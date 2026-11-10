@@ -1398,6 +1398,54 @@ impl Session {
             csrf_token: &authority.csrf_token,
         })
     }
+    pub(crate) fn confirm_saved_head_publication(&mut self, head: &crate::installations::native_static_export::SavedHead,
+                                                publication: &str) -> Result<()> {
+        let (identity, session_hash) = self.saved_head_owner_hash()?;
+        let query = head.receipt_query(publication, &identity.1, &identity.2, &session_hash)?;
+        let confirmed = self.query_database_before("exhibitos", &query, Instant::now() + Duration::from_secs(15))?;
+        self.check_native_observation_fence()?;
+        if confirmed != "t" { return Err(err("NATIVE_SAVED_HEAD_PUBLICATION_UNCONFIRMED")); }
+        Ok(())
+    }
+    fn saved_head_owner_hash(&mut self) -> Result<((String, String, String), String)> {
+        if !cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))
+            || self.payload.context().manifest_sha256 != crate::installations::native_static_export::SAVED_HEAD_RUNTIME
+            || self.oex_upload_selection_started || self.selected_furnishing_import()
+            || self.state != "ready" || !self.readiness.ready || self.auxiliary.is_some()
+            || self.active_furnishing_binding().is_none()
+        {
+            return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
+        }
+        self.check_workspace_furnishing_channel()?;
+        let identity = self.service.personal_identity()?;
+        let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        if (&identity.0, &identity.1, &identity.2) != (&authority.workspace_id, &authority.tenant_id, &authority.principal_id)
+            || authority.owner_uid != unsafe { libc::geteuid() }
+        {
+            return Err(err("NATIVE_PERSONAL_OWNER_MISMATCH"));
+        }
+        Ok((identity, digest(authority.session_token.as_bytes())))
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(crate) fn retain_abandoned_ordinary_publication_stage(
+        &mut self, plan: &crate::installations::native_publication_custody::Plan,
+        recheck: impl FnOnce() -> Result<()>,
+    ) -> Result<Value> {
+        let (owner, session_hash) = self.saved_head_owner_hash()?;
+        if &owner != plan.owner() { return Err(err("NATIVE_PERSONAL_OWNER_MISMATCH")); }
+        plan.check_stage()?;
+        let query = plan.absence_query(&session_hash)?;
+        self.quiesce_for_backup()?;
+        let deadline = Instant::now() + Duration::from_secs(25);
+        self.verify_furnishing_db_quiescence(deadline)?;
+        if self.query_database_mode("exhibitos", &query, deadline, true)? != "t" {
+            return Err(err("NATIVE_PUBLICATION_STAGE_CUSTODY_UNCONFIRMED"));
+        }
+        self.check_native_observation_fence()?;
+        recheck()?;
+        if self.cancelled() { return Err(err("NATIVE_CANCELLED")); }
+        plan.retain()
+    }
     /// Explicit private IPC only, never part of status/journal/log output.
     pub fn authoring_session(&mut self) -> Result<Value> {
         if self.oex_upload_selection_started { return Err(err("NATIVE_OEX_SESSION_BOUND")); }
@@ -1843,6 +1891,9 @@ const { isDeepStrictEqual } = require('node:util');
         self.query_database_before(database, sql, Instant::now() + Duration::from_secs(60))
     }
     fn query_database_before(&mut self, database: &str, sql: &str, deadline: Instant) -> Result<String> {
+        self.query_database_mode(database, sql, deadline, false)
+    }
+    fn query_database_mode(&mut self, database: &str, sql: &str, deadline: Instant, private_input: bool) -> Result<String> {
         let timeout = deadline.checked_duration_since(Instant::now())
             .filter(|duration| !duration.is_zero()).ok_or_else(|| err("NATIVE_DATABASE_UNAVAILABLE"))?;
         let password = self
@@ -1851,9 +1902,7 @@ const { isDeepStrictEqual } = require('node:util');
             .get("POSTGRES_PASSWORD")
             .ok_or_else(|| err("NATIVE_CONFIGURATION_INVALID"))?
             .clone();
-        let (code, bytes) = self.auxiliary_timed(
-            self.pg_tool("psql")?,
-            vec![
+        let mut args = vec![
                 "-h".into(),
                 "127.0.0.1".into(),
                 "-p".into(),
@@ -1866,11 +1915,16 @@ const { isDeepStrictEqual } = require('node:util');
                 "--no-psqlrc".into(),
                 "--tuples-only".into(),
                 "--no-align".into(),
-                "--command".into(),
-                sql.into(),
-            ],
+            ];
+        if private_input {
+            args.extend(["--file=-".into(), "--set=ON_ERROR_STOP=1".into(), "--set=VERBOSITY=terse".into()]);
+        } else {
+            args.extend(["--command".into(), sql.into()]);
+        }
+        let (code, bytes) = self.auxiliary_timed(
+            self.pg_tool("psql")?, args,
             vec![("PGPASSWORD", password)],
-            None, timeout,
+            private_input.then_some(sql.as_bytes()), timeout,
         )?;
         if code != 0 {
             return Err(err("NATIVE_DATABASE_UNAVAILABLE"));

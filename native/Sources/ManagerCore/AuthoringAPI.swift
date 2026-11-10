@@ -2309,6 +2309,14 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsOrdinarySavedHeadStaticRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == workspaceInfoStandPreparationManifestPin
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsOrdinaryNativePublicationRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == nativePublicationCapacityManifestPin

@@ -1211,15 +1211,34 @@ impl Host {
         } = request.command
         {
             use super::installations::native_maintenance::Input;
-            self.selected(&selection_token)?;
+            let selected = self.selected(&selection_token)?;
             if matches!(&maintenance, super::installations::native_maintenance::Input::CheckOexWorkspace) {
                 let payload=Payload::open(&self.resources)?;
                 return serde_json::to_value(payload.normal_oex_027_selected_input()?).map_err(|_|err("STATE_INVALID"));
             }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            if let Input::RetainAbandonedOrdinaryPublicationStage { proof } = &maintenance {
+                if self.exporter.detail_held(&selection_token)? { return Err(err("BUSY")); }
+                let plan = self.controller.ordinary_publication_custody_plan(&selection_token, proof)?;
+                let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                if state.root.as_ref() != Some(&selected) || state.busy || state.detail_closing || state.selected_oex {
+                    return Err(err("NATIVE_NOT_READY"));
+                }
+                let session = state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?;
+                return session.retain_abandoned_ordinary_publication_stage(&plan, || {
+                    if self.controller.ordinary_publication_custody_plan(&selection_token, proof)? != plan {
+                        return Err(err("NATIVE_PUBLICATION_STAGE_CUSTODY_UNCONFIRMED"));
+                    }
+                    Ok(())
+                });
+            }
+            let _ = selected;
             self.exporter.stop_detail_child(Some(&selection_token))?;
             self.detach_stopped()?;
             return match maintenance {
                 Input::CheckOexWorkspace => Err(err("NATIVE_PROTOCOL_INVALID")),
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+                Input::RetainAbandonedOrdinaryPublicationStage { .. } => Err(err("NATIVE_PROTOCOL_INVALID")),
                 Input::CreateKey { path } => {
                     self.controller.create_backup_key(&selection_token, &path)?;
                     Ok(Value::Null)
@@ -1312,6 +1331,8 @@ impl Host {
                 if !current.readiness.ready {
                     return Err(err("NATIVE_NOT_READY"));
                 }
+                let mut export = export.clone();
+                export.verify_saved_head_receipt(session)?;
                 let authority = if export.detail_mode.is_some() {
                     Some(session.static_detail_authority()?)
                 } else {
@@ -1319,7 +1340,7 @@ impl Host {
                 };
                 return serde_json::to_value(self.exporter.start(
                     selection_token.clone(),
-                    export.clone(),
+                    export,
                     payload,
                     current.ports.web,
                     authority,

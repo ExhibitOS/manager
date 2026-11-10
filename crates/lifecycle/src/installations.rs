@@ -40,6 +40,9 @@ impl NewSelectedRoot {
 #[cfg(target_os = "macos")]
 #[path = "native_publication.rs"]
 pub mod native_publication;
+#[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_publication_custody.rs"]
+pub(crate) mod native_publication_custody;
 #[cfg(target_os = "macos")]
 #[path = "native_static_export.rs"]
 pub mod native_static_export;
