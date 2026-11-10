@@ -379,6 +379,9 @@ public actor AuthoringAPI {
     public nonisolated let productImageRuntimeQualified: Bool
     private let nativeRuntimeManifestSHA256: String?
     private static let placedExitDoorRuntimePin = "1245b842efb55525ebf0c307f984391431552ce19d6f59874dbcd8435b8e39d2"
+    #if DEBUG
+    private static let defaultSeatRuntimePin = "ca92c7530f594462e459bdf16ff9cd64cc1dd1ffc0d68ab4b13c31e7ea3a7630"
+    #endif
     public nonisolated var supportsPlacedExitDoors: Bool {
         #if DEBUG
         nativeRuntimeManifestSHA256 == Self.placedExitDoorRuntimePin
@@ -539,6 +542,7 @@ public actor AuthoringAPI {
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
             || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
+            || Self.supportsDefaultSeatRuntime(manifest: manifest)
         let configuration = URLSessionConfiguration.ephemeral
         if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.urlCache = nil
@@ -2311,7 +2315,7 @@ public actor AuthoringAPI {
         return next
     }
 
-    private var admitsWorkspaceDefaultSeatProposal: Bool {
+    var admitsWorkspaceDefaultSeatProposal: Bool {
         admitsWorkspaceFurnishings && session?.nativeDefaultSeatProposalProfile == "default-seat-proposal-v1"
     }
 
@@ -2402,7 +2406,16 @@ public actor AuthoringAPI {
     nonisolated static func supportsPinnedStartupDrain(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
+            || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsPreReadyPreservationReadback(manifest: manifest)
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsDefaultSeatRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == defaultSeatRuntimePin
         #else
         false
         #endif

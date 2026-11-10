@@ -227,6 +227,11 @@ Operations:
   `etag` and up to 32 existing `placementIds` to stage missing defaults on a
   clean saved head. Existing valid linked seats and viewpoints are preserved.
   Use the existing `save` operation to commit a staged change.
+  The macOS debug catalog-045 default-seat payload (manifest `ca92c753…`)
+  supports fresh personal startup and clean same-payload reopen. Build the
+  static Viewer with its private editor and the native cover companion before
+  packaging, using the Platform build recipe. The payload has its own manifest
+  identity and grants no profile transition or restore admission.
 - On a runtime that supports backed workspace seats, save the registered
   bench visual at scale 1 with the existing host's exact room, position and
   yaw. Call `workspace-bench-seat-attach` with the clean head's `etag`, the
