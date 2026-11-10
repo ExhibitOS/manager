@@ -1398,6 +1398,30 @@ impl Session {
             csrf_token: &authority.csrf_token,
         })
     }
+    pub(crate) fn confirm_saved_head_publication(&mut self, head: &crate::installations::native_static_export::SavedHead,
+                                                publication: &str) -> Result<()> {
+        if !cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))
+            || self.payload.context().manifest_sha256 != crate::installations::native_static_export::SAVED_HEAD_RUNTIME
+            || self.oex_upload_selection_started || self.selected_furnishing_import()
+            || self.state != "ready" || !self.readiness.ready || self.auxiliary.is_some()
+            || self.active_furnishing_binding().is_none()
+        {
+            return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
+        }
+        self.check_workspace_furnishing_channel()?;
+        let identity = self.service.personal_identity()?;
+        let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
+        if (&identity.0, &identity.1, &identity.2) != (&authority.workspace_id, &authority.tenant_id, &authority.principal_id)
+            || authority.owner_uid != unsafe { libc::geteuid() }
+        {
+            return Err(err("NATIVE_PERSONAL_OWNER_MISMATCH"));
+        }
+        let query = head.receipt_query(publication, &identity.1, &identity.2, &digest(authority.session_token.as_bytes()))?;
+        let confirmed = self.query_database_before("exhibitos", &query, Instant::now() + Duration::from_secs(15))?;
+        self.check_native_observation_fence()?;
+        if confirmed != "t" { return Err(err("NATIVE_SAVED_HEAD_PUBLICATION_UNCONFIRMED")); }
+        Ok(())
+    }
     /// Explicit private IPC only, never part of status/journal/log output.
     pub fn authoring_session(&mut self) -> Result<Value> {
         if self.oex_upload_selection_started { return Err(err("NATIVE_OEX_SESSION_BOUND")); }

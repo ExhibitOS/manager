@@ -1312,6 +1312,8 @@ impl Host {
                 if !current.readiness.ready {
                     return Err(err("NATIVE_NOT_READY"));
                 }
+                let mut export = export.clone();
+                export.verify_saved_head_receipt(session)?;
                 let authority = if export.detail_mode.is_some() {
                     Some(session.static_detail_authority()?)
                 } else {
@@ -1319,7 +1321,7 @@ impl Host {
                 };
                 return serde_json::to_value(self.exporter.start(
                     selection_token.clone(),
-                    export.clone(),
+                    export,
                     payload,
                     current.ports.web,
                     authority,

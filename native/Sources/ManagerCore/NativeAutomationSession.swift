@@ -633,22 +633,12 @@ public actor NativeAutomationSession {
         try reopened.requireSameComparison(await api.exhibition(draft.id))
         guard try Self.exportRootIdentity(root, profile: profile) == parent else { throw BridgeFailure(changed) }
 
-        let existing = try await bridge.staticExportStatus(context)
-        if try existing?.canReuse(publicationId: frozen.publicationId, output: path) == true {
-            guard let existing, existing.revisionSha256 == frozen.revisionSha256, existing.privateEditor == true,
-                  existing.workspaceId == owner.workspaceId, existing.tenantId == owner.tenantId,
-                  existing.principalId == owner.principalId,
-                  existing.outputParentIdentity?.device == UInt64(bitPattern: Int64(parent.0)),
-                  existing.outputParentIdentity?.inode == UInt64(parent.1) else { throw BridgeFailure(changed) }
-        } else {
-            _ = try output(path)
-            let head: DocumentValue = .object(["exhibitionId": .string(draft.id), "etag": .string(etag),
-                "revision": request["expectedRevision"], "editVersion": request["expectedEditVersion"],
-                "revisionSha256": .string(frozen.revisionSha256)])
-            _ = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination,
-                                                   privateEditor: true, nativeOriginalDetail: false,
-                                                   outputParentIdentity: parent, savedHead: head)
-        }
+        let head: DocumentValue = .object(["exhibitionId": .string(draft.id), "etag": .string(etag),
+            "requestId": .string(id), "revision": request["expectedRevision"],
+            "editVersion": request["expectedEditVersion"], "revisionSha256": .string(frozen.revisionSha256)])
+        _ = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination,
+                                               privateEditor: true, nativeOriginalDetail: false,
+                                               outputParentIdentity: parent, savedHead: head)
         let receipt = try await waitForStaticExport(context, publication: frozen, path: path, nativeOriginal: false, detailJobId: nil)
         guard receipt.publicationId == frozen.publicationId, receipt.revisionSha256 == frozen.revisionSha256,
               receipt.output == path, FileManager.default.fileExists(atPath: path),
