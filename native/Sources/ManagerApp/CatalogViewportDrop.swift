@@ -254,6 +254,7 @@ struct CatalogViewportDrop: DropDelegate {
             guard let hit = try await controller.catalogDrop(query), source.matches(model) else {
                 throw AuthoringFailure("CATALOG_DROP_INVALID")
             }
+            var changed = true
             switch (source.item, hit) {
             case (.artwork, .artwork):
                 guard let placement else { throw AuthoringFailure("CATALOG_DROP_INVALID") }
@@ -281,7 +282,7 @@ struct CatalogViewportDrop: DropDelegate {
                     throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED")
                 }
                 model.selectViewport(.init(kind: "placement", id: id))
-                _ = try await model.applyWorkspaceArtworkFrame(to: id, access: source.access) { api, state in
+                changed = try await model.applyWorkspaceArtworkFrame(to: id, access: source.access) { api, state in
                     try await api.prepareSelectedWorkspaceArtworkFrame(entry, placementId: id,
                         artworkRevisionId: revision, assetId: assetID, in: state)
                 }
@@ -296,7 +297,8 @@ struct CatalogViewportDrop: DropDelegate {
                 guard source.matches(model), controller.catalogDropFrameMatches(source.draft, selection: nil),
                       model.canEditSharedFurnishing, var form = model.sharedFurnishing,
                       form.host == .light, form.hostId == id else { throw AuthoringFailure("CATALOG_DROP_INVALID") }
-                if !form.selected {
+                changed = !form.selected
+                if changed {
                     form.selected = true
                     model.sharedFurnishing = form
                     await model.previewSharedFurnishing()
@@ -313,7 +315,8 @@ struct CatalogViewportDrop: DropDelegate {
             default:
                 throw AuthoringFailure("CATALOG_DROP_INVALID")
             }
-            session.complete("카탈로그 항목을 배치했습니다. 전시를 저장하거나 되돌릴 수 있습니다.")
+            session.complete(changed ? "카탈로그 항목을 배치했습니다. 전시를 저장하거나 되돌릴 수 있습니다."
+                : "선택한 비품이 이미 연결되어 있습니다.")
         } catch {
             if let placement, model.artworkPlacement?.requestId == placement.requestId {
                 await model.cancelVisualArtworkPlacement()
