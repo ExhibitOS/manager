@@ -1483,6 +1483,21 @@ public actor NativeAutomationSession {
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
+        case "placed-exit-door-apply":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "settings"])
+            guard selectedOEXFormat == nil, fields["inputPath"] == nil, fields["outputPath"] == nil,
+                  let etag = current.etag, command["etag"] == .string(etag) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let settings = try PlacedExitDoorSettings(value: command["settings"])
+            if let draft = try await api.preparePlacedExitDoor(settings, in: current) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "floor-appearance-apply":
             try checkedRevision(request, current)
             let policy = try await checkSavedSurfacePolicy(current, api: api)

@@ -674,6 +674,13 @@ const CATALOG45_PREPARED_SIGN_AUDIO: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_PLACED_EXIT_DOORS: RuntimeTuple = (
+    "5b855dde3ed645a7d29e75fbf498bfff9bc7e9ec",
+    "83d230e2cab53d7c4472b3640de01f5937088559f9dfaff41b4db32df58b16be",
+    "1245b842efb55525ebf0c307f984391431552ce19d6f59874dbcd8435b8e39d2",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG45_PRODUCT_IMAGE: RuntimeTuple = (
     "d33714b74d2b12ad1bc089bd8180ad0a49974894",
     "29cdc6fd07e1c5d4e5fda06a2c37270d7023024d76a7cc3d31596af9f1c7a921",
@@ -747,6 +754,7 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL == tuple
         || CATALOG45_SAVED_HEAD_MODULAR_PORTAL == tuple
         || CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE == tuple
+        || CATALOG45_PLACED_EXIT_DOORS == tuple
         || catalog45_native_publication_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -2260,6 +2268,20 @@ mod normal_oex_release_declaration_tests {
         assert!(new.static_detail_export_resources(true).is_err());
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
         assert_eq!(old.workspace_furnishing_ledger(catalog).unwrap(), new.workspace_furnishing_ledger(catalog).unwrap());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact isolated placed exit-door runtime payload"]
+    fn opens_reviewed_placed_exit_door_runtime() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_EXIT_DOOR_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        assert_eq!(payload.manifest_sha256, CATALOG45_PLACED_EXIT_DOORS.2);
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
+        assert!(payload.ordinary_fresh_furnishing());
+        assert!(payload.static_export_resources(true).is_ok());
+        assert!(payload.static_detail_export_resources(true).is_err());
+        assert!(!saved_workspace_transition_supported((CATALOG45_PREPARED_SIGN_AUDIO.2, CATALOG45_PLACED_EXIT_DOORS.2)));
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

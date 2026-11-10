@@ -377,6 +377,14 @@ public actor AuthoringAPI {
     public nonisolated let admitsSameOwnerArtworkReplacement: Bool
     public nonisolated let productImageRuntimeQualified: Bool
     private let nativeRuntimeManifestSHA256: String?
+    private static let placedExitDoorRuntimePin = "1245b842efb55525ebf0c307f984391431552ce19d6f59874dbcd8435b8e39d2"
+    public nonisolated var supportsPlacedExitDoors: Bool {
+        #if DEBUG
+        nativeRuntimeManifestSHA256 == Self.placedExitDoorRuntimePin
+        #else
+        false
+        #endif
+    }
     public nonisolated let largeModelRuntimeQualified: Bool
     // These reviewed v5 tuples are local-validation payloads. Release admission
     // requires separate package qualification.
@@ -926,6 +934,30 @@ public actor AuthoringAPI {
         let policy = try await nativeViewportPolicy(draft.id)
         guard policy.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
         guard policy.confirmsOrdinaryDraft else { throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED") }
+        return draft
+    }
+
+    public func preparePlacedExitDoor(_ settings: PlacedExitDoorSettings, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard supportsPlacedExitDoors, nativeSession, session?.userId == document.principalId,
+              document.tenantId == tenant, !document.dirty, document.pending == nil,
+              var draft = document.draft, let etag = document.etag,
+              let target = PlacedExitDoorSettings.targets(in: draft).first(where: { $0.id == settings.placementId }) else {
+            throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard policy.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        guard policy.confirmsOrdinaryDraft else { throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE") }
+        let furnishing = try await workspaceFurnishing(target.furnishingId, version: 1)
+        guard furnishing.details.kind == .barrier, furnishing.details.model.sha256 == PlacedExitDoorSettings.modelSHA256,
+              furnishing.details.model.bytes == 8684 else { throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE") }
+        let saved = try await exhibition(draft.id)
+        guard generation == heldGeneration, saved.etag == etag, saved.draft == draft else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let candidate = try settings.candidate(in: draft)
+        guard candidate != draft.candidate else { return nil }
+        try draft.replaceCandidate(candidate)
         return draft
     }
 
@@ -2297,7 +2329,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
-            || manifest == savedHeadPreparedSignAudioManifestPin
+            || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
         #else
         false
         #endif
