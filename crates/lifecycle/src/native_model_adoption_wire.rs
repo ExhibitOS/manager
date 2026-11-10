@@ -142,6 +142,8 @@ pub(crate) struct Grant {
     receipt_sha256: String,
     rights_sha256: String,
     rights_policy_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_credit_line: Option<String>,
     pub(crate) original: Blob,
     pub(crate) display: Blob,
 }
@@ -164,6 +166,12 @@ impl Grant {
             ]
             .into_iter()
             .all(|value| hash_valid(value))
+            || self.source_credit_line.as_deref().is_some_and(|credit| {
+                // Match JavaScript trim without altering the authenticated bytes.
+                credit.len() > 2048
+                    || credit.bytes().any(|byte| byte.is_ascii_control())
+                    || credit.trim_matches(|c: char| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}').is_empty()
+            })
             || !self.original.valid()
             || !self.display.valid()
             || if self.original.sha256 == self.display.sha256 {
@@ -178,8 +186,8 @@ impl Grant {
     }
 
     pub(crate) fn digest(&self) -> Result<String> {
-        // The v1 domain contains only ASCII strings and safe integer values.
         // Sort keys recursively to match Platform's canonicalModelValue.
+        // Attribution is hashed as its exact UTF-8 content.
         let mut canonical = serde_json::to_value(self).map_err(|_| unavailable())?;
         canonical.sort_all_objects();
         let bytes = serde_json::to_vec(&canonical).map_err(|_| unavailable())?;
@@ -379,6 +387,21 @@ pub(crate) mod tests {
             changed.digest().unwrap(),
             "6aa6f66d8dad05d67088ee424af545be93bffe42f8241a8914c8ae7cd8c2697d"
         );
+    }
+
+    #[test]
+    fn source_credit_preserves_platform_utf8_digest_and_refuses_invalid_text() {
+        let mut grant = fixture_grant(1000, 2000);
+        let credit = "  Épreuve • Source  ";
+        grant.source_credit_line = Some(credit.into());
+        assert!(grant.check(1500).is_ok());
+        assert_eq!(serde_json::to_value(&grant).unwrap()["sourceCreditLine"], credit);
+        assert_eq!(grant.digest().unwrap(),
+            "4e6ef2880555f607b2b5cf8962cd121caeaf3600acb3dd3bde58b644ab7a7721");
+        for invalid in [" \u{feff}".into(), "credit\nline".into(), "\u{7f}".into(), "é".repeat(1025)] {
+            grant.source_credit_line = Some(invalid);
+            assert!(grant.check(1500).is_err());
+        }
     }
 
     #[test]
