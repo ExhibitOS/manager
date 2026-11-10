@@ -949,18 +949,37 @@ public actor AuthoringAPI {
         let heldGeneration = generation
         let policy = try await nativeViewportPolicy(draft.id)
         guard policy.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
-        guard policy.confirmsOrdinaryDraft else { throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE") }
+        let needsViewportCheck = !policy.confirmsOrdinaryDraft
+        if needsViewportCheck, !Self.admitsImportedExitDoorEdit(policy) {
+            throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE")
+        }
         let furnishing = try await workspaceFurnishing(target.furnishingId, version: 1)
         guard furnishing.details.kind == .barrier, furnishing.details.model.sha256 == PlacedExitDoorSettings.modelSHA256,
               furnishing.details.model.bytes == 8684 else { throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE") }
         let saved = try await exhibition(draft.id)
-        guard generation == heldGeneration, saved.etag == etag, saved.draft == draft else {
+        guard generation == heldGeneration, saved.etag == etag, saved.draft == draft,
+              !needsViewportCheck || saved.revision == policy.revision else {
             throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
         }
         let candidate = try settings.candidate(in: draft)
         guard candidate != draft.candidate else { return nil }
         try draft.replaceCandidate(candidate)
+        if needsViewportCheck {
+            try await validateNativeViewportEdit(draft, etag: etag)
+            let latest = try await nativeViewportPolicy(draft.id)
+            guard generation == heldGeneration, latest.etag == etag, latest.revision == saved.revision else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard Self.admitsImportedExitDoorEdit(latest) else {
+                throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE")
+            }
+        }
         return draft
+    }
+
+    static func admitsImportedExitDoorEdit(_ policy: NativeViewportPolicy) -> Bool {
+        policy.boundedProfile == true && policy.boundedEditRequired == false
+            && !policy.boundedReadOnly && policy.editingCapability == nil
     }
 
     private func approvedRoomAudioTracks(exhibitionId: String) async throws -> [ApprovedRoomAudioTrack] {
