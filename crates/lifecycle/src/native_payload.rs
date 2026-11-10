@@ -687,7 +687,7 @@ const CATALOG45_PREPARED_SIGN_AUDIO: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const CATALOG45_PLACED_EXIT_DOORS: RuntimeTuple = (
+pub(crate) const CATALOG45_PLACED_EXIT_DOORS: RuntimeTuple = (
     "5b855dde3ed645a7d29e75fbf498bfff9bc7e9ec",
     "83d230e2cab53d7c4472b3640de01f5937088559f9dfaff41b4db32df58b16be",
     "1245b842efb55525ebf0c307f984391431552ce19d6f59874dbcd8435b8e39d2",
@@ -769,6 +769,13 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
         || CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE == tuple
         || CATALOG45_PLACED_EXIT_DOORS == tuple
         || catalog45_native_publication_host_matches(tuple);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
+pub(crate) fn catalog45_same_version_restore_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG45_PLACED_EXIT_DOORS == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }

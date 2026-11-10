@@ -129,6 +129,9 @@ impl Binding {
                 || (self.catalog == 45 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
                     && crate::native_payload::ordinary_fresh_catalog45_host_matches(tuple))
+                || (self.catalog == 45 && self.restore.is_some()
+                    && matches!(self.admission_kind, Admission::VerifiedRestore | Admission::CleanReopen)
+                    && crate::native_payload::catalog45_same_version_restore_host_matches(tuple))
                 || (self.catalog == 46 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen | Admission::InterruptedReopen)
                     && crate::native_payload::large_model_host_matches(tuple))
@@ -1234,6 +1237,60 @@ mod tests {
         assert_eq!(next.admission_kind, Admission::VerifiedRestore);
         assert_eq!(next.owner, restored.owner);
         assert_eq!(next.restore, restored.restore);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog45_sealed_restore_admits_activation_and_normal_reopens() {
+        let pinned = |generation: &str| {
+            let (source, producer, manifest) = crate::native_payload::CATALOG45_PLACED_EXIT_DOORS;
+            let mut value = binding(generation);
+            value.catalog = 45;
+            value.source_commit = source.into();
+            value.producer_sha256 = producer.into();
+            value.payload_manifest_sha256 = manifest.into();
+            value
+        };
+        let mut activated = pinned(GENERATION);
+        activated.phase = Phase::ActivatedRestore;
+        activated.admission_kind = Admission::VerifiedRestore;
+        assert!(activated.sha256().is_err());
+        activated.restore = Some(Restore {
+            id: "10000000-0000-4000-8000-000000000007".into(),
+            backup_id: "10000000-0000-4000-8000-000000000008".into(),
+            archive_manifest_sha256: "5".repeat(64),
+            target_system_identifier: "123".into(),
+            provenance: None,
+        });
+        activated.sha256().unwrap();
+
+        let mut other_payload = activated.clone();
+        other_payload.payload_manifest_sha256 = "4".repeat(64);
+        assert!(other_payload.check().is_err());
+        let mut malformed = activated.clone();
+        malformed.restore.as_mut().unwrap().target_system_identifier = "0123".into();
+        assert!(malformed.check().is_err());
+
+        let mut other_owner = pinned(NEXT);
+        other_owner.owner.owner_uid += 1;
+        assert!(other_owner.consume(&activated).is_err());
+        let mut other_root = pinned(NEXT);
+        other_root.physical.root_inode += 1;
+        assert!(other_root.consume(&activated).is_err());
+
+        let mut first = pinned(NEXT);
+        first.consume(&activated).unwrap();
+        assert_eq!(first.admission_kind, Admission::VerifiedRestore);
+        assert_eq!(first.restore, activated.restore);
+        first.phase = Phase::Clean;
+        first.sha256().unwrap();
+
+        let mut reopened = pinned(LATER);
+        reopened.consume(&first).unwrap();
+        assert_eq!(reopened.admission_kind, Admission::CleanReopen);
+        assert_eq!(reopened.restore, activated.restore);
+        reopened.phase = Phase::Clean;
+        reopened.sha256().unwrap();
     }
 
     #[test]
