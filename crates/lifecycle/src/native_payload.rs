@@ -3979,7 +3979,7 @@ impl Payload {
             || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
             || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance
             || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == provenance
-            || catalog45_recovery_host_matches(provenance);
+            || (catalog45_recovery_host_matches(provenance) && !self.catalog45_pre_ready_preservation_validation());
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let combined_local_validation = false;
         if (CATALOG40_WHEAT_DETAIL != Some(provenance)

@@ -122,6 +122,22 @@ fn saved_document_digest(document: &super::installations::native_document::Docum
     Ok(digest(&serde_json::to_vec(document).map_err(|_| invalid())?))
 }
 
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn catalog45_activation_saved_document(
+    pair: (&str, &str), retained_recovery: bool, historical_startup: bool,
+    expected: Option<&str>, document: &super::installations::native_document::DocumentState,
+) -> Result<bool> {
+    let preservation = crate::native_payload::catalog45_startup_recovery(pair)
+        == Some(crate::native_payload::Catalog45StartupRecovery::PreReadyPreservation);
+    if pair.0 != pair.1 && !retained_recovery && !historical_startup && !preservation {
+        return Ok(false);
+    }
+    if expected != Some(saved_document_digest(document)?.as_str()) {
+        return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
+    }
+    Ok(true)
+}
+
 fn check_transition_host(
     pair: (&str, &str),
     saved_document_sha256: Option<&str>,
@@ -1547,10 +1563,9 @@ impl InstallationController {
         {
             return Err(invalid());
         }
+        let pair = (checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str());
         let generation = crate::native_runtime::catalog45_recovery_source_generation(
-            &service.root, crate::native_payload::catalog45_startup_recovery((
-                checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str(),
-            )),
+            &service.root, crate::native_payload::catalog45_startup_recovery(pair),
         )?;
         if checkpoint.startup_cancellation_045.as_ref().is_some_and(|proof| proof.failed_generation != generation) {
             return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
@@ -1559,15 +1574,8 @@ impl InstallationController {
         if let Some(proof) = retained_recovery {
             check_retained_recovery_generation(proof, &generation)?;
         }
-        if checkpoint.old_manifest == checkpoint.new_manifest || retained_recovery.is_some()
-            || checkpoint.startup_cancellation_045.is_some()
-        {
-            // Verify the preserved saved draft when no publication was attempted.
-            let document_sha256 = saved_document_digest(document)?;
-            if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str()) {
-                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
-            }
-        } else {
+        if !catalog45_activation_saved_document(pair, retained_recovery.is_some(),
+            checkpoint.startup_cancellation_045.is_some(), checkpoint.saved_document_sha256.as_deref(), document)? {
             self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
         }
         verify_unchanged(&service.root, &checkpoint, &pending)?;
@@ -1658,6 +1666,17 @@ mod tests {
         assert_eq!(checkpoint_inventory_limit(pre_ready, None), publication_limit);
         assert!(startup_cancellation_proof_matches(pre_ready, None, None));
         assert!(!startup_cancellation_proof_matches(pre_ready, None, Some(&proof)));
+        let mut document = crate::installations::native_document::DocumentState {
+            format: 1, revision: 1, workspace_id: Uuid::new_v4().to_string(),
+            tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(),
+            draft: None, etag: None, saved_edit_version: None, pending: None,
+        };
+        let expected = saved_document_digest(&document).unwrap();
+        assert!(catalog45_activation_saved_document(pre_ready, false, false, Some(&expected), &document).unwrap());
+        assert!(!catalog45_activation_saved_document((previous, current), false, false, Some(&expected), &document).unwrap());
+        document.revision += 1;
+        assert_eq!(catalog45_activation_saved_document(pre_ready, false, false, Some(&expected), &document).unwrap_err().code,
+            "NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
         for pair in [(captions, publication), (captions, captions), (current, captions), (caption_fixture, captions),
                      (prepared_sign_audio, captions), (publication, prepared_sign_audio), (prepared_sign_audio, prepared_sign_audio),
                      (pre_ready_preservation, prepared_sign_audio), (pre_ready_preservation, pre_ready_preservation)] {

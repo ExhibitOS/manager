@@ -2297,7 +2297,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
-            || supportsPreparedSignStartupDrain(manifest: manifest)
+            || manifest == savedHeadPreparedSignAudioManifestPin
         #else
         false
         #endif
@@ -2305,7 +2305,15 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsPreparedSignStartupDrain(manifest: String) -> Bool {
         #if DEBUG
-        manifest == savedHeadPreparedSignAudioManifestPin || manifest == preparedSignPreReadyPreservationManifestPin
+        manifest == savedHeadPreparedSignAudioManifestPin || supportsPreReadyPreservationReadback(manifest: manifest)
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsPreReadyPreservationReadback(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == preparedSignPreReadyPreservationManifestPin
         #else
         false
         #endif

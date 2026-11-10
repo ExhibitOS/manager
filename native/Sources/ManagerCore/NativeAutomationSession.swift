@@ -79,6 +79,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
             } == true
@@ -272,8 +273,10 @@ public actor NativeAutomationSession {
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
+        let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
+            && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
-                || admitsRenderedSculptureThumbnailOex || admitsNativePublication else {
+                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
