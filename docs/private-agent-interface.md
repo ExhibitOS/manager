@@ -227,6 +227,13 @@ Operations:
   `etag` and up to 32 existing `placementIds` to stage missing defaults on a
   clean saved head. Existing valid linked seats and viewpoints are preserved.
   Use the existing `save` operation to commit a staged change.
+- On a runtime that supports backed workspace seats, save the registered
+  bench visual at scale 1 with the existing host's exact room, position and
+  yaw. Call `workspace-bench-seat-attach` with the clean head's `etag`, the
+  existing `benchId`, `viewpointId` and `dimensions`, and the reviewed
+  `placementId`, `furnishingId`, `furnishingVersion` and `modelSha256`. Omit
+  `viewpoint` so the command preserves the existing camera. Save the staged
+  first link and reopen to verify it. An exact replay leaves the draft intact.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at
