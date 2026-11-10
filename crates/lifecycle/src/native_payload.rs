@@ -794,9 +794,9 @@ pub(crate) fn fresh_image_host_matches(tuple: (&str, &str, &str)) -> bool {
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG48_INFO_STAND_PREPARATION: RuntimeTuple = (
-    "0dc1c676a2a70a47ee2220521638c9febdc7f043",
+    "9611961c75c80980babcec8fe9e7c0267800fcc0",
     "392bde543dd12306061a65c1a60b1696def07407e0019faaf22e3060a4fc0e10",
-    "62dc2e80622344b7c0c9566714c6e76179d8706a1de609fa268d65530038b99c",
+    "cfc795c35628e15a9f91b71dcca0587023a0b249b2984a2615973b72bc6ed32f",
 );
 
 pub(crate) fn info_stand_preparation_host_matches(tuple: (&str, &str, &str)) -> bool {

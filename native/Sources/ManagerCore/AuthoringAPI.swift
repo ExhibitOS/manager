@@ -451,7 +451,7 @@ public actor AuthoringAPI {
         "d31372305fd54f8d42cec1ebc76bf0ec4d47cf36cb4ece658bca08195687748e"
     ]
     private static let workspaceInfoStandPreparationManifestPin =
-        "62dc2e80622344b7c0c9566714c6e76179d8706a1de609fa268d65530038b99c"
+        "cfc795c35628e15a9f91b71dcca0587023a0b249b2984a2615973b72bc6ed32f"
     #else
     private static let workspaceFurnishingManifestPins: Set<String> = []
     #endif
