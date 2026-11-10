@@ -804,6 +804,27 @@ pub(crate) fn catalog45_same_version_restore_host_matches(tuple: (&str, &str, &s
     { let _ = tuple; false }
 }
 
+pub(crate) fn catalog45_carried_restore_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == (
+        "01125cc93f27ee9df27da01dc6605c0579138a3e",
+        "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
+        "ea2570531e6a988d1333f4f8a0898f972f75da24919a32e47c75fff638bdbf67",
+    );
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
+pub(crate) fn catalog45_carried_restore_payload(payload: &Payload) -> bool {
+    let context = payload.context();
+    catalog45_carried_restore_host_matches((&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
+}
+
+pub(crate) fn catalog45_carried_restore_source(payload: &Payload) -> bool {
+    let context = payload.context();
+    catalog45_same_version_restore_host_matches((&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
+}
+
 pub(crate) fn native_restore_provenance_host_matches(catalog: u32, tuple: (&str, &str, &str)) -> bool {
     catalog == 40 || (catalog == 45 && catalog45_same_version_restore_host_matches(tuple))
 }

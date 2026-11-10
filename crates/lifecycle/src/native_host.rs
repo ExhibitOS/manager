@@ -1298,9 +1298,9 @@ impl Host {
                     self.reset_selection_state()?;
                     serde_json::to_value(context).map_err(|_| err("STATE_INVALID"))
                 }
-                Input::StageRestore { source, key_file } => serde_json::to_value(self.launch(
+                Input::StageRestore { source, key_file, carried_restore } => serde_json::to_value(self.launch(
                     selection_token,
-                    Work::Restore(super::installations::native_restore::Input { source, key_file }),
+                    Work::Restore(super::installations::native_restore::Input { source, key_file, carried_restore }),
                 )?)
                 .map_err(|_| err("STATE_INVALID")),
                 #[cfg(debug_assertions)]

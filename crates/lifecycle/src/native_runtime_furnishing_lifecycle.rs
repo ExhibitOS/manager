@@ -63,6 +63,8 @@ pub(super) struct Restore {
     pub(super) target_system_identifier: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) provenance: Option<RestoreProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) carried_provenance: Option<crate::installations::native_restore::CarriedObservation>,
 }
 
 /// Canonical Active bytes are serde's compact JSON for this closed structure
@@ -115,6 +117,10 @@ impl Binding {
         let retained_restore = self.catalog == 45 && self.admission_kind == Admission::CleanReopen
             && self.restore.as_ref().is_some_and(|restore| restore.provenance.is_some())
             && crate::native_payload::catalog45_retained_restore_payload(tuple).is_some();
+        let carried_restore = self.catalog == 45
+            && matches!(self.admission_kind, Admission::VerifiedRestore | Admission::CleanReopen)
+            && self.restore.as_ref().is_some_and(|restore| restore.carried_provenance.is_some())
+            && crate::native_payload::catalog45_carried_restore_host_matches(tuple);
         let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
             42 => crate::native_payload::hayes_validation_host_matches(tuple),
             43 => crate::native_payload::hayes_disposition_host_matches(tuple),
@@ -122,7 +128,7 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -210,6 +216,9 @@ impl Binding {
                         .is_ok_and(|value| {
                             value != 0 && value.to_string() == proof.target_system_identifier
                         })
+                || proof.carried_provenance.as_ref().is_some_and(|provenance|
+                    !carried_restore || proof.provenance.is_some()
+                        || !provenance.matches(&proof.archive_manifest_sha256, &proof.target_system_identifier))
                 || proof.provenance.as_ref().is_some_and(|provenance|
                     !(retained_restore || crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple))
                         || !provenance.matches(&proof.id, &proof.backup_id, &proof.archive_manifest_sha256, &proof.target_system_identifier))
@@ -227,7 +236,7 @@ impl Binding {
         let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
             .unwrap_or(self.payload_manifest_sha256.as_str());
         crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
-            &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref())
+            &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref(), proof.carried_provenance.as_ref())
     }
 
     pub(super) fn same_installation(&self, other: &Self) -> bool {
@@ -370,12 +379,22 @@ impl Kind {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CarriedChannelProof {
+    restore_id: String,
+    backup_id: String,
+    authenticated_manifest_sha256: String,
+    observation: crate::installations::native_restore::CarriedObservation,
+}
+
 pub(super) struct Exchange {
     generation: String,
     lease_transcript_sha256: String,
     admission_kind: Admission,
     active_binding_sha256: String,
     restore_proof: Option<RestoreProof>,
+    carried_restore_proof: Option<CarriedChannelProof>,
     previous_runtime_generation: Option<String>,
 }
 
@@ -393,6 +412,8 @@ struct Frame<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     restore_proof: Option<&'a RestoreProof>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    carried_restore_proof: Option<&'a CarriedChannelProof>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     previous_runtime_generation: Option<&'a str>,
     mac: String,
 }
@@ -405,12 +426,19 @@ impl Exchange {
             admission_kind: binding.admission_kind,
             active_binding_sha256: binding.active_sha256()?,
             restore_proof: binding.restore.as_ref().and_then(|restore| restore.provenance.clone()),
+            carried_restore_proof: binding.restore.as_ref().and_then(|restore| {
+                restore.carried_provenance.as_ref().map(|observation| CarriedChannelProof {
+                    restore_id: restore.id.clone(), backup_id: restore.backup_id.clone(),
+                    authenticated_manifest_sha256: restore.archive_manifest_sha256.clone(), observation: observation.clone(),
+                })
+            }),
             previous_runtime_generation: binding.interrupted_claim_generations.first().cloned(),
         })
     }
 
     fn version(&self) -> u32 {
-        if self.previous_runtime_generation.is_some() { 3 }
+        if self.carried_restore_proof.is_some() { 4 }
+        else if self.previous_runtime_generation.is_some() { 3 }
         else if self.restore_proof.is_some() { 2 }
         else { 1 }
     }
@@ -449,6 +477,13 @@ impl Exchange {
             let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
             bytes.extend(decode(&digest(&canonical))?);
         }
+        if let Some(proof) = &self.carried_restore_proof {
+            if self.restore_proof.is_some() || self.previous_runtime_generation.is_some()
+                || !matches!(self.admission_kind, Admission::VerifiedRestore | Admission::CleanReopen)
+            { return Err(err(ERROR)); }
+            let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
+            bytes.extend(decode(&digest(&canonical))?);
+        }
         Ok(bytes)
     }
 
@@ -465,6 +500,7 @@ impl Exchange {
             admission_kind: self.admission_kind,
             active_binding_sha256: &self.active_binding_sha256,
             restore_proof: self.restore_proof.as_ref(),
+            carried_restore_proof: self.carried_restore_proof.as_ref(),
             previous_runtime_generation: self.previous_runtime_generation.as_deref(),
             mac,
         })
@@ -532,6 +568,7 @@ mod tests {
             admission_kind: Admission::InterruptedReopen,
             active_binding_sha256: "44".repeat(32),
             restore_proof: None,
+            carried_restore_proof: None,
             previous_runtime_generation: Some(previous.into()),
         };
         for (kind, mac) in [
@@ -613,6 +650,51 @@ mod tests {
     }
 
     #[test]
+    fn carried_restore_v4_authenticates_both_hops_in_all_four_frames() {
+        let observation = serde_json::from_value(serde_json::json!({
+            "version": 1, "sourceHandoffSha256": "e".repeat(64),
+            "priorRestoreProof": {
+                "restoreId": "10000000-0000-4000-8000-000000000007",
+                "backupId": "10000000-0000-4000-8000-000000000008",
+                "authenticatedManifestSha256": "c".repeat(64),
+                "sourceDatabaseSystemId": "110", "sourceDatabaseOid": "16000",
+                "targetDatabaseSystemId": "220", "targetDatabaseOid": "16002",
+                "provenanceRowCount": 1, "provenanceTableSha256": "d".repeat(64)
+            },
+            "archiveSourceDatabaseSystemId": "220", "archiveSourceDatabaseOid": "16002",
+            "targetDatabaseSystemId": "330", "targetDatabaseOid": "16004",
+            "provenanceRowCount": 1, "provenanceTableSha256": "d".repeat(64)
+        })).unwrap();
+        let exchange = Exchange {
+            generation: GENERATION.into(), lease_transcript_sha256: "a".repeat(64),
+            admission_kind: Admission::VerifiedRestore, active_binding_sha256: "b".repeat(64),
+            restore_proof: None, previous_runtime_generation: None,
+            carried_restore_proof: Some(CarriedChannelProof {
+                restore_id: "10000000-0000-4000-8000-000000000009".into(),
+                backup_id: "10000000-0000-4000-8000-000000000010".into(),
+                authenticated_manifest_sha256: "f".repeat(64), observation,
+            }),
+        };
+        for (kind, mac) in [
+            (Kind::Admission, "f838721f65b91d757ef843dc00e91a6b9cbee4c01301c02333795b6ed93ef407"),
+            (Kind::AdmissionAck, "8d57528f12d6b2c8a7d30f2bcf7a1f4b6bff59debf36ea1984dd510bd4839a5e"),
+            (Kind::Stop, "8ab42debe4f96a9672779249f2e5029e8f8b9263b7d46f538a73d9729864c072"),
+            (Kind::Drained, "b0b5d3c538b5b2a7f91bd83f4a71f6b25e7985c51fac12b9a56608ea274979fe"),
+        ] {
+            let key = [7; 32];
+            let bytes = exchange.signed(&key, kind).unwrap();
+            assert!(bytes.len() < LIMIT);
+            let mut frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(frame["version"], 4);
+            assert_eq!(frame["mac"], mac);
+            assert!(frame.get("restoreProof").is_none());
+            exchange.check_frame(&key, kind, &bytes).unwrap();
+            frame["carriedRestoreProof"]["observation"]["archiveSourceDatabaseOid"] = "16003".into();
+            assert!(exchange.check_frame(&key, kind, &serde_json::to_vec(&frame).unwrap()).is_err());
+        }
+    }
+
+    #[test]
     fn ordinary_restore_v2_authenticates_proof_in_all_four_frames() {
         let proof: RestoreProof = serde_json::from_value(serde_json::json!({
             "restoreId":"10000000-0000-4000-8000-000000000007",
@@ -626,6 +708,7 @@ mod tests {
             generation: GENERATION.into(), lease_transcript_sha256: "a".repeat(64),
             admission_kind: Admission::VerifiedRestore, active_binding_sha256: "b".repeat(64),
             restore_proof: Some(proof.clone()),
+            carried_restore_proof: None,
             previous_runtime_generation: None,
         };
         for (kind, mac) in [
@@ -655,6 +738,7 @@ mod tests {
             backup_id: "10000000-0000-4000-8000-000000000008".into(),
             archive_manifest_sha256: "c".repeat(64), target_system_identifier: "220".into(),
             provenance: Some(proof),
+            carried_provenance: None,
         });
         let mut active = binding(NEXT);
         active.catalog = 40;
@@ -1245,6 +1329,7 @@ mod tests {
             archive_manifest_sha256: "5".repeat(64),
             target_system_identifier: "123".into(),
             provenance: None,
+            carried_provenance: None,
         });
         let mut next = binding(NEXT);
         next.catalog = 38;
@@ -1285,6 +1370,7 @@ mod tests {
             archive_manifest_sha256: "5".repeat(64),
             target_system_identifier: "123".into(),
             provenance: None,
+            carried_provenance: None,
         });
         activated.sha256().unwrap();
         let proof: RestoreProof = serde_json::from_value(serde_json::json!({
@@ -1362,6 +1448,7 @@ mod tests {
             archive_manifest_sha256: "5".repeat(64),
             target_system_identifier: "123".into(),
             provenance: None,
+            carried_provenance: None,
         });
         assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
         prior.restore.as_mut().unwrap().provenance = Some(proof.clone());
@@ -1468,6 +1555,7 @@ mod tests {
             archive_manifest_sha256: "6".repeat(64),
             target_system_identifier: "1234".into(),
             provenance: None,
+            carried_provenance: None,
         });
         let mut copied = binding(NEXT);
         copied.physical.root_inode += 1;

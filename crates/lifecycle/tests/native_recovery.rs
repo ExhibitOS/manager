@@ -332,7 +332,8 @@ fn actual_encrypted_backup_same_id_recovery_activation_and_reopen() {
                 &mut candidate,
                 native_restore::Input {
                     source: archive.clone(),
-                    key_file: wrong.clone()
+                    key_file: wrong.clone(),
+                    carried_restore: None,
                 }
             )
             .is_err()
@@ -350,6 +351,7 @@ fn actual_encrypted_backup_same_id_recovery_activation_and_reopen() {
             native_restore::Input {
                 source: archive.clone(),
                 key_file: key.clone(),
+                carried_restore: None,
             },
         )
         .unwrap();
@@ -370,6 +372,7 @@ fn actual_encrypted_backup_same_id_recovery_activation_and_reopen() {
             native_restore::Input {
                 source: archive.clone(),
                 key_file: key.clone(),
+                carried_restore: None,
             },
         )
         .unwrap();

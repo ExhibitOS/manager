@@ -1191,6 +1191,11 @@ impl Session {
     fn workspace_furnishing_start(&self) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
+        // The inventory-only bootstrap has no carried proof owner-channel wire.
+        // Stage/activation remain PG-only; do not open this tuple as an editor.
+        if crate::native_payload::catalog45_carried_restore_payload(&self.payload) {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
         let initialize = if self.normal_oex_selected {
             if !self.fresh_ordinary_furnishing
                 || self.payload.selected_workspace_import_version() != Some(crate::native_payload::WorkspaceImport::V7)
@@ -2670,7 +2675,8 @@ const { isDeepStrictEqual } = require('node:util');
                             active.consume(source)?;
                         }
                         if active.admission_kind == Admission::VerifiedRestore
-                            || active.restore.as_ref().is_some_and(|restore| restore.provenance.is_some())
+                            || active.restore.as_ref().is_some_and(|restore|
+                                restore.provenance.is_some() || restore.carried_provenance.is_some())
                         {
                             active.verify_restore_activation(&self.service.root)?;
                         }
@@ -2848,6 +2854,7 @@ const { isDeepStrictEqual } = require('node:util');
     pub(crate) fn record_furnishing_activation(
         &mut self, id: &str, backup_id: &str, archive_manifest_sha256: &str, target_system_identifier: &str,
         provenance: Option<crate::installations::native_restore::RestoreProof>,
+        carried_provenance: Option<crate::installations::native_restore::CarriedObservation>,
     ) -> Result<()> {
         if !self.payload.workspace_furnishing_catalog()?.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             return Ok(());
@@ -2864,6 +2871,7 @@ const { isDeepStrictEqual } = require('node:util');
             id: id.into(), backup_id: backup_id.into(), archive_manifest_sha256: archive_manifest_sha256.into(),
             target_system_identifier: target_system_identifier.into(),
             provenance,
+            carried_provenance,
         });
         if let Some(prior) = &self.furnishing_binding {
             if prior.phase != Phase::ActivatedRestore || prior.restore != restored.restore || !restored.same_installation(prior) {
