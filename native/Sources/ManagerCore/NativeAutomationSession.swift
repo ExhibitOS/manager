@@ -82,6 +82,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
@@ -293,14 +294,16 @@ public actor NativeAutomationSession {
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
         let admitsDefaultSeats = await api.admitsWorkspaceDefaultSeatProposal
-        if AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256), !admitsDefaultSeats {
+        let requiresDefaultSeatProfile = AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256)
+            || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: config.manifestSha256)
+        if requiresDefaultSeatProfile, !admitsDefaultSeats {
             throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
         }
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback
-                || (AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256) && admitsDefaultSeats) else {
+                || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
@@ -372,7 +375,9 @@ public actor NativeAutomationSession {
         let credentials = try await bridge.authoringSession(reopened)
         let reopenedAPI = try AuthoringAPI(port: config.ports.web, tenantId: current.tenantId, nativeRuntimeManifestSHA256: manifest)
         let session = try await reopenedAPI.connect(credentials)
-        if AuthoringAPI.supportsDefaultSeatRuntime(manifest: manifest), !(await reopenedAPI.admitsWorkspaceDefaultSeatProposal) {
+        if (AuthoringAPI.supportsDefaultSeatRuntime(manifest: manifest)
+                || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: manifest)),
+           !(await reopenedAPI.admitsWorkspaceDefaultSeatProposal) {
             throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
         }
         guard try profileIdentity() == directory, session.userId == current.principalId,

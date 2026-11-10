@@ -383,6 +383,7 @@ public actor AuthoringAPI {
     private static let defaultSeatRuntimePin = "ca92c7530f594462e459bdf16ff9cd64cc1dd1ffc0d68ab4b13c31e7ea3a7630"
     private static let backedBenchRuntimePin = "f8d5933a2c2e361154dbcc9cb4a332144ca9217e5edb363fdd5056ee70aed702"
     private static let bottomCatalogRuntimePin = "4a0bbccc8ef04c6734407fd448f2b68e6b25a6a7d5f5b0afc33878be5aa29d4d"
+    private static let carriedRestoreBenchRuntimePin = "d0209c6ac9980a1507e53fc7a5eaa2b6b254bb60b6a8a1feb2f72d98e48d2874"
     #endif
     public nonisolated var supportsPlacedExitDoors: Bool {
         #if DEBUG
@@ -545,6 +546,7 @@ public actor AuthoringAPI {
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
             || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
             || Self.supportsDefaultSeatRuntime(manifest: manifest)
+            || Self.supportsCarriedRestoreBenchRuntime(manifest: manifest)
         let configuration = URLSessionConfiguration.ephemeral
         if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.urlCache = nil
@@ -2409,6 +2411,7 @@ public actor AuthoringAPI {
         #if DEBUG
         manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
+            || supportsCarriedRestoreBenchRuntime(manifest: manifest)
             || supportsPreReadyPreservationReadback(manifest: manifest)
         #else
         false
@@ -2418,6 +2421,14 @@ public actor AuthoringAPI {
     nonisolated static func supportsDefaultSeatRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == defaultSeatRuntimePin || manifest == backedBenchRuntimePin || manifest == bottomCatalogRuntimePin
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsCarriedRestoreBenchRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == carriedRestoreBenchRuntimePin
         #else
         false
         #endif
