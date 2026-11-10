@@ -377,11 +377,13 @@ public actor AuthoringAPI {
     public nonisolated let admitsSameOwnerArtworkReplacement: Bool
     public nonisolated let productImageRuntimeQualified: Bool
     private let nativeRuntimeManifestSHA256: String?
-    // Populated only for an independently qualified runtime carrying the
-    // shared exitDoors validator, publication remap and Viewer consumer.
-    private static let placedExitDoorRuntimePins: Set<String> = []
+    private static let placedExitDoorRuntimePin = "1245b842efb55525ebf0c307f984391431552ce19d6f59874dbcd8435b8e39d2"
     public nonisolated var supportsPlacedExitDoors: Bool {
-        nativeRuntimeManifestSHA256.map(Self.placedExitDoorRuntimePins.contains) == true
+        #if DEBUG
+        nativeRuntimeManifestSHA256 == Self.placedExitDoorRuntimePin
+        #else
+        false
+        #endif
     }
     public nonisolated let largeModelRuntimeQualified: Bool
     // These reviewed v5 tuples are local-validation payloads. Release admission
@@ -2325,7 +2327,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
-            || manifest == savedHeadPreparedSignAudioManifestPin
+            || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
         #else
         false
         #endif
