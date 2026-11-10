@@ -432,7 +432,8 @@ dedicated adoption capability. The actions run in order.
   before the target transaction. Read the resulting saved head using the
   normal authenticated authoring path.
 - `status_target` takes `operationId` and `grantSha256` to read the
-  target's durable result. An unresolved status retains staging for
+  target's durable result (`committed`, `cancelled`, or `unresolved`).
+  An unresolved status retains staging for
   reconciliation. The confirmation command requires the preview retained by
   the same runtime generation and accepts only its operation ID and digest.
 
@@ -447,12 +448,29 @@ dedicated adoption capability. The actions run in order.
   a durable commit. Use `retire: true` to remove the verified reserved
   pair and `retire: false` to preserve it. If retirement is interrupted,
   retain the remaining evidence and reconcile via the target receipt.
+- On a runtime qualified for terminal disposition, `dispose_target` takes
+  `operationId`, `grantSha256`, and the currently selected `exhibitionId`.
+  The authenticated target serializes this request against the same operation's
+  commit. It returns an existing matching durable commit, or records an
+  idempotent durable cancellation that prevents any future commit of that
+  operation. Digest or exhibition conflicts fail closed. Cancellation returns
+  null revision and ETag; it does not imply rollback or change the saved draft.
+  A matching live helper slot is released only for cancellation. A committed
+  result leaves that slot available for the existing settlement command.
+  Refusal, malformed replies and disconnects preserve the slot for reconciliation.
+  All staging files and UUID reservations remain preserved in either case.
+  This command accepts no source grant and never reacquires or retires files.
 
 The helper preserves reserved bytes across interruption. A new helper can
 read the target receipt by its operation ID and grant digest. Retirement
 requires the original helper's retained file identities. The operation
 supports registered source and target selections within one managed helper
 process.
+
+After helper loss, use status or explicit terminal disposition through the
+authenticated target. Receipt absence, an unchanged saved head, grant expiry,
+or reservation age never authorizes clearing files or replaying a grant.
+Older runtimes without terminal disposition refuse the new command.
 
 For two existing managed profiles, the exact reviewed macOS debug runtime
 also provides the private operator entry below. Supply the two explicitly

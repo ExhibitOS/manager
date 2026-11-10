@@ -31,6 +31,7 @@ pub(crate) fn refused(code: &str) -> crate::LifecycleError {
         | "RIGHTS_DENIED"
         | "REMOTE_CONFLICT"
         | "REQUEST_CONFLICT"
+        | "MODEL_ADOPTION_CANCELLED"
         | "MODEL_ADOPTION_TARGET_CHANGED"
         | "MODEL_ADOPTION_SOURCE_CHANGED" => err(code),
         _ => unavailable(),
@@ -275,6 +276,16 @@ impl Request for StatusTarget<'_> {
     const KIND: &'static str = "adoption-status-target";
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DisposeTarget<'a> {
+    pub(crate) grant_sha256: &'a str,
+    pub(crate) exhibition_id: &'a str,
+}
+impl Request for DisposeTarget<'_> {
+    const KIND: &'static str = "adoption-dispose-target";
+}
+
 pub(crate) trait Reply: Serialize + DeserializeOwned {
     const KIND: &'static str;
     fn header(&self) -> (u8, &str, &str, &str);
@@ -305,6 +316,7 @@ reply!(SourceStaged, "adoption-source-staged", grant: Grant);
 reply!(TargetPreview, "adoption-target-preview", grant_sha256: String, preview: Preview);
 reply!(TargetCommitted, "adoption-target-committed", grant_sha256: String, revision: u32, etag: String);
 reply!(TargetStatus, "adoption-target-status", grant_sha256: String, outcome: Outcome, revision: Option<u32>, etag: Option<String>);
+reply!(TargetDisposition, "adoption-target-disposition", grant_sha256: String, exhibition_id: String, outcome: Outcome, revision: Option<u32>, etag: Option<String>);
 reply!(Refused, "adoption-refused", code: String);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -335,6 +347,7 @@ impl Preview {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Outcome {
     Committed,
+    Cancelled,
     Unresolved,
 }
 
