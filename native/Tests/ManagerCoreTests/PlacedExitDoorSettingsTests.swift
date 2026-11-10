@@ -3,6 +3,31 @@ import XCTest
 @testable import ManagerCore
 
 final class PlacedExitDoorSettingsTests: XCTestCase {
+    func testImportedDoorEditRequiresExplicitOrdinarySizePolicy() throws {
+        func policy(_ fields: [String: Any]) throws -> NativeViewportPolicy {
+            let defaults: [String: Any] = ["exhibitionId": UUID().uuidString, "revision": 1,
+                "etag": "head", "boundedReadOnly": false]
+            return try JSONDecoder().decode(NativeViewportPolicy.self, from:
+                JSONSerialization.data(withJSONObject: defaults.merging(fields) { _, supplied in supplied }))
+        }
+        let ordinary = try policy(["boundedProfile": false, "boundedEditRequired": false])
+        XCTAssertTrue(ordinary.confirmsOrdinaryDraft)
+        XCTAssertFalse(AuthoringAPI.admitsImportedExitDoorEdit(ordinary))
+        let imported = try policy(["boundedProfile": true, "boundedEditRequired": false])
+        XCTAssertFalse(imported.confirmsOrdinaryDraft)
+        XCTAssertTrue(AuthoringAPI.admitsImportedExitDoorEdit(imported))
+        for fields: [String: Any] in [[:], ["boundedProfile": true], ["boundedEditRequired": false],
+            ["boundedProfile": true, "boundedEditRequired": true],
+            ["boundedProfile": true, "boundedEditRequired": false, "boundedReadOnly": true]] {
+            XCTAssertFalse(AuthoringAPI.admitsImportedExitDoorEdit(try policy(fields)))
+        }
+        let id = UUID().uuidString.lowercased()
+        let capability: [String: Any] = ["version": 1, "kind": "native-bounded-edit-v1", "tenantId": id,
+            "principalId": id, "workspaceId": id, "exhibitionId": id, "revision": 1, "etag": "head"]
+        XCTAssertFalse(AuthoringAPI.admitsImportedExitDoorEdit(try policy([
+            "boundedProfile": true, "boundedEditRequired": false, "editingCapability": capability])))
+    }
+
     func testOnlyThePreparedDoorOnItsWallGetsIndependentDestinations() throws {
         func id() -> String { UUID().uuidString.lowercased() }
         func vector(_ values: Double...) -> DocumentValue { .array(values.map(DocumentValue.number)) }
