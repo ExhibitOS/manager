@@ -740,6 +740,8 @@ pub struct Session {
     retained_product_image: Option<retained_product_image::Trial>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     startup_cancellation_045: Option<crate::installations::native_maintenance::StartupCancellation045>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    clean_exit_hayes_before: Option<Vec<retained_product_image::CleanExitHayes>>,
     node_drain_requested: bool,
     job_id: Option<String>,
     run: Option<PathBuf>,
@@ -1138,6 +1140,8 @@ impl Session {
             retained_product_image: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             startup_cancellation_045: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            clean_exit_hayes_before: None,
             node_drain_requested: false,
             job_id: None,
             run: None,
@@ -2224,6 +2228,8 @@ const { isDeepStrictEqual } = require('node:util');
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         self.check_retained_product_image_before_node()?;
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        self.check_clean_exit_hayes_before_node()?;
         self.state = "starting_services".into();
         self.record()?;
         let mut environment = vec![

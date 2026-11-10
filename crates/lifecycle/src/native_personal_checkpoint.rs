@@ -133,7 +133,9 @@ fn catalog45_activation_saved_document(
 ) -> Result<bool> {
     let preservation = crate::native_payload::catalog45_startup_recovery(pair)
         .is_some_and(crate::native_payload::Catalog45StartupRecovery::preserves_pre_ready);
-    if pair.0 != pair.1 && !retained_recovery && !historical_startup && !preservation {
+    if pair.0 != pair.1 && !retained_recovery && !historical_startup && !preservation
+        && !crate::native_payload::catalog45_clean_exit_handoff(pair)
+    {
         return Ok(false);
     }
     if expected != Some(saved_document_digest(document)?.as_str()) {
@@ -243,7 +245,9 @@ fn startup_cancellation_proof_matches(
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    if crate::native_payload::catalog45_native_publication_transition(pair).is_some() {
+    if crate::native_payload::catalog45_native_publication_transition(pair).is_some()
+        || crate::native_payload::catalog45_clean_exit_handoff(pair)
+    {
         return CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(feature = "workspace-v5-owner-validation")]
@@ -1091,6 +1095,7 @@ impl LifecycleService {
         key: &[u8; 32],
         saved_workspace_host: bool,
         retained: Option<&RetainedProductImage>,
+        document: Option<&super::installations::native_document::DocumentState>,
     ) -> Result<(
         crate::native_runtime::Session,
         Checkpoint,
@@ -1119,6 +1124,17 @@ impl LifecycleService {
             || checkpoint.trial || checkpoint.staged != staging {
             return Err(invalid());
         }
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        {
+            let pair = (checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str());
+            if crate::native_payload::catalog45_clean_exit_handoff(pair) {
+                catalog45_activation_saved_document(
+                    pair, false, false, checkpoint.saved_document_sha256.as_deref(), document.ok_or_else(invalid)?,
+                )?;
+            }
+        }
+        #[cfg(not(feature = "workspace-v5-owner-validation"))]
+        let _ = document;
         check_cold_transition_source(&self.root, (&checkpoint.old_manifest, &checkpoint.new_manifest))?;
         verify_unchanged(&self.root, &checkpoint, &pending)?;
         let binding = bindings(&checkpoint)?;
@@ -1167,7 +1183,7 @@ impl LifecycleService {
         selected: Option<(crate::native_runtime::oex_retained_cleanup::Selected045, PathBuf)>,
     ) -> Result<()> {
         let (mut session, mut checkpoint, binding, envelope) =
-            self.trial_local_personal_runtime(target, staging, key, saved_workspace_host, retained)?;
+            self.trial_local_personal_runtime(target, staging, key, saved_workspace_host, retained, Some(document))?;
         #[cfg(feature = "workspace-v5-owner-validation")]
         let selected_staging = selected.map(|(selection, prefix)| {
             session.arm_selected_recovery_045(selection)?;
@@ -1206,6 +1222,8 @@ impl LifecycleService {
             }
             #[cfg(feature = "workspace-v5-owner-validation")]
             session.verify_startup_cancellation_045()?;
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            session.verify_clean_exit_hayes_after_start()?;
             Ok(())
         })();
         let stop = session.stop()?;
@@ -1670,6 +1688,7 @@ mod tests {
         let prepared_sign_audio = "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a";
         let pre_ready_preservation = "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86";
         let pre_ready_hayes_preservation = "5cb2431e561c21e1463f78faf938a5cfc3807c9dd690a545f3474769c1c7f4a9";
+        let placed_exit_doors = "1245b842efb55525ebf0c307f984391431552ce19d6f59874dbcd8435b8e39d2";
         let caption_fixture = "31b12d9f6fac4019f39c2a9128ced09b7ee918c49ffb119beb544e5e40831ac0";
         let publication_limit = checkpoint_inventory_limit((current, publication), None);
         assert_eq!(publication_limit, 4_294_967_296);
@@ -1680,6 +1699,11 @@ mod tests {
         assert!(startup_cancellation_proof_matches(pre_ready, None, None));
         assert!(!startup_cancellation_proof_matches(pre_ready, None, Some(&proof)));
         let pre_ready_hayes = (prepared_sign_audio, pre_ready_hayes_preservation);
+        let clean_exit_handoff = (pre_ready_hayes_preservation, placed_exit_doors);
+        assert_eq!(checkpoint_inventory_limit(clean_exit_handoff, None), publication_limit);
+        assert_eq!(checkpoint_inventory_limit((placed_exit_doors, pre_ready_hayes_preservation), None), default);
+        assert!(startup_cancellation_proof_matches(clean_exit_handoff, None, None));
+        assert!(!startup_cancellation_proof_matches(clean_exit_handoff, None, Some(&proof)));
         assert_eq!(checkpoint_inventory_limit(pre_ready_hayes, Some(&proof)), publication_limit);
         assert!(!startup_cancellation_proof_matches(pre_ready_hayes, None, None));
         assert!(startup_cancellation_proof_matches(pre_ready_hayes, None, Some(&proof)));
@@ -1691,11 +1715,14 @@ mod tests {
         let expected = saved_document_digest(&document).unwrap();
         assert!(catalog45_activation_saved_document(pre_ready, false, false, Some(&expected), &document).unwrap());
         assert!(catalog45_activation_saved_document(pre_ready_hayes, false, true, Some(&expected), &document).unwrap());
+        assert!(catalog45_activation_saved_document(clean_exit_handoff, false, false, Some(&expected), &document).unwrap());
         assert!(!catalog45_activation_saved_document((previous, current), false, false, Some(&expected), &document).unwrap());
         document.revision += 1;
         assert_eq!(catalog45_activation_saved_document(pre_ready, false, false, Some(&expected), &document).unwrap_err().code,
             "NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
         assert_eq!(catalog45_activation_saved_document(pre_ready_hayes, false, true, Some(&expected), &document).unwrap_err().code,
+            "NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
+        assert_eq!(catalog45_activation_saved_document(clean_exit_handoff, false, false, Some(&expected), &document).unwrap_err().code,
             "NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
         for pair in [(captions, publication), (captions, captions), (current, captions), (caption_fixture, captions),
                      (prepared_sign_audio, captions), (publication, prepared_sign_audio), (prepared_sign_audio, prepared_sign_audio),
@@ -1780,7 +1807,7 @@ mod tests {
         let target = Arc::new(Payload::open(&path("EXHIBITOS_TEST_TARGET_PAYLOAD")).unwrap());
         let service = LifecycleService::bound_existing(root.clone()).unwrap();
         let (mut session, checkpoint, binding, _) = service
-            .trial_local_personal_runtime(target, &staging, key.0.as_slice().try_into().unwrap(), false, None)
+            .trial_local_personal_runtime(target, &staging, key.0.as_slice().try_into().unwrap(), false, None, None)
             .unwrap();
         assert_eq!(session.start().unwrap().state, "ready");
         let authoring = session.authoring_session().unwrap();

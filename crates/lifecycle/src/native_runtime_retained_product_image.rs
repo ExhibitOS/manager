@@ -4,6 +4,15 @@ use super::*;
 use crate::installations::native_maintenance::{RetainedProductImage, RetainedProductImageRecovery};
 
 const ERROR: &str = "NATIVE_RETAINED_PRODUCT_IMAGE_CHANGED";
+const CLEAN_EXIT_HAYES_CHANGED: &str = "NATIVE_CLEAN_EXIT_HAYES_CHANGED";
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CleanExitHayes {
+    job_id: String,
+    completion_frame_sha256: String,
+    lease_fingerprint: String,
+}
 
 pub(super) struct Trial {
     proof: RetainedProductImage,
@@ -133,6 +142,66 @@ impl Session {
             return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
         }
         Ok(())
+    }
+
+    fn is_clean_exit_handoff_trial(&self) -> bool {
+        self.furnishing_transition_trial.as_ref().is_some_and(|(_, transition)| {
+            crate::native_payload::catalog45_clean_exit_handoff((transition.source().2, transition.target().2))
+        })
+    }
+
+    fn clean_exit_hayes_snapshot(&mut self) -> Result<Vec<CleanExitHayes>> {
+        self.check_native_observation_fence()?;
+        let changed = || err(CLEAN_EXIT_HAYES_CHANGED);
+        let binding = self.active_furnishing_binding().ok_or_else(changed)?;
+        if binding.admission_kind != Admission::CleanReopen || binding.catalog != 45
+            || binding.restore.is_some() || self.transition_fence.is_none()
+        {
+            return Err(changed());
+        }
+        let owner = &binding.owner;
+        let mut sql = include_str!("native_runtime_clean_exit_hayes.sql").to_owned();
+        for (placeholder, id) in [
+            ("@TENANT@", &owner.tenant_id),
+            ("@WORKSPACE@", &owner.workspace_id),
+            ("@PRINCIPAL@", &owner.principal_id),
+        ] {
+            if !oex_preflight_frames::uuid(id) {
+                return Err(changed());
+            }
+            sql = sql.replace(placeholder, &format!("'{id}'::uuid"));
+        }
+        let raw = self.query_database("exhibitos", &sql)?;
+        let rows: Vec<CleanExitHayes> = serde_json::from_str(&raw).map_err(|_| changed())?;
+        if rows.is_empty() || rows.len() > 128 || rows.iter().any(|row| {
+            !oex_preflight_frames::uuid(&row.job_id) || !hash_valid(&row.completion_frame_sha256)
+                || !hash_valid(&row.lease_fingerprint)
+        }) {
+            return Err(changed());
+        }
+        Ok(rows)
+    }
+
+    pub(super) fn check_clean_exit_hayes_before_node(&mut self) -> Result<()> {
+        if self.is_clean_exit_handoff_trial() {
+            self.clean_exit_hayes_before = Some(self.clean_exit_hayes_snapshot()?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify_clean_exit_hayes_after_start(&mut self) -> Result<()> {
+        if !self.is_clean_exit_handoff_trial() {
+            return Ok(());
+        }
+        let after = self.clean_exit_hayes_snapshot()?;
+        if self.clean_exit_hayes_before.as_ref() != Some(&after) {
+            return Err(err(CLEAN_EXIT_HAYES_CHANGED));
+        }
+        let jobs: Vec<_> = after.iter().map(|row| serde_json::json!({
+            "jobId": row.job_id, "completionFrameSha256": row.completion_frame_sha256,
+        })).collect();
+        let run = self.run.as_ref().ok_or_else(|| err(CLEAN_EXIT_HAYES_CHANGED))?;
+        write_json(run, "clean-exit-hayes.json", &serde_json::json!({ "format": 1, "jobs": jobs }))
     }
 
     fn retained_product_image_custody(&mut self) -> Result<Value> {

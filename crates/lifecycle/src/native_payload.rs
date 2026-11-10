@@ -905,6 +905,11 @@ pub(crate) fn catalog45_native_publication_transition(pair: (&str, &str)) -> Opt
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn catalog45_clean_exit_handoff(pair: (&str, &str)) -> bool {
+    pair == (CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET.2, CATALOG45_PLACED_EXIT_DOORS.2)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Catalog45StartupRecovery {
     Cancelled,
@@ -965,6 +970,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_PREPARED_SIGN_AUDIO.2 == manifest
         || CATALOG45_PRE_READY_PRESERVATION_TARGET.2 == manifest
         || CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET.2 == manifest
+        || CATALOG45_PLACED_EXIT_DOORS.2 == manifest
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
@@ -1060,6 +1066,13 @@ impl FurnishingTransition {
             return Some(Self::SameCatalog {
                 source,
                 target,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
+        if catalog45_clean_exit_handoff(pair) {
+            return Some(Self::SameCatalog {
+                source: CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET,
+                target: CATALOG45_PLACED_EXIT_DOORS,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -2337,6 +2350,27 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact clean Hayes and placed exit-door runtime payloads"]
+    fn opens_exact_clean_exit_handoff() {
+        let source = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PRE_READY_HAYES_PRESERVATION_RUNTIME").unwrap());
+        let target = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_EXIT_DOOR_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&source).unwrap();
+        let target = Payload::open_saved_workspace_transition(&target).unwrap();
+        let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(FurnishingTransition::from_manifests(pair), Some(FurnishingTransition::SameCatalog {
+            source: CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET,
+            target: CATALOG45_PLACED_EXIT_DOORS,
+            catalog,
+        }));
+        assert!(!saved_workspace_transition_supported((pair.1, pair.0)));
+        assert!(!source.ordinary_fresh_furnishing());
+        assert!(target.ordinary_fresh_furnishing());
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact combined catalog 045 and its sealed retained-image recovery successor"]
     fn opens_reviewed_catalog45_retained_image_recovery() {
         let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_RETAINED_PRODUCT_IMAGE_RUNTIME").unwrap());
@@ -3123,7 +3157,7 @@ impl Payload {
         let ordinary_catalog45 = [
             CATALOG45_RENDERED_SCULPTURE_THUMBNAIL, CATALOG45_NATIVE_PUBLICATION_CAPACITY,
             CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
-            CATALOG45_PREPARED_SIGN_AUDIO,
+            CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PLACED_EXIT_DOORS,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = payload.retained_furnishing_catalog().or(
             ordinary_catalog45.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
