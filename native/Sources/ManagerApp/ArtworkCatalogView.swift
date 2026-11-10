@@ -12,6 +12,7 @@ struct ArtworkCatalogView: View {
     var addArtwork: (() -> Void)? = nil
     var catalogDrag: CatalogDragSession?
     @State private var expanded = true
+    @State private var thumbnailReview = false
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 10) {
             HStack(spacing: 8) {
@@ -84,7 +85,7 @@ struct ArtworkCatalogView: View {
                     Text("\(Int(100 * Double(progress.processed) / Double(progress.total)))%")
                 }
             }
-            if model.catalogThumbnailSaving { ProgressView("감상 시점 이미지를 준비하고 저장하고 있습니다…") }
+            if model.catalogThumbnailSaving { ProgressView(model.catalogThumbnailConfirmationAttempted ? "게시용 선택 결과를 확인하고 있습니다…" : "미리보기 후보를 준비하고 있습니다…") }
             if !model.catalogFailures.isEmpty {
                 HStack { Text("일부 작품 정보를 읽지 못했습니다.").foregroundStyle(.secondary); Button("정보 다시 확인") { model.retryCatalogMetadata() }.disabled(!ready || model.busy) }
             }
@@ -94,6 +95,7 @@ struct ArtworkCatalogView: View {
         .controlSize(compact ? .small : .regular)
         .padding(compact ? 8 : 12)
         .background(Color(nsColor: .controlBackgroundColor))
+        .sheet(isPresented: $thumbnailReview) { thumbnailReviewSheet }
         .onAppear { if condensed { expanded = false } }
         .onChange(of: condensed) { _, value in if value && !model.placingArtwork { expanded = false } }
         .onChange(of: model.catalogRevealID) { _, id in if id != nil { expanded = true } }
@@ -114,24 +116,56 @@ struct ArtworkCatalogView: View {
             Button { Task { await controller.findSelection() } } label: { Label("선택한 배치 찾기", systemImage: "scope") }
                 .labelStyle(.iconOnly).disabled(!ready || !model.canSelectCatalog || model.immutable || model.viewportSelection?.kind != "placement" || !controller.findSelectionSupported || model.viewportPresentation == .plan)
             if controller.renderedThumbnailSupported && model.selectedCatalogArtworkSupportsRenderedThumbnail {
-                #if DEBUG
-                if CatalogThumbnailValidationCapture.requested {
-                    Button("검증용 미리보기 PNG 캡처", systemImage: "photo") { Task { await model.captureSelectedCatalogThumbnail() } }
-                        .disabled(!ready || !model.canCaptureSelectedCatalogThumbnail)
-                } else {
-                    thumbnailSaveButton
-                }
-                #else
                 thumbnailSaveButton
-                #endif
             }
         }
         Spacer(minLength: 0)
         if model.libraryCursor != nil { Button("작품 더 보기") { Task { await model.loadMoreCatalog() } }.disabled(!ready || model.busy) }
     }
     private var thumbnailSaveButton: some View {
-        Button("게시용 미리보기 저장", systemImage: "photo") { Task { await model.saveSelectedCatalogThumbnail() } }
-            .disabled(!ready || !model.canSaveSelectedCatalogThumbnail)
+        Button(model.hasPreparedCatalogThumbnail ? "미리보기 후보 확인" : "게시용 미리보기 준비", systemImage: "photo") {
+            Task {
+                if !model.hasPreparedCatalogThumbnail {
+                    #if DEBUG
+                    if CatalogThumbnailValidationCapture.requested { await model.captureSelectedCatalogThumbnail() }
+                    else { await model.prepareSelectedCatalogThumbnail() }
+                    #else
+                    await model.prepareSelectedCatalogThumbnail()
+                    #endif
+                }
+                if model.hasPreparedCatalogThumbnail { thumbnailReview = true }
+            }
+        }.disabled(!ready || model.catalogThumbnailSaving || (!model.hasPreparedCatalogThumbnail && !canPrepareThumbnail))
+    }
+    private var canPrepareThumbnail: Bool {
+        #if DEBUG
+        if CatalogThumbnailValidationCapture.requested { return model.canCaptureSelectedCatalogThumbnail }
+        #endif
+        return model.canPrepareSelectedCatalogThumbnail
+    }
+    private var thumbnailReviewSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("게시용 미리보기 확인").font(.headline)
+            if let bytes = model.preparedCatalogThumbnailPNG, let image = NSImage(data: bytes) {
+                Image(nsImage: image).resizable().scaledToFit().frame(width: 256, height: 256)
+                    .accessibilityLabel("현재 승인 모델의 기본 시점 미리보기 후보")
+                Text("이 이미지를 게시용으로 선택합니다. 작품 파일과 전시 배치는 유지됩니다.")
+            } else { Text("후보를 만든 작품을 다시 선택해 확인하세요.") }
+            if !model.catalogStatus.isEmpty { Text(model.catalogStatus).font(.caption) }
+            HStack {
+                Button("닫기") { thumbnailReview = false }.disabled(model.catalogThumbnailSaving)
+                Button("후보 취소") { model.discardPreparedCatalogThumbnail(); thumbnailReview = false }
+                    .disabled(!model.canDiscardPreparedCatalogThumbnail)
+                Spacer()
+                Button(model.catalogThumbnailConfirmationAttempted ? "선택 결과 다시 확인" : "게시용으로 선택") {
+                    Task {
+                        await model.saveSelectedCatalogThumbnail()
+                        if !model.hasPreparedCatalogThumbnail { thumbnailReview = false }
+                    }
+                }.buttonStyle(.borderedProminent).disabled(!ready || !model.canSaveSelectedCatalogThumbnail)
+            }
+        }.padding(20).frame(minWidth: 380, idealWidth: 440)
+            .interactiveDismissDisabled(model.catalogThumbnailSaving)
     }
     private var search: some View {
         TextField("작품명·작가 검색", text: $model.catalogQuery).textFieldStyle(.roundedBorder).frame(minWidth: compact ? 90 : 180)

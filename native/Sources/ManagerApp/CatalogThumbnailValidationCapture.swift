@@ -22,6 +22,8 @@ struct CatalogThumbnailValidationCapture {
         let sourceSha256: String
         let displaySha256: String
         let manifestSHA256: String
+        let requestId: String?
+        let recipeId: String, toolId: String, modelBytes: Int
         let pngSha256: String
         let pngBytes: Int
         let width = 256
@@ -115,7 +117,7 @@ struct CatalogThumbnailValidationCapture {
         return reservation
     }
 
-    func write(_ rendered: ViewportRenderedThumbnail, to reservation: Reservation) throws {
+    func write(_ rendered: ViewportRenderedThumbnail, to reservation: Reservation, requestId: UUID? = nil) throws {
         guard rendered.artworkId == intent.artworkId, rendered.revision == intent.revision,
               rendered.sourceAssetId == intent.sourceAssetId, rendered.sourceSha256 == intent.sourceSha256,
               rendered.displaySha256 == intent.displaySha256, (24...512 * 1024).contains(rendered.pngData.count) else {
@@ -123,13 +125,28 @@ struct CatalogThumbnailValidationCapture {
         }
         let receipt = Receipt(artworkId: rendered.artworkId, revision: rendered.revision,
             sourceAssetId: rendered.sourceAssetId, sourceSha256: rendered.sourceSha256, displaySha256: rendered.displaySha256,
-            manifestSHA256: intent.manifestSHA256, pngSha256: rendered.pngSha256, pngBytes: rendered.pngData.count)
+            manifestSHA256: intent.manifestSHA256, requestId: requestId?.uuidString.lowercased(),
+            recipeId: rendered.recipeId, toolId: rendered.toolId, modelBytes: rendered.modelBytes,
+            pngSha256: rendered.pngSha256, pngBytes: rendered.pngData.count)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let metadata = try encoder.encode(receipt)
         guard reservation.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         try writePrivate(rendered.pngData, name: "preview.png", in: reservation)
         try writePrivate(metadata, name: "receipt.json", in: reservation)
+        guard reservation.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+    }
+
+    func writeSelection(_ receipt: NativeRenderedArtworkThumbnailSelectionReceipt, requestId: UUID, to reservation: Reservation) throws {
+        struct Selection: Encodable {
+            let requestId: String
+            let receipt: NativeRenderedArtworkThumbnailSelectionReceipt
+        }
+        guard reservation.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try writePrivate(encoder.encode(Selection(requestId: requestId.uuidString.lowercased(), receipt: receipt)),
+                         name: "selection.json", in: reservation)
         guard reservation.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
     }
 
