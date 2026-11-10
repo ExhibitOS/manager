@@ -1120,7 +1120,15 @@ fn observe(
         budget,
         scratch,
     )?;
-    if plan.kind != "personal" || session.maintenance_payload().workspace_furnishing_catalog()?.map(|catalog| catalog.version()) != Some(40) {
+    if plan.kind != "personal" {
+        return Ok(None);
+    }
+    let payload = session.maintenance_payload();
+    let context = payload.context();
+    let tuple = (context.source_commit.as_str(), payload.producer_sha256(), context.manifest_sha256.as_str());
+    if !payload.workspace_furnishing_catalog()?.is_some_and(|catalog|
+        crate::native_payload::native_restore_provenance_host_matches(catalog.version(), tuple))
+    {
         return Ok(None);
     }
     restore_proof_from_observation(plan, manifest, &result)
