@@ -2375,6 +2375,10 @@ public actor AuthoringAPI {
         let furnishing = try await workspaceFurnishing(attachment.furnishingId, version: attachment.furnishingVersion)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         let next = try attachment.applying(furnishing, to: draft)
+        if try BenchSettings.list(in: draft).contains(where: { $0.id == attachment.benchId && $0.kind == .backed }) {
+            _ = try await workspaceFurnishingModel(furnishing)
+            guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        }
         try await validateNativeViewportEdit(next ?? draft, etag: policy.etag)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next

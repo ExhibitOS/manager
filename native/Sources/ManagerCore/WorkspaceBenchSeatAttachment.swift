@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
-/// Adds seating to a registered visual already present in the saved scene.
+/// Links a registered visual already present in the saved scene to seating.
 public struct WorkspaceBenchSeatAttachment: Sendable {
     public let benchId: String, furnishingId: String, viewpointId: String
     public let visual: BenchSettings.WorkspaceVisual
@@ -43,8 +43,26 @@ public struct WorkspaceBenchSeatAttachment: Sendable {
             throw AuthoringFailure("BENCH_SELECTION_CHANGED")
         }
         let existing = try BenchSettings.list(in: draft)
-        let selected = existing.first { $0.id.lowercased() == benchId.lowercased() }
+        let selectedIndex = existing.firstIndex { $0.id.lowercased() == benchId.lowercased() }
+        let selected = selectedIndex.map { existing[$0] }
         let attached = existing.filter { $0.workspaceVisual?.placementId == visual.placementId }
+        if let selectedIndex, let selected, selected.kind == .backed {
+            guard selected.id == benchId, kind == .bench, viewpoint == nil, viewpointId == selected.viewpointId,
+                  width == selected.width, depth == selected.depth, height == selected.height,
+                  placement.roomId == selected.roomId, placement.position == selected.position, placement.yaw == selected.yaw,
+                  selected.workspaceVisual == nil ? attached.isEmpty : selected.workspaceVisual == visual && attached == [selected],
+                  var rows = draft.candidate["extensions"][BenchSettings.namespace]["benches"].items else {
+                throw AuthoringFailure("BENCH_SELECTION_CHANGED")
+            }
+            if selected.workspaceVisual == visual { return nil }
+            rows[selectedIndex]["workspaceVisual"] = visual.value
+            var candidate = draft.candidate
+            candidate["extensions"][BenchSettings.namespace]["benches"] = .array(rows)
+            var next = draft
+            try next.replaceCandidate(candidate)
+            _ = try BenchSettings.list(in: next)
+            return next
+        }
         guard attached.isEmpty ? selected == nil : attached.count == 1 && selected?.id == benchId && selected?.workspaceVisual == visual else {
             throw AuthoringFailure("BENCH_SELECTION_CHANGED")
         }

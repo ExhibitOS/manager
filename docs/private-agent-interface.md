@@ -232,6 +232,13 @@ Operations:
   static Viewer with its private editor and the native cover companion before
   packaging, using the Platform build recipe. The payload has its own manifest
   identity and grants no profile transition or restore admission.
+- On a runtime that supports backed workspace seats, save the registered
+  bench visual at scale 1 with the existing host's exact room, position and
+  yaw. Call `workspace-bench-seat-attach` with the clean head's `etag`, the
+  existing `benchId`, `viewpointId` and `dimensions`, and the reviewed
+  `placementId`, `furnishingId`, `furnishingVersion` and `modelSha256`. Omit
+  `viewpoint` so the command preserves the existing camera. Save the staged
+  first link and reopen to verify it. An exact replay leaves the draft intact.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at
