@@ -116,6 +116,11 @@ pub struct Request {
 
 pub enum Command {
     #[cfg(target_os = "macos")]
+    NativeModelAdoption {
+        selection_token: String,
+        adoption: Box<crate::native_runtime::model_adoption::Input>,
+    },
+    #[cfg(target_os = "macos")]
     NativeHosting { selection_token: String, hosting: super::native_hosting::Input },
     #[cfg(target_os = "macos")]
     NativeHostingStatus { selection_token: String },
@@ -239,6 +244,8 @@ pub enum Command {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireRequest {
+    #[cfg(target_os = "macos")]
+    adoption: Option<crate::native_runtime::model_adoption::Input>,
     version: u32,
     id: u64,
     command: String,
@@ -278,6 +285,27 @@ struct WireRequest {
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
     fn try_from(wire: WireRequest) -> std::result::Result<Self, Self::Error> {
+        #[cfg(target_os = "macos")]
+        if wire.command == "native_model_adoption" {
+            if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
+                || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some()
+                || wire.hosting.is_some() || wire.maintenance.is_some() || wire.oex_save.is_some()
+            {
+                return Err("NATIVE_PROTOCOL_INVALID");
+            }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            if wire.hayes_execute.is_some() || wire.hayes_job_id.is_some() || wire.hayes_current_artwork_revision.is_some()
+                || wire.hayes_finished_artwork_id.is_some() || wire.hayes_finished_display_sha256.is_some()
+            {
+                return Err("NATIVE_PROTOCOL_INVALID");
+            }
+            let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let adoption = Box::new(wire.adoption.ok_or("NATIVE_PROTOCOL_INVALID")?);
+            return Ok(Self { version: wire.version, id: wire.id, command: Command::NativeModelAdoption { selection_token, adoption } });
+        }
+        #[cfg(target_os = "macos")]
+        if wire.adoption.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
+
         #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
         if matches!(wire.command.as_str(), "native_hayes_execute" | "native_hayes_release") {
             if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
@@ -670,6 +698,7 @@ impl Request {
             Command::NativeHayesExecute { .. } | Command::NativeHayesRelease { .. } => return Err(err("NATIVE_HOST_REQUIRED")),
             #[cfg(target_os = "macos")]
             Command::NativeAuthoringSession { .. }
+            | Command::NativeModelAdoption { .. }
             | Command::NativeHosting { .. }
             | Command::NativeHostingStatus { .. }
             | Command::NativeHostingReview { .. }

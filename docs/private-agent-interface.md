@@ -408,3 +408,89 @@ assert process.wait(timeout=120) == 0  # stdin was never closed to dispatch
 This sequential example has one outstanding request. A client issuing status or
 cancel during an operation must correlate all responses by requestId and retain
 the original operation response as well as the control response.
+
+## Private native model adoption
+
+The paired macOS helper accepts `native_model_adoption` over its existing
+private host pipe, with the current `selection_token` and one closed
+`adoption` action. This requires a qualified ordinary runtime with the
+dedicated adoption capability. The actions run in order.
+
+- `stage_source` takes `sourceArtworkId`, `sourceArtworkRevision`,
+  `original`, `display`, and `target`. Each model identity contains
+  `sha256` and `bytes`. Target identity contains `workspaceId`,
+  `tenantId`, `principalId`, `artworkId`, `artworkRevision`,
+  `exhibitionId`, `placementId`, and `etag`. The helper reserves both
+  fixed leaves and retains the exact source grant itself.
+- Stop the source normally and select the already registered target in the
+  same managed helper process. Start the target and load its saved draft.
+  `preview_target` takes `operationId` and the current native document
+  `expectedRevision`. It returns the exact preview and `grantSha256`.
+- After the target owner confirms the exact preview, `confirm_target`
+  takes `operationId`, `grantSha256`, and the same `expectedRevision`.
+  It checks the saved draft, artwork, placement, and runtime generation
+  before the target transaction. Read the resulting saved head using the
+  normal authenticated authoring path.
+- `status_target` takes `operationId` and `grantSha256` to read the
+  target's durable result. An unresolved status retains staging for
+  reconciliation. The confirmation command requires the preview retained by
+  the same runtime generation and accepts only its operation ID and digest.
+
+- `retained_operation` returns the reserved operation ID and any available
+  grant digest to the exact source or target owner. This works when source
+  staging failed before a grant was returned.
+- `release_precommit` takes the retained `operationId` before any target
+  commit attempt. It frees the helper slot and preserves both leaves under
+  their original reservation.
+- `settle_target` takes `operationId`, `grantSha256`, and explicit
+  `retire`. It frees the helper slot only after the exact target confirms
+  a durable commit. Use `retire: true` to remove the verified reserved
+  pair and `retire: false` to preserve it. If retirement is interrupted,
+  retain the remaining evidence and reconcile via the target receipt.
+
+The helper preserves reserved bytes across interruption. A new helper can
+read the target receipt by its operation ID and grant digest. Retirement
+requires the original helper's retained file identities. The operation
+supports registered source and target selections within one managed helper
+process.
+
+For two existing managed profiles, the exact reviewed macOS debug runtime
+also provides the private operator entry below. Supply the two explicitly
+reviewed profile paths and their currently selected registered installation IDs.
+
+```sh
+exhibitos-native --model-adoption-profile-pair-v1 \
+  /absolute/source-profile SOURCE_INSTALLATION_ID \
+  /absolute/target-profile TARGET_INSTALLATION_ID
+```
+
+This entry holds both exclusive profile sessions until it closes. Both
+workspaces must have a clean completed generation under the same exact runtime,
+with no restore proof on the source and authenticated carried restore proof on
+the target. The source starts first and only its private staging commands are
+available. After its normal stop, `switch_target_profile` takes the retained
+`operationId` under the source selection token. It checks the staged source
+generation, unchanged target owner and physical binding, saved draft and ETag,
+and exact reserved bytes before transferring the typed grant in memory. Its
+response is the target context with the target selection token. Start that
+target before preview and explicit confirmation. The switch is one-way for the
+helper session. Close normally to return both leases.
+
+A grant created under the acquired-original publication runtime also binds
+the source credit line as exact UTF-8. Existing target artwork attribution is
+preserved. After durable adoption and saving the current target head, the
+authenticated target owner may explicitly approve the original through
+`POST /studio/exhibitions/:id/native-original-static-approval` with its saved
+`If-Match`. Its closed body contains `kind: "adopted-model-custody-v1"`,
+`artworkId`, `artworkRevision`, `operationId`, and `grantSha256`. A successful
+response confirms `approved`, `artworkId`, and `artworkRevision`. Normal native
+`export-static-native-original` then uses the saved head and a fresh output
+request. The v4 output preserves the acquired-original detail candidate
+separately from the approved display model. The browser still applies its
+device budget and fallback checks.
+
+The isolated validation pair uses the explicit fresh helper profile entry.
+After the first workspace drains, register and initialize the second workspace
+in the same helper. The exact debug validation payload enables that second
+fresh initialization. Both members use ordinary startup with fresh or clean
+local provenance.

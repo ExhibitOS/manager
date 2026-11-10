@@ -12,6 +12,12 @@ use crate::{
     native_payload::Payload,
     native_runtime::{Context, Session},
 };
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_host_adoption_pair.rs"]
+mod adoption_pair;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub use adoption_pair::AdoptionPair;
+
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -144,6 +150,7 @@ pub struct Host {
     retained_oex_cleanup: Option<(crate::native_runtime::oex_retained_cleanup::Selection, bool)>,
     state: Arc<Mutex<State>>,
     worker: Option<thread::JoinHandle<()>>,
+    adoption: Option<crate::native_runtime::model_adoption::Operation>,
     exporter: super::installations::native_static_export::Exporter,
     hoster: super::installations::native_hosting::Hoster,
 }
@@ -203,6 +210,7 @@ impl Host {
                 pre_ready_guard_diagnostic: None,
             })),
             worker: None,
+            adoption: None,
         }
     }
     /// Fresh ordinary automation workspaces use their own validated ports.
@@ -1232,6 +1240,21 @@ impl Host {
         {
             return Err(err("NATIVE_RESTORE_PENDING"));
         }
+        if let UiCommand::NativeModelAdoption { selection_token, adoption } = request.command {
+            let root = self.selected(&selection_token)?;
+            if self.exporter.active() || self.hoster.active() {
+                return Err(err("NATIVE_OPERATION_ACTIVE"));
+            }
+            let document = self.controller.native_document(&selection_token)?;
+            let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+            if state.root.as_ref() != Some(&root) || state.busy || state.detail_closing || state.selected_oex {
+                return Err(err("NATIVE_NOT_READY"));
+            }
+            let session = state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?;
+            return crate::native_runtime::model_adoption::Operation::execute(
+                &mut self.adoption, session, *adoption, &document,
+            );
+        }
         if let UiCommand::NativeMaintenance {
             selection_token,
             maintenance,
@@ -1271,8 +1294,26 @@ impl Host {
                     Ok(Value::Null)
                 }
                 Input::CreateRecovery { acknowledged } => {
+                    // Only the explicit fresh local validation Host can mint
+                    // the second member of the isolated adoption pair.
+                    let adoption_pair = if self.fresh_ordinary_root.is_some()
+                        && self.controller.context()?.installations.len() == 1
+                    {
+                        let cached = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.payload.clone();
+                        match cached {
+                            Some(payload) => payload.native_model_adoption_root()?.is_some(),
+                            None => false,
+                        }
+                    } else {
+                        false
+                    };
                     let context = self.controller.create(&selection_token, acknowledged)?;
                     self.reset_selection_state()?;
+                    if adoption_pair {
+                        let path = self.selected(&context.selection_token)?;
+                        let pin = crate::maintenance_source::DirectoryPin::open(&path)?;
+                        self.fresh_ordinary_root = Some((path, Arc::new(pin)));
+                    }
                     serde_json::to_value(context).map_err(|_| err("STATE_INVALID"))
                 }
                 Input::CreateOexWorkspace { acknowledged } => {

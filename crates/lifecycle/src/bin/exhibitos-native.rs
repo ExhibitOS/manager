@@ -8,6 +8,19 @@ use std::io::{BufRead, Read};
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(target_os = "macos")]
+    if args.len() == 2 && (args[1] == "--model-adoption-stage-read-v1" || args[1] == "--model-adoption-stage-write-v1") {
+        use exhibitos_lifecycle::native_model_adoption_stage::{read_inherited_stage, write_inherited_stage};
+        let read = args[1] == "--model-adoption-stage-read-v1";
+        let input = io::stdin().lock();
+        let output = io::stdout().lock();
+        let result = if read { read_inherited_stage(input, output) } else { write_inherited_stage(input, output) };
+        if let Err(error) = result {
+            eprintln!("{}", error.code);
+            std::process::exit(1);
+        }
+        return;
+    }
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     if args.len() == 2 && (args[1] == "--refresh-static-publication" || args[1] == "--refresh-static-publication-status") {
         use exhibitos_lifecycle::native_static_refresh as refresh;
@@ -55,6 +68,15 @@ fn main() {
         return;
     }
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if args.len() == 6 && args[1] == "--model-adoption-profile-pair-v1" {
+        let result = native_resources().ok_or_else(|| "NATIVE_HELPER_MISSING".to_string()).and_then(|resources|
+            exhibitos_lifecycle::native_host::AdoptionPair::open(
+                (&args[2]).into(), args[3].to_str().unwrap_or_default(),
+                (&args[4]).into(), args[5].to_str().unwrap_or_default(), resources,
+            ).map_err(|error| error.code));
+        match result { Ok(host) => std::process::exit(run_host(host)), Err(code) => { eprintln!("{code}"); std::process::exit(1); } }
+    }
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if args.len() == 5 && args[1] == "--profile" && args[3] == "--reopen-workspace-v6-validation" {
         let result = exhibitos_lifecycle::native_host::Host::reopen_workspace_v6_validation((&args[2]).into(), (&args[4]).into());
         match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
@@ -240,7 +262,35 @@ fn run_fresh_selected(profile: std::path::PathBuf) -> i32 {
 }
 
 #[cfg(target_os = "macos")]
-fn run_host(mut host: exhibitos_lifecycle::native_host::Host) -> i32 {
+trait StdioHost {
+    fn handle(&mut self, request: Request) -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError>;
+    fn shutdown(&mut self);
+}
+
+#[cfg(target_os = "macos")]
+impl StdioHost for exhibitos_lifecycle::native_host::Host {
+    fn handle(&mut self, request: Request) -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError> {
+        Self::handle(self, request)
+    }
+
+    fn shutdown(&mut self) {
+        Self::shutdown(self)
+    }
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+impl StdioHost for exhibitos_lifecycle::native_host::AdoptionPair {
+    fn handle(&mut self, request: Request) -> Result<serde_json::Value, exhibitos_lifecycle::LifecycleError> {
+        Self::handle(self, request)
+    }
+
+    fn shutdown(&mut self) {
+        Self::shutdown(self)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_host(mut host: impl StdioHost) -> i32 {
     use std::sync::atomic::Ordering;
     // Signal handlers only publish atomics. Child shutdown is owned by Host on
     // the normal thread, including EOF after the parent app disappears.

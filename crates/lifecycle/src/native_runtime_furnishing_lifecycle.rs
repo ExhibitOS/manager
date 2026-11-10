@@ -120,7 +120,9 @@ impl Binding {
         let carried_restore = self.catalog == 45
             && matches!(self.admission_kind, Admission::VerifiedRestore | Admission::CleanReopen)
             && self.restore.as_ref().is_some_and(|restore| restore.carried_provenance.is_some())
-            && crate::native_payload::catalog45_carried_restore_host_matches(tuple);
+            && (crate::native_payload::catalog45_carried_restore_host_matches(tuple)
+                || (self.admission_kind == Admission::CleanReopen
+                    && crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple).is_some()));
         let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
             42 => crate::native_payload::hayes_validation_host_matches(tuple),
             43 => crate::native_payload::hayes_disposition_host_matches(tuple),
@@ -234,6 +236,7 @@ impl Binding {
         let proof = self.restore.as_ref().ok_or_else(|| err(ERROR))?;
         let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
         let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
+            .or_else(|| crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple))
             .unwrap_or(self.payload_manifest_sha256.as_str());
         crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
             &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref(), proof.carried_provenance.as_ref())
@@ -290,6 +293,13 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
+        if transition.retains_catalog45_adoption_carried_restore() {
+            return self.restore.as_ref()
+                .filter(|restore| self.admission_kind == Admission::CleanReopen
+                    && restore.provenance.is_none() && restore.carried_provenance.is_some())
+                .map(Some)
+                .ok_or_else(|| err(ERROR));
+        }
         match (&self.restore, transition.retains_catalog45_restore()) {
             (None, false) => Ok(None),
             (Some(restore), true) if self.admission_kind == Admission::CleanReopen && restore.provenance.is_some() => Ok(Some(restore)),

@@ -31,6 +31,20 @@ struct Ack { version: u32, kind: String, workspace_id: String, tenant_id: String
 #[path = "native_runtime_hayes_owner_bootstrap.rs"]
 mod hayes_bootstrap;
 use hayes_bootstrap::HayesSetup;
+#[path = "native_runtime_adoption_owner_bootstrap.rs"]
+mod adoption_bootstrap;
+use adoption_bootstrap::AdoptionSetup;
+pub(super) use adoption_bootstrap::AdoptionConnection;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdoptionBootstrap<'a> {
+    workspace: &'a LocalAuthority,
+    owner_channel: FreshOwnerBinding<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hayes_owner_channel: Option<hayes_bootstrap::Pin<'a>>,
+    adoption_owner_channel: adoption_bootstrap::Pin<'a>,
+}
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 pub(super) use hayes_bootstrap::AuthenticatedHayes;
 pub(super) use hayes_bootstrap::HayesSessionPin;
@@ -43,6 +57,7 @@ pub(super) struct Setup {
     secret: String,
     furnishing_writer: Option<super::furnishing_lifetime::ProbedWriter>,
     hayes: Option<HayesSetup>,
+    adoption: Option<AdoptionSetup>,
     #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     probe_source: Option<super::hayes_probe_source::ProbeSourceFd>,
 }
@@ -93,6 +108,7 @@ impl Setup {
         parent.set_nonblocking(true).map_err(|_| err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;
         Ok(Self {parent,child:Some(child),secret,furnishing_writer:None,
             hayes: None,
+            adoption: None,
             #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             probe_source: None,
         })
@@ -139,6 +155,23 @@ impl Setup {
         self.normal_selected_v3_bootstrap(auth, generation, super::oex_catalog_frames::Protocol::from(version).owner_mode())
     }
     pub(super) fn workspace_furnishing_bootstrap(&self, auth: &LocalAuthority, generation: &str, start: super::FurnishingStart) -> Result<Vec<u8>> {
+        if let Some(adoption) = &self.adoption {
+            if !matches!(start, super::FurnishingStart::Initialize | super::FurnishingStart::Reopen) {
+                return Err(err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"));
+            }
+            let value = AdoptionBootstrap {
+                workspace: auth,
+                owner_channel: FreshOwnerBinding { version: 3, runtime_generation: generation, secret: &self.secret, mode: start.owner_mode() },
+                hayes_owner_channel: self.hayes.as_ref().map(|setup| setup.bootstrap_pin(generation, &self.secret)).transpose()?,
+                adoption_owner_channel: adoption.bootstrap_pin(generation, &self.secret, self.hayes.as_ref())?,
+            };
+            let mut bytes = serde_json::to_vec(&value).map_err(|_| err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"))?;
+            if bytes.len() > 4096 {
+                bytes.fill(0);
+                return Err(err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"));
+            }
+            return Ok(bytes);
+        }
         if let Some(hayes) = &self.hayes {
             return hayes.bootstrap(auth, generation, start, &self.secret);
         }
@@ -158,6 +191,20 @@ impl Setup {
         }
         self.hayes = Some(HayesSetup::new(pin)?);
         Ok(self)
+    }
+
+    pub(super) fn with_model_adoption(
+        mut self, generation: &str, manifest: &str, workspace: &Path, payload: &Path,
+    ) -> Result<Self> {
+        if self.adoption.is_some() || self.furnishing_writer.is_none() {
+            return Err(err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"));
+        }
+        self.adoption = Some(AdoptionSetup::for_runtime(generation, manifest, workspace, payload)?);
+        Ok(self)
+    }
+
+    pub(super) fn take_adoption(&mut self) -> Option<AdoptionSetup> {
+        self.adoption.take()
     }
 
     pub(super) fn take_hayes(&mut self) -> Option<HayesSetup> {
@@ -201,8 +248,17 @@ impl Setup {
             }
             command.env("EXHIBITOS_TEST_HAYES_SOURCE_FD", source.to_string());
         }
+        let adoption_fds = self.adoption.as_ref().map(AdoptionSetup::child_fds).transpose()?;
+        if let Some([socket, root]) = adoption_fds {
+            let aliases = |candidate| std::iter::once(fd).chain(writer).chain(hayes_fd).chain(probe_source).any(|other| other == candidate);
+            if socket == root || [socket, root].iter().any(|&candidate| !(10..=1023).contains(&candidate) || aliases(candidate)) {
+                return Err(err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"));
+            }
+            command.env(adoption_bootstrap::SOCKET_ENV, socket.to_string());
+            command.env(adoption_bootstrap::ROOT_ENV, root.to_string());
+        }
         unsafe { command.pre_exec(move || {
-            for descriptor in std::iter::once(fd).chain(writer).chain(hayes_fd).chain(probe_source) {
+            for descriptor in std::iter::once(fd).chain(writer).chain(hayes_fd).chain(probe_source).chain(adoption_fds.into_iter().flatten()) {
                 let flags = libc::fcntl(descriptor, libc::F_GETFD);
                 if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
                     return Err(std::io::Error::last_os_error());
@@ -219,6 +275,9 @@ impl Setup {
         self.probe_source.take();
         if let Some(hayes) = self.hayes.as_mut() {
             hayes.close_child();
+        }
+        if let Some(adoption) = self.adoption.as_mut() {
+            adoption.close_child();
         }
     }
     /// A successful hello proves only possession of this inherited socket and

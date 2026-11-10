@@ -38,6 +38,8 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_oex_materializer_protocol.rs"] mod oex_materializer_protocol;
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
+#[path = "native_runtime_model_adoption.rs"]
+pub(crate) mod model_adoption;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 #[allow(dead_code)] // Inactive pending native containment and owner-channel integration.
 #[path = "native_runtime_hayes.rs"] mod hayes;
@@ -756,6 +758,7 @@ pub struct Session {
     cancellation: Arc<AtomicBool>,
     local_authority: Option<LocalAuthority>,
     owner_channel: Option<owner_channel::Connection>,
+    adoption_owner: Option<owner_channel::AdoptionConnection>,
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
     hayes_owner_connection: Option<owner_channel::Connection>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -866,6 +869,51 @@ pub(crate) fn check_cold_transition_root(root: &Path, drained_failure: Option<&s
         return Err(cold());
     }
     Ok(())
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[derive(PartialEq, Eq)]
+pub(crate) struct AdoptionProfilePin {
+    pub(crate) owner: (String, String, String),
+    physical: furnishing_lifetime::WriterIdentity,
+    pub(crate) generation: String,
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+impl AdoptionProfilePin {
+    pub(crate) fn same_owner_and_writer(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.physical == other.physical
+    }
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn check_cold_adoption_profile(
+    service: &LifecycleService, payload: &Payload, carried: bool,
+) -> Result<AdoptionProfilePin> {
+    let invalid = || err("NATIVE_MODEL_ADOPTION_PROFILE_PAIR_UNAVAILABLE");
+    let _operation = service.lock()?;
+    let writer = furnishing_lifetime::WriterLifetime::acquire_existing(&service.root)?;
+    check_cold_checkpoint_root(&service.root)?;
+    let context = payload.context();
+    let binding = current_run(&service.root)?.and_then(|record| record.furnishing).ok_or_else(invalid)?;
+    let owner = service.personal_identity()?;
+    if !service.native_prepared()?.is_some_and(|prepared| prepared.manifest_sha256 == context.manifest_sha256)
+        || binding.phase != Phase::Clean || binding.admission_kind != Admission::CleanReopen
+        || !binding.matches_catalog_tuple(45, (&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
+        || binding.physical != writer.identity()?
+        || (&binding.owner.workspace_id, &binding.owner.tenant_id, &binding.owner.principal_id)
+            != (&owner.0, &owner.1, &owner.2)
+        || binding.owner.owner_uid != unsafe { libc::geteuid() }
+        || (carried && !binding.restore.as_ref().is_some_and(|restore| restore.carried_provenance.is_some()))
+        || (!carried && binding.restore.is_some())
+    {
+        return Err(invalid());
+    }
+    unconsumed_furnishing_completion(&service.root, &binding)?;
+    if carried {
+        binding.verify_restore_activation(&service.root)?;
+    }
+    Ok(AdoptionProfilePin { owner, physical: binding.physical, generation: binding.generation })
 }
 
 /// Positive server/DB drain for an interrupted export whose child was reaped.
@@ -1156,6 +1204,7 @@ impl Session {
             cancellation: Arc::new(AtomicBool::new(false)),
             local_authority: None,
             owner_channel: None,
+            adoption_owner: None,
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
             hayes_owner_connection: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1698,6 +1747,7 @@ const { isDeepStrictEqual } = require('node:util');
         }
         if self.node.is_none() {
             self.owner_channel = None;
+            self.adoption_owner = None;
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
             { self.hayes_owner_connection = None; }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -2351,6 +2401,12 @@ const { isDeepStrictEqual } = require('node:util');
             let pin = HayesSessionPin::new(generation_id, &expected)?;
             owner_setup = Some(owner_setup.take().ok_or_else(|| err("HAYES_OPERATION_UNAVAILABLE"))?.with_hayes(pin)?);
         }
+        if personal && matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen))
+            && let Some(payload_root) = self.payload.native_model_adoption_root()?
+        {
+            owner_setup = Some(owner_setup.take().ok_or_else(|| err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"))?
+                .with_model_adoption(generation, &self.payload.context().manifest_sha256, &self.service.root, payload_root)?);
+        }
         let script = self.payload.script();
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let script = match (self.payload.hayes_session_probe_script()?, self.hayes_probe_source.take()) {
@@ -2416,10 +2472,12 @@ const { isDeepStrictEqual } = require('node:util');
         self.record()?;
         if let Some(mut setup) = owner_setup {
             let dedicated = setup.take_hayes();
+            let adoption = setup.take_adoption();
             let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
             let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
             let mut channel = setup.handshake(authority, generation, &self.cancellation)?;
             let hayes = dedicated.map(|setup| setup.handshake(authority, generation, &self.cancellation)).transpose()?;
+            let adoption = adoption.map(|setup| setup.handshake(authority, generation, &self.cancellation)).transpose()?;
             if let Some(lease) = furnishing_lease {
                 let cancellation = self.cancellation.clone();
                 let binding = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.clone();
@@ -2435,6 +2493,7 @@ const { isDeepStrictEqual } = require('node:util');
                     Ok(())
                 })?;
             }
+            self.adoption_owner = adoption;
             self.owner_channel = Some(channel);
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             if let Some(hayes) = hayes {
