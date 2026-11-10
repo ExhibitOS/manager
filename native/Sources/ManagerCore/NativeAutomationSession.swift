@@ -947,9 +947,19 @@ public actor NativeAutomationSession {
             return .object(["items": try value(page.items), "nextCursor": page.nextCursor.map(DocumentValue.string) ?? .null])
         case "workspace-furnishing-intake-status", "workspace-furnishing-intake-upload",
              "workspace-furnishing-intake-complete", "workspace-furnishing-intake-cancel", "workspace-furnishing-intake-retry":
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["intakeId"])
+            let command = request["command"]
+            let optional: Set<String> = operation == "workspace-furnishing-intake-status" ? ["producerManifestSHA256"] : []
+            guard case .object(let fields) = command, Set(fields.keys).subtracting(optional) == ["intakeId"] else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
             guard let id = command["intakeId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let intake = try await api.workspaceFurnishingIntake(id)
+            let expected = fields["producerManifestSHA256"]
+            if let expected {
+                guard let hash = expected.string, nativeImportDigest(hash), await api.infoStandPreparationManifest == hash else {
+                    throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+                }
+            }
+            let intake = try await api.workspaceFurnishingIntake(id, requireCurrentInfoStandProducer: expected != nil)
             if operation == "workspace-furnishing-intake-status" { return try value(intake) }
             if operation == "workspace-furnishing-intake-upload" {
                 guard let path = request["inputPath"].string, let pin = inputs[path] else {

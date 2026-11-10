@@ -434,7 +434,8 @@ struct WorkspaceFurnishingIntakeView: View {
             try await model.withWorkspaceFurnishingAccess(access) { api in
                 var intake: WorkspaceFurnishingIntake
                 if let selected {
-                    intake = try await api.workspaceFurnishingIntake(selected.id)
+                    intake = try await api.workspaceFurnishingIntake(selected.id,
+                        requireCurrentInfoStandProducer: selected.preparationPolicy == .normalizeLegacySignTexture && selected.phase != .registered)
                 } else if let request {
                     do {
                         intake = try await api.createWorkspaceFurnishing(requestId: request.id, details: request.details,
@@ -461,7 +462,8 @@ struct WorkspaceFurnishingIntakeView: View {
         guard let selected else { return }
         await perform {
             try await model.withWorkspaceFurnishingAccess(access) { api in
-                let current = try await api.workspaceFurnishingIntake(selected.id)
+                let current = try await api.workspaceFurnishingIntake(selected.id,
+                    requireCurrentInfoStandProducer: selected.preparationPolicy == .normalizeLegacySignTexture && selected.phase != .registered)
                 try remember(current, reportFailure: action == nil)
                 if let action { try remember(await api.workspaceFurnishingAction(current, action)) }
             }

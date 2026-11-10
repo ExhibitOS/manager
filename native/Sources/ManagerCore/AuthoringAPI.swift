@@ -1947,7 +1947,7 @@ public actor AuthoringAPI {
             && session?.advertisesWorkspaceInfoStandPreparation == true
     }
 
-    private var infoStandPreparationManifest: String? {
+    var infoStandPreparationManifest: String? {
         admitsWorkspaceInfoStandPreparation ? nativeRuntimeManifestSHA256 : nil
     }
 
@@ -2026,10 +2026,14 @@ public actor AuthoringAPI {
         return intake
     }
 
-    public func workspaceFurnishingIntake(_ id: String) async throws -> WorkspaceFurnishingIntake {
+    public func workspaceFurnishingIntake(_ id: String, requireCurrentInfoStandProducer: Bool = false) async throws -> WorkspaceFurnishingIntake {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(id))
         try intake.check(id: id, supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                         admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                         admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
+                         requireCurrentInfoStandProducer: requireCurrentInfoStandProducer)
+        if requireCurrentInfoStandProducer && intake.preparationPolicy != .normalizeLegacySignTexture {
+            throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+        }
         return intake
     }
 

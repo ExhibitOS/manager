@@ -210,7 +210,10 @@ Operations:
   - A compatible model registers unchanged. A prepared registration returns
     `preparation` with the recipe, `sourceModel`, `renderableModel` and
     `runtimeManifestSHA256`. Compare both models and the producing manifest
-    when approving a newly prepared result. Registered historical receipts
+    when approving a newly prepared result. For every poll of that intake,
+    including after reopening the owner session, pass the expected
+    `command.producerManifestSHA256` to `workspace-furnishing-intake-status`.
+    Registered historical receipts
     retain their producing manifest when read by a later compatible runtime.
   - Before placing an info-stand on this runtime, read its registered model
     and use `workspace-furnishing-model-check` to verify the exact display bytes.

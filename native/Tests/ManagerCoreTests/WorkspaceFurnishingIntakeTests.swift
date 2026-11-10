@@ -216,6 +216,15 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
             "recipe": .string(policy.rawValue), "sourceModel": source, "renderableModel": renderable,
             "runtimeManifestSHA256": .string(manifest),
         ])
+        if case .object(var pendingFields) = prepared {
+            pendingFields["phase"] = .string("validating")
+            pendingFields["furnishing"] = .null
+            pendingFields.removeValue(forKey: "preparation")
+            try intake(.object(pendingFields)).check(supportedExtensionVersion: 3,
+                infoStandPreparationManifest: manifest, requireCurrentInfoStandProducer: true)
+        } else {
+            XCTFail("Expected an object fixture")
+        }
         let value = try intake(prepared)
         try value.check(details: value.declaration, expectedPolicy: policy,
                         supportedExtensionVersion: 3, infoStandPreparationManifest: manifest, requireCurrentInfoStandProducer: true)
