@@ -8,6 +8,7 @@ struct NativeImportControls: View {
     let ready: Bool
     let mode: Mode
     let openArtwork: (String) -> Void
+    @State private var submittingFile = false
     private var belongs: Bool { model.transfer?.intent == nil || model.transfer?.intent?.artworkId == model.selected?.id }
     private var approvedAssets: [NativeArtwork.Asset] { model.selected?.assets.filter { $0.state == "approved" } ?? [] }
     private var needsNewRevision: Bool {
@@ -30,7 +31,7 @@ struct NativeImportControls: View {
                         if model.importJob == nil || model.importJob?.state == "uploading" {
                             Button("Hayes GLB 원본 선택…") { Task { await model.chooseImportFile() } }
                             if let file = model.importFile { Text(file.name).textSelection(.enabled) }
-                            Button("원본 등록") { Task { await model.uploadImportFile() } }
+                            Button("원본 등록") { Task { await submitFile() } }
                                 .disabled(model.importFile == nil || model.metadataDirty || model.transfer == nil)
                             if model.hasHayesIntent, model.importFile == nil {
                                 Button("이전 원본 등록 확인") { Task { await model.recoverImport() } }
@@ -72,10 +73,13 @@ struct NativeImportControls: View {
                         Text("작품 정보와 권리를 먼저 저장하세요.").foregroundStyle(.secondary)
                     }
                     if model.importJob == nil || model.importJob?.state == "uploading" {
-                        Button("파일 검사 시작·계속") { Task { await model.uploadImportFile() } }
+                        Button("파일 검사 시작·계속") { Task { await submitFile() } }
                             .disabled(model.metadataDirty || model.selected == nil || model.importFile == nil || model.transfer == nil
                                 || model.inspectedReferencePending || (!model.ordinaryUnknownModel && !model.freshImageSourceSelected && (!model.importScale.isFinite || model.importScale <= 0)))
                     }
+                }
+                if submittingFile && (model.importJob == nil || model.importJob?.state == "uploading") {
+                    ProgressView("파일 전송과 검사 요청을 확인하고 있습니다…").controlSize(.small)
                 }
                 if !model.hasProductImageTransfer && (!model.hasUnknownSourceUnits || model.ordinaryUnknownModel)
                     && model.transfer?.intent != nil && model.importJob == nil {
@@ -104,7 +108,7 @@ struct NativeImportControls: View {
                             }
                         }
                     }
-                    if ["queued", "processing"].contains(job.state) { ProgressView(value: Double(job.progress), total: 100).accessibilityLabel("파일 검사 진행") }
+                    importProgress(job)
                     HStack {
                         Button("상태 다시 확인") { Task { await model.refreshImport() } }
                         if (!model.hasUnknownSourceUnits || model.ordinaryUnknownModel) && job.state == "uploading" { Button("받은 원본으로 검사 계속") { Task { await model.recoverImport() } } }
@@ -228,6 +232,28 @@ struct NativeImportControls: View {
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
         .onChange(of: model.assetId) { _, _ in model.approvalAcknowledged = false }
     }
+
+    private func submitFile() async {
+        guard !submittingFile else { return }
+        submittingFile = true
+        defer { submittingFile = false }
+        await model.uploadImportFile()
+    }
+
+    @ViewBuilder
+    private func importProgress(_ job: NativeImportJob) -> some View {
+        if model.intakeDrainPending {
+            ProgressView("파일 처리 종료 확인 중").controlSize(.small)
+        } else if job.modelPreparation?.status == .processing
+                    || (job.state == "approved" && (job.modelDerivation?.status == "pending" || job.productImagePreparation?.status == .pending)) {
+            ProgressView("감상용 파일 준비 중").controlSize(.small)
+        } else if job.state == "queued" {
+            ProgressView("파일 검사 대기 중").controlSize(.small)
+        } else if job.state == "processing" {
+            ProgressView("파일 검사 중").controlSize(.small)
+        }
+    }
+
     @ViewBuilder
     private func compactControls(_ transfer: NativeCompactModelVariantTransfer) -> some View {
         if model.selected?.id != transfer.artworkId {
@@ -235,6 +261,11 @@ struct NativeImportControls: View {
             Button("준비 중인 작품 열기") { openArtwork(transfer.artworkId) }
         } else if let job = model.compactJob {
             Text(compactStateTitle(job)).font(.headline)
+            if [.pending, .processing].contains(job.modelPreparation.status) {
+                ProgressView(job.state == "queued" ? "축소본 준비 대기 중" : "축소본 준비 중").controlSize(.small)
+            } else if !job.modelPreparation.workerDrained && [.failed, .cancelled].contains(job.modelPreparation.status) {
+                ProgressView("축소본 준비 종료 확인 중").controlSize(.small)
+            }
             Text("전체 모델은 그대로 유지됩니다. 축소본은 준비 후 별도로 승인합니다.")
                 .foregroundStyle(.secondary)
             if let coarse = job.modelPreparation.coarse {

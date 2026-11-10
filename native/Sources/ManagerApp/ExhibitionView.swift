@@ -7,6 +7,20 @@ import ManagerCore
 
 @MainActor
 final class ExhibitionModel: ObservableObject {
+    enum OpeningStage {
+        case creating, loadingSaved, refreshingArtwork
+
+        var title: String {
+            switch self {
+            case .creating: "새 전시 입력을 만들고 있습니다…"
+            case .loadingSaved: "저장한 전시 입력과 편집 권한을 확인하고 있습니다…"
+            case .refreshingArtwork: "작품 목록을 새로 확인하고 있습니다…"
+            }
+        }
+    }
+
+    @Published private(set) var openingStage: OpeningStage?
+
     let oexImport = OEXImportModel()
     @Published private(set) var state: NativeDocumentState?
     @Published private(set) var items: [NativeExhibitionSummary] = []
@@ -2374,6 +2388,13 @@ final class ExhibitionModel: ObservableObject {
         libraryCursor = artworks.nextCursor
         refreshCatalogMetadata()
     }
+    var catalogMetadataProgress: (processed: Int, total: Int)? {
+        guard catalogTask != nil else { return nil }
+        let processed = library.filter { row in
+            catalogEntries[row.id]?.revision == row.revision || catalogFailures.contains(row.id)
+        }.count
+        return processed < library.count ? (processed, library.count) : nil
+    }
     private func refreshCatalogMetadata() {
         catalogTask?.cancel()
         let current = Dictionary(library.map { ($0.id, $0.revision) }, uniquingKeysWith: { _, newer in newer })
@@ -2564,6 +2585,8 @@ final class ExhibitionModel: ObservableObject {
     func refresh(more: Bool = false) async { await work { try await list(more: more) } }
     func new() async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
+            openingStage = .creating
+            defer { openingStage = nil }
             guard !ordinaryBoundedRuntime, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLight == true)
             value.etag = nil; value.savedEditVersion = nil
@@ -2682,6 +2705,8 @@ final class ExhibitionModel: ObservableObject {
     }
     func open(_ id: String) async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
+            openingStage = .loadingSaved
+            defer { openingStage = nil }
             guard !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             if ordinaryBoundedRuntime {
                 boundedPolicyGeneration = UUID()
@@ -2702,12 +2727,13 @@ final class ExhibitionModel: ObservableObject {
             boundedReadOnly = restricted; boundedPolicyPending = ordinaryBoundedRuntime; storedImmutable = editingAccess.immutable || restricted || ordinaryBoundedRuntime; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
             if ordinaryBoundedRuntime { await prepareOrdinaryBoundedPlacement() }
             if !boundedPolicyPending {
-                notice = storedImmutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시를 열었습니다."
+                notice = storedImmutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시 입력을 불러왔습니다."
             }
             // OEX import can add approved works after the last library fetch.
             // Refresh only after the saved draft is safely opened; a catalogue
             // failure must not undo or misreport that successful open.
             let access = viewportAccessID
+            openingStage = .refreshingArtwork
             let refreshFailure = "작품 목록을 새로 확인하지 못했습니다. 전시 목록의 검색으로 다시 확인하세요."
             do {
                 let artworks = try await api.artworks()
