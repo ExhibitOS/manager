@@ -2348,6 +2348,8 @@ mod normal_oex_release_declaration_tests {
             "ea2570531e6a988d1333f4f8a0898f972f75da24919a32e47c75fff638bdbf67",
         )));
         assert!(Payload::open_workspace_v5_validation(&root, false).is_err());
+        assert!(payload.static_detail_export_resources(true).is_ok());
+        assert_eq!(payload.static_detail_export_resources(false).unwrap_err().code, "NATIVE_STATIC_DETAIL_UNAVAILABLE");
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -4271,7 +4273,9 @@ impl Payload {
             || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
             || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance
             || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == provenance
-            || (private_editor && [CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH].contains(&provenance))
+            || (private_editor
+                && ([CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH].contains(&provenance)
+                    || catalog45_carried_restore_host_matches(provenance)))
             || (catalog45_recovery_host_matches(provenance)
                 && !self.catalog45_pre_ready_preservation_validation()
                 && !self.catalog45_pre_ready_hayes_preservation_validation());
