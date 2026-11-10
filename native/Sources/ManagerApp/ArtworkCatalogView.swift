@@ -77,6 +77,14 @@ struct ArtworkCatalogView: View {
             } else if !model.artworkId.isEmpty {
                 HStack { Text("배치할 위치를 확인하세요.").foregroundStyle(.secondary); Button("배치 선택 취소") { model.cancelCatalogPlacement() } }
             }
+            if ready && expanded, let progress = model.catalogMetadataProgress {
+                ProgressView(value: Double(progress.processed), total: Double(progress.total)) {
+                    Text("불러온 목록의 작품 정보 확인 \(progress.processed)/\(progress.total)")
+                } currentValueLabel: {
+                    Text((Double(progress.processed) / Double(progress.total)).formatted(.percent.precision(.fractionLength(0))))
+                }
+            }
+            if model.catalogThumbnailSaving { ProgressView("감상 시점 이미지를 준비하고 저장하고 있습니다…") }
             if !model.catalogFailures.isEmpty {
                 HStack { Text("일부 작품 정보를 읽지 못했습니다.").foregroundStyle(.secondary); Button("정보 다시 확인") { model.retryCatalogMetadata() }.disabled(!ready || model.busy) }
             }

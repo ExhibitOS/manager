@@ -23,7 +23,7 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var snapshot: ImportFileSnapshot?
     @State private var bundledCatalog: BundledWorkspaceFurnishings.Catalog?
     @State private var choosing = false
-    @State private var busy = false
+    @State private var busyActivity: String?
     @State private var message: String?
     @State private var request: (id: String, details: WorkspaceFurnishingDetails, policy: WorkspaceArtworkFramePreparationPolicy?)?
     @State private var selected: WorkspaceFurnishingIntake?
@@ -42,6 +42,7 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var scale = "1"
     @State private var placementId = UUID().uuidString.lowercased()
     @State private var seatPolicyETag: String?
+    private var busy: Bool { busyActivity != nil }
 
     init(model: ExhibitionModel, access: UUID, initialKind: WorkspaceFurnishingKind? = nil,
          initialWorkspaceFurnishingID: String? = nil, initialBundledID: String? = nil,
@@ -106,6 +107,13 @@ struct WorkspaceFurnishingIntakeView: View {
                 if model.workspaceArtworkFrameAvailable { artworkFrameSection }
                 if model.workspacePortalFinishAvailable { portalSection }
             }.disabled(busy || access != model.viewportAccessID)
+            if access == model.viewportAccessID {
+                if let busyActivity {
+                    ProgressView(busyActivity).controlSize(.small)
+                } else if let selected, [.validating, .cancelling].contains(selected.phase) {
+                    ProgressView(status(selected.phase)).controlSize(.small)
+                }
+            }
             if let message { Text(message).accessibilityAddTraits(.updatesFrequently) }
             HStack {
                 Button("목록 새로 고침") { Task { await reload() } }.disabled(busy || access != model.viewportAccessID)
@@ -201,7 +209,18 @@ struct WorkspaceFurnishingIntakeView: View {
 
     private func intakeSection(_ intake: WorkspaceFurnishingIntake) -> some View {
         Section(intake.declaration.name) {
-            Text(status(intake.phase))
+            if intake.phase == .uploading {
+                let received = intake.received?.bytes ?? 0
+                let declared = intake.declaration.model.bytes
+                ProgressView(value: Double(received), total: Double(declared)) {
+                    Text("GLB 파일 수신 확인")
+                } currentValueLabel: {
+                    let fraction = Double(received) / Double(declared)
+                    Text("\(received.formatted()) / \(declared.formatted())바이트 · \(fraction.formatted(.percent.precision(.fractionLength(0))))")
+                }
+            } else {
+                Text(status(intake.phase))
+            }
             Text(intake.declaration.provenance).foregroundStyle(.secondary)
             if let preparation = intake.preparation {
                 LabeledContent("보정 방식", value: preparation.recipe == .normalizeLegacySignTexture
@@ -378,12 +397,12 @@ struct WorkspaceFurnishingIntakeView: View {
         }
     }
 
-    private func perform(_ work: () async throws -> Void) async {
+    private func perform(_ activity: String = "비품 상태를 확인하고 있습니다…", _ work: () async throws -> Void) async {
         guard !busy, access == model.viewportAccessID else { return }
         let registeredBefore = selected?.phase == .registered ? selected?.furnishing?.id : nil
-        busy = true
+        busyActivity = activity
         message = nil
-        defer { busy = false }
+        defer { busyActivity = nil }
         do {
             try await work()
             if !Task.isCancelled, access == model.viewportAccessID, selected?.phase == .registered,
@@ -476,7 +495,7 @@ struct WorkspaceFurnishingIntakeView: View {
     }
 
     private func submit() async {
-        await perform {
+        await perform("비품 등록 요청을 확인하고 있습니다…") {
             if selected == nil && request == nil {
                 guard let snapshot else { throw AuthoringFailure("FURNISHING_DECLARATION") }
                 let descriptor = try WorkspaceFurnishingModel(snapshot: snapshot)
@@ -504,9 +523,11 @@ struct WorkspaceFurnishingIntakeView: View {
                 guard intake.phase == .uploading else { return }
                 if intake.received == nil {
                     guard let snapshot else { return }
+                    busyActivity = "GLB 파일을 전송하고 있습니다…"
                     intake = try await api.uploadWorkspaceFurnishing(intake, snapshot: snapshot)
                     try remember(intake)
                 }
+                busyActivity = "GLB 검증 결과를 확인하고 있습니다…"
                 try remember(await api.workspaceFurnishingAction(intake, .complete))
             }
         }
@@ -519,7 +540,10 @@ struct WorkspaceFurnishingIntakeView: View {
                 let current = try await api.workspaceFurnishingIntake(selected.id,
                     requireCurrentInfoStandProducer: selected.preparationPolicy == .normalizeLegacySignTexture && selected.phase != .registered)
                 try remember(current, reportFailure: action == nil)
-                if let action { try remember(await api.workspaceFurnishingAction(current, action)) }
+                if let action {
+                    busyActivity = action == .cancel ? "등록 취소를 확인하고 있습니다…" : "GLB 검증 결과를 확인하고 있습니다…"
+                    try remember(await api.workspaceFurnishingAction(current, action))
+                }
             }
         }
     }

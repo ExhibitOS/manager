@@ -28,6 +28,19 @@ struct NativeDisplayReadoutInput {
     let presentation: ViewportPresentation
 }
 
+enum ViewportSceneProgress: Equatable {
+    case preparing
+    case artworks(processed: Int, total: Int)
+
+    static func reported(ready: Bool, failed: Bool, loadedCount: Int, failedCount: Int, total: Int) -> Self? {
+        guard !failed else { return nil }
+        guard ready, total >= 0, loadedCount >= 0, loadedCount <= total,
+              failedCount >= 0, failedCount <= total - loadedCount else { return .preparing }
+        let processed = loadedCount + failedCount
+        return processed < total ? .artworks(processed: processed, total: total) : nil
+    }
+}
+
 @MainActor
 final class NativeViewportController: ObservableObject {
     // Synchronously updated by native navigation, before a delayed WK frame or
@@ -235,6 +248,7 @@ final class NativeViewportController: ObservableObject {
         do { try await findSelectionAction(); message = "선택한 배치가 보이도록 시점을 맞췄습니다." }
         catch { message = "선택한 배치를 찾지 못했습니다. 선택과 기존 시점은 유지됩니다."; diagnose("FIND", error) }
     }
+    @Published fileprivate(set) var sceneProgress: ViewportSceneProgress? = .preparing
     @Published var rendering = false
     @Published var loaded = 0
     @Published var failed = 0
@@ -442,6 +456,7 @@ struct NativeViewport: NSViewRepresentable {
             endPlacement()
             entranceOperation = nil
             fingerprint = hash; sequence += 1
+            if latest?.draft != value.draft { controller.sceneProgress = .preparing }
             if !controller.displayReadout.isEmpty { controller.displayReadout = "" }
             controller.connected = false
             controller.acknowledgedBoundedEdit = nil
@@ -468,7 +483,7 @@ struct NativeViewport: NSViewRepresentable {
                 web.configuration.userContentController.removeAllContentRuleLists(); web.configuration.userContentController.add(rule)
                 resourceRule = rule
                 web.load(URLRequest(url: page, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15))
-            } catch { if self.generation == generation { controller.message = "3D 화면 연결을 준비하지 못했습니다. 작업 공간을 다시 연결하세요."; controller.diagnose(stage, error) } }
+            } catch { if self.generation == generation { controller.sceneProgress = nil; controller.message = "3D 화면 연결을 준비하지 못했습니다. 작업 공간을 다시 연결하세요."; controller.diagnose(stage, error) } }
         }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard active, controller.owner == epoch, webView === web, isPage(webView.url) else { return }
@@ -482,9 +497,10 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
+            controller.sceneProgress = nil
             controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
             controller.diagnose("PAGE_LOAD", error)
         }
@@ -551,7 +567,7 @@ struct NativeViewport: NSViewRepresentable {
                         if self.controller.connected && self.controller.message == "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요." {
                             self.controller.message = "전시 연결을 확인했습니다."
                         }
-                    } catch { if self.generation == generation { self.controller.connected = false; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
+                    } catch { if self.generation == generation { self.controller.connected = false; self.controller.sceneProgress = nil; self.controller.message = "전시를 3D에 표시하지 못했습니다. 저장한 전시와 연결을 확인하세요."; self.controller.diagnose("FRAME", error) }; break }
                 }
             }
             controller.displayReadoutAction = { [weak self] input in
@@ -1085,14 +1101,28 @@ struct NativeViewport: NSViewRepresentable {
             case "candidate": guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, placementIntent == nil, !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
             case "status":
                 guard let report = try? JSONDecoder().decode(Report.self, from: JSONEncoder().encode(envelope.body)), report.loaded >= 0, report.failed >= 0, report.message.count <= 2048 else { return }
-                controller.rendering = report.ready; controller.loaded = report.loaded; controller.failed = report.failed
-                controller.message = !report.ready ? "편집 화면을 준비하고 있습니다." : report.loaded + report.failed < frame.draft.placements.count ? "전시 작품을 불러오고 있습니다." : report.failed > 0 ? "일부 작품을 불러오지 못했습니다. 작업 공간과 작품 사용 권한을 확인하세요." : "전시 편집 화면을 표시했습니다."
+                let total = frame.draft.placements.count
+                controller.sceneProgress = ViewportSceneProgress.reported(ready: report.ready, failed: report.error == true,
+                    loadedCount: report.loaded, failedCount: report.failed, total: total)
+                controller.rendering = report.ready && report.error != true
+                controller.loaded = report.loaded; controller.failed = report.failed
+                if report.error == true {
+                    controller.message = "편집 화면을 준비하지 못했습니다. 편집 화면을 다시 열어 보세요."
+                } else if controller.sceneProgress == .preparing {
+                    controller.message = "편집 화면을 준비하고 있습니다."
+                } else if controller.sceneProgress != nil {
+                    controller.message = "전시 작품을 불러오고 있습니다."
+                } else {
+                    controller.message = report.failed > 0
+                        ? "일부 작품을 불러오지 못했습니다. 작업 공간과 작품 사용 권한을 확인하세요."
+                        : "전시 편집 화면을 표시했습니다."
+                }
             case "error": controller.message = "3D 조작을 적용하지 못했습니다. 현재 전시와 선택은 유지됩니다."
             default: break
             }
         }
         private struct Envelope: Decodable { let version: Int; let epoch: String; let sequence: Int; let type: String; let body: DocumentValue }
-        private struct Report: Decodable { let ready: Bool; let message: String; let loaded: Int; let failed: Int }
+        private struct Report: Decodable { let ready: Bool; let message: String; let loaded: Int; let failed: Int; let error: Bool? }
     }
 }
 
@@ -1147,6 +1177,20 @@ struct NativeViewportArea: View {
                 }
                     .frame(height: workbench ? nil : (model.entrancePreviewActive ? 740 : 440))
                     .frame(minHeight: workbench ? 120 : nil, maxHeight: workbench ? .infinity : (model.entrancePreviewActive ? 740 : 440))
+                if workbench && model.viewportPresentation == .threeD && !model.entrancePreviewActive {
+                    switch controller.sceneProgress {
+                    case .preparing:
+                        ProgressView("편집 화면 준비 중").controlSize(.small).padding(.horizontal, 12)
+                    case .artworks(let processed, let total):
+                        ProgressView(value: Double(processed), total: Double(total)) {
+                            Text("작품 배치 확인 \(processed)/\(total)")
+                        } currentValueLabel: {
+                            Text((Double(processed) / Double(total)).formatted(.percent.precision(.fractionLength(0))))
+                        }.controlSize(.small).padding(.horizontal, 12)
+                    case nil:
+                        EmptyView()
+                    }
+                }
                 if !workbench { Text("불러온 작품 \(controller.loaded)개 · 불러오지 못한 작품 \(controller.failed)개").foregroundStyle(.secondary) }
                 Text(workbench ? "작품 \(controller.loaded)개 · 불러오기 실패 \(controller.failed)개 · " + controller.message : controller.message).foregroundStyle(.secondary)
                     .font(workbench ? .caption : .body).lineLimit(workbench ? 2 : nil).padding(.horizontal, workbench ? 12 : 0)

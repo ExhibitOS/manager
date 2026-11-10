@@ -7,7 +7,7 @@ import ManagerCore
 final class HostingModel: ObservableObject {
     @Published private(set) var status: NativeHostingStatus?
     @Published private(set) var review: NativeHostingReview?
-    @Published private(set) var busy = false
+    @Published private var foregroundProgress: String?
     @Published private(set) var credentialPresent: Bool?
     @Published private(set) var failure: BridgeFailure?
     @Published var accountId = ""
@@ -15,7 +15,12 @@ final class HostingModel: ObservableObject {
     @Published var costConfirmed = false
     @Published var tokenInput = ""
     @Published var replacingToken = false
+    var busy: Bool { foregroundProgress != nil }
     var running: Bool { status?.running == true }
+    var progressTitle: String? {
+        foregroundProgress ?? (running ? workerProgress ?? "진행 중인 호스팅 작업의 결과를 기다리고 있습니다…" : nil)
+    }
+    private var workerProgress: String?
     private let credentials = CloudflareCredentialStore()
     private var read: (() async throws -> NativeHostingStatus)?
     private var inspect: (() async throws -> NativeHostingReview)?
@@ -34,7 +39,8 @@ final class HostingModel: ObservableObject {
     func refreshReview(_ receipt: NativeStaticExportReceipt?) async {
         guard let receipt, let inspect else { review = nil; resetReview(); return }
         guard !busy, !running else { return }
-        busy = true; defer { busy = false }
+        foregroundProgress = "배포할 정적 전시 파일을 확인하고 있습니다…"
+        defer { foregroundProgress = nil }
         do {
             let value = try await inspect()
             guard value.source.manifestSha256 == receipt.manifestSha256, value.source.publicationId == receipt.publicationId else { throw BridgeFailure("NATIVE_PUBLICATION_STATE_CHANGED") }
@@ -44,29 +50,54 @@ final class HostingModel: ObservableObject {
     }
     func saveToken(_ token: String) async -> Bool {
         guard !busy, !running else { return false }
-        busy = true; failure = nil; defer { busy = false }
+        foregroundProgress = "호스팅 토큰을 키체인에 저장하고 있습니다…"
+        failure = nil
+        defer { foregroundProgress = nil }
         do { try await credentials.save(token); credentialPresent = true; return true }
         catch { failure = error as? BridgeFailure ?? BridgeFailure("HOSTED_KEYCHAIN_STORE_FAILED"); return false }
     }
-    private func perform(_ operation: (String) async throws -> NativeHostingStatus) async {
+    private func perform(progress: String, waiting: String, _ operation: (String) async throws -> NativeHostingStatus) async {
         guard !busy, !running else { return }
-        busy = true; failure = nil; defer { busy = false }
-        do { let token = try await credentials.load(); status = try await operation(token); follow() }
+        foregroundProgress = "키체인에서 호스팅 토큰을 확인하고 있습니다…"
+        failure = nil
+        defer { foregroundProgress = nil }
+        do {
+            let token = try await credentials.load()
+            foregroundProgress = progress
+            let observed = try await operation(token)
+            workerProgress = observed.running ? waiting : nil
+            status = observed
+            follow()
+        }
         catch { failure = error as? BridgeFailure ?? BridgeFailure("HOSTED_OPERATION_UNCERTAIN") }
     }
-    func loadAccounts() async { guard let accounts else { return }; await perform(accounts) }
+    func loadAccounts() async {
+        guard let accounts else { return }
+        await perform(progress: "호스팅 계정 확인을 요청하고 있습니다…", waiting: "호스팅 계정 목록을 기다리고 있습니다…", accounts)
+    }
     func publish() async {
         guard let deploy, let review, rightsConfirmed, costConfirmed, status?.accounts.contains(where: { $0.id == accountId }) == true else { failure = BridgeFailure("HOSTED_PERMISSION_REQUIRED"); return }
-        await perform { token in try await deploy(token, accountId, review, rightsConfirmed, costConfirmed) }
+        await perform(progress: "공개 파일을 확인하고 배포를 요청하고 있습니다…", waiting: "배포와 공개 파일 확인 결과를 기다리고 있습니다…") { token in
+            try await deploy(token, accountId, review, rightsConfirmed, costConfirmed)
+        }
     }
-    func checkDeployment() async { guard let reconcile else { return }; await perform(reconcile) }
+    func checkDeployment() async {
+        guard let reconcile else { return }
+        await perform(progress: "같은 배포 요청의 상태를 다시 확인하고 있습니다…", waiting: "이전 배포와 공개 파일의 확인 결과를 기다리고 있습니다…", reconcile)
+    }
     private func follow() {
         polling?.cancel()
         guard running else { return }
         polling = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled, running {
-                do { try await Task.sleep(for: .milliseconds(250)); try Task.checkCancellation(); guard let read else { return }; status = try await read() }
+                do {
+                    try await Task.sleep(for: .milliseconds(250)); try Task.checkCancellation()
+                    guard let read else { return }
+                    let observed = try await read()
+                    if !observed.running { workerProgress = nil }
+                    status = observed
+                }
                 catch is CancellationError { return }
                 catch { failure = error as? BridgeFailure ?? BridgeFailure("HOSTED_OPERATION_UNCERTAIN"); return }
             }
@@ -75,6 +106,7 @@ final class HostingModel: ObservableObject {
     func cancelAndWait() async -> Bool {
         guard running else { return true }
         guard let cancel, let read else { return false }
+        defer { if !running { workerProgress = nil } }
         do {
             status = try await cancel()
             let end = ContinuousClock.now.advanced(by: .seconds(15))
@@ -125,8 +157,8 @@ struct NativeHostingView: View {
                 Button("확인한 전시를 온라인 공개") { Task { await model.publish() } }
                     .disabled(!available || model.busy || model.running || !mayDeploy || model.status?.accounts.contains(where: { $0.id == model.accountId }) != true || !model.rightsConfirmed || !model.costConfirmed)
             } else { Text("먼저 위에서 현재 전시의 정적 파일을 저장하세요.").foregroundStyle(.secondary) }
+            if let title = model.progressTitle { ProgressView(title) }
             if model.running {
-                ProgressView("배포와 공개 파일을 확인하고 있습니다…")
                 Button("공개 작업 정지") { Task { await model.cancelPublish() } }
             }
             if let work = model.status?.work {

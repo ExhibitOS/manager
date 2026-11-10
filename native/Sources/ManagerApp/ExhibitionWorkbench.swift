@@ -316,7 +316,9 @@ struct NativeExhibitionView: View {
             } else if model.notice.isEmpty {
                 Text("전시 저장됨").foregroundStyle(.secondary)
             }
-            if model.busy && !model.exporting { ProgressView("전시를 확인하고 있습니다…").controlSize(.small) }
+            if model.busy && !model.exporting {
+                ProgressView(model.openingStage?.title ?? "전시를 확인하고 있습니다…").controlSize(.small)
+            }
             if let failure = model.failure {
                 HStack(alignment: .top) {
                     Label(failure.code == "PLACEMENT_INVALID" ? "위치 X·Y·Z에 올바른 미터 값을 입력하거나 위치 입력을 취소하세요." : failure.localizedDescription, systemImage: "exclamationmark.triangle")
