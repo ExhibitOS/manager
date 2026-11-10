@@ -756,6 +756,7 @@ pub struct Session {
     cancellation: Arc<AtomicBool>,
     local_authority: Option<LocalAuthority>,
     owner_channel: Option<owner_channel::Connection>,
+    adoption_owner: Option<owner_channel::AdoptionConnection>,
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
     hayes_owner_connection: Option<owner_channel::Connection>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1156,6 +1157,7 @@ impl Session {
             cancellation: Arc::new(AtomicBool::new(false)),
             local_authority: None,
             owner_channel: None,
+            adoption_owner: None,
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
             hayes_owner_connection: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1698,6 +1700,7 @@ const { isDeepStrictEqual } = require('node:util');
         }
         if self.node.is_none() {
             self.owner_channel = None;
+            self.adoption_owner = None;
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions)))]
             { self.hayes_owner_connection = None; }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -2351,6 +2354,12 @@ const { isDeepStrictEqual } = require('node:util');
             let pin = HayesSessionPin::new(generation_id, &expected)?;
             owner_setup = Some(owner_setup.take().ok_or_else(|| err("HAYES_OPERATION_UNAVAILABLE"))?.with_hayes(pin)?);
         }
+        if personal && matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen))
+            && let Some(payload_root) = self.payload.native_model_adoption_root()?
+        {
+            owner_setup = Some(owner_setup.take().ok_or_else(|| err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"))?
+                .with_model_adoption(generation, &self.payload.context().manifest_sha256, &self.service.root, payload_root)?);
+        }
         let script = self.payload.script();
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let script = match (self.payload.hayes_session_probe_script()?, self.hayes_probe_source.take()) {
@@ -2416,10 +2425,12 @@ const { isDeepStrictEqual } = require('node:util');
         self.record()?;
         if let Some(mut setup) = owner_setup {
             let dedicated = setup.take_hayes();
+            let adoption = setup.take_adoption();
             let authority = self.local_authority.as_ref().ok_or_else(|| err("NATIVE_PERSONAL_SESSION_REQUIRED"))?;
             let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
             let mut channel = setup.handshake(authority, generation, &self.cancellation)?;
             let hayes = dedicated.map(|setup| setup.handshake(authority, generation, &self.cancellation)).transpose()?;
+            let adoption = adoption.map(|setup| setup.handshake(authority, generation, &self.cancellation)).transpose()?;
             if let Some(lease) = furnishing_lease {
                 let cancellation = self.cancellation.clone();
                 let binding = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.clone();
@@ -2435,6 +2446,7 @@ const { isDeepStrictEqual } = require('node:util');
                     Ok(())
                 })?;
             }
+            self.adoption_owner = adoption;
             self.owner_channel = Some(channel);
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             if let Some(hayes) = hayes {

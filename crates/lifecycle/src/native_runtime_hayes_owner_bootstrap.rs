@@ -15,13 +15,13 @@ use std::{
 
 /// Native-selected identity issued before the API sends OPEN. The caller
 /// must convey it through the existing authenticated private bootstrap.
-pub(in super::super) struct HayesSessionPin {
+pub(in super::super) struct DedicatedOwnerPin {
     runtime_generation: Uuid,
     host_manifest_sha256: String,
     native_owner_id: Uuid,
 }
 
-impl HayesSessionPin {
+impl DedicatedOwnerPin {
     pub(in super::super) fn new(
         runtime_generation: Uuid,
         host_manifest_sha256: &str,
@@ -52,6 +52,8 @@ impl HayesSessionPin {
     }
 }
 
+pub(in super::super) type HayesSessionPin = DedicatedOwnerPin;
+
 pub(in super::super) struct AuthenticatedHayes {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub(in super::super) pin: HayesSessionPin,
@@ -73,7 +75,7 @@ struct Bootstrap<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Pin<'a> {
+pub(super) struct Pin<'a> {
     version: u8,
     runtime_generation: &'a str,
     secret: &'a str,
@@ -135,10 +137,7 @@ impl HayesSetup {
         start: FurnishingStart,
         ordinary_secret: &str,
     ) -> Result<Vec<u8>> {
-        if !matches!(start, FurnishingStart::Initialize | FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)
-            || self.pin.runtime_generation().to_string() != generation
-            || ordinary_secret == self.socket.secret
-        {
+        if !matches!(start, FurnishingStart::Initialize | FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045) {
             return Err(unavailable());
         }
         let mut bytes = serde_json::to_vec(&Bootstrap {
@@ -149,13 +148,7 @@ impl HayesSetup {
                 secret: ordinary_secret,
                 mode: start.owner_mode(),
             },
-            hayes_owner_channel: Pin {
-                version: 1,
-                runtime_generation: generation,
-                secret: &self.socket.secret,
-                native_owner_id: self.pin.native_owner_id(),
-                runtime_manifest_sha256: self.pin.host_manifest_sha256(),
-            },
+            hayes_owner_channel: self.bootstrap_pin(generation, ordinary_secret)?,
         })
         .map_err(|_| unavailable())?;
         if bytes.len() > 4096 {
@@ -165,92 +158,130 @@ impl HayesSetup {
         Ok(bytes)
     }
 
+    pub(super) fn bootstrap_pin<'a>(&'a self, generation: &'a str, ordinary_secret: &str) -> Result<Pin<'a>> {
+        if self.pin.runtime_generation().to_string() != generation || ordinary_secret == self.socket.secret {
+            return Err(unavailable());
+        }
+        Ok(Pin {
+            version: 1,
+            runtime_generation: generation,
+            secret: &self.socket.secret,
+            native_owner_id: self.pin.native_owner_id(),
+            runtime_manifest_sha256: self.pin.host_manifest_sha256(),
+        })
+    }
+
+    pub(super) fn has_secret(&self, value: &str) -> bool {
+        self.socket.secret == value
+    }
+
     pub(in super::super) fn handshake(
         mut self,
         auth: &LocalAuthority,
         generation: &str,
         cancellation: &AtomicBool,
     ) -> Result<AuthenticatedHayes> {
-        if self.pin.runtime_generation().to_string() != generation || self.socket.child.is_some() {
-            return Err(unavailable());
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut hello = serde_json::to_vec(&Hello {
-            version: 1,
-            kind: "hayes-owner-hello",
-            workspace_id: &auth.workspace_id,
-            tenant_id: &auth.tenant_id,
-            principal_id: &auth.principal_id,
-            runtime_generation: generation,
-            secret: &self.socket.secret,
-            native_owner_id: self.pin.native_owner_id(),
-            runtime_manifest_sha256: self.pin.host_manifest_sha256(),
-        })
-        .map_err(|_| unavailable())?;
-        let mut check = || Ok(());
-        let sent = (|| {
-            if hello.is_empty() || hello.len() > LIMIT {
-                return Err(unavailable());
-            }
-            write_bounded(
-                &mut self.socket.parent,
-                &(hello.len() as u32).to_be_bytes(),
-                deadline,
-                cancellation,
-                &mut check,
-            )?;
-            write_bounded(
-                &mut self.socket.parent,
-                &hello,
-                deadline,
-                cancellation,
-                &mut check,
-            )
-        })();
-        hello.fill(0);
-        sent?;
-
-        let mut prefix = [0; 4];
-        read_bounded(
-            &mut self.socket.parent,
-            &mut prefix,
-            deadline,
-            cancellation,
-            &mut check,
-        )?;
-        let size = u32::from_be_bytes(prefix) as usize;
-        if !(1..=LIMIT).contains(&size) {
-            return Err(unavailable());
-        }
-        let mut raw = vec![0; size];
-        read_bounded(
-            &mut self.socket.parent,
-            &mut raw,
-            deadline,
-            cancellation,
-            &mut check,
-        )?;
-        let expected = serde_json::to_vec(&Ack {
-            version: 1,
-            kind: "hayes-owner-hello-ack",
-            workspace_id: &auth.workspace_id,
-            tenant_id: &auth.tenant_id,
-            principal_id: &auth.principal_id,
-            runtime_generation: generation,
-            native_owner_id: self.pin.native_owner_id(),
-            runtime_manifest_sha256: self.pin.host_manifest_sha256(),
-        })
-        .map_err(|_| unavailable())?;
-        if raw != expected {
-            return Err(unavailable());
-        }
-        let channel = self.socket.authenticated_connection()?;
+        let channel = handshake_dedicated(&mut self.socket, &self.pin, auth, generation, cancellation, DedicatedProtocol::Hayes)?;
         Ok(AuthenticatedHayes {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             pin: self.pin,
             channel,
         })
     }
+}
+
+pub(super) enum DedicatedProtocol {
+    Hayes,
+    Adoption,
+}
+
+pub(super) fn handshake_dedicated(
+    setup: &mut Setup,
+    pin: &DedicatedOwnerPin,
+    auth: &LocalAuthority,
+    generation: &str,
+    cancellation: &AtomicBool,
+    protocol: DedicatedProtocol,
+) -> Result<Connection> {
+    let (kind, ack, code) = match protocol {
+        DedicatedProtocol::Hayes => ("hayes-owner-hello", "hayes-owner-hello-ack", "HAYES_OPERATION_UNAVAILABLE"),
+        DedicatedProtocol::Adoption => ("adoption-owner-hello", "adoption-owner-hello-ack", "NATIVE_MODEL_ADOPTION_UNAVAILABLE"),
+    };
+    let unavailable = || err(code);
+    if pin.runtime_generation().to_string() != generation || setup.child.is_some() {
+        return Err(unavailable());
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut hello = serde_json::to_vec(&Hello {
+        version: 1,
+        kind,
+        workspace_id: &auth.workspace_id,
+        tenant_id: &auth.tenant_id,
+        principal_id: &auth.principal_id,
+        runtime_generation: generation,
+        secret: &setup.secret,
+        native_owner_id: pin.native_owner_id(),
+        runtime_manifest_sha256: pin.host_manifest_sha256(),
+    })
+    .map_err(|_| unavailable())?;
+    let mut check = || Ok(());
+    let sent = (|| {
+        if hello.is_empty() || hello.len() > LIMIT {
+            return Err(unavailable());
+        }
+        write_bounded(
+            &mut setup.parent,
+            &(hello.len() as u32).to_be_bytes(),
+            deadline,
+            cancellation,
+            &mut check,
+        )?;
+        write_bounded(
+            &mut setup.parent,
+            &hello,
+            deadline,
+            cancellation,
+            &mut check,
+        )
+    })();
+    hello.fill(0);
+    sent?;
+
+    let mut prefix = [0; 4];
+    read_bounded(
+        &mut setup.parent,
+        &mut prefix,
+        deadline,
+        cancellation,
+        &mut check,
+    )?;
+    let size = u32::from_be_bytes(prefix) as usize;
+    if !(1..=LIMIT).contains(&size) {
+        return Err(unavailable());
+    }
+    let mut raw = vec![0; size];
+    read_bounded(
+        &mut setup.parent,
+        &mut raw,
+        deadline,
+        cancellation,
+        &mut check,
+    )?;
+    let expected = serde_json::to_vec(&Ack {
+        version: 1,
+        kind: ack,
+        workspace_id: &auth.workspace_id,
+        tenant_id: &auth.tenant_id,
+        principal_id: &auth.principal_id,
+        runtime_generation: generation,
+        native_owner_id: pin.native_owner_id(),
+        runtime_manifest_sha256: pin.host_manifest_sha256(),
+    })
+    .map_err(|_| unavailable())?;
+    if raw != expected {
+        return Err(unavailable());
+    }
+    setup.authenticated_connection()
 }
 
 fn unavailable() -> crate::LifecycleError {

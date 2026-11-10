@@ -54,7 +54,7 @@ fn metadata(file: &File) -> Result<Metadata> {
     file.metadata().map_err(|_| invalid())
 }
 
-fn private_directory(value: &Metadata) -> bool {
+pub(crate) fn private_directory(value: &Metadata) -> bool {
     value.is_dir()
         && value.uid() == unsafe { libc::geteuid() }
         && value.mode() & 0o7777 == 0o700

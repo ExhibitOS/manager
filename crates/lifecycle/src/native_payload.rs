@@ -3499,6 +3499,28 @@ impl Payload {
     pub(crate) fn workspace_v5_selected_input(&self) -> bool {
         self.workspace_v5_validation
     }
+    pub(crate) fn native_model_adoption_root(&self) -> Result<Option<&Path>> {
+        const PATH: &str = "platform/scripts/native-model-adoption-capability-v1.json";
+        const BYTES: &[u8] = b"{\"version\":1,\"profile\":\"native-model-adoption-v1\"}\n";
+        const SHA: &str = "1cc2e6bc81fec1ef0aa6b6643dd177feff9480ad690d7b1b75e870b5072ca4a3";
+        let Some(marker) = self.manifest.files.iter().find(|file| file.path == PATH) else {
+            return Ok(None);
+        };
+        if marker.link.is_some() || marker.executable != Some(false)
+            || marker.bytes != Some(BYTES.len() as u64) || marker.sha256.as_deref() != Some(SHA)
+            || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045)
+        {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        self.recheck()?;
+        let (bytes, pin) = crate::hosted_runtime_file::bounded(&self.root.join(PATH), BYTES.len() as u64)?;
+        if bytes != BYTES {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        pin.check()?;
+        Ok(Some(&self.root))
+    }
+
     pub(crate) fn workspace_furnishing_validation(&self) -> Result<bool> {
         Ok(self.workspace_furnishing_catalog()?.is_some())
     }

@@ -3,8 +3,7 @@
 
 use super::*;
 use std::{
-    ffi::{CStr, OsStr},
-    os::unix::{ffi::OsStrExt, fs::DirBuilderExt},
+    os::unix::fs::DirBuilderExt,
 };
 
 const CONTAINER: &str = "ExhibitOS Hayes Custody";
@@ -12,32 +11,8 @@ const ROOT: &str = "custody";
 const AUTHORITY: &str = "authority.json";
 const PROVISION_LOCK: &str = "provision.lock";
 
-fn account_home() -> Result<PathBuf> {
-    let mut account = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut record = std::ptr::null_mut();
-    let mut buffer = [0u8; 16 * 1024];
-    let uid = effective_uid();
-    let status = unsafe {
-        libc::getpwuid_r(uid, account.as_mut_ptr(), buffer.as_mut_ptr().cast(), buffer.len(), &mut record)
-    };
-    if status != 0 || record.is_null() || uid == 0 {
-        return Err(custody_error());
-    }
-    let home = unsafe { account.assume_init() }.pw_dir;
-    if home.is_null() {
-        return Err(custody_error());
-    }
-    let path = PathBuf::from(OsStr::from_bytes(unsafe { CStr::from_ptr(home) }.to_bytes()));
-    if !path.is_absolute() || fs::canonicalize(&path).ok().as_ref() != Some(&path)
-        || fs::metadata(&path).map_err(|_| custody_error())?.uid() != uid
-    {
-        return Err(custody_error());
-    }
-    Ok(path)
-}
-
 pub(in crate::native_runtime) fn acquire_user_lease() -> Result<Lease> {
-    let support = account_home()?.join("Library/Application Support");
+    let support = crate::native_account_home::effective_home().ok_or_else(custody_error)?.join("Library/Application Support");
     let pin = DirectoryPin::open(&support).map_err(|_| custody_error())?;
     let base = support.join(CONTAINER);
     match fs::DirBuilder::new().mode(0o700).create(&base) {
@@ -50,7 +25,7 @@ pub(in crate::native_runtime) fn acquire_user_lease() -> Result<Lease> {
 }
 
 pub(in crate::native_runtime) fn open_user_lease() -> Result<Lease> {
-    let base = PrivateDirectory::open(&account_home()?.join("Library/Application Support").join(CONTAINER))?;
+    let base = PrivateDirectory::open(&crate::native_account_home::effective_home().ok_or_else(custody_error)?.join("Library/Application Support").join(CONTAINER))?;
     let authority = base.read(AUTHORITY)?;
     Lease::acquire(&base.path.join(ROOT), authority)
 }
