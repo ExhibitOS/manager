@@ -204,6 +204,7 @@ final class NativeAutomationFailureTests: XCTestCase {
         let missing = URL(fileURLWithPath: "/missing/exhibitos-native")
         for (pin, expected) in [(manifest, "AUTOMATION_SCOPE_CHANGED"),
                                 ("e41df146d7097fd6964564de3d2f82b4bb766dba5377ec7f938896955fea39b0", "AUTOMATION_SCOPE_CHANGED"),
+                                ("3e05e41286c517d5304299bdd987b8e5b6fe08ab8396dee3804feeb0f0c4f670", "AUTOMATION_SCOPE_CHANGED"),
                                 (String(repeating: "a", count: 64), "AUTOMATION_CONFIGURATION_INVALID")] {
             let data = Data("""
                 {"workspaceId":"\(owner)","tenantId":"\(owner)","principalId":"\(owner)","manifestSHA256":"\(pin)"}
