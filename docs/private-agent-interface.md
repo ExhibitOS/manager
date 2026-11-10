@@ -453,3 +453,9 @@ read the target receipt by its operation ID and grant digest. Retirement
 requires the original helper's retained file identities. The operation
 supports registered source and target selections within one managed helper
 process. Separate managed profiles require an approved operator handoff.
+
+The isolated validation pair uses the explicit fresh helper profile entry.
+After the first workspace drains, register and initialize the second workspace
+in the same helper. The exact debug validation payload enables that second
+fresh initialization. Both members use ordinary startup with fresh or clean
+local provenance.

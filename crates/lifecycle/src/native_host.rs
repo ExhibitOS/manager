@@ -1288,8 +1288,26 @@ impl Host {
                     Ok(Value::Null)
                 }
                 Input::CreateRecovery { acknowledged } => {
+                    // Only the explicit fresh local validation Host can mint
+                    // the second member of the isolated adoption pair.
+                    let adoption_pair = if self.fresh_ordinary_root.is_some()
+                        && self.controller.context()?.installations.len() == 1
+                    {
+                        let cached = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.payload.clone();
+                        match cached {
+                            Some(payload) => payload.native_model_adoption_root()?.is_some(),
+                            None => false,
+                        }
+                    } else {
+                        false
+                    };
                     let context = self.controller.create(&selection_token, acknowledged)?;
                     self.reset_selection_state()?;
+                    if adoption_pair {
+                        let path = self.selected(&context.selection_token)?;
+                        let pin = crate::maintenance_source::DirectoryPin::open(&path)?;
+                        self.fresh_ordinary_root = Some((path, Arc::new(pin)));
+                    }
                     serde_json::to_value(context).map_err(|_| err("STATE_INVALID"))
                 }
                 Input::CreateOexWorkspace { acknowledged } => {

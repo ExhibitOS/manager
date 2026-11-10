@@ -813,7 +813,7 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
 
 pub(crate) fn catalog45_same_version_restore_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG45_PLACED_EXIT_DOORS == tuple || catalog45_model_adoption_host_matches(tuple);
+    return CATALOG45_PLACED_EXIT_DOORS == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2411,7 +2411,7 @@ mod normal_oex_release_declaration_tests {
         assert!(!catalog45_model_adoption_host_matches((source, producer, "unreviewed-manifest")));
         assert!(!catalog45_model_adoption_host_matches((source, "unreviewed-producer", manifest)));
         assert!(!catalog45_model_adoption_host_matches(("unreviewed-source", producer, manifest)));
-        assert!(catalog45_same_version_restore_host_matches((source, producer, manifest)));
+        assert!(!catalog45_same_version_restore_host_matches((source, producer, manifest)));
         assert!(!catalog45_carried_restore_host_matches((source, producer, manifest)));
     }
 
