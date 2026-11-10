@@ -993,6 +993,30 @@ final class ExhibitionModel: ObservableObject {
             notice = "공간 소리를 이 Mac에 적용했습니다. 전시를 저장하세요."
         }
     }
+
+    var placedExitDoorEditorAvailable: Bool { api?.supportsPlacedExitDoors == true && !immutable }
+    var canEditPlacedExitDoor: Bool {
+        placedExitDoorEditorAvailable && canExport && !entrancePreviewActive && viewportController.editingContextActive
+    }
+
+    func applyPlacedExitDoor(_ settings: PlacedExitDoorSettings, revision: UInt64) async {
+        guard canEditPlacedExitDoor else { return }
+        await work {
+            guard let api, var value = state, value.revision == revision else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let next = try await api.preparePlacedExitDoor(settings, in: value)
+            guard placedExitDoorEditorAvailable, viewportController.editingContextActive, self.api === api,
+                  state?.revision == revision, state?.workspaceId == value.workspaceId,
+                  state?.tenantId == value.tenantId, state?.principalId == value.principalId else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard let next else { return }
+            value.draft = next
+            try await persist(value)
+            notice = "출구 문 목적지를 적용했습니다. 전시를 저장하세요."
+        }
+    }
     @Published private(set) var sceneSnapshotting = false
     @Published private(set) var sceneSnapshotStatus = ""
     var canCaptureSceneSnapshot: Bool {

@@ -73,6 +73,10 @@ struct ArchitectureSettingsView: View {
                 }
                 if !model.architectureStatus.isEmpty { Text(model.architectureStatus).foregroundStyle(.secondary) }
             }
+            if model.placedExitDoorEditorAvailable, let draft = model.draft {
+                let doors = PlacedExitDoorSettings.targets(in: draft).filter { $0.roomId == model.roomId }
+                if !doors.isEmpty { PlacedExitDoorSettingsView(model: model, ready: ready, targets: doors) }
+            }
             WallFinishSettingsView(model: model, viewport: model.viewportController, ready: ready)
             if model.viewportSelection?.kind == "opening" { SharedFurnishingCatalogView(model: model, viewport: model.viewportController, ready: ready) }
             if let selection = model.viewportSelection, selection.kind == "surface",
