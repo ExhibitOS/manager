@@ -18,6 +18,10 @@ struct RoomAudioSettingsView: View {
         let roomId: String
         let revision: UInt64
     }
+    private struct LoadKey: Equatable {
+        let target: Target?
+        let canEdit: Bool
+    }
 
     private var target: Target? {
         guard ready, let state = model.state, let draft = state.draft,
@@ -30,6 +34,8 @@ struct RoomAudioSettingsView: View {
         guard case .asset(let id) = settings.bgm else { return true }
         return tracks.contains { $0.id.lowercased() == id }
     }
+
+    private var loadKey: LoadKey { LoadKey(target: target, canEdit: model.canEditRoomAudio) }
 
     var body: some View {
         Form {
@@ -76,7 +82,7 @@ struct RoomAudioSettingsView: View {
         }
         .formStyle(.grouped)
         .fixedSize(horizontal: false, vertical: true)
-        .task(id: target) { await load() }
+        .task(id: loadKey) { await load(loadKey) }
     }
 
     private func defaultPicker(_ title: String, selection: Binding<Bool?>) -> some View {
@@ -87,27 +93,34 @@ struct RoomAudioSettingsView: View {
         }
     }
 
-    private func load() async {
-        loaded = nil
-        tracks = []
+    private func load(_ key: LoadKey) async {
+        guard !Task.isCancelled, key == loadKey else { return }
         message = ""
         loading = false
-        guard let target, let draft = model.draft else { return }
+        guard let target = key.target, let draft = model.draft else {
+            loaded = nil
+            tracks = []
+            return
+        }
         do {
-            let current = try RoomAudioSettings.read(in: draft, roomId: target.roomId)
-            settings = current
-            baseline = current
-            loaded = target
-            guard model.canEditRoomAudio else { return }
+            if loaded != target {
+                loaded = nil
+                tracks = []
+                let current = try RoomAudioSettings.read(in: draft, roomId: target.roomId)
+                settings = current
+                baseline = current
+                loaded = target
+            }
+            guard key.canEdit else { return }
             loading = true
             let approved = try await model.roomAudioTracks()
-            guard !Task.isCancelled, self.target == target else { return }
+            guard !Task.isCancelled, key == loadKey else { return }
             tracks = approved
         } catch {
-            guard !Task.isCancelled, self.target == target else { return }
+            guard !Task.isCancelled, key == loadKey else { return }
             message = (error as? AuthoringFailure)?.errorDescription ?? "공간 소리를 불러오지 못했습니다."
         }
-        if !Task.isCancelled, self.target == target { loading = false }
+        if !Task.isCancelled, key == loadKey { loading = false }
     }
 }
 
