@@ -284,7 +284,8 @@ public actor NativeAutomationSession {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
         }
         if stored.draft != draft || stored.etag != etag {
-            guard let attempt = try artworkAttempt(at: replacementAttemptPath),
+            guard !admitsPreservationReadback,
+                  let attempt = try artworkAttempt(at: replacementAttemptPath),
                   let command = try? NativeAutomationReplacementCommand(attempt),
                   await admitsReplacement(command, api: api),
                   attempt["operation"] == .string("artwork-replace-reviewed"),
@@ -1076,10 +1077,17 @@ public actor NativeAutomationSession {
         guard fields == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
     }
 
+    static func checkPreservationOperation(_ operation: String?, manifest: String?, allowed: String) throws {
+        if let manifest, AuthoringAPI.supportsPreReadyPreservationReadback(manifest: manifest), operation != allowed {
+            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
@@ -2391,6 +2399,7 @@ public actor NativeAutomationSession {
     }
     /// Control authorization precedes cancellation or shutdown side effects.
     public func authorizeControl(_ request: DocumentValue) async throws {
+        try Self.checkPreservationOperation(request["operation"].string, manifest: runtimeManifest, allowed: "close")
         guard !closed, !closing, context != nil, let identity,
               request["capability"].string == capability,
               request["workspaceId"].string == identity.workspaceId,
