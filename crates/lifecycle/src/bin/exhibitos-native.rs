@@ -8,6 +8,17 @@ use std::io::{BufRead, Read};
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(target_os = "macos")]
+    if args.len() == 2 && args[1] == "--model-adoption-stage-read-v1" {
+        if let Err(error) = exhibitos_lifecycle::native_model_adoption_stage::read_inherited_stage(
+            io::stdin().lock(),
+            io::stdout().lock(),
+        ) {
+            eprintln!("{}", error.code);
+            std::process::exit(1);
+        }
+        return;
+    }
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     if args.len() == 2 && (args[1] == "--refresh-static-publication" || args[1] == "--refresh-static-publication-status") {
         use exhibitos_lifecycle::native_static_refresh as refresh;
