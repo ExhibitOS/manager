@@ -2468,11 +2468,15 @@ public actor AuthoringAPI {
         #endif
     }
 
-    var admitsSavedHeadAuthoring: Bool {
+    var admitsSavedHeadAuthoring: Bool { hasSavedHeadAuthoringAdmission() }
+
+    private func hasSavedHeadAuthoringAdmission(forCarriedPlaqueUpdate: Bool = false) -> Bool {
         #if DEBUG
-        nativeSession && !authenticationBusy
-            && (Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
-                || nativeRuntimeManifestSHA256 == Self.nativePublicationCapacityManifestPin)
+        let manifest = nativeRuntimeManifestSHA256 ?? ""
+        return nativeSession && !authenticationBusy
+            && (Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
+                || manifest == Self.nativePublicationCapacityManifestPin
+                || (forCarriedPlaqueUpdate && Self.supportsCarriedRestoreBenchRuntime(manifest: manifest)))
             && session?.nativeAuthoringProposalProfile == "saved-head-v1"
         #else
         false
@@ -2495,7 +2499,8 @@ public actor AuthoringAPI {
 
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
-        guard admitsSavedHeadAuthoring, let session else {
+        guard hasSavedHeadAuthoringAdmission(forCarriedPlaqueUpdate: proposal["type"] == .string("set-plaque")),
+              let session else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
