@@ -50,6 +50,56 @@ public struct ViewportThumbnailReply: Decodable, Sendable {
             sourceSha256: sourceSha256, displaySha256: displaySha256, pngData: bytes, pngSha256: digest)
     }
 }
+public struct ViewportFurnishingThumbnailRequest: Codable, Equatable, Sendable {
+    public static let capability = "furnishing-registration-thumbnail-v1"
+    public static let recipe = "furnishing-glb-card-256-v1"
+    public static let tool = "exhibitos-three-0.186.1-thumbnail-v1"
+
+    public let version: Int, sequence: Int, furnishingVersion: Int, modelBytes: Int
+    public let epoch: String, tenantId: String, principalId: String, requestId: String
+    public let furnishingId: String, modelSha256: String, recipeId: String, toolId: String
+
+    public init(frame: ViewportFrame, furnishing: WorkspaceFurnishing) throws {
+        let model = furnishing.details.model
+        guard !frame.disabled, frame.sequence > 0, furnishing.version == 1,
+              model.mime == "model/gltf-binary", (28...32 * 1024 * 1024).contains(model.bytes),
+              nativeImportDigest(model.sha256), furnishing.details.rights.permissions.display,
+              [frame.epoch, frame.tenantId, frame.principalId, furnishing.id].allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE")
+        }
+        version = 1; sequence = frame.sequence; furnishingVersion = furnishing.version; modelBytes = model.bytes
+        epoch = frame.epoch; tenantId = frame.tenantId; principalId = frame.principalId
+        requestId = UUID().uuidString.lowercased(); furnishingId = furnishing.id; modelSha256 = model.sha256
+        recipeId = Self.recipe; toolId = Self.tool
+    }
+}
+
+public struct ViewportFurnishingThumbnailReply: Decodable, Sendable {
+    private let binding: ViewportFurnishingThumbnailRequest
+    private let pngBase64: String, pngSha256: String
+    private let width: Int, height: Int
+
+    public init(from decoder: Decoder) throws {
+        binding = try ViewportFurnishingThumbnailRequest(from: decoder)
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        pngBase64 = try fields.decode(String.self, forKey: .pngBase64)
+        pngSha256 = try fields.decode(String.self, forKey: .pngSha256)
+        width = try fields.decode(Int.self, forKey: .width)
+        height = try fields.decode(Int.self, forKey: .height)
+    }
+
+    public func pngData(matching request: ViewportFurnishingThumbnailRequest) throws -> Data {
+        guard binding == request, width == 256, height == 256, pngBase64.utf8.count <= 699_052,
+              let bytes = Data(base64Encoded: pngBase64), bytes.base64EncodedString() == pngBase64,
+              bytes.count <= 512 * 1024, nativeImportSHA256(bytes) == pngSha256 else {
+            throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+        }
+        return try GeneratedThumbnailPNG.canonical(bytes)
+    }
+
+    private enum CodingKeys: String, CodingKey { case pngBase64, pngSha256, width, height }
+}
+
 public struct ViewportFindSelectionRequest: Encodable, Sendable {
     public let version = 1
     public let epoch: String, tenantId: String, principalId: String, requestId: String

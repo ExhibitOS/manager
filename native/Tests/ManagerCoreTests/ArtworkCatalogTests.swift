@@ -123,6 +123,8 @@ final class ArtworkCatalogTests: XCTestCase {
             artworkId: UUID().uuidString, expectedRevision: 4)
         let png = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAAAAXNSR0IArs4c6QAAAyFJREFUeJzt1CEBACAQwMAPQApS0L8YxEDsxPmpzdrnAk3zOwD4xwAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAgzAAg7AFVARTs0KSS8QAAAABJRU5ErkJggg=="
         let pngHash = "d6d4bf257e7cdf31e55caad7f0a023f67fe50c612dd81bad06ac7c7f4d74c510"
+        try assertFurnishingThumbnailBinding(png: png, pngHash: pngHash)
+
         let source = UUID().uuidString.lowercased()
         let sourceHash = String(repeating: "a", count: 64)
         let displayHash = String(repeating: "b", count: 64)
@@ -180,6 +182,38 @@ final class ArtworkCatalogTests: XCTestCase {
         fields["height"] = 256
         XCTAssertThrowsError(try reply(fields).renderedThumbnail(matching: request), "Mismatched IHDR dimensions")
     }
+    private func assertFurnishingThumbnailBinding(png: String, pngHash: String) throws {
+        let id = UUID().uuidString.lowercased()
+        let modelHash = String(repeating: "a", count: 64)
+        let descriptor = Data("""
+            {"id":"\(id)","version":1,"kind":"bench","name":"Fixture","provenance":"Synthetic",
+             "rights":{"holder":"Fixture","ownership":"owner","licenseId":"CC0-1.0","creditLine":"",
+              "permissions":{"display":true,"download":false,"export":false,"commercial":false}},
+             "model":{"mime":"model/gltf-binary","bytes":128,"sha256":"\(modelHash)"}}
+            """.utf8)
+        let furnishing = try JSONDecoder().decode(WorkspaceFurnishing.self, from: descriptor)
+        let request = try ViewportFurnishingThumbnailRequest(frame: frame(NativeExhibitionDraft.new()), furnishing: furnishing)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        XCTAssertEqual(Set(fields.keys), ["version", "epoch", "sequence", "tenantId", "principalId", "requestId",
+            "furnishingId", "furnishingVersion", "modelSha256", "modelBytes", "recipeId", "toolId"])
+        fields["width"] = 256; fields["height"] = 256
+        fields["pngBase64"] = png; fields["pngSha256"] = pngHash
+        func pngData(_ values: [String: Any]) throws -> Data {
+            try JSONDecoder().decode(ViewportFurnishingThumbnailReply.self, from: JSONSerialization.data(withJSONObject: values))
+                .pngData(matching: request)
+        }
+        XCTAssertEqual(try pngData(fields), Data(base64Encoded: png))
+        let replacements: [(String, Any)] = [("sequence", request.sequence + 1), ("principalId", UUID().uuidString),
+            ("furnishingId", UUID().uuidString), ("furnishingVersion", 2), ("modelBytes", 129),
+            ("modelSha256", pngHash), ("recipeId", "unapproved"), ("toolId", "unapproved"),
+            ("pngSha256", modelHash), ("height", 255)]
+        for (key, value) in replacements {
+            var stale = fields
+            stale[key] = value
+            XCTAssertThrowsError(try pngData(stale), key)
+        }
+    }
+
     func testFindReplyBindsExactCurrentInstanceAndDoesNotBecomeDocumentEdit() throws {
         var draft = try NativeExhibitionDraft.new(); let art = artwork(kind: "sculpture", title: "같은 원본")
         let room = draft.rooms[0]["id"].string!
