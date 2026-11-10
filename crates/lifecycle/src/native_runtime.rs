@@ -871,6 +871,51 @@ pub(crate) fn check_cold_transition_root(root: &Path, drained_failure: Option<&s
     Ok(())
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[derive(PartialEq, Eq)]
+pub(crate) struct AdoptionProfilePin {
+    pub(crate) owner: (String, String, String),
+    physical: furnishing_lifetime::WriterIdentity,
+    pub(crate) generation: String,
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+impl AdoptionProfilePin {
+    pub(crate) fn same_owner_and_writer(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.physical == other.physical
+    }
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn check_cold_adoption_profile(
+    service: &LifecycleService, payload: &Payload, carried: bool,
+) -> Result<AdoptionProfilePin> {
+    let invalid = || err("NATIVE_MODEL_ADOPTION_PROFILE_PAIR_UNAVAILABLE");
+    let _operation = service.lock()?;
+    let writer = furnishing_lifetime::WriterLifetime::acquire_existing(&service.root)?;
+    check_cold_checkpoint_root(&service.root)?;
+    let context = payload.context();
+    let binding = current_run(&service.root)?.and_then(|record| record.furnishing).ok_or_else(invalid)?;
+    let owner = service.personal_identity()?;
+    if !service.native_prepared()?.is_some_and(|prepared| prepared.manifest_sha256 == context.manifest_sha256)
+        || binding.phase != Phase::Clean || binding.admission_kind != Admission::CleanReopen
+        || !binding.matches_catalog_tuple(45, (&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
+        || binding.physical != writer.identity()?
+        || (&binding.owner.workspace_id, &binding.owner.tenant_id, &binding.owner.principal_id)
+            != (&owner.0, &owner.1, &owner.2)
+        || binding.owner.owner_uid != unsafe { libc::geteuid() }
+        || (carried && !binding.restore.as_ref().is_some_and(|restore| restore.carried_provenance.is_some()))
+        || (!carried && binding.restore.is_some())
+    {
+        return Err(invalid());
+    }
+    unconsumed_furnishing_completion(&service.root, &binding)?;
+    if carried {
+        binding.verify_restore_activation(&service.root)?;
+    }
+    Ok(AdoptionProfilePin { owner, physical: binding.physical, generation: binding.generation })
+}
+
 /// Positive server/DB drain for an interrupted export whose child was reaped.
 /// The detail-admitted Platform must include its scoped handlers in native drain.
 pub(crate) struct DetailDrainFence {

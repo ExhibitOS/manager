@@ -3621,6 +3621,13 @@ impl Payload {
     pub(crate) fn workspace_v5_selected_input(&self) -> bool {
         self.workspace_v5_validation
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn native_model_adoption_carried_target(&self) -> bool {
+        catalog45_adoption_carried_receipt_payload((
+            &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
+        )).is_some()
+    }
+
     pub(crate) fn native_model_adoption_root(&self) -> Result<Option<&Path>> {
         let tuple = (
             self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str(),

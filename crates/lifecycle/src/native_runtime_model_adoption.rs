@@ -23,6 +23,8 @@ use uuid::Uuid;
 )]
 
 pub enum Input {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    SwitchTargetProfile { operation_id: String },
     StageSource {
         source_artwork_id: String,
         source_artwork_revision: u32,
@@ -57,6 +59,8 @@ pub enum Input {
 pub(crate) struct Operation {
     operation_id: Uuid,
     reservation: Option<Reservation>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    source_generation: String,
     source_owner: (String, String, String),
     target: Target,
     grant: Option<Grant>,
@@ -83,6 +87,8 @@ impl Operation {
             return Err(wire::unavailable());
         }
         match input {
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            Input::SwitchTargetProfile { .. } => Err(wire::unavailable()),
             Input::StageSource {
                 source_artwork_id,
                 source_artwork_revision,
@@ -114,6 +120,8 @@ impl Operation {
                 *held = Some(Self {
                     operation_id: id,
                     reservation: None,
+                    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                    source_generation: session.adoption_generation()?,
                     source_owner: owner.clone(),
                     target: target.clone(),
                     grant: None,
@@ -309,6 +317,20 @@ impl Operation {
                 )
             }
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn check_profile_switch(
+        &self, operation_id: &str, source: &super::AdoptionProfilePin, document: &DocumentState,
+    ) -> Result<()> {
+        if self.commit_started || self.preview.is_some() || source.owner != self.source_owner
+            || source.generation != self.source_generation
+        {
+            return Err(wire::unavailable());
+        }
+        let grant = self.grant.as_ref().ok_or_else(wire::unavailable)?;
+        check_target(document, document.revision, operation_id, grant)?;
+        self.stage()?.verify(grant.original.identity(), grant.display.identity())
     }
 
     fn stage(&self) -> Result<&Reservation> {
@@ -549,6 +571,8 @@ mod tests {
             reservation: Some(
                 Reservation::create(File::open(&root).unwrap(), operation_id).unwrap(),
             ),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            source_generation: fixture_id(12),
             source_owner: owner.clone(),
             target,
             grant: None,

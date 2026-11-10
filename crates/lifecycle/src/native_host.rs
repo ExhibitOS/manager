@@ -12,6 +12,12 @@ use crate::{
     native_payload::Payload,
     native_runtime::{Context, Session},
 };
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_host_adoption_pair.rs"]
+mod adoption_pair;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub use adoption_pair::AdoptionPair;
+
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
