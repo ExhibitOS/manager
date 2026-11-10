@@ -135,6 +135,7 @@ fn catalog45_activation_saved_document(
         .is_some_and(crate::native_payload::Catalog45StartupRecovery::preserves_pre_ready);
     if pair.0 != pair.1 && !retained_recovery && !historical_startup && !preservation
         && !crate::native_payload::catalog45_clean_exit_handoff(pair)
+        && !crate::native_payload::catalog45_restored_backed_handoff(pair)
     {
         return Ok(false);
     }
@@ -1127,7 +1128,9 @@ impl LifecycleService {
         #[cfg(feature = "workspace-v5-owner-validation")]
         {
             let pair = (checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str());
-            if crate::native_payload::catalog45_clean_exit_handoff(pair) {
+            if crate::native_payload::catalog45_clean_exit_handoff(pair)
+                || crate::native_payload::catalog45_restored_backed_handoff(pair)
+            {
                 catalog45_activation_saved_document(
                     pair, false, false, checkpoint.saved_document_sha256.as_deref(), document.ok_or_else(invalid)?,
                 )?;
