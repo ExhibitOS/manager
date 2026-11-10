@@ -49,6 +49,7 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var yaw = "0"
     @State private var scale = "1"
     @State private var placementId = UUID().uuidString.lowercased()
+    @State private var placementStaged = false
     @State private var seatPolicyETag: String?
     private var busy: Bool { busyActivity != nil }
 
@@ -110,6 +111,15 @@ struct WorkspaceFurnishingIntakeView: View {
                     if target.kind == .bench, let seatPolicyETag, seatPolicyETag == model.state?.etag {
                         WorkspaceBenchSeatEditor(model: model, entry: target, access: access).id(target.id)
                     }
+                } else if placementStaged {
+                    Section {
+                        Label {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("배치 입력을 보관했습니다.").font(.headline)
+                                Text("편집 화면으로 돌아가 전시를 저장하세요.").foregroundStyle(.secondary)
+                            }
+                        } icon: { Image(systemName: "checkmark.circle") }
+                    }
                 } else if !busy, message == nil {
                     Text("하단 카탈로그에서 배치할 비품을 선택하세요.").foregroundStyle(.secondary)
                 }
@@ -128,8 +138,13 @@ struct WorkspaceFurnishingIntakeView: View {
                 if let message { Text(message).accessibilityAddTraits(.updatesFrequently) }
                 HStack {
                     Spacer()
-                    Button("닫기", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy)
-                    if adding { primaryRegistrationAction.disabled(!canInteract) }
+                    if placementStaged {
+                        Button("편집 화면으로 돌아가기") { dismiss() }
+                            .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    } else {
+                        Button("닫기", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy)
+                        if adding { primaryRegistrationAction.disabled(!canInteract) }
+                    }
                 }
             }.padding(.horizontal, 20).padding(.vertical, 12)
         }
@@ -655,7 +670,7 @@ struct WorkspaceFurnishingIntakeView: View {
                 expectedModelSHA256: expectedModelSHA256, infoStandIntakeId: infoStandIntakeId) {
                 target = nil
                 reviewedInfoStand = nil
-                message = "배치 입력을 보관했습니다. 전시를 저장하세요."
+                placementStaged = true
             }
         }
     }
