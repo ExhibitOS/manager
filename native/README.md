@@ -975,6 +975,25 @@ The release manifest SHA-256 is
 Retain the producer receipt with the packaged runtime. The four models and four
 notices match the existing catalog identities and bytes.
 
+### Room audio
+
+In the native exhibition workbench, save the exhibition and open **공간 소리**.
+Select a room, then choose a WAV from the exhibition's approved audio catalog,
+**없음** to clear its soundtrack, or **기본값** to leave the room track unset.
+Set the first-visit defaults for background music, footsteps and room reverb
+independently. Apply the room settings and save the exhibition. A visitor's
+previous choices still take precedence.
+
+The private automation operation `room-audio-apply` stages the same edit on a
+clean, ordinary saved draft. Pass `expectedRevision` and
+`expectedEditVersion` in the request envelope, and `etag`, `roomId` and
+`settings` in its command. Include the room's existing `reverb` value in
+`settings` (zero for a room with no prior row). An asset selection is
+`"bgm": {"assetId": "<approved audio ID>"}`, and `"bgm": null` means no
+soundtrack. Omit `bgm` to leave it unset. Each of `bgmOn`, `footstepsOn`
+and `reverbOn` accepts a boolean or can be omitted to inherit the default.
+After applying, use `save`, `reopen-saved` and the normal export command.
+
 ### Workspace furnishing registration (source integration)
 
 The Manager client has a separate workspace furnishing catalog for pedestal,

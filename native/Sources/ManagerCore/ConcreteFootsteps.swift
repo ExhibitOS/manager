@@ -24,7 +24,7 @@ public enum ConcreteFootsteps {
                                   "annotations": .array([]), "rooms": .array([]), "translations": .array([])])
         }
         guard case .object(let fields) = experience,
-              Set(fields.keys) == ["version", "footsteps", "voices", "annotations", "rooms", "translations"],
+              Set(fields.keys).subtracting(["audioDefaults"]) == ["version", "footsteps", "voices", "annotations", "rooms", "translations"],
               experience["version"] == .integer(1), var footsteps = experience["footsteps"].items, footsteps.count <= 256,
               let voices = experience["voices"].items, voices.count <= 64,
               let annotations = experience["annotations"].items, annotations.count <= 256,

@@ -38,13 +38,14 @@ struct NativeExhibitionView: View {
     @State private var inspectorInputs: [String: InstallationInspectorState] = [:]
 
     private enum InspectorScope: String, CaseIterable, Identifiable {
-        case selection, lighting, floor, cover, exhibition, viewingPlan, output
+        case selection, lighting, floor, roomAudio, cover, exhibition, viewingPlan, output
         var id: Self { self }
         var title: String {
             switch self {
             case .selection: "선택 속성"
             case .lighting: "전시 조명"
             case .floor: "바닥 재질"
+            case .roomAudio: "공간 소리"
             case .cover: "표지·입장"
             case .exhibition: "전시 정보"
             case .viewingPlan: "관람 순서"
@@ -276,6 +277,8 @@ struct NativeExhibitionView: View {
             ScrollView { ViewingPlanSettingsView(model: model, controller: controller, ready: ready) }
         case .floor:
             ScrollView { NativeFloorSettingsInspector(model: model, viewport: controller, ready: ready).padding(12) }
+        case .roomAudio:
+            ScrollView { RoomAudioSettingsView(model: model, ready: ready && !editRestricted) }
         case .output:
             ScrollView { outputControls.padding(12) }
         }
