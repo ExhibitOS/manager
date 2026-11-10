@@ -206,21 +206,24 @@ public actor NativeAutomationSession {
             _ = try await bridge.prepare(context)
             preparedManifest = try await waitReady().configuration?.manifestSha256
         }
+        let preparedDefaultSeatRuntime = preparedManifest.map(AuthoringAPI.supportsDefaultSeatRuntime) == true
         _ = try await bridge.start(context)
         let status: NativeHostStatus
-        if let preparedManifest, AuthoringAPI.supportsDefaultSeatRuntime(manifest: preparedManifest) {
+        if let preparedManifest, preparedDefaultSeatRuntime {
             status = try await waitStartup(manifest: preparedManifest)
         } else {
             status = try await waitReady()
         }
         guard status.runtime?.readiness.ready == true, let config = status.configuration else { throw BridgeFailure("NATIVE_NOT_READY") }
+        let defaultSeatRuntime = preparedDefaultSeatRuntime || AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256)
+        guard !defaultSeatRuntime || config.manifestSha256 == preparedManifest else {
+            throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+        }
         let credentials = try await bridge.authoringSession(context)
         let api = try AuthoringAPI(port: config.ports.web, tenantId: credentials.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
         let session = try await api.connect(credentials)
-        if AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256) {
-            guard config.manifestSha256 == preparedManifest, await api.admitsWorkspaceDefaultSeatProposal else {
-                throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
-            }
+        if defaultSeatRuntime, !(await api.admitsWorkspaceDefaultSeatProposal) {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
         }
         authoringSession = session; self.api = api; runtimeManifest = config.manifestSha256
         identity = try await bridge.documentState(context)
