@@ -67,6 +67,8 @@ const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const CATALOG45_STARTUP_RECOVERY_CHECKPOINT_MAX_BYTES: u64 = MAX_BYTES + 256 * 1024 * 1024;
 #[cfg(feature = "workspace-v5-owner-validation")]
 const CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+#[cfg(feature = "workspace-v5-owner-validation")]
+const CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024 * 1024;
 const DATA_DIRECTORIES: &[&str] = &["native-database", "blobs", "config"];
 const MEMBERS: &[&str] = &["native-database", "blobs", "config", "runtime.env", RECORD];
@@ -247,10 +249,13 @@ fn startup_cancellation_proof_matches(
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(feature = "workspace-v5-owner-validation")]
+    if crate::native_payload::catalog45_adoption_handoff(pair) {
+        return CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES;
+    }
+    #[cfg(feature = "workspace-v5-owner-validation")]
     if crate::native_payload::catalog45_native_publication_transition(pair).is_some()
         || crate::native_payload::catalog45_clean_exit_handoff(pair)
         || crate::native_payload::catalog45_restored_backed_handoff(pair)
-        || crate::native_payload::catalog45_adoption_handoff(pair)
     {
         return CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES;
     }
