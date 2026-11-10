@@ -782,6 +782,20 @@ fn catalog45_native_publication_host_matches(tuple: (&str, &str, &str)) -> bool 
     { let _ = tuple; false }
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_MODEL_ADOPTION_VALIDATION: (&str, &str, &str) = (
+    "5a087c69dd4459b4d189f3bfa4eed66ddcda9b06",
+    "cb424ea0d4b3c579ab85313e0311e074fc119d94acc96fcc512932138ce1d701",
+    "0fd5149ea964713218d87b09b41b7d9aa05576ce0b5f94c9d520ac2221e36ff0",
+);
+
+fn catalog45_model_adoption_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == CATALOG45_MODEL_ADOPTION_VALIDATION;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_DEFAULT_FRAME == tuple || CATALOG45_PRODUCT_IMAGE == tuple
@@ -792,14 +806,14 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
         || CATALOG45_DEFAULT_SEATS == tuple
         || CATALOG45_BACKED_BENCH == tuple
         || CATALOG45_BOTTOM_CATALOG == tuple
-        || catalog45_native_publication_host_matches(tuple);
+        || catalog45_native_publication_host_matches(tuple) || catalog45_model_adoption_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
 
 pub(crate) fn catalog45_same_version_restore_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CATALOG45_PLACED_EXIT_DOORS == tuple;
+    return CATALOG45_PLACED_EXIT_DOORS == tuple || catalog45_model_adoption_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2384,6 +2398,25 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact local ordinary Catalog 045 model-adoption runtime"]
+    fn opens_exact_native_model_adoption_payload() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_NATIVE_MODEL_ADOPTION_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert!(payload.ordinary_fresh_furnishing());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(payload.workspace_furnishing_ledger(catalog).is_ok());
+        assert_eq!(payload.native_model_adoption_root().unwrap(), Some(root.as_path()));
+        let (source, producer, manifest) = CATALOG45_MODEL_ADOPTION_VALIDATION;
+        assert!(!catalog45_model_adoption_host_matches((source, producer, "unreviewed-manifest")));
+        assert!(!catalog45_model_adoption_host_matches((source, "unreviewed-producer", manifest)));
+        assert!(!catalog45_model_adoption_host_matches(("unreviewed-source", producer, manifest)));
+        assert!(catalog45_same_version_restore_host_matches((source, producer, manifest)));
+        assert!(!catalog45_carried_restore_host_matches((source, producer, manifest)));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact publication capacity, authored-seat and museum-caption payloads"]
     fn opens_reviewed_catalog45_native_publication_payloads() {
         for (tuple, variable) in CATALOG45_NATIVE_PUBLICATION_TARGETS.iter().zip([
@@ -3508,10 +3541,13 @@ impl Payload {
         const PATH: &str = "platform/scripts/native-model-adoption-capability-v1.json";
         const BYTES: &[u8] = b"{\"version\":1,\"profile\":\"native-model-adoption-v1\"}\n";
         const SHA: &str = "1cc2e6bc81fec1ef0aa6b6643dd177feff9480ad690d7b1b75e870b5072ca4a3";
+        let pinned = catalog45_model_adoption_host_matches((
+            &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
+        ));
         let Some(marker) = self.manifest.files.iter().find(|file| file.path == PATH) else {
-            return Ok(None);
+            return if pinned { Err(err("NATIVE_RUNTIME_UNQUALIFIED")) } else { Ok(None) };
         };
-        if marker.link.is_some() || marker.executable != Some(false)
+        if !pinned || marker.link.is_some() || marker.executable != Some(false)
             || marker.bytes != Some(BYTES.len() as u64) || marker.sha256.as_deref() != Some(SHA)
             || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045)
         {
