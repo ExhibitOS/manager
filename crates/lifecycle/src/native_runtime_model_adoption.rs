@@ -45,6 +45,11 @@ pub enum Input {
         operation_id: String,
         grant_sha256: String,
     },
+    DisposeTarget {
+        operation_id: String,
+        grant_sha256: String,
+        exhibition_id: String,
+    },
     RetainedOperation,
     ReleasePrecommit {
         operation_id: String,
@@ -250,12 +255,36 @@ impl Operation {
                 let result = target_status(session, &operation_id, &grant_sha256)?;
                 let outcome = match result.outcome {
                     wire::Outcome::Committed => "committed",
+                    wire::Outcome::Cancelled => "cancelled",
                     wire::Outcome::Unresolved => "unresolved",
                 };
                 Ok(
                     json!({"operationId": operation_id, "grantSha256": grant_sha256, "outcome": outcome,
                           "revision": result.revision, "etag": result.etag}),
                 )
+            }
+            Input::DisposeTarget { operation_id, grant_sha256, exhibition_id } => {
+                if !wire::valid_id(&operation_id) || !crate::hash_valid(&grant_sha256)
+                    || !wire::valid_id(&exhibition_id) || document.pending.is_some()
+                    || document.draft.as_ref().and_then(|draft| draft["exhibitionId"].as_str())
+                        != Some(exhibition_id.as_str())
+                {
+                    return Err(wire::unavailable());
+                }
+                if let Some(current) = held.as_ref() {
+                    current.check_disposition(&owner, &operation_id, &grant_sha256, &exhibition_id)?;
+                }
+                // The server fences this UUID under the commit transaction lock.
+                // A refusal/disconnect leaves both the live slot and files intact.
+                let result: wire::TargetDisposition = session.adoption_exchange(
+                    &operation_id, wire::DisposeTarget {
+                        grant_sha256: &grant_sha256, exhibition_id: &exhibition_id,
+                    },
+                )?;
+                let outcome = accept_disposition(held, &result, &grant_sha256, &exhibition_id)?;
+                Ok(json!({"operationId": operation_id, "grantSha256": grant_sha256,
+                    "exhibitionId": exhibition_id, "outcome": outcome,
+                    "revision": result.revision, "etag": result.etag, "stageRetired": false}))
             }
             Input::RetainedOperation => {
                 let Some(current) = held.as_ref() else {
@@ -364,6 +393,50 @@ impl Operation {
         }
         Ok(())
     }
+
+    fn check_disposition(&self, owner: &(String, String, String), operation: &str,
+        digest: &str, exhibition: &str) -> Result<()> {
+        if !self.is_target(owner) || self.operation_id.to_string() != operation
+            || self.target.exhibition_id != exhibition
+            || self.grant.as_ref().map(Grant::digest).transpose()?.as_deref() != Some(digest)
+        {
+            return Err(wire::unavailable());
+        }
+        Ok(())
+    }
+}
+
+fn check_disposition_reply(result: &wire::TargetDisposition, digest: &str, exhibition: &str) -> Result<()> {
+    if result.grant_sha256 != digest || result.exhibition_id != exhibition
+        || result.outcome == wire::Outcome::Unresolved
+    {
+        return Err(wire::unavailable());
+    }
+    check_status_shape(result.outcome, result.revision, result.etag.as_deref())
+}
+
+fn accept_disposition(held: &mut Option<Operation>, result: &wire::TargetDisposition,
+    digest: &str, exhibition: &str) -> Result<&'static str> {
+    check_disposition_reply(result, digest, exhibition)?;
+    match result.outcome {
+        wire::Outcome::Cancelled => {
+            // Drop only the in-memory slot. Never reacquire or unlink a
+            // reservation using a cancellation receipt.
+            *held = None;
+            Ok("cancelled")
+        }
+        wire::Outcome::Committed => Ok("committed"),
+        wire::Outcome::Unresolved => Err(wire::unavailable()),
+    }
+}
+
+fn check_status_shape(outcome: wire::Outcome, revision: Option<u32>, etag: Option<&str>) -> Result<()> {
+    match (outcome, revision, etag) {
+        (wire::Outcome::Committed, Some(revision), Some(etag))
+            if wire::etag(etag) == Some(revision) => Ok(()),
+        (wire::Outcome::Unresolved | wire::Outcome::Cancelled, None, None) => Ok(()),
+        _ => Err(wire::unavailable()),
+    }
 }
 
 fn target_status(
@@ -379,15 +452,7 @@ fn target_status(
     if result.grant_sha256 != grant_sha256 {
         return Err(wire::unavailable());
     }
-    match (result.outcome, result.revision, result.etag.as_deref()) {
-        (wire::Outcome::Committed, Some(revision), Some(etag))
-            if wire::etag(etag) == Some(revision) =>
-        {
-            ()
-        }
-        (wire::Outcome::Unresolved, None, None) => (),
-        _ => return Err(wire::unavailable()),
-    }
+    check_status_shape(result.outcome, result.revision, result.etag.as_deref())?;
     Ok(result)
 }
 
@@ -603,17 +668,95 @@ mod tests {
     }
 
     #[test]
+    fn terminal_disposition_preserves_files_and_requires_exact_owner_and_receipt() {
+        use std::fs::{self, DirBuilder, File};
+        use std::os::unix::fs::DirBuilderExt;
+        let root = std::env::temp_dir().join(format!("adoption-dispose-{}", Uuid::new_v4()));
+        DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let grant = fixture_grant(1000, 2000);
+        let operation_id = Uuid::parse_str(&grant.operation_id).unwrap();
+        let owner = (grant.target.workspace_id.clone(), grant.target.tenant_id.clone(), grant.target.principal_id.clone());
+        let digest = grant.digest().unwrap();
+        let exhibition = grant.target.exhibition_id.clone();
+        let mut held = Some(Operation {
+            operation_id,
+            reservation: Some(Reservation::create(File::open(&root).unwrap(), operation_id).unwrap()),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            source_generation: fixture_id(12),
+            source_owner: (grant.source.workspace_id.clone(), grant.source.tenant_id.clone(), grant.source.principal_id.clone()),
+            target: grant.target.clone(), grant: Some(grant.clone()), preview: None,
+            commit_started: true, retirement_started: false,
+        });
+        let current = held.as_ref().unwrap();
+        assert!(current.check_disposition(&owner, &grant.operation_id, &digest, &exhibition).is_ok());
+        for (scope, id, hash, exhibit) in [
+            (current.source_owner.clone(), grant.operation_id.clone(), digest.clone(), exhibition.clone()),
+            (owner.clone(), fixture_id(99), digest.clone(), exhibition.clone()),
+            (owner.clone(), grant.operation_id.clone(), "f".repeat(64), exhibition.clone()),
+            (owner.clone(), grant.operation_id.clone(), digest.clone(), fixture_id(99)),
+        ] {
+            assert!(current.check_disposition(&scope, &id, &hash, &exhibit).is_err());
+        }
+        let reply = |outcome: &str, hash: &str, exhibit: &str, revision: Value, etag: Value| {
+            serde_json::from_value::<wire::TargetDisposition>(json!({
+                "version":1,"kind":"adoption-target-disposition","operationId":grant.operation_id,
+                "runtimeGeneration":fixture_id(50),"grantSha256":hash,"exhibitionId":exhibit,
+                "outcome":outcome,"revision":revision,"etag":etag,
+            })).unwrap()
+        };
+        for invalid in [
+            reply("unresolved", &digest, &exhibition, Value::Null, Value::Null),
+            reply("cancelled", &"f".repeat(64), &exhibition, Value::Null, Value::Null),
+            reply("cancelled", &digest, &fixture_id(99), Value::Null, Value::Null),
+            reply("cancelled", &digest, &exhibition, json!(2), Value::Null),
+            reply("committed", &digest, &exhibition, json!(2), json!(format!("\"studio-r3-{}\"", "a".repeat(64)))),
+        ] {
+            assert!(accept_disposition(&mut held, &invalid, &digest, &exhibition).is_err());
+            assert!(held.is_some());
+        }
+        let committed = reply("committed", &digest, &exhibition, json!(2), json!(format!("\"studio-r2-{}\"", "a".repeat(64))));
+        assert_eq!(accept_disposition(&mut held, &committed, &digest, &exhibition).unwrap(), "committed");
+        assert!(held.is_some());
+        let cancelled = reply("cancelled", &digest, &exhibition, Value::Null, Value::Null);
+        assert_eq!(accept_disposition(&mut held, &cancelled, &digest, &exhibition).unwrap(), "cancelled");
+        assert!(held.is_none());
+        for name in ["original", "display"] {
+            assert!(root.join(&grant.operation_id).join(name).is_file());
+        }
+        // A new helper needs no grant or reservation import to accept a terminal proof.
+        assert_eq!(accept_disposition(&mut held, &cancelled, &digest, &exhibition).unwrap(), "cancelled");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelled_status_is_terminal_without_a_saved_head() {
+        assert!(check_status_shape(wire::Outcome::Cancelled, None, None).is_ok());
+        assert!(check_status_shape(wire::Outcome::Unresolved, None, None).is_ok());
+        assert!(check_status_shape(wire::Outcome::Committed, None, None).is_err());
+        let etag = format!("\"studio-r2-{}\"", "a".repeat(64));
+        for outcome in [wire::Outcome::Cancelled, wire::Outcome::Unresolved] {
+            assert!(check_status_shape(outcome, Some(2), Some(&etag)).is_err());
+            assert!(check_status_shape(outcome, None, Some(&etag)).is_err());
+        }
+    }
+
+    #[test]
     fn private_command_refuses_an_imported_grant_and_missing_confirmation() {
         let operation_id = fixture_id(1);
         let digest = "a".repeat(64);
         for invalid in [
             json!({"action":"preview_target","operationId":operation_id,"expectedRevision":1,"grant":{}}),
             json!({"action":"confirm_target","operationId":operation_id,"expectedRevision":1}),
+            json!({"action":"dispose_target","operationId":operation_id,"grantSha256":digest}),
+            json!({"action":"dispose_target","operationId":operation_id,"grantSha256":digest,"exhibitionId":fixture_id(2),"grant":{}}),
         ] {
             assert!(serde_json::from_value::<Input>(invalid).is_err());
         }
         assert!(serde_json::from_value::<Input>(json!({
             "action":"confirm_target","operationId":operation_id,"expectedRevision":1,"grantSha256":digest,
+        })).is_ok());
+        assert!(serde_json::from_value::<Input>(json!({
+            "action":"dispose_target","operationId":operation_id,"grantSha256":digest,"exhibitionId":fixture_id(2),
         })).is_ok());
     }
 }
