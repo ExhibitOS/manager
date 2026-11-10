@@ -214,7 +214,7 @@ struct CatalogViewportDrop: DropDelegate {
     }
 
     func validateDrop(info: DropInfo) -> Bool {
-        source != nil && info.itemProviders(for: [CatalogDragSession.contentType]).count == 1
+        source != nil && info.hasItemsConforming(to: [CatalogDragSession.contentType])
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
@@ -227,8 +227,10 @@ struct CatalogViewportDrop: DropDelegate {
     func dropExited(info: DropInfo) { session.leave(controller) }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let source, let point = normalized(info.location), validateDrop(info: info),
-              let provider = info.itemProviders(for: [CatalogDragSession.contentType]).first else { return false }
+        guard let source, let point = normalized(info.location) else { return false }
+        // SwiftUI exposes the item providers only while performing the drop.
+        let providers = info.itemProviders(for: [CatalogDragSession.contentType])
+        guard providers.count == 1, let provider = providers.first else { return false }
         let sequence = controller.acceptedSequence
         let context = controller.editingContextGeneration
         provider.loadDataRepresentation(forTypeIdentifier: CatalogDragSession.contentType.identifier) { bytes, _ in
