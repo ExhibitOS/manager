@@ -18,7 +18,11 @@ pub enum Input {
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     RetainAbandonedOrdinaryPublicationStage { proof: super::native_publication_custody::Input },
     Select { id: String, acknowledged: bool },
-    StageRestore { source: PathBuf, key_file: PathBuf },
+    StageRestore {
+        source: PathBuf,
+        key_file: PathBuf,
+        carried_restore: Option<super::native_restore::CarriedInput>,
+    },
     ActivateRestore { id: String },
     #[cfg(debug_assertions)]
     LocalPersonalTransition {
