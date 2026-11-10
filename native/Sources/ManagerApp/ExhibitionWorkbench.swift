@@ -179,6 +179,8 @@ struct NativeExhibitionView: View {
             feedback
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { catalogDrag.startInputTrace() }
+        .onDisappear { catalogDrag.stopInputTrace() }
         .disabled(!active)
         .sheet(isPresented: Binding(get: { workspaceMaterialAccess != nil }, set: { if !$0 { workspaceMaterialAccess = nil } })) {
             if let workspaceMaterialAccess { WorkspaceMaterialIntakeView(model: model, access: workspaceMaterialAccess) }

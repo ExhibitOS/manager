@@ -116,6 +116,24 @@ final class CatalogDragSession: ObservableObject {
     private var hoverSequence = 0
     private var hoverValid: Bool?
     private(set) var dropping = false
+    private var inputTraceMonitor: Any?
+
+    func startInputTrace() {
+        #if DEBUG
+        guard inputTraceMonitor == nil else { return }
+        inputTraceMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { event in
+            CatalogDropTrace.record("mouseInput", "type=\(event.type.rawValue) buttons=\(NSEvent.pressedMouseButtons)")
+            return event
+        }
+        #endif
+    }
+
+    func stopInputTrace() {
+        #if DEBUG
+        if let inputTraceMonitor { NSEvent.removeMonitor(inputTraceMonitor) }
+        inputTraceMonitor = nil
+        #endif
+    }
 
     struct Source: Sendable {
         let token: UUID
