@@ -314,7 +314,7 @@ final class ExhibitionModel: ObservableObject {
             try capture.write(attempt.rendered, to: reservation, requestId: attempt.requestId)
             attempt.evidence = (capture, reservation)
             pendingCatalogThumbnail = attempt
-            catalogStatus = "ミリ보기 후보와 검증 기록을 준비했습니다. 게시용 선택은 별도입니다."
+            catalogStatus = "미리보기 후보와 검증 기록을 준비했습니다. 게시용 선택은 별도입니다."
         } catch { catalogStatus = "미리보기 후보의 검증 기록을 확인하지 못했습니다." }
     }
     #endif
