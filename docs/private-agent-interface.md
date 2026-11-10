@@ -221,6 +221,12 @@ Operations:
     `command.modelSha256` and the registered intake as `command.intakeId`.
     The placement checks that exact receipt again before applying. Save and
     reopen through the existing commands.
+- A qualified owner session advertising `default-seat-proposal-v1` stages the
+  catalogue default seat with an eligible workspace furnishing placement in
+  the same draft edit. `workspace-default-seat-reconcile` accepts the saved
+  `etag` and up to 32 existing `placementIds` to stage missing defaults on a
+  clean saved head. Existing valid linked seats and viewpoints are preserved.
+  Use the existing `save` operation to commit a staged change.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at

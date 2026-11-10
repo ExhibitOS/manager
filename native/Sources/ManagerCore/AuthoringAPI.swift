@@ -26,6 +26,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
+    public var nativeDefaultSeatProposalProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
     public var workspaceFurnishingReusableFitProfile: String? = nil
     public var nativeFreshImagePreparationProfile: String? = nil
@@ -2299,6 +2300,44 @@ public actor AuthoringAPI {
         }
         let next = try placement.applying(furnishing, to: draft, supportedExtensionVersion: supportedFurnishingExtensionVersion)
         _ = try await workspaceFurnishingModel(furnishing)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        if let next, admitsWorkspaceDefaultSeatProposal,
+           BenchSettings.isDefaultSeatModel(furnishing.details.model, kind: furnishing.details.kind) {
+            guard let seated = try await defaultSeatProposal(placementIds: [placement.id], prospective: next, base: draft) else {
+                throw BenchSettings.invalid()
+            }
+            return seated
+        }
+        return next
+    }
+
+    private var admitsWorkspaceDefaultSeatProposal: Bool {
+        admitsWorkspaceFurnishings && session?.nativeDefaultSeatProposalProfile == "default-seat-proposal-v1"
+    }
+
+    private func defaultSeatProposal(placementIds: [String], prospective: NativeExhibitionDraft,
+                                     base: NativeExhibitionDraft) async throws -> NativeExhibitionDraft? {
+        let heldGeneration = generation
+        let proposal = try WorkspaceDefaultSeatProposal(draft: prospective, placementIds: placementIds)
+        let body = try encoded(proposal)
+        guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        let response: DocumentValue = try await request(studioPrefix + "/native-default-seat-proposal", method: "POST", body: body)
+        try Task.checkCancellation()
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try proposal.applying(response, to: base)
+    }
+
+    func prepareWorkspaceDefaultSeatRetrofit(placementIds: [String], in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspaceDefaultSeatProposal, let draft = document.draft else {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let policy = try await workspaceBenchSeatPolicy(in: document)
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == policy.etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let next = try await defaultSeatProposal(placementIds: placementIds, prospective: draft, base: draft)
+        try saved.requireSameComparison(await exhibition(draft.id))
+        try Task.checkCancellation()
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
     }

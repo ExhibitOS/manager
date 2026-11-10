@@ -48,7 +48,9 @@ public struct WorkspaceBenchSeatAttachment: Sendable {
         guard attached.isEmpty ? selected == nil : attached.count == 1 && selected?.id == benchId && selected?.workspaceVisual == visual else {
             throw AuthoringFailure("BENCH_SELECTION_CHANGED")
         }
-        if kind == .bench && galleryStoolSeat { throw BenchSettings.invalid() }
+        if kind == .bench && !BenchSettings.ordinarySize(width: width, depth: depth, height: height) {
+            throw BenchSettings.invalid()
+        }
         let settings = try BenchSettings(id: benchId, name: furnishing.details.name, roomId: placement.roomId,
             kind: .slab, position: placement.position, yaw: placement.yaw, width: width, depth: depth, height: height,
             material: .defaults(.wood), viewpointId: viewpointId, workspaceVisual: visual)
