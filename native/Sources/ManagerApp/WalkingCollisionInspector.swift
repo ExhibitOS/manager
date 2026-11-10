@@ -101,7 +101,10 @@ struct WalkingCollisionInspector: View {
         case .plinth, .frame:
             kind = target.kind == .plinth ? "받침대" : "프레임"
             row = find(draft.placements)
-            name = draft.artworks.first { $0["revisionId"] == row["artworkRevisionId"] }?["title"].string
+            let revision = row["artworkRevisionId"].string?.lowercased()
+            name = revision.flatMap { id in
+                draft.artworks.first { $0["revisionId"].string?.lowercased() == id }?["metadata"]["title"].string
+            }
         case .light:
             kind = "조명"
             row = find(draft.candidate["lights"].items)
