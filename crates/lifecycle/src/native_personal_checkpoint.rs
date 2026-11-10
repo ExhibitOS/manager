@@ -13,6 +13,10 @@ use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::sync::Arc;
 
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+#[path = "native_personal_checkpoint_guard.rs"]
+mod guard_diagnostic;
+
 const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4";
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
 #[cfg(feature = "workspace-v5-owner-validation")]
@@ -695,6 +699,20 @@ fn copy_beforeimages(
     files: &BTreeMap<PathBuf, Entry>,
     max_bytes: u64,
 ) -> Result<()> {
+    copy_entries(source_root, source_staged, destination, files)?;
+    // Verify and flush the final-mode files before a seal or recovery plan is published.
+    if inventory_with_limit(destination, true, max_bytes)? != *files {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn copy_entries(
+    source_root: &Path,
+    source_staged: bool,
+    destination: &Path,
+    files: &BTreeMap<PathBuf, Entry>,
+) -> Result<()> {
     for (relative, entry) in files {
         let name = relative.to_str().ok_or_else(invalid)?;
         let archived = Path::new(staged_name(name));
@@ -724,11 +742,6 @@ fn copy_beforeimages(
         output
             .set_permissions(fs::Permissions::from_mode(entry.mode))
             .map_err(|_| invalid())?;
-    }
-    // Staged inventory verifies and flushes the final-mode files and nested
-    // directories before the caller can publish a seal or a recovery plan.
-    if inventory_with_limit(destination, true, max_bytes)? != *files {
-        return Err(invalid());
     }
     Ok(())
 }
@@ -1381,14 +1394,14 @@ impl LifecycleService {
 }
 
 impl InstallationController {
-    fn with_transition_key(
+    fn with_transition_key<T>(
         &self,
         token: &str,
         key_path: &Path,
         staging: &Path,
         retained: Option<&RetainedProductImage>,
-        task: impl FnOnce(&LifecycleService, &Path, &super::installations::native_document::DocumentState, &[u8; 32]) -> Result<()>,
-    ) -> Result<()> {
+        task: impl FnOnce(&LifecycleService, &Path, &super::installations::native_document::DocumentState, &[u8; 32]) -> Result<T>,
+    ) -> Result<T> {
         if key_path.starts_with(staging) {
             return Err(invalid());
         }

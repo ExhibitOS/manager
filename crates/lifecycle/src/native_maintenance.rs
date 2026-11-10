@@ -61,6 +61,13 @@ pub enum LocalPersonalTransition {
         #[serde(default)]
         retained_product_image: Option<RetainedProductImage>,
     },
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
+    InspectPreReadyGuard {
+        staging: PathBuf,
+        key_file: PathBuf,
+        failed_generation: String,
+        recovery_receipt_sha256: String,
+    },
 }
 
 /// Exact approved image preparation retained while the saved workspace changes payloads.
