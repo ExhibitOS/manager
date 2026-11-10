@@ -193,7 +193,8 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         var compatible = try registered()
         compatible["preparationPolicy"] = .string(policy.rawValue)
         compatible["declaration"]["kind"] = .string("info-stand")
-        compatible["declaration"]["rights"]["holder"] = .string("ExhibitOS")
+        compatible["declaration"]["rights"]["holder"] = .string("Independent owner")
+        compatible["declaration"]["rights"]["licenseId"] = .string("CC-BY-4.0")
         compatible["declaration"]["model"]["bytes"] = .integer(128)
         compatible["received"]["bytes"] = .integer(128)
         let source = compatible["declaration"]["model"]
@@ -217,8 +218,12 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         ])
         let value = try intake(prepared)
         try value.check(details: value.declaration, expectedPolicy: policy,
-                        supportedExtensionVersion: 3, infoStandPreparationManifest: manifest)
-        XCTAssertThrowsError(try value.check(supportedExtensionVersion: 3, infoStandPreparationManifest: modelSHA256))
+                        supportedExtensionVersion: 3, infoStandPreparationManifest: manifest, requireCurrentInfoStandProducer: true)
+        // An authenticated newer runtime can read a registered receipt from an older
+        // producer. A selected operation still checks the expected producer exactly.
+        try value.check(supportedExtensionVersion: 3, infoStandPreparationManifest: modelSHA256)
+        XCTAssertThrowsError(try value.check(supportedExtensionVersion: 3, infoStandPreparationManifest: modelSHA256,
+                                              requireCurrentInfoStandProducer: true))
         let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(value))
         XCTAssertEqual(encoded["preparation"], prepared["preparation"])
 

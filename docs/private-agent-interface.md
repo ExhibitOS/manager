@@ -201,6 +201,21 @@ Operations:
     interfaces check display access and verify each declared map before staging
     the binding. Ambient occlusion (AO) is unavailable for surface application.
     Earlier qualified runtimes keep their color-only application rules.
+- On the admitted info-stand preparation runtime, a declared owner can use
+  `workspace-furnishing-intake-create` with `kind: "info-stand"` and the original
+  model. The authenticated client selects `normalize-legacy-sign-texture-r1`
+  for bounded eligible inputs. The runtime keeps the original and validates it
+  first. It prepares a separate display model only when needed. The original
+  rights and use permissions remain in force.
+  - A compatible model registers unchanged. A prepared registration returns
+    `preparation` with the recipe, `sourceModel`, `renderableModel` and
+    `runtimeManifestSHA256`. Compare both models and the producing manifest
+    when approving a newly prepared result. Registered historical receipts
+    retain their producing manifest when read by a later compatible runtime.
+  - Before placing an info-stand on this runtime, read its registered model
+    and use `workspace-furnishing-model-check` to verify the exact display bytes.
+    In `workspace-furnishing-place` pass that reviewed SHA-256 as
+    `command.modelSha256`. Save and reopen through the existing commands.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at

@@ -1359,6 +1359,10 @@ final class ExhibitionModel: ObservableObject {
         workspaceArtworkFrameAvailable && api?.workspaceFramePreparationRuntimeQualified == true
             && session?.advertisesWorkspaceArtworkFramePreparation == true
     }
+    var workspaceInfoStandPreparationAvailable: Bool {
+        workspaceFurnishingRoomVisualAvailable && api?.workspaceInfoStandPreparationRuntimeQualified == true
+            && session?.advertisesWorkspaceInfoStandPreparation == true
+    }
     var workspacePortalFinishAvailable: Bool {
         workspaceFurnishingIntakeAvailable && api?.workspacePortalFinishRuntimeQualified == true
             && session?.advertisesWorkspacePortalFinish == true
@@ -1392,14 +1396,15 @@ final class ExhibitionModel: ObservableObject {
         guard access == viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return result
     }
-    func placeWorkspaceFurnishing(_ placement: WorkspaceFurnishingPlacement, access: UUID) async throws -> Bool {
+    func placeWorkspaceFurnishing(_ placement: WorkspaceFurnishingPlacement, access: UUID,
+                                 expectedModelSHA256: String? = nil) async throws -> Bool {
         try await withWorkspaceFurnishingAccess(access) { api in
             guard !immutable, !formDirty, !positionDirty, !architectureDirty,
                   viewportController.editingContextActive, var current = state else {
                 throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED")
             }
             let revision = current.revision
-            let next = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current)
+            let next = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current, expectedModelSHA256: expectedModelSHA256)
             guard access == viewportAccessID, state?.revision == revision, state?.draft == current.draft else {
                 throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
             }

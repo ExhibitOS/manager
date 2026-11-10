@@ -450,12 +450,15 @@ public actor AuthoringAPI {
         "7f76b19894fe3a9824a640cf1856ba7c828d5bd3201ede0da5d1c53a501bd1e7",
         "d31372305fd54f8d42cec1ebc76bf0ec4d47cf36cb4ece658bca08195687748e"
     ]
+    private static let workspaceInfoStandPreparationManifestPin =
+        "62dc2e80622344b7c0c9566714c6e76179d8706a1de609fa268d65530038b99c"
     #else
     private static let workspaceFurnishingManifestPins: Set<String> = []
     #endif
     public nonisolated let hayesOriginalRuntimeQualified: Bool
     public nonisolated let workspaceFurnishingRuntimeQualified: Bool
     public nonisolated let workspaceFramePreparationRuntimeQualified: Bool
+    public nonisolated let workspaceInfoStandPreparationRuntimeQualified: Bool
     public nonisolated let workspacePortalFinishRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?
@@ -513,9 +516,11 @@ public actor AuthoringAPI {
         workspaceCatalogReadRuntimeQualified = false
         #endif
         workspaceFramePreparationRuntimeQualified = framePreparationQualified
+        workspaceInfoStandPreparationRuntimeQualified = Self.supportsInfoStandPreparationRuntime(manifest: manifest)
         workspacePortalFinishRuntimeQualified = portalQualified
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
-            || Self.workspaceFurnishingManifestPins.contains(manifest) || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
+            || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
+            || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
         let configuration = URLSessionConfiguration.ephemeral
         if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.urlCache = nil
@@ -1937,10 +1942,13 @@ public actor AuthoringAPI {
             && session?.advertisesWorkspaceArtworkFramePreparation == true
     }
 
+    public var admitsWorkspaceInfoStandPreparation: Bool {
+        workspaceInfoStandPreparationRuntimeQualified && admitsWorkspaceFurnishings
+            && session?.advertisesWorkspaceInfoStandPreparation == true
+    }
+
     private var infoStandPreparationManifest: String? {
-        guard admitsWorkspaceFurnishings, session?.advertisesWorkspaceInfoStandPreparation == true,
-              let manifest = nativeRuntimeManifestSHA256, nativeImportDigest(manifest) else { return nil }
-        return manifest
+        admitsWorkspaceInfoStandPreparation ? nativeRuntimeManifestSHA256 : nil
     }
 
     public var admitsWorkspacePortalFinish: Bool {
@@ -1993,7 +2001,7 @@ public actor AuthoringAPI {
                 throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
             }
         }
-        let policy = preparationPolicy ?? (infoStandPreparationManifest != nil && details.canRequestInfoStandPreparation
+        let policy = preparationPolicy ?? (admitsWorkspaceInfoStandPreparation && details.canRequestInfoStandPreparation
             ? .normalizeLegacySignTexture : nil)
         switch policy {
         case .omitUnusedInvalidTangent:
@@ -2003,7 +2011,7 @@ public actor AuthoringAPI {
                 throw AuthoringFailure("FRAME_PREPARATION_SOURCE_UNSUPPORTED")
             }
         case .normalizeLegacySignTexture:
-            guard infoStandPreparationManifest != nil, details.canRequestInfoStandPreparation else {
+            guard admitsWorkspaceInfoStandPreparation, details.canRequestInfoStandPreparation else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
         case nil:
@@ -2083,7 +2091,8 @@ public actor AuthoringAPI {
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
                          expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                         admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                         admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
+                         requireCurrentInfoStandProducer: previous.phase != .registered)
         return intake
     }
 
@@ -2145,11 +2154,18 @@ public actor AuthoringAPI {
     }
 
     public func prepareWorkspaceFurnishingPlacement(_ placement: WorkspaceFurnishingPlacement,
-                                                   in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+                                                   in document: NativeDocumentState,
+                                                   expectedModelSHA256: String? = nil) async throws -> NativeExhibitionDraft? {
         guard document.pending == nil, document.tenantId == tenant, session?.userId == document.principalId,
               let draft = document.draft else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         let heldGeneration = generation
         let furnishing = try await workspaceFurnishing(placement.furnishingId, version: placement.furnishingVersion)
+        if furnishing.details.kind == .infoStand && admitsWorkspaceInfoStandPreparation {
+            guard expectedModelSHA256 != nil else { throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED") }
+        }
+        if let expectedModelSHA256, furnishing.details.model.sha256 != expectedModelSHA256 {
+            throw AuthoringFailure("MODEL_CONFLICT")
+        }
         let next = try placement.applying(furnishing, to: draft, supportedExtensionVersion: supportedFurnishingExtensionVersion)
         _ = try await workspaceFurnishingModel(furnishing)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
@@ -2203,6 +2219,14 @@ public actor AuthoringAPI {
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsInfoStandPreparationRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == workspaceInfoStandPreparationManifestPin
         #else
         false
         #endif

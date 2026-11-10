@@ -77,6 +77,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsProductImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
@@ -265,11 +266,12 @@ public actor NativeAutomationSession {
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
+        let admitsInfoStandPreparation = await api.admitsWorkspaceInfoStandPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
-        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsSavedHeadAuthoring
+        guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsRenderedSculptureThumbnailOex || admitsNativePublication else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
@@ -1170,10 +1172,21 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
             try checkedRevision(request, current)
-            let command = try NativeAutomationArtworkRules.command(request, keys: ["id", "roomId", "furnishingId", "furnishingVersion", "position", "yaw", "scale"])
+            guard case .object(var fields) = request["command"] else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let expectedModelSHA256: String?
+            if let approved = fields.removeValue(forKey: "modelSha256") {
+                guard let hash = approved.string, nativeImportDigest(hash) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                expectedModelSHA256 = hash
+            } else {
+                expectedModelSHA256 = nil
+            }
+            guard Set(fields.keys) == ["id", "roomId", "furnishingId", "furnishingVersion", "position", "yaw", "scale"] else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let command = DocumentValue.object(fields)
             let placement = try JSONDecoder().decode(WorkspaceFurnishingPlacement.self, from: JSONEncoder().encode(command))
             guard try value(placement) == command else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current) {
+            if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current, expectedModelSHA256: expectedModelSHA256) {
                 var next = current
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])

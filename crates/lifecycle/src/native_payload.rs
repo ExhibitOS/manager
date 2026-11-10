@@ -347,6 +347,17 @@ const FRESH_IMAGE_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     269,
     "92f9752cf464f7e75839c57f40d81586e1a6a2b452b06b5d5bee1868211c45ac",
 );
+const INFO_STAND_PREPARATION_DIRECTORY: &str = "platform/database/native-workspace-info-stand-preparation/";
+const INFO_STAND_PREPARATION_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-workspace-info-stand-preparation/048_workspace_info_stand_preparation.sql",
+    1961,
+    "5f41eba8cff108ee545e7454ca5ef3757087335c7650c95660ef1022d6698ca6",
+);
+const INFO_STAND_PREPARATION_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-info-stand-preparation-capability-v1.json",
+    231,
+    "36a0dfacb8a71463737f723ab7f6c260e686d5a13fe6878a826b54817f3b71c1",
+);
 const HAYES_FRAME_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.0,
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.1,
@@ -781,6 +792,20 @@ pub(crate) fn fresh_image_host_matches(tuple: (&str, &str, &str)) -> bool {
     fresh_image_recovery_host_matches(tuple) || fresh_image_release_host_matches(tuple)
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG48_INFO_STAND_PREPARATION: RuntimeTuple = (
+    "0dc1c676a2a70a47ee2220521638c9febdc7f043",
+    "392bde543dd12306061a65c1a60b1696def07407e0019faaf22e3060a4fc0e10",
+    "62dc2e80622344b7c0c9566714c6e76179d8706a1de609fa268d65530038b99c",
+);
+
+pub(crate) fn info_stand_preparation_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG48_INFO_STAND_PREPARATION == tuple;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 pub(crate) fn required_model_preparation_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_BC96_REQUIRED_MODEL_TARGET == tuple
@@ -1148,6 +1173,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     RequiredModelPreparation045,
     LargeModelPreparation046,
     FreshImagePreparation047,
+    InfoStandPreparation048,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -1165,6 +1191,7 @@ impl WorkspaceFurnishingCatalog {
             Self::RequiredModelPreparation045 => 45,
             Self::LargeModelPreparation046 => 46,
             Self::FreshImagePreparation047 => 47,
+            Self::InfoStandPreparation048 => 48,
         }
     }
 
@@ -1172,7 +1199,7 @@ impl WorkspaceFurnishingCatalog {
         matches!(self, Self::Writer037 | Self::Publication038 | Self::MaterialPublication039
             | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042
             | Self::HayesDisposition043 | Self::HayesRelease044 | Self::RequiredModelPreparation045
-            | Self::LargeModelPreparation046 | Self::FreshImagePreparation047)
+            | Self::LargeModelPreparation046 | Self::FreshImagePreparation047 | Self::InfoStandPreparation048)
     }
 }
 
@@ -2300,6 +2327,25 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact 045 plus 048 info-stand package"]
+    fn opens_reviewed_info_stand_preparation_runtime() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_INFO_STAND_PREPARATION_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::InfoStandPreparation048;
+        assert_eq!(payload.manifest_sha256, CATALOG48_INFO_STAND_PREPARATION.2);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ledger.lines().count(), 46);
+        assert!(ledger.lines().last().unwrap().starts_with("048_workspace_info_stand_preparation.sql|"));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045).is_err());
+        assert!(!saved_workspace_transition_target(&payload.manifest_sha256));
+        assert!(payload.retained_furnishing_catalog().is_none());
+        assert!(payload.static_detail_export_resources(true).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact original and corrected museum captions and publication capacity payloads"]
     fn opens_reviewed_museum_captions_runtime_for_ordinary_catalog45() {
         let original = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_MUSEUM_CAPTIONS_SOURCE_RUNTIME").unwrap());
@@ -2986,6 +3032,7 @@ impl Payload {
         let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
         ordinary_fresh_catalog45_host_matches(tuple) || large_model_host_matches(tuple)
             || self.fresh_image_release() || fresh_image_recovery_host_matches(tuple)
+            || info_stand_preparation_host_matches(tuple)
     }
 
     pub(crate) fn fresh_image_release(&self) -> bool {
@@ -3158,6 +3205,12 @@ impl Payload {
         if fresh_image_declared != fresh_image_pinned {
             return Err(unqualified());
         }
+        let info_stand_pinned = info_stand_preparation_host_matches(tuple);
+        let info_stand_declared = self.manifest.files.iter().any(|file|
+            file.path == INFO_STAND_PREPARATION_CAPABILITY.0 || file.path.starts_with(INFO_STAND_PREPARATION_DIRECTORY));
+        if info_stand_declared != info_stand_pinned {
+            return Err(unqualified());
+        }
         let model_preparation_pinned = required_model_preparation_host_matches(tuple)
             || self.ordinary_fresh_furnishing();
         let model_preparation_declared = self.manifest.files.iter().any(|file|
@@ -3308,6 +3361,12 @@ impl Payload {
                                             }
                                             return Ok(Some(WorkspaceFurnishingCatalog::FreshImagePreparation047));
                                         }
+                                        if info_stand_pinned {
+                                            if !pinned_file(INFO_STAND_PREPARATION_CAPABILITY) || !pinned_file(INFO_STAND_PREPARATION_SCHEMA) {
+                                                return Err(unqualified());
+                                            }
+                                            return Ok(Some(WorkspaceFurnishingCatalog::InfoStandPreparation048));
+                                        }
                                         return Ok(Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
                                     }
                                     return Ok(Some(WorkspaceFurnishingCatalog::HayesRelease044));
@@ -3437,6 +3496,14 @@ impl Payload {
                     return Err(invalid());
                 }
                 47
+            } else if file.path.starts_with(INFO_STAND_PREPARATION_DIRECTORY) {
+                let (path, bytes, hash) = INFO_STAND_PREPARATION_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::InfoStandPreparation048
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                {
+                    return Err(invalid());
+                }
+                48
             } else {
                 let Some((_, range)) = directories.iter().find(|(expected, _)| *expected == directory) else { continue; };
                 let Some(number) = name.split_once('_').and_then(|(number, _)| number.parse::<usize>().ok()) else { return Err(invalid()); };
@@ -3451,8 +3518,11 @@ impl Payload {
                 return Err(invalid());
             }
         }
-        // The isolated fresh-image catalog is 045 plus 047, with no 046.
-        let count = if catalog == WorkspaceFurnishingCatalog::FreshImagePreparation047 { 46 } else { catalog.version() };
+        // These isolated catalogs append one migration to 045.
+        let count = match catalog {
+            WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048 => 46,
+            _ => catalog.version(),
+        };
         if rows.len() != count as usize { return Err(invalid()); }
         Ok(rows.into_values().collect::<Vec<_>>().join("\n"))
     }

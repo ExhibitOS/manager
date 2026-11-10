@@ -160,7 +160,7 @@ public struct WorkspaceFurnishingDetails: Codable, Equatable, Sendable {
     var isValid: Bool { furnishingText(name, limit: 120) && furnishingText(provenance, limit: 1024) && model.isValid }
 
     var canRequestInfoStandPreparation: Bool {
-        kind == .infoStand && rights.holder == "ExhibitOS" && rights.ownership == "owner" && rights.licenseId == "CC0-1.0"
+        kind == .infoStand && rights.ownership == "owner"
             && (28...WorkspaceFurnishingPreparationPolicy.infoStandSourceByteLimit).contains(model.bytes)
     }
 }
@@ -326,7 +326,8 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
     func check(id: String? = nil, requestId: String? = nil, details: WorkspaceFurnishingDetails? = nil,
                expectedPolicy: WorkspaceFurnishingPreparationPolicy? = nil, expectedFit: WorkspaceFurnishingFitProfile? = nil,
                supportedExtensionVersion: Int64 = 1,
-               admitsPreparation: Bool = false, infoStandPreparationManifest: String? = nil) throws {
+               admitsPreparation: Bool = false, infoStandPreparationManifest: String? = nil,
+               requireCurrentInfoStandProducer: Bool = false) throws {
         guard workspaceFurnishingID(intakeId), workspaceFurnishingID(self.requestId),
               id.map({ $0 == intakeId }) ?? true, requestId.map({ $0 == self.requestId }) ?? true,
               declaration.isValid, declaration.kind.minimumExtensionVersion <= supportedExtensionVersion,
@@ -361,9 +362,13 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
         case .normalizeLegacySignTexture:
             guard let infoStandPreparationManifest, nativeImportDigest(infoStandPreparationManifest),
                   declaration.canRequestInfoStandPreparation,
-                  preparation.map({ $0.runtimeManifestSHA256 == infoStandPreparationManifest
-                      && $0.renderableModel.isValid && (28..<declaration.model.bytes).contains($0.renderableModel.bytes)
-                      && $0.renderableModel.sha256 != declaration.model.sha256 }) ?? true else {
+                  preparation.map({ receipt in
+                      guard let manifest = receipt.runtimeManifestSHA256, nativeImportDigest(manifest) else { return false }
+                      return (!requireCurrentInfoStandProducer || manifest == infoStandPreparationManifest)
+                          && receipt.renderableModel.isValid
+                          && (28..<declaration.model.bytes).contains(receipt.renderableModel.bytes)
+                          && receipt.renderableModel.sha256 != declaration.model.sha256
+                  }) ?? true else {
                 throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
             }
         }
