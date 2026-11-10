@@ -808,6 +808,13 @@ pub(crate) fn catalog45_retained_restore_payload(tuple: (&str, &str, &str)) -> O
     { let _ = tuple; None }
 }
 
+pub(crate) fn catalog45_restored_backed_handoff(pair: (&str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return pair == (CATALOG45_PLACED_EXIT_DOORS.2, CATALOG45_BACKED_BENCH.2);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = pair; false }
+}
+
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG46_LARGE_MODEL: RuntimeTuple = (
     "c3937794193b2262f0ad2d5dcf30cdb838e424c9",
@@ -1117,7 +1124,7 @@ impl FurnishingTransition {
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
-        if pair == (CATALOG45_PLACED_EXIT_DOORS.2, CATALOG45_BACKED_BENCH.2) {
+        if catalog45_restored_backed_handoff(pair) {
             return Some(Self::SameCatalog {
                 source: CATALOG45_PLACED_EXIT_DOORS,
                 target: CATALOG45_BACKED_BENCH,
