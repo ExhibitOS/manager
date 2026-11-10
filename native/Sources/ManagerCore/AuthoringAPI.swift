@@ -407,6 +407,8 @@ public actor AuthoringAPI {
         "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a"
     private static let preparedSignPreReadyPreservationManifestPin =
         "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86"
+    private static let preparedSignPreReadyHayesPreservationManifestPin =
+        "5cb2431e561c21e1463f78faf938a5cfc3807c9dd690a545f3474769c1c7f4a9"
     private static let nativePublicationCapacityManifestPin =
         "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203"
     private static let renderedSculptureThumbnailOexRuntimeManifestPin =
@@ -2346,6 +2348,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsPreReadyPreservationReadback(manifest: String) -> Bool {
         #if DEBUG
         manifest == preparedSignPreReadyPreservationManifestPin
+            || manifest == preparedSignPreReadyHayesPreservationManifestPin
         #else
         false
         #endif
