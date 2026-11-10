@@ -233,6 +233,10 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         try value.check(supportedExtensionVersion: 3, infoStandPreparationManifest: modelSHA256)
         XCTAssertThrowsError(try value.check(supportedExtensionVersion: 3, infoStandPreparationManifest: modelSHA256,
                                               requireCurrentInfoStandProducer: true))
+        let registeredModel = try XCTUnwrap(value.furnishing)
+        try value.checkInfoStandApproval(registeredModel, currentProducer: manifest)
+        XCTAssertThrowsError(try value.checkInfoStandApproval(registeredModel, currentProducer: modelSHA256))
+        XCTAssertThrowsError(try value.checkInfoStandApproval(XCTUnwrap(intake(compatible).furnishing), currentProducer: manifest))
         let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(value))
         XCTAssertEqual(encoded["preparation"], prepared["preparation"])
 

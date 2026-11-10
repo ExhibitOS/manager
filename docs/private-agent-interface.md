@@ -218,7 +218,9 @@ Operations:
   - Before placing an info-stand on this runtime, read its registered model
     and use `workspace-furnishing-model-check` to verify the exact display bytes.
     In `workspace-furnishing-place` pass that reviewed SHA-256 as
-    `command.modelSha256`. Save and reopen through the existing commands.
+    `command.modelSha256` and the registered intake as `command.intakeId`.
+    The placement checks that exact receipt again before applying. Save and
+    reopen through the existing commands.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at

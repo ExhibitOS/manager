@@ -2157,15 +2157,34 @@ public actor AuthoringAPI {
             mime: model.mime, invalidCode: "FURNISHING_RESPONSE_INVALID", requireDigestHeader: true)
     }
 
+    private func checkInfoStandApproval(_ furnishing: WorkspaceFurnishing, intakeId: String) async throws {
+        guard let manifest = infoStandPreparationManifest else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
+        let intake = try await workspaceFurnishingIntake(intakeId)
+        try intake.checkInfoStandApproval(furnishing, currentProducer: manifest)
+    }
+
+    public func reviewWorkspaceInfoStand(intakeId: String, furnishingId: String, version: Int) async throws -> WorkspaceFurnishing {
+        let furnishing = try await workspaceFurnishing(furnishingId, version: version)
+        try await checkInfoStandApproval(furnishing, intakeId: intakeId)
+        _ = try await workspaceFurnishingModel(furnishing)
+        return furnishing
+    }
+
     public func prepareWorkspaceFurnishingPlacement(_ placement: WorkspaceFurnishingPlacement,
                                                    in document: NativeDocumentState,
-                                                   expectedModelSHA256: String? = nil) async throws -> NativeExhibitionDraft? {
+                                                   expectedModelSHA256: String? = nil,
+                                                   infoStandIntakeId: String? = nil) async throws -> NativeExhibitionDraft? {
         guard document.pending == nil, document.tenantId == tenant, session?.userId == document.principalId,
               let draft = document.draft else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         let heldGeneration = generation
         let furnishing = try await workspaceFurnishing(placement.furnishingId, version: placement.furnishingVersion)
         if furnishing.details.kind == .infoStand && admitsWorkspaceInfoStandPreparation {
-            guard expectedModelSHA256 != nil else { throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED") }
+            guard expectedModelSHA256 != nil, let infoStandIntakeId else {
+                throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED")
+            }
+            try await checkInfoStandApproval(furnishing, intakeId: infoStandIntakeId)
+        } else if infoStandIntakeId != nil {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         if let expectedModelSHA256, furnishing.details.model.sha256 != expectedModelSHA256 {
             throw AuthoringFailure("MODEL_CONFLICT")

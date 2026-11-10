@@ -1190,13 +1190,21 @@ public actor NativeAutomationSession {
             } else {
                 expectedModelSHA256 = nil
             }
+            let infoStandIntakeId: String?
+            if let intake = fields.removeValue(forKey: "intakeId") {
+                guard let id = intake.string, workspaceFurnishingID(id) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                infoStandIntakeId = id
+            } else {
+                infoStandIntakeId = nil
+            }
             guard Set(fields.keys) == ["id", "roomId", "furnishingId", "furnishingVersion", "position", "yaw", "scale"] else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
             let command = DocumentValue.object(fields)
             let placement = try JSONDecoder().decode(WorkspaceFurnishingPlacement.self, from: JSONEncoder().encode(command))
             guard try value(placement) == command else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current, expectedModelSHA256: expectedModelSHA256) {
+            if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current,
+                expectedModelSHA256: expectedModelSHA256, infoStandIntakeId: infoStandIntakeId) {
                 var next = current
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])

@@ -383,6 +383,14 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
     }
+
+    func checkInfoStandApproval(_ registered: WorkspaceFurnishing, currentProducer: String) throws {
+        guard phase == .registered, declaration.kind == .infoStand, furnishing == registered,
+              nativeImportDigest(currentProducer),
+              preparation.map({ $0.runtimeManifestSHA256 == currentProducer }) ?? true else {
+            throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED")
+        }
+    }
 }
 
 public enum WorkspaceFurnishingIntakeAction: String, Sendable {

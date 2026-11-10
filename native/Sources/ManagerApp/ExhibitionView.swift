@@ -1397,14 +1397,15 @@ final class ExhibitionModel: ObservableObject {
         return result
     }
     func placeWorkspaceFurnishing(_ placement: WorkspaceFurnishingPlacement, access: UUID,
-                                 expectedModelSHA256: String? = nil) async throws -> Bool {
+                                 expectedModelSHA256: String? = nil, infoStandIntakeId: String? = nil) async throws -> Bool {
         try await withWorkspaceFurnishingAccess(access) { api in
             guard !immutable, !formDirty, !positionDirty, !architectureDirty,
                   viewportController.editingContextActive, var current = state else {
                 throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED")
             }
             let revision = current.revision
-            let next = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current, expectedModelSHA256: expectedModelSHA256)
+            let next = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current,
+                expectedModelSHA256: expectedModelSHA256, infoStandIntakeId: infoStandIntakeId)
             guard access == viewportAccessID, state?.revision == revision, state?.draft == current.draft else {
                 throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
             }
