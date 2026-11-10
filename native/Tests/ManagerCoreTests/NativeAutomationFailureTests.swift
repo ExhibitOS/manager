@@ -5,17 +5,21 @@ import Darwin
 
 final class NativeAutomationFailureTests: XCTestCase {
     func testPreReadyPreservationAutomationRejectsSaveAndOtherCommands() throws {
-        let manifest = "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86"
-        XCTAssertNoThrow(try NativeAutomationSession.checkPreservationOperation("read", manifest: manifest, allowed: "read"))
-        XCTAssertNoThrow(try NativeAutomationSession.checkPreservationOperation("close", manifest: manifest, allowed: "close"))
-        for operation in ["save", "load-copy", "reopen-saved", "export-static", "close"] {
-            XCTAssertThrowsError(try NativeAutomationSession.checkPreservationOperation(operation, manifest: manifest, allowed: "read")) {
-                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
+        for manifest in [
+            "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86",
+            "5cb2431e561c21e1463f78faf938a5cfc3807c9dd690a545f3474769c1c7f4a9"
+        ] {
+            XCTAssertNoThrow(try NativeAutomationSession.checkPreservationOperation("read", manifest: manifest, allowed: "read"))
+            XCTAssertNoThrow(try NativeAutomationSession.checkPreservationOperation("close", manifest: manifest, allowed: "close"))
+            for operation in ["save", "load-copy", "reopen-saved", "export-static", "close"] {
+                XCTAssertThrowsError(try NativeAutomationSession.checkPreservationOperation(operation, manifest: manifest, allowed: "read")) {
+                    XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
+                }
             }
-        }
-        for operation in ["cancel", "status", "read"] {
-            XCTAssertThrowsError(try NativeAutomationSession.checkPreservationOperation(operation, manifest: manifest, allowed: "close")) {
-                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
+            for operation in ["cancel", "status", "read"] {
+                XCTAssertThrowsError(try NativeAutomationSession.checkPreservationOperation(operation, manifest: manifest, allowed: "close")) {
+                    XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
+                }
             }
         }
         let ordinary = "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a"

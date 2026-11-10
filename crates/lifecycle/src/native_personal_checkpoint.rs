@@ -132,7 +132,7 @@ fn catalog45_activation_saved_document(
     expected: Option<&str>, document: &super::installations::native_document::DocumentState,
 ) -> Result<bool> {
     let preservation = crate::native_payload::catalog45_startup_recovery(pair)
-        == Some(crate::native_payload::Catalog45StartupRecovery::PreReadyPreservation);
+        .is_some_and(crate::native_payload::Catalog45StartupRecovery::preserves_pre_ready);
     if pair.0 != pair.1 && !retained_recovery && !historical_startup && !preservation {
         return Ok(false);
     }
@@ -234,8 +234,7 @@ fn startup_cancellation_proof_matches(
 ) -> bool {
     #[cfg(feature = "workspace-v5-owner-validation")]
     if let Some(startup) = crate::native_payload::catalog45_startup_recovery(pair) {
-        let historical_hayes = startup != crate::native_payload::Catalog45StartupRecovery::PreReadyPreservation;
-        return retained.is_none() && proof.is_some() == historical_hayes;
+        return retained.is_none() && proof.is_some() == startup.requires_hayes_proof();
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let _ = (pair, retained);
@@ -255,7 +254,7 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     }
     #[cfg(feature = "workspace-v5-owner-validation")]
     if crate::native_payload::catalog45_startup_recovery(pair)
-        == Some(crate::native_payload::Catalog45StartupRecovery::PreReadyPreservation)
+        .is_some_and(crate::native_payload::Catalog45StartupRecovery::preserves_pre_ready)
     {
         return CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES;
     }
@@ -1670,6 +1669,7 @@ mod tests {
         let captions = "4fbd168027090f38776bd75990e27ed336db6c65d15c4af3f17bf428d140440b";
         let prepared_sign_audio = "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a";
         let pre_ready_preservation = "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86";
+        let pre_ready_hayes_preservation = "5cb2431e561c21e1463f78faf938a5cfc3807c9dd690a545f3474769c1c7f4a9";
         let caption_fixture = "31b12d9f6fac4019f39c2a9128ced09b7ee918c49ffb119beb544e5e40831ac0";
         let publication_limit = checkpoint_inventory_limit((current, publication), None);
         assert_eq!(publication_limit, 4_294_967_296);
@@ -1679,6 +1679,10 @@ mod tests {
         assert_eq!(checkpoint_inventory_limit(pre_ready, None), publication_limit);
         assert!(startup_cancellation_proof_matches(pre_ready, None, None));
         assert!(!startup_cancellation_proof_matches(pre_ready, None, Some(&proof)));
+        let pre_ready_hayes = (prepared_sign_audio, pre_ready_hayes_preservation);
+        assert_eq!(checkpoint_inventory_limit(pre_ready_hayes, Some(&proof)), publication_limit);
+        assert!(!startup_cancellation_proof_matches(pre_ready_hayes, None, None));
+        assert!(startup_cancellation_proof_matches(pre_ready_hayes, None, Some(&proof)));
         let mut document = crate::installations::native_document::DocumentState {
             format: 1, revision: 1, workspace_id: Uuid::new_v4().to_string(),
             tenant_id: Uuid::new_v4().to_string(), principal_id: Uuid::new_v4().to_string(),
@@ -1686,9 +1690,12 @@ mod tests {
         };
         let expected = saved_document_digest(&document).unwrap();
         assert!(catalog45_activation_saved_document(pre_ready, false, false, Some(&expected), &document).unwrap());
+        assert!(catalog45_activation_saved_document(pre_ready_hayes, false, true, Some(&expected), &document).unwrap());
         assert!(!catalog45_activation_saved_document((previous, current), false, false, Some(&expected), &document).unwrap());
         document.revision += 1;
         assert_eq!(catalog45_activation_saved_document(pre_ready, false, false, Some(&expected), &document).unwrap_err().code,
+            "NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
+        assert_eq!(catalog45_activation_saved_document(pre_ready_hayes, false, true, Some(&expected), &document).unwrap_err().code,
             "NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
         for pair in [(captions, publication), (captions, captions), (current, captions), (caption_fixture, captions),
                      (prepared_sign_audio, captions), (publication, prepared_sign_audio), (prepared_sign_audio, prepared_sign_audio),

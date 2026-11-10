@@ -105,7 +105,8 @@ impl Session {
     ) -> Result<()> {
         let (trial, transition) = self.furnishing_transition_trial.as_ref().ok_or_else(|| err(ERROR))?;
         if self.job_id.is_some() || self.startup_cancellation_045.is_some() || self.transition_fence.is_none()
-            || transition.startup_recovery().is_none() || proof.failed_generation != trial.source.id
+            || !transition.startup_recovery().is_some_and(crate::native_payload::Catalog45StartupRecovery::requires_hayes_proof)
+            || proof.failed_generation != trial.source.id
             || self.retained_product_image.is_some() || self.oex_retained_cleanup.is_some()
         {
             return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));

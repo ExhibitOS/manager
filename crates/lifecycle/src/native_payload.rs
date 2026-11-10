@@ -649,12 +649,25 @@ const CATALOG45_PRE_READY_PRESERVATION_TARGET: RuntimeTuple = (
     "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86",
 );
 
+const CATALOG45_PRE_READY_HAYES_PRESERVATION_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-catalog-045-pre-ready-hayes-preservation-capability-v1.json",
+    145,
+    "68eb708a876ec949bb26e0789b569790a4cefeb69e233c4c1e7f3186c5d3d262",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET: RuntimeTuple = (
+    "3575da477b91c0300a2781e9272fd372a385cc5a",
+    "a6cab25d569db1ad4cb3f1c3cc29d9019c2573241e7465441e923ca2fc74a721",
+    "5cb2431e561c21e1463f78faf938a5cfc3807c9dd690a545f3474769c1c7f4a9",
+);
+
 pub(crate) fn catalog45_recovery_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_RECOVERY_TARGET == tuple || CATALOG45_SELECTED_RECOVERY_TARGET == tuple
         || CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET == tuple
         || CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET == tuple
-        || CATALOG45_PRE_READY_PRESERVATION_TARGET == tuple;
+        || CATALOG45_PRE_READY_PRESERVATION_TARGET == tuple
+        || CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -897,6 +910,18 @@ pub(crate) enum Catalog45StartupRecovery {
     Cancelled,
     Unqualified,
     PreReadyPreservation,
+    PreReadyHayesPreservation,
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+impl Catalog45StartupRecovery {
+    pub(crate) fn preserves_pre_ready(self) -> bool {
+        matches!(self, Self::PreReadyPreservation | Self::PreReadyHayesPreservation)
+    }
+
+    pub(crate) fn requires_hayes_proof(self) -> bool {
+        matches!(self, Self::Cancelled | Self::Unqualified | Self::PreReadyHayesPreservation)
+    }
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -908,6 +933,8 @@ pub(crate) fn catalog45_startup_recovery(pair: (&str, &str)) -> Option<Catalog45
         (source, target) if source == current && target == current => Some(Catalog45StartupRecovery::Unqualified),
         (source, target) if source == CATALOG45_PREPARED_SIGN_AUDIO.2 && target == CATALOG45_PRE_READY_PRESERVATION_TARGET.2 =>
             Some(Catalog45StartupRecovery::PreReadyPreservation),
+        (source, target) if source == CATALOG45_PREPARED_SIGN_AUDIO.2 && target == CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET.2 =>
+            Some(Catalog45StartupRecovery::PreReadyHayesPreservation),
         _ => None,
     }
 }
@@ -937,6 +964,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS.2 == manifest
         || CATALOG45_PREPARED_SIGN_AUDIO.2 == manifest
         || CATALOG45_PRE_READY_PRESERVATION_TARGET.2 == manifest
+        || CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET.2 == manifest
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
@@ -979,6 +1007,7 @@ impl FurnishingTransition {
                 Catalog45StartupRecovery::Cancelled => (CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET, CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET),
                 Catalog45StartupRecovery::Unqualified => (CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET, CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET),
                 Catalog45StartupRecovery::PreReadyPreservation => (CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PRE_READY_PRESERVATION_TARGET),
+                Catalog45StartupRecovery::PreReadyHayesPreservation => (CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET),
             };
             return Some(Self::Recover45 { source, target });
         }
@@ -2272,6 +2301,28 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact prepared-sign and pre-ready Hayes preservation runtime payloads"]
+    fn opens_reviewed_catalog45_pre_ready_hayes_preservation_pair() {
+        let source = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PREPARED_SIGN_AUDIO_RUNTIME").unwrap());
+        let target = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PRE_READY_HAYES_PRESERVATION_RUNTIME").unwrap());
+        let old = Payload::open_saved_workspace_transition(&source).unwrap();
+        let new = Payload::open_saved_workspace_transition(&target).unwrap();
+        let pair = (old.manifest_sha256.as_str(), new.manifest_sha256.as_str());
+        let transition = FurnishingTransition::from_manifests(pair).unwrap();
+        assert_eq!(transition.startup_recovery(), Some(Catalog45StartupRecovery::PreReadyHayesPreservation));
+        assert!(!saved_workspace_transition_supported((pair.1, pair.0)));
+        assert!(!saved_workspace_transition_supported((pair.1, pair.1)));
+        assert!(!saved_workspace_transition_supported((CATALOG45_PRE_READY_PRESERVATION_TARGET.2, pair.1)));
+        assert!(new.catalog45_recovery_validation());
+        assert!(!new.ordinary_fresh_furnishing());
+        assert!(new.static_detail_export_resources(false).is_err());
+        assert!(new.static_detail_export_resources(true).is_err());
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(old.workspace_furnishing_ledger(catalog).unwrap(), new.workspace_furnishing_ledger(catalog).unwrap());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact isolated placed exit-door runtime payload"]
     fn opens_reviewed_placed_exit_door_runtime() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_EXIT_DOOR_RUNTIME").unwrap());
@@ -3184,6 +3235,15 @@ impl Payload {
         false
     }
 
+    fn catalog45_pre_ready_hayes_preservation_validation(&self) -> bool {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        return CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET == (
+            self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str(),
+        );
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        false
+    }
+
     pub(crate) fn fresh_image_recovery_enabled(&self) -> bool {
         self.fresh_image_release() || fresh_image_recovery_host_matches((
             &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
@@ -3323,12 +3383,14 @@ impl Payload {
         let startup_cancel_recovery = self.catalog45_startup_cancel_recovery_validation();
         let retained_recovery = self.catalog45_retained_image_recovery_validation() || startup_cancel_recovery;
         let pre_ready_preservation = self.catalog45_pre_ready_preservation_validation();
+        let pre_ready_hayes_preservation = self.catalog45_pre_ready_hayes_preservation_validation();
         for ((path, bytes, sha), expected) in [
-            (CATALOG45_RECOVERY_CAPABILITY, self.catalog45_recovery_validation() && !selected_recovery && !retained_recovery && !pre_ready_preservation),
+            (CATALOG45_RECOVERY_CAPABILITY, self.catalog45_recovery_validation() && !selected_recovery && !retained_recovery && !pre_ready_preservation && !pre_ready_hayes_preservation),
             (CATALOG45_SELECTED_RECOVERY_CAPABILITY, selected_recovery),
             (CATALOG45_RETAINED_IMAGE_RECOVERY_CAPABILITY, retained_recovery),
             (CATALOG45_STARTUP_CANCEL_RECOVERY_CAPABILITY, startup_cancel_recovery),
             (CATALOG45_PRE_READY_PRESERVATION_CAPABILITY, pre_ready_preservation),
+            (CATALOG45_PRE_READY_HAYES_PRESERVATION_CAPABILITY, pre_ready_hayes_preservation),
         ] {
             let marker = self.manifest.files.iter().find(|file| file.path == path);
             if marker.is_some() != expected || marker.is_some_and(|file|
@@ -4001,7 +4063,9 @@ impl Payload {
             || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
             || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance
             || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == provenance
-            || (catalog45_recovery_host_matches(provenance) && !self.catalog45_pre_ready_preservation_validation());
+            || (catalog45_recovery_host_matches(provenance)
+                && !self.catalog45_pre_ready_preservation_validation()
+                && !self.catalog45_pre_ready_hayes_preservation_validation());
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let combined_local_validation = false;
         if (CATALOG40_WHEAT_DETAIL != Some(provenance)

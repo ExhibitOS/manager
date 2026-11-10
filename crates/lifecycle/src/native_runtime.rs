@@ -415,7 +415,8 @@ fn catalog45_failed_reopen_shape(failed: &Context, startup: Option<Catalog45Star
         && failed.exits.get("postgres") == Some(&0) && failed.exits.get("auxiliary") == Some(&0)
         && failed.exits.get("node") == Some(&node_exit)
         && (startup.is_none() || (!failed.readiness.ready && failed.exits.len() == 3))
-        && (!matches!(startup, Some(Catalog45StartupRecovery::Unqualified | Catalog45StartupRecovery::PreReadyPreservation))
+        && (!matches!(startup, Some(Catalog45StartupRecovery::Unqualified | Catalog45StartupRecovery::PreReadyPreservation
+                | Catalog45StartupRecovery::PreReadyHayesPreservation))
             || (failed.readiness.version.is_none() && failed.readiness.protocol_version.is_none()
                 && failed.readiness.error_code.is_none()))
 }
@@ -469,9 +470,11 @@ fn catalog45_cancelled_startup_is_separate_from_unqualified_stop() {
     let cancelled = Some(Catalog45StartupRecovery::Cancelled);
     let unqualified = Some(Catalog45StartupRecovery::Unqualified);
     let preservation = Some(Catalog45StartupRecovery::PreReadyPreservation);
+    let hayes_preservation = Some(Catalog45StartupRecovery::PreReadyHayesPreservation);
     assert!(catalog45_failed_reopen_shape(&context, cancelled));
     assert!(!catalog45_failed_reopen_shape(&context, unqualified));
     assert!(!catalog45_failed_reopen_shape(&context, preservation));
+    assert!(!catalog45_failed_reopen_shape(&context, hayes_preservation));
     assert!(!catalog45_failed_reopen_shape(&context, None));
     context.readiness.ready = true;
     assert!(!catalog45_failed_reopen_shape(&context, cancelled));
@@ -484,15 +487,18 @@ fn catalog45_cancelled_startup_is_separate_from_unqualified_stop() {
     assert!(catalog45_failed_reopen_shape(&context, None));
     assert!(catalog45_failed_reopen_shape(&context, unqualified));
     assert!(catalog45_failed_reopen_shape(&context, preservation));
+    assert!(catalog45_failed_reopen_shape(&context, hayes_preservation));
     assert!(!catalog45_failed_reopen_shape(&context, cancelled));
     context.readiness.ready = true;
     assert!(!catalog45_failed_reopen_shape(&context, unqualified));
     assert!(!catalog45_failed_reopen_shape(&context, preservation));
+    assert!(!catalog45_failed_reopen_shape(&context, hayes_preservation));
     assert!(catalog45_failed_reopen_shape(&context, None));
     context.readiness.ready = false;
     context.readiness.version = Some("unexpected".into());
     assert!(!catalog45_failed_reopen_shape(&context, unqualified));
     assert!(!catalog45_failed_reopen_shape(&context, preservation));
+    assert!(!catalog45_failed_reopen_shape(&context, hayes_preservation));
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
