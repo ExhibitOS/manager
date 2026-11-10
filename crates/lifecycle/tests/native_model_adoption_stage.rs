@@ -29,6 +29,14 @@ struct Stage {
 
 impl Stage {
     fn new() -> Self {
+        Self::fixture(false)
+    }
+
+    fn empty() -> Self {
+        Self::fixture(true)
+    }
+
+    fn fixture(empty: bool) -> Self {
         let root = std::env::temp_dir().join(format!("manager-adoption-{}", Uuid::new_v4()));
         let operation = Uuid::new_v4();
         let mut builder = DirBuilder::new();
@@ -43,7 +51,7 @@ impl Stage {
                 .mode(0o600)
                 .open(stage.join(role))
                 .unwrap()
-                .write_all(bytes)
+                .write_all(if empty { &[] } else { bytes })
                 .unwrap();
         }
         let directory = File::open(&root).unwrap();
@@ -76,9 +84,21 @@ impl Stage {
     }
 
     fn invoke_wire(&self, request: &[u8]) -> Output {
+        self.run("--model-adoption-stage-read-v1", request)
+    }
+
+    fn write(&self, request: &Value, body: &[u8]) -> Output {
+        let request = serde_json::to_vec(request).unwrap();
+        let mut wire = (request.len() as u32).to_be_bytes().to_vec();
+        wire.extend(request);
+        wire.extend(body);
+        self.run("--model-adoption-stage-write-v1", &wire)
+    }
+
+    fn run(&self, operation: &str, request: &[u8]) -> Output {
         let root_fd = self.directory.as_raw_fd();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_exhibitos-native"));
-        cmd.arg("--model-adoption-stage-read-v1")
+        cmd.arg(operation)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -167,4 +187,37 @@ fn rejects_unsafe_directory_and_leaf_without_output() {
     fs::rename(op_directory, &moved).unwrap();
     symlink(Path::new("other"), op_directory).unwrap();
     refused(stage.invoke(&request));
+}
+
+#[test]
+fn writer_accepts_only_exact_empty_roles_and_reader_observes_them() {
+    let stage = Stage::empty();
+    for (role, bytes) in [("original", ORIGINAL), ("display", DISPLAY)] {
+        let request = stage.request(role, bytes);
+        let output = stage.write(&request, bytes);
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, b"{\"version\":1,\"outcome\":\"written\"}\n");
+        assert!(output.stderr.is_empty());
+        assert_eq!(stage.invoke(&request).stdout, bytes);
+        refused(stage.write(&request, bytes));
+        assert_eq!(fs::read(stage.leaf(role)).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn writer_rejects_truncated_tampered_extra_and_unreserved_bytes() {
+    let stage = Stage::empty();
+    let request = stage.request("original", ORIGINAL);
+    let mut extra = ORIGINAL.to_vec();
+    extra.push(0);
+    for bytes in [&ORIGINAL[1..], &vec![0; ORIGINAL.len()], &extra] {
+        refused(stage.write(&request, bytes));
+        assert_eq!(fs::metadata(stage.leaf("original")).unwrap().len(), 0);
+    }
+    fs::remove_file(stage.leaf("original")).unwrap();
+    refused(stage.write(&request, ORIGINAL));
+    assert!(!stage.leaf("original").exists());
+    symlink(stage.leaf("display"), stage.leaf("original")).unwrap();
+    refused(stage.write(&request, ORIGINAL));
+    assert_eq!(fs::metadata(stage.leaf("display")).unwrap().len(), 0);
 }

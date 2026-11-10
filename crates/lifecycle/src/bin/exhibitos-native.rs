@@ -9,11 +9,13 @@ use std::io::{BufRead, Read};
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     #[cfg(target_os = "macos")]
-    if args.len() == 2 && args[1] == "--model-adoption-stage-read-v1" {
-        if let Err(error) = exhibitos_lifecycle::native_model_adoption_stage::read_inherited_stage(
-            io::stdin().lock(),
-            io::stdout().lock(),
-        ) {
+    if args.len() == 2 && (args[1] == "--model-adoption-stage-read-v1" || args[1] == "--model-adoption-stage-write-v1") {
+        use exhibitos_lifecycle::native_model_adoption_stage::{read_inherited_stage, write_inherited_stage};
+        let read = args[1] == "--model-adoption-stage-read-v1";
+        let input = io::stdin().lock();
+        let output = io::stdout().lock();
+        let result = if read { read_inherited_stage(input, output) } else { write_inherited_stage(input, output) };
+        if let Err(error) = result {
             eprintln!("{}", error.code);
             std::process::exit(1);
         }

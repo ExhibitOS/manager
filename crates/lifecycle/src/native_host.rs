@@ -144,6 +144,7 @@ pub struct Host {
     retained_oex_cleanup: Option<(crate::native_runtime::oex_retained_cleanup::Selection, bool)>,
     state: Arc<Mutex<State>>,
     worker: Option<thread::JoinHandle<()>>,
+    adoption: Option<crate::native_runtime::model_adoption::Operation>,
     exporter: super::installations::native_static_export::Exporter,
     hoster: super::installations::native_hosting::Hoster,
 }
@@ -203,6 +204,7 @@ impl Host {
                 pre_ready_guard_diagnostic: None,
             })),
             worker: None,
+            adoption: None,
         }
     }
     /// Fresh ordinary automation workspaces use their own validated ports.
@@ -1231,6 +1233,21 @@ impl Host {
                 .is_some()
         {
             return Err(err("NATIVE_RESTORE_PENDING"));
+        }
+        if let UiCommand::NativeModelAdoption { selection_token, adoption } = request.command {
+            let root = self.selected(&selection_token)?;
+            if self.exporter.active() || self.hoster.active() {
+                return Err(err("NATIVE_OPERATION_ACTIVE"));
+            }
+            let document = self.controller.native_document(&selection_token)?;
+            let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+            if state.root.as_ref() != Some(&root) || state.busy || state.detail_closing || state.selected_oex {
+                return Err(err("NATIVE_NOT_READY"));
+            }
+            let session = state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?;
+            return crate::native_runtime::model_adoption::Operation::execute(
+                &mut self.adoption, session, *adoption, &document,
+            );
         }
         if let UiCommand::NativeMaintenance {
             selection_token,

@@ -408,3 +408,34 @@ assert process.wait(timeout=120) == 0  # stdin was never closed to dispatch
 This sequential example has one outstanding request. A client issuing status or
 cancel during an operation must correlate all responses by requestId and retain
 the original operation response as well as the control response.
+
+## Private native model adoption
+
+The paired macOS helper accepts `native_model_adoption` over its existing
+private host pipe, with the current `selection_token` and one closed
+`adoption` action. This requires a qualified ordinary runtime with the
+dedicated adoption capability. The actions run in order.
+
+- `stage_source` takes `sourceArtworkId`, `sourceArtworkRevision`,
+  `original`, `display`, and `target`. Each model identity contains
+  `sha256` and `bytes`. Target identity contains `workspaceId`,
+  `tenantId`, `principalId`, `artworkId`, `artworkRevision`,
+  `exhibitionId`, `placementId`, and `etag`. The helper reserves both
+  fixed leaves and retains the exact source grant itself.
+- Stop the source normally and select the already registered target in the
+  same managed helper process. Start the target and load its saved draft.
+  `preview_target` takes `operationId` and the current native document
+  `expectedRevision`. It returns the exact preview and `grantSha256`.
+- After the target owner confirms the exact preview, `confirm_target`
+  takes `operationId`, `grantSha256`, and the same `expectedRevision`.
+  It checks the saved draft, artwork, placement, and runtime generation
+  before the target transaction. Read the resulting saved head using the
+  normal authenticated authoring path.
+- `status_target` takes `operationId` and `grantSha256` to read the
+  target's durable result. An unresolved status retains staging for
+  reconciliation. The confirmation command requires the preview retained by
+  the same runtime generation and accepts only its operation ID and digest.
+
+The helper retains reserved bytes after interruptions. The operation
+supports already registered source and target selections within one managed
+helper process. Separate managed profiles require an approved operator handoff.

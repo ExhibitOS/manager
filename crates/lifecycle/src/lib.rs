@@ -25,6 +25,8 @@ pub mod native_runtime;
 #[cfg(target_os = "macos")]
 pub mod native_model_adoption_stage;
 #[cfg(target_os = "macos")]
+mod native_model_adoption_wire;
+#[cfg(target_os = "macos")]
 mod native_account_home;
 #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
 pub mod native_static_refresh;

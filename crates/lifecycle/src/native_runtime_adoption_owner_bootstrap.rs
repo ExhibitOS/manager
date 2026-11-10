@@ -42,9 +42,40 @@ pub(in super::super) struct AdoptionSetup {
 }
 
 pub(in super::super) struct AdoptionConnection {
-    _channel: Connection,
-    _pin: DedicatedOwnerPin,
-    _root: DirectoryPin,
+    channel: Connection,
+    pin: DedicatedOwnerPin,
+    root: DirectoryPin,
+}
+
+impl AdoptionConnection {
+    pub(in super::super) fn root(&self) -> Result<File> {
+        let file = self.root.try_clone_file().map_err(|_| unavailable())?;
+        if !private_directory(&file.metadata().map_err(|_| unavailable())?) {
+            return Err(unavailable());
+        }
+        Ok(file)
+    }
+
+    pub(in super::super) fn exchange(
+        &mut self,
+        generation: &str,
+        request: &[u8],
+        deadline: std::time::Instant,
+        cancelled: &AtomicBool,
+        check: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<Vec<u8>> {
+        if self.pin.runtime_generation().to_string() != generation {
+            return Err(unavailable());
+        }
+        self.root()?;
+        check()?;
+        self.channel
+            .send_frame(request, deadline, cancelled, check)?;
+        let response = self.channel.read_frame(deadline, cancelled, check)?;
+        check()?;
+        self.root()?;
+        Ok(response)
+    }
 }
 
 #[derive(Serialize)]
@@ -222,9 +253,9 @@ impl AdoptionSetup {
         )?;
         self.check_root()?;
         Ok(AdoptionConnection {
-            _channel: channel,
-            _pin: self.pin,
-            _root: self.root,
+            channel,
+            pin: self.pin,
+            root: self.root,
         })
     }
 }
