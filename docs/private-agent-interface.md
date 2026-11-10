@@ -452,7 +452,42 @@ The helper preserves reserved bytes across interruption. A new helper can
 read the target receipt by its operation ID and grant digest. Retirement
 requires the original helper's retained file identities. The operation
 supports registered source and target selections within one managed helper
-process. Separate managed profiles require an approved operator handoff.
+process.
+
+For two existing managed profiles, the exact reviewed macOS debug runtime
+also provides the private operator entry below. Supply the two explicitly
+reviewed profile paths and their currently selected registered installation IDs.
+
+```sh
+exhibitos-native --model-adoption-profile-pair-v1 \
+  /absolute/source-profile SOURCE_INSTALLATION_ID \
+  /absolute/target-profile TARGET_INSTALLATION_ID
+```
+
+This entry holds both exclusive profile sessions until it closes. Both
+workspaces must have a clean completed generation under the same exact runtime,
+with no restore proof on the source and authenticated carried restore proof on
+the target. The source starts first and only its private staging commands are
+available. After its normal stop, `switch_target_profile` takes the retained
+`operationId` under the source selection token. It checks the staged source
+generation, unchanged target owner and physical binding, saved draft and ETag,
+and exact reserved bytes before transferring the typed grant in memory. Its
+response is the target context with the target selection token. Start that
+target before preview and explicit confirmation. The switch is one-way for the
+helper session. Close normally to return both leases.
+
+A grant created under the acquired-original publication runtime also binds
+the source credit line as exact UTF-8. Existing target artwork attribution is
+preserved. After durable adoption and saving the current target head, the
+authenticated target owner may explicitly approve the original through
+`POST /studio/exhibitions/:id/native-original-static-approval` with its saved
+`If-Match`. Its closed body contains `kind: "adopted-model-custody-v1"`,
+`artworkId`, `artworkRevision`, `operationId`, and `grantSha256`. A successful
+response confirms `approved`, `artworkId`, and `artworkRevision`. Normal native
+`export-static-native-original` then uses the saved head and a fresh output
+request. The v4 output preserves the acquired-original detail candidate
+separately from the approved display model. The browser still applies its
+device budget and fallback checks.
 
 The isolated validation pair uses the explicit fresh helper profile entry.
 After the first workspace drains, register and initialize the second workspace
