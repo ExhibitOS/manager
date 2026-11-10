@@ -213,8 +213,9 @@ fn startup_cancellation_proof_matches(
     pair: (&str, &str), retained: Option<&RetainedProductImage>, proof: Option<&StartupCancellation045>,
 ) -> bool {
     #[cfg(feature = "workspace-v5-owner-validation")]
-    if crate::native_payload::catalog45_startup_recovery(pair).is_some() {
-        return retained.is_none() && proof.is_some();
+    if let Some(startup) = crate::native_payload::catalog45_startup_recovery(pair) {
+        let historical_hayes = startup != crate::native_payload::Catalog45StartupRecovery::PreReadyPreservation;
+        return retained.is_none() && proof.is_some() == historical_hayes;
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let _ = (pair, retained);
@@ -231,6 +232,12 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         == Some(crate::native_payload::Catalog45StartupRecovery::Unqualified)
     {
         return CATALOG45_STARTUP_RECOVERY_CHECKPOINT_MAX_BYTES;
+    }
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    if crate::native_payload::catalog45_startup_recovery(pair)
+        == Some(crate::native_payload::Catalog45StartupRecovery::PreReadyPreservation)
+    {
+        return CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(not(feature = "workspace-v5-owner-validation"))]
     let _ = (pair, proof);
@@ -1433,7 +1440,8 @@ impl InstallationController {
                     }
                 } else if let Some(proof) = retained.filter(|proof| proof.recovery.is_some()) {
                     check_retained_recovery_generation(proof, &generation)?;
-                } else if pair.0 != pair.1 {
+                } else if pair.0 != pair.1 && crate::native_payload::catalog45_startup_recovery(pair)
+                    != Some(crate::native_payload::Catalog45StartupRecovery::PreReadyPreservation) {
                     self.check_catalog45_recovery_export_unlocked(service, &generation, document)?;
                 }
             }
@@ -1640,13 +1648,19 @@ mod tests {
         let publication = "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203";
         let captions = "4fbd168027090f38776bd75990e27ed336db6c65d15c4af3f17bf428d140440b";
         let prepared_sign_audio = "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a";
+        let pre_ready_preservation = "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86";
         let caption_fixture = "31b12d9f6fac4019f39c2a9128ced09b7ee918c49ffb119beb544e5e40831ac0";
         let publication_limit = checkpoint_inventory_limit((current, publication), None);
         assert_eq!(publication_limit, 4_294_967_296);
         assert_eq!(checkpoint_inventory_limit((publication, captions), None), publication_limit);
         assert_eq!(checkpoint_inventory_limit((captions, prepared_sign_audio), None), publication_limit);
+        let pre_ready = (prepared_sign_audio, pre_ready_preservation);
+        assert_eq!(checkpoint_inventory_limit(pre_ready, None), publication_limit);
+        assert!(startup_cancellation_proof_matches(pre_ready, None, None));
+        assert!(!startup_cancellation_proof_matches(pre_ready, None, Some(&proof)));
         for pair in [(captions, publication), (captions, captions), (current, captions), (caption_fixture, captions),
-                     (prepared_sign_audio, captions), (publication, prepared_sign_audio), (prepared_sign_audio, prepared_sign_audio)] {
+                     (prepared_sign_audio, captions), (publication, prepared_sign_audio), (prepared_sign_audio, prepared_sign_audio),
+                     (pre_ready_preservation, prepared_sign_audio), (pre_ready_preservation, pre_ready_preservation)] {
             assert_eq!(checkpoint_inventory_limit(pair, None), default);
         }
         assert_eq!(checkpoint_inventory_limit((publication, current), None), default);

@@ -637,11 +637,24 @@ const CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET: RuntimeTuple = (
     "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a",
 );
 
+const CATALOG45_PRE_READY_PRESERVATION_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-catalog-045-pre-ready-preservation-capability-v1.json",
+    139,
+    "c597e580c1863c6a6efbb2dcb683046aa57b1a9207e578d0828977a630f38df9",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_PRE_READY_PRESERVATION_TARGET: RuntimeTuple = (
+    "3414e771111b238f08d18a2c4775bb8477a51a63",
+    "79a9efc8e6550bb0dd998bef02c9273cf4603c9349ffce0bb7aae05cd7928037",
+    "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86",
+);
+
 pub(crate) fn catalog45_recovery_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CATALOG45_RECOVERY_TARGET == tuple || CATALOG45_SELECTED_RECOVERY_TARGET == tuple
         || CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET == tuple
-        || CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET == tuple;
+        || CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET == tuple
+        || CATALOG45_PRE_READY_PRESERVATION_TARGET == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -875,6 +888,7 @@ pub(crate) fn catalog45_native_publication_transition(pair: (&str, &str)) -> Opt
 pub(crate) enum Catalog45StartupRecovery {
     Cancelled,
     Unqualified,
+    PreReadyPreservation,
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -884,6 +898,8 @@ pub(crate) fn catalog45_startup_recovery(pair: (&str, &str)) -> Option<Catalog45
         (source, target) if source == CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET.2 && target == current =>
             Some(Catalog45StartupRecovery::Cancelled),
         (source, target) if source == current && target == current => Some(Catalog45StartupRecovery::Unqualified),
+        (source, target) if source == CATALOG45_PREPARED_SIGN_AUDIO.2 && target == CATALOG45_PRE_READY_PRESERVATION_TARGET.2 =>
+            Some(Catalog45StartupRecovery::PreReadyPreservation),
         _ => None,
     }
 }
@@ -912,6 +928,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_NATIVE_PUBLICATION_CAPACITY.2 == manifest
         || CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS.2 == manifest
         || CATALOG45_PREPARED_SIGN_AUDIO.2 == manifest
+        || CATALOG45_PRE_READY_PRESERVATION_TARGET.2 == manifest
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
@@ -950,13 +967,12 @@ impl FurnishingTransition {
             });
         }
         if let Some(startup) = catalog45_startup_recovery(pair) {
-            return Some(Self::Recover45 {
-                source: match startup {
-                    Catalog45StartupRecovery::Cancelled => CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET,
-                    Catalog45StartupRecovery::Unqualified => CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET,
-                },
-                target: CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET,
-            });
+            let (source, target) = match startup {
+                Catalog45StartupRecovery::Cancelled => (CATALOG45_RETAINED_IMAGE_RECOVERY_TARGET, CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET),
+                Catalog45StartupRecovery::Unqualified => (CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET, CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET),
+                Catalog45StartupRecovery::PreReadyPreservation => (CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PRE_READY_PRESERVATION_TARGET),
+            };
+            return Some(Self::Recover45 { source, target });
         }
         if let Some(transition) = Self::same_catalog_from_manifests(
             pair, Some(CATALOG40_DRAFT2_OEX_SELECTED), Some(CATALOG40_RETAINED_OEX_CLEANUP),
@@ -2227,6 +2243,27 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact prepared-sign and pre-ready preservation runtime payloads"]
+    fn opens_reviewed_catalog45_pre_ready_preservation_pair() {
+        let source = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PREPARED_SIGN_AUDIO_RUNTIME").unwrap());
+        let target = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PRE_READY_PRESERVATION_RUNTIME").unwrap());
+        let old = Payload::open_saved_workspace_transition(&source).unwrap();
+        let new = Payload::open_saved_workspace_transition(&target).unwrap();
+        let pair = (old.manifest_sha256.as_str(), new.manifest_sha256.as_str());
+        let transition = FurnishingTransition::from_manifests(pair).unwrap();
+        assert_eq!(transition.startup_recovery(), Some(Catalog45StartupRecovery::PreReadyPreservation));
+        assert!(matches!(transition, FurnishingTransition::Recover45 { .. }));
+        assert!(!saved_workspace_transition_supported((pair.1, pair.0)));
+        assert!(!saved_workspace_transition_supported((pair.0, pair.0)));
+        assert!(new.catalog45_recovery_validation());
+        assert!(!new.ordinary_fresh_furnishing());
+        assert!(new.static_detail_export_resources(true).is_err());
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(old.workspace_furnishing_ledger(catalog).unwrap(), new.workspace_furnishing_ledger(catalog).unwrap());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact combined catalog 045 and its sealed retained-image recovery successor"]
     fn opens_reviewed_catalog45_retained_image_recovery() {
         let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_RETAINED_PRODUCT_IMAGE_RUNTIME").unwrap());
@@ -3116,6 +3153,15 @@ impl Payload {
         false
     }
 
+    fn catalog45_pre_ready_preservation_validation(&self) -> bool {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        return CATALOG45_PRE_READY_PRESERVATION_TARGET == (
+            self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str(),
+        );
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        false
+    }
+
     pub(crate) fn fresh_image_recovery_enabled(&self) -> bool {
         self.fresh_image_release() || fresh_image_recovery_host_matches((
             &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
@@ -3254,11 +3300,13 @@ impl Payload {
         let selected_recovery = self.catalog45_selected_recovery_validation();
         let startup_cancel_recovery = self.catalog45_startup_cancel_recovery_validation();
         let retained_recovery = self.catalog45_retained_image_recovery_validation() || startup_cancel_recovery;
+        let pre_ready_preservation = self.catalog45_pre_ready_preservation_validation();
         for ((path, bytes, sha), expected) in [
-            (CATALOG45_RECOVERY_CAPABILITY, self.catalog45_recovery_validation() && !selected_recovery && !retained_recovery),
+            (CATALOG45_RECOVERY_CAPABILITY, self.catalog45_recovery_validation() && !selected_recovery && !retained_recovery && !pre_ready_preservation),
             (CATALOG45_SELECTED_RECOVERY_CAPABILITY, selected_recovery),
             (CATALOG45_RETAINED_IMAGE_RECOVERY_CAPABILITY, retained_recovery),
             (CATALOG45_STARTUP_CANCEL_RECOVERY_CAPABILITY, startup_cancel_recovery),
+            (CATALOG45_PRE_READY_PRESERVATION_CAPABILITY, pre_ready_preservation),
         ] {
             let marker = self.manifest.files.iter().find(|file| file.path == path);
             if marker.is_some() != expected || marker.is_some_and(|file|
