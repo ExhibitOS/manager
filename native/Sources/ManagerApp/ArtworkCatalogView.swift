@@ -9,6 +9,8 @@ struct ArtworkCatalogView: View {
     let ready: Bool
     var compact = false
     var condensed = false
+    var addArtwork: (() -> Void)? = nil
+    var catalogDrag: CatalogDragSession?
     @State private var expanded = true
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 10) {
@@ -27,6 +29,11 @@ struct ArtworkCatalogView: View {
                         .menuStyle(.borderlessButton).fixedSize()
                     } else { filters }
                 }
+                if let addArtwork {
+                    Button("작품 추가", systemImage: "plus", action: addArtwork)
+                        .help("작품 정보·파일·권리를 등록하고 승인합니다.")
+                        .disabled(!ready || model.draft == nil || !model.canSelectCatalog || model.immutable)
+                }
             }
             if expanded {
                 if model.library.isEmpty {
@@ -34,13 +41,21 @@ struct ArtworkCatalogView: View {
                 } else if model.visibleCatalog.isEmpty {
                     Text("조건에 맞는 작품이 없습니다. 검색어나 필터를 바꿔 보세요.").foregroundStyle(.secondary)
                 } else {
-                    ScrollView(.horizontal) {
-                        LazyHStack(alignment: .top, spacing: 8) {
-                            ForEach(model.visibleCatalog) { entry in
-                                catalogCard(entry)
-                                    .task(id: model.viewportAccessID.uuidString + ":" + String(controller.acceptedSequence) + ":" + model.catalogImageKey(entry)) { await model.loadCatalogImage(entry) }
+                    ScrollViewReader { proxy in
+                        ScrollView(.horizontal) {
+                            LazyHStack(alignment: .top, spacing: 8) {
+                                ForEach(model.visibleCatalog) { entry in
+                                    draggableCard(entry)
+                                        .id(entry.id)
+                                        .task(id: model.viewportAccessID.uuidString + ":" + String(controller.acceptedSequence) + ":" + model.catalogImageKey(entry)) { await model.loadCatalogImage(entry) }
+                                }
+                            }.padding(2)
+                        }
+                        .task(id: model.catalogRevealID) {
+                            if let id = model.catalogRevealID, model.catalogArtworkId == id {
+                                proxy.scrollTo(id, anchor: .center)
                             }
-                        }.padding(2)
+                        }
                     }.frame(height: compact ? (condensed ? 88 : 110) : 222)
                 }
             }
@@ -73,6 +88,7 @@ struct ArtworkCatalogView: View {
         .background(Color(nsColor: .controlBackgroundColor))
         .onAppear { if condensed { expanded = false } }
         .onChange(of: condensed) { _, value in if value && !model.placingArtwork { expanded = false } }
+        .onChange(of: model.catalogRevealID) { _, id in if id != nil { expanded = true } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             Task { await model.cancelVisualArtworkPlacement() }
         }
@@ -116,6 +132,13 @@ struct ArtworkCatalogView: View {
         Picker("작품 필터", selection: $model.catalogFilter) {
             ForEach(ArtworkCatalogFilter.allCases, id: \.self) { Text($0.label).tag($0) }
         }.pickerStyle(.segmented).frame(minWidth: compact ? 190 : 280)
+    }
+    @ViewBuilder private func draggableCard(_ entry: ArtworkCatalogEntry) -> some View {
+        if let catalogDrag, controller.catalogDropSupported, ready, model.canPlaceVisually(entry) {
+            catalogCard(entry).onDrag { catalogDrag.provider(for: .artwork(entry), model: model) }
+        } else {
+            catalogCard(entry)
+        }
     }
     private func catalogCard(_ entry: ArtworkCatalogEntry) -> some View {
         let selected = model.catalogArtworkId == entry.id

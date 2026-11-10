@@ -16,6 +16,7 @@ final class ExhibitionModel: ObservableObject {
     @Published var catalogQuery = ""
     @Published var catalogFilter = ArtworkCatalogFilter.all
     @Published private(set) var catalogArtworkId = ""
+    @Published private(set) var catalogRevealID: String?
     @Published private(set) var catalogStatus = ""
     @Published private(set) var artworkPlacement: ArtworkPlacementIntent?
     @Published private(set) var artworkPlacementTarget: ViewportPlacementTarget?
@@ -23,7 +24,11 @@ final class ExhibitionModel: ObservableObject {
     private var placementAttempt: UUID?
     var placingArtwork: Bool { artworkPlacement != nil || placementApplying }
     var canPlaceVisually: Bool {
-        guard let entry = catalogEntries[catalogArtworkId], !ArtworkSizePresentation(entry.artwork).sourceUnitsUnknown else { return false }
+        guard let entry = catalogEntries[catalogArtworkId] else { return false }
+        return canPlaceVisually(entry)
+    }
+    func canPlaceVisually(_ entry: ArtworkCatalogEntry) -> Bool {
+        guard !ArtworkSizePresentation(entry.artwork).sourceUnitsUnknown else { return false }
         return canSelectCatalog && !immutable && viewportPresentation == .threeD && viewportController.connected && viewportController.placementSupported
     }
     @Published private(set) var libraryCursor: String?
@@ -2409,6 +2414,48 @@ final class ExhibitionModel: ObservableObject {
             refreshCatalogMetadata()
         }
     }
+    func revealApprovedCatalogArtwork(_ id: String, revision: Int) async {
+        guard canSelectCatalog, !immutable, let api, let base = draft else { return }
+        let access = viewportAccessID
+        var revealed: ArtworkSummary?
+        await work {
+            let approved = try await api.studioArtwork(id).artwork
+            let cms = approved["extensions"]["org.exhibitos.studio/cms"]
+            guard cms["artworkId"].string == id, cms["revision"].integer == Int64(revision) else {
+                throw AuthoringFailure("ARTWORK_SCOPE_CHANGED")
+            }
+            let first = try await api.artworks()
+            var page = first
+            var seenCursors: Set<String> = []
+            while true {
+                try Task.checkCancellation()
+                guard self.api === api, viewportAccessID == access, draft == base, !immutable else {
+                    throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+                }
+                if let row = page.items.first(where: { $0.id == id }) {
+                    guard !row.archived, row.revision == revision, row.approvedRevision == revision else {
+                        throw AuthoringFailure("ARTWORK_SCOPE_CHANGED")
+                    }
+                    library = first.items.filter { !$0.archived && $0.approvedRevision == $0.revision && $0.id != id }
+                    library.insert(row, at: 0)
+                    libraryCursor = first.nextCursor
+                    catalogEntries[id] = ArtworkCatalogEntry(id: id, revision: revision, artwork: approved)
+                    refreshCatalogMetadata()
+                    revealed = row
+                    return
+                }
+                guard let cursor = page.nextCursor, seenCursors.insert(cursor).inserted else {
+                    throw AuthoringFailure("ARTWORK_SCOPE_CHANGED")
+                }
+                page = try await api.artworks(cursor: cursor)
+            }
+        }
+        guard let revealed, self.api === api, viewportAccessID == access, draft == base, canSelectCatalog, !immutable else { return }
+        catalogQuery = ""
+        catalogFilter = .all
+        selectCatalog(revealed.id)
+        catalogRevealID = revealed.id
+    }
     func selectCatalog(_ id: String) {
         guard canSelectCatalog, library.contains(where: { $0.id == id }), let draft else { return }
         catalogArtworkId = id
@@ -2427,25 +2474,32 @@ final class ExhibitionModel: ObservableObject {
         catalogStatus = "배치할 작품을 골랐습니다. 위치를 확인한 뒤 배치하세요. 원본 작품은 바뀌지 않습니다."
     }
     func beginVisualArtworkPlacement() async {
-        guard canPlaceVisually, let api, let credentials = viewportCredentials, let base = draft,
-              let entry = catalogEntries[catalogArtworkId] else { return }
+        guard let entry = catalogEntries[catalogArtworkId] else { return }
+        _ = await beginVisualArtworkPlacement(entry, requiresSelection: true)
+    }
+    func beginVisualArtworkPlacement(_ entry: ArtworkCatalogEntry, requiresSelection: Bool) async -> ArtworkPlacementIntent? {
+        guard canPlaceVisually(entry), catalogEntries[entry.id]?.revision == entry.revision,
+              let api, let credentials = viewportCredentials, let base = draft else { return nil }
         let access = viewportAccessID, room = roomId, attempt = UUID()
         placementAttempt = attempt; placementApplying = true; failure = nil
         catalogStatus = "승인한 작품을 확인하고 있습니다."
         defer { if placementAttempt == attempt { placementAttempt = nil }; placementApplying = false }
         do {
             let approved = try await api.studioArtwork(entry.id)
-            guard placementAttempt == attempt, viewportAccessID == access, draft == base, roomId == room, catalogArtworkId == entry.id,
+            guard placementAttempt == attempt, viewportAccessID == access, draft == base, roomId == room, (!requiresSelection || catalogArtworkId == entry.id),
+                  catalogEntries[entry.id]?.revision == entry.revision,
                   !immutable, !pending, !formDirty, !positionDirty, !architectureDirty else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             let intent = try ArtworkPlacementIntent(artworkId: entry.id, expectedRevision: entry.revision, tenantId: credentials.tenantId, artwork: approved.artwork, roomId: room, base: base)
             artworkPlacement = intent; artworkPlacementTarget = nil
             _ = try await viewportController.placement(intent, phase: .begin)
             guard artworkPlacement?.requestId == intent.requestId else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             catalogStatus = intent.targetKind == .wall ? "3D 공간의 벽을 클릭해 미리 본 뒤 ‘여기에 배치’를 선택하세요." : "3D 공간의 바닥을 클릭해 미리 본 뒤 ‘여기에 배치’를 선택하세요."
+            return intent
         } catch {
             artworkPlacement = nil; artworkPlacementTarget = nil
             catalogStatus = "3D 배치를 시작하지 못했습니다. 기존 선택과 입력은 유지됩니다. 숫자로도 배치할 수 있습니다."
             viewportController.diagnose("PLACE", error)
+            return nil
         }
     }
     func receivePlacementTarget(_ value: DocumentValue) {
