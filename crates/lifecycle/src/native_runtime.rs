@@ -545,11 +545,12 @@ impl FurnishingTransitionTrial {
         };
         if self.source.format != 1 || !installations::uuid(&self.source.id)
             || !installations::uuid(&self.generation) || self.generation == prior.generation
-            || prior.phase != source_phase || prior.restore.is_some()
+            || prior.phase != source_phase
             || !prior.matches_catalog_tuple(transition.source_catalog().version(), transition.source())
         {
             return Err(err(furnishing_lifecycle::ERROR));
         }
+        prior.transition_restore(transition)?;
         Ok(prior)
     }
 
@@ -580,6 +581,9 @@ impl FurnishingTransitionTrial {
             return Err(err(furnishing_lifecycle::ERROR));
         }
         let observed = current_run(&service.root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        if prior.restore.is_some() {
+            prior.verify_restore_activation(&service.root)?;
+        }
         if observed != self.source {
             let target = observed.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
             if observed.id != self.generation || target.generation != self.generation
@@ -587,7 +591,7 @@ impl FurnishingTransitionTrial {
                 || target.owner != prior.owner || target.physical != prior.physical
                 || target.previous_generation.as_deref() != Some(prior.generation.as_str())
                 || !target.matches_catalog_tuple(transition.target_catalog().version(), transition.target())
-                || target.admission_kind != Binding::transition_admission(transition) || target.restore.is_some()
+                || target.admission_kind != Binding::transition_admission(transition) || target.restore != prior.restore
             {
                 return Err(err(furnishing_lifecycle::ERROR));
             }
@@ -2668,11 +2672,7 @@ const { isDeepStrictEqual } = require('node:util');
                         if active.admission_kind == Admission::VerifiedRestore
                             || active.restore.as_ref().is_some_and(|restore| restore.provenance.is_some())
                         {
-                            let proof = active.restore.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
-                            crate::installations::native_restore::verify_ordinary_activation(
-                                &self.service.root, &proof.id, &proof.backup_id, &proof.archive_manifest_sha256,
-                                &proof.target_system_identifier, &active.payload_manifest_sha256, proof.provenance.as_ref(),
-                            )?;
+                            active.verify_restore_activation(&self.service.root)?;
                         }
                     }
                     _ => return Err(err(furnishing_lifecycle::ERROR)),

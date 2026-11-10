@@ -112,6 +112,9 @@ impl Binding {
             return Err(err(ERROR));
         }
         let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
+        let retained_restore = self.catalog == 45 && self.admission_kind == Admission::CleanReopen
+            && self.restore.as_ref().is_some_and(|restore| restore.provenance.is_some())
+            && crate::native_payload::catalog45_retained_restore_payload(tuple).is_some();
         let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
             42 => crate::native_payload::hayes_validation_host_matches(tuple),
             43 => crate::native_payload::hayes_disposition_host_matches(tuple),
@@ -119,7 +122,7 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -208,13 +211,23 @@ impl Binding {
                             value != 0 && value.to_string() == proof.target_system_identifier
                         })
                 || proof.provenance.as_ref().is_some_and(|provenance|
-                    !crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple)
+                    !(retained_restore || crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple))
                         || !provenance.matches(&proof.id, &proof.backup_id, &proof.archive_manifest_sha256, &proof.target_system_identifier))
             })
         {
             return Err(err(ERROR));
         }
         Ok(())
+    }
+
+    pub(super) fn verify_restore_activation(&self, root: &Path) -> Result<()> {
+        self.check()?;
+        let proof = self.restore.as_ref().ok_or_else(|| err(ERROR))?;
+        let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
+        let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
+            .unwrap_or(self.payload_manifest_sha256.as_str());
+        crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
+            &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref())
     }
 
     pub(super) fn same_installation(&self, other: &Self) -> bool {
@@ -267,6 +280,15 @@ impl Binding {
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
+        match (&self.restore, transition.retains_catalog45_restore()) {
+            (None, false) => Ok(None),
+            (Some(restore), true) if self.admission_kind == Admission::CleanReopen && restore.provenance.is_some() => Ok(Some(restore)),
+            _ => Err(err(ERROR)),
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn consume_furnishing_transition(&mut self, prior: &Self, transition: FurnishingTransition) -> Result<()> {
         prior.check()?;
         let admission = Self::transition_admission(transition);
@@ -280,7 +302,7 @@ impl Binding {
         };
         if prior.phase != source_phase || self.phase != Phase::Active
             || self.previous_generation.is_some() || self.admission_kind != Admission::FreshEmpty
-            || prior.restore.is_some() || self.restore.is_some()
+            || self.restore.is_some()
             || self.generation == prior.generation || self.owner != prior.owner
             || self.physical != prior.physical
             || !prior.matches_catalog_tuple(transition.source_catalog().version(), transition.source())
@@ -288,6 +310,7 @@ impl Binding {
         {
             return Err(err(ERROR));
         }
+        self.restore = prior.transition_restore(transition)?.cloned();
         self.admission_kind = admission;
         self.previous_generation = Some(prior.generation.clone());
         if admission == Admission::InterruptedReopen {
@@ -1304,6 +1327,64 @@ mod tests {
         assert_eq!(Exchange::new(&reopened, b"new lease").unwrap().restore_proof.as_ref(), Some(&proof));
         reopened.phase = Phase::Clean;
         reopened.sha256().unwrap();
+    }
+
+    #[test]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn restored_catalog45_backed_transition_preserves_exact_restore_authority() {
+        let source = crate::native_payload::CATALOG45_PLACED_EXIT_DOORS;
+        let target = crate::native_payload::CATALOG45_BACKED_BENCH;
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        let pin = |generation: &str, tuple: (&str, &str, &str)| {
+            let mut value = binding(generation);
+            value.catalog = 45;
+            value.source_commit = tuple.0.into();
+            value.producer_sha256 = tuple.1.into();
+            value.payload_manifest_sha256 = tuple.2.into();
+            value
+        };
+        let mut prior = pin(GENERATION, source);
+        prior.phase = Phase::Clean;
+        prior.admission_kind = Admission::CleanReopen;
+        prior.previous_generation = Some("10000000-0000-4000-8000-000000000004".into());
+        assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
+        let proof: RestoreProof = serde_json::from_value(serde_json::json!({
+            "restoreId": "10000000-0000-4000-8000-000000000007",
+            "backupId": "10000000-0000-4000-8000-000000000008",
+            "authenticatedManifestSha256": "5".repeat(64),
+            "sourceDatabaseSystemId": "122", "sourceDatabaseOid": "16000",
+            "targetDatabaseSystemId": "123", "targetDatabaseOid": "16001",
+            "provenanceRowCount": 1, "provenanceTableSha256": "6".repeat(64)
+        })).unwrap();
+        prior.restore = Some(Restore {
+            id: "10000000-0000-4000-8000-000000000007".into(),
+            backup_id: "10000000-0000-4000-8000-000000000008".into(),
+            archive_manifest_sha256: "5".repeat(64),
+            target_system_identifier: "123".into(),
+            provenance: None,
+        });
+        assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
+        prior.restore.as_mut().unwrap().provenance = Some(proof.clone());
+        let mut other_root = pin(NEXT, target);
+        other_root.physical.root_inode += 1;
+        assert!(other_root.consume_furnishing_transition(&prior, transition).is_err());
+        let mut unrelated = pin(NEXT, target);
+        unrelated.producer_sha256 = source.1.into();
+        assert!(unrelated.consume_furnishing_transition(&prior, transition).is_err());
+        let mut next = pin(NEXT, target);
+        next.consume_furnishing_transition(&prior, transition).unwrap();
+        assert_eq!(next.owner, prior.owner);
+        assert_eq!(next.physical, prior.physical);
+        assert_eq!(next.restore, prior.restore);
+        assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
+        assert_eq!(Exchange::new(&next, b"transition lease").unwrap().restore_proof, Some(proof));
+        let mut direct_restore = next.clone();
+        direct_restore.admission_kind = Admission::VerifiedRestore;
+        assert!(direct_restore.check().is_err());
+        next.phase = Phase::Clean;
+        let mut reopened = pin(LATER, target);
+        reopened.consume(&next).unwrap();
+        assert_eq!(reopened.restore, next.restore);
     }
 
     #[test]
