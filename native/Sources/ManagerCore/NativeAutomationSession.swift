@@ -83,6 +83,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsWalkingCollisionRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
@@ -299,10 +300,15 @@ public actor NativeAutomationSession {
         if requiresDefaultSeatProfile, !admitsDefaultSeats {
             throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
         }
+        let walkingCollisionRuntime = AuthoringAPI.supportsWalkingCollisionRuntime(manifest: config.manifestSha256)
+        let admitsWalkingCollision = walkingCollisionRuntime && session.advertisesFurnishingWalkingCollision
+        if walkingCollisionRuntime, !admitsWalkingCollision {
+            throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
+        }
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
-                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback
+                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
                 || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
@@ -379,6 +385,9 @@ public actor NativeAutomationSession {
                 || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: manifest)),
            !(await reopenedAPI.admitsWorkspaceDefaultSeatProposal) {
             throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
+        if AuthoringAPI.supportsWalkingCollisionRuntime(manifest: manifest), !session.advertisesFurnishingWalkingCollision {
+            throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
         }
         guard try profileIdentity() == directory, session.userId == current.principalId,
               try value(await bridge.documentState(reopened)) == value(current) else {
@@ -1139,6 +1148,12 @@ public actor NativeAutomationSession {
                                          "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
+        if ["furnishing-walking-collision-evaluate", "furnishing-walking-collision-set"].contains(operation) {
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
+                                       "expectedRevision", "expectedEditVersion"]
+            let expected = operation.hasSuffix("-set") ? common.union(["command"]) : common
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         if operation == "export-static-saved-head" {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "outputPath", "command"]
@@ -1375,6 +1390,24 @@ public actor NativeAutomationSession {
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
+            }
+        case "furnishing-walking-collision-evaluate":
+            guard selectedOEXFormat == nil else { throw BridgeFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            result = try await api.evaluateFurnishingWalkingCollision(in: current)
+        case "furnishing-walking-collision-set":
+            guard selectedOEXFormat == nil else { throw BridgeFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            let (target, setting) = try FurnishingWalkingCollisionProposal.command(request["command"])
+            if let draft = try await api.prepareFurnishingWalkingCollision(target: target, setting: setting, in: current) {
+                try Task.checkCancellation()
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                let latest = try await bridge.documentState(context)
+                try checkedRevision(request, latest)
+                result = .object(["changed": .bool(false), "document": try value(latest)])
             }
         case "workspace-frame-attach", "workspace-frame-detach":
             guard selectedOEXFormat == nil, await api.admitsWorkspaceArtworkFrames else {

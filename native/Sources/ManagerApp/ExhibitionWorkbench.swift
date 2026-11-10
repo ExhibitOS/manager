@@ -54,7 +54,7 @@ struct NativeExhibitionView: View {
     }
 
     private enum InspectorScope: String, CaseIterable, Identifiable {
-        case selection, lighting, floor, roomAudio, cover, exhibition, viewingPlan, output
+        case selection, lighting, floor, roomAudio, cover, exhibition, viewingPlan, walkingCollision, output
         var id: Self { self }
         var title: String {
             switch self {
@@ -65,6 +65,7 @@ struct NativeExhibitionView: View {
             case .cover: "표지·입장"
             case .exhibition: "전시 정보"
             case .viewingPlan: "관람 순서"
+            case .walkingCollision: "걷기 충돌"
             case .output: "저장·내보내기"
             }
         }
@@ -375,6 +376,8 @@ struct NativeExhibitionView: View {
             ScrollView { exhibitionForm.padding(4) }
         case .viewingPlan:
             ScrollView { ViewingPlanSettingsView(model: model, controller: controller, ready: ready) }
+        case .walkingCollision:
+            WalkingCollisionInspector(model: model, ready: ready && !editRestricted)
         case .floor:
             ScrollView { NativeFloorSettingsInspector(model: model, viewport: controller, ready: ready).padding(12) }
         case .roomAudio:

@@ -812,12 +812,17 @@ const CATALOG45_CARRIED_RESTORE_BASE: (&str, &str, &str) = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const CATALOG45_CARRIED_RESTORE_HOSTS: [(&str, &str, &str); 2] = [
+const CATALOG45_CARRIED_RESTORE_HOSTS: [(&str, &str, &str); 3] = [
     CATALOG45_CARRIED_RESTORE_BASE,
     (
         "3dfa5c1b430973c59d86a50796bfd5377f2dbde6",
         "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
         "1bfd19cd28329a63e2f81527de380e65c3417f1242cdfa243b92cf87f0315fb4",
+    ),
+    (
+        "2a0e3eb89641967ad2cc18d85e6b1747b505fba1",
+        "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
+        "62e3b790a013d9f6895eb4236db17d538ca1996f9bb031d249a675ea9de9be34",
     ),
 ];
 

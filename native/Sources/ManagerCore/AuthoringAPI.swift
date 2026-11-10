@@ -27,6 +27,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeProductImagePreparationProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
+    public var nativeFurnishingWalkingCollisionProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
     public var workspaceFurnishingReusableFitProfile: String? = nil
     public var nativeFreshImagePreparationProfile: String? = nil
@@ -41,6 +42,10 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
+
+    public var advertisesFurnishingWalkingCollision: Bool {
+        nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile
+    }
 
     public var advertisesRoomBaseLight: Bool { roomBaseLightProfile == RoomBaseLightAction.profile }
 
@@ -384,6 +389,7 @@ public actor AuthoringAPI {
     private static let backedBenchRuntimePin = "f8d5933a2c2e361154dbcc9cb4a332144ca9217e5edb363fdd5056ee70aed702"
     private static let bottomCatalogRuntimePin = "4a0bbccc8ef04c6734407fd448f2b68e6b25a6a7d5f5b0afc33878be5aa29d4d"
     private static let carriedRestoreBenchRuntimePin = "d0209c6ac9980a1507e53fc7a5eaa2b6b254bb60b6a8a1feb2f72d98e48d2874"
+    private static let walkingCollisionRuntimePin = "62e3b790a013d9f6895eb4236db17d538ca1996f9bb031d249a675ea9de9be34"
     #endif
     public nonisolated var supportsPlacedExitDoors: Bool {
         #if DEBUG
@@ -547,7 +553,7 @@ public actor AuthoringAPI {
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
             || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
             || Self.supportsDefaultSeatRuntime(manifest: manifest)
-            || Self.supportsCarriedRestoreBenchRuntime(manifest: manifest)
+            || Self.supportsCarriedRestoreBenchRuntime(manifest: manifest) || Self.supportsWalkingCollisionRuntime(manifest: manifest)
         let configuration = URLSessionConfiguration.ephemeral
         if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.urlCache = nil
@@ -2351,6 +2357,49 @@ public actor AuthoringAPI {
         return next
     }
 
+    private func furnishingWalkingCollisionDraft(_ document: NativeDocumentState) throws -> NativeExhibitionDraft {
+        guard nativeSession, !authenticationBusy, document.tenantId == tenant, session?.userId == document.principalId,
+              session?.advertisesFurnishingWalkingCollision == true,
+              document.pending == nil, let draft = document.draft else {
+            throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
+        }
+        return draft
+    }
+
+    private func furnishingWalkingCollisionRequest(_ operation: String, input: some Encodable) async throws -> DocumentValue {
+        let heldGeneration = generation
+        let body = try encoded(input)
+        guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        let response: DocumentValue = try await request(studioPrefix + "/native-furnishing-walking-collision-" + operation,
+                                                       method: "POST", body: body)
+        try Task.checkCancellation()
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return response
+    }
+
+    private func furnishingWalkingCollisionEvaluation(in document: NativeDocumentState) async throws -> FurnishingWalkingCollisionEvaluation {
+        struct Input: Encodable { let draft: NativeExhibitionDraft }
+        let draft = try furnishingWalkingCollisionDraft(document)
+        let response = try await furnishingWalkingCollisionRequest("evaluation", input: Input(draft: draft))
+        return try FurnishingWalkingCollisionEvaluation(response, in: draft)
+    }
+
+    func evaluateFurnishingWalkingCollision(in document: NativeDocumentState) async throws -> DocumentValue {
+        try await furnishingWalkingCollisionEvaluation(in: document).value
+    }
+
+    public func furnishingWalkingCollisionTargets(in document: NativeDocumentState) async throws -> [FurnishingWalkingCollisionState] {
+        try await furnishingWalkingCollisionEvaluation(in: document).targets
+    }
+
+    public func prepareFurnishingWalkingCollision(target: FurnishingWalkingCollisionTarget, setting: FurnishingWalkingCollisionSetting,
+                                                 in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        let draft = try furnishingWalkingCollisionDraft(document)
+        let proposal = FurnishingWalkingCollisionProposal(draft: draft, target: target, setting: setting)
+        let response = try await furnishingWalkingCollisionRequest("proposal", input: proposal)
+        return try proposal.applying(response)
+    }
+
     public func workspaceBenchSeatPolicy(in document: NativeDocumentState) async throws -> NativeViewportPolicy {
         guard admitsWorkspaceFurnishings, document.tenantId == tenant, session?.userId == document.principalId,
               !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag else {
@@ -2430,6 +2479,14 @@ public actor AuthoringAPI {
     nonisolated static func supportsCarriedRestoreBenchRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == carriedRestoreBenchRuntimePin
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsWalkingCollisionRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == walkingCollisionRuntimePin
         #else
         false
         #endif
