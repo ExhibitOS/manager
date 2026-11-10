@@ -136,6 +136,7 @@ fn catalog45_activation_saved_document(
     if pair.0 != pair.1 && !retained_recovery && !historical_startup && !preservation
         && !crate::native_payload::catalog45_clean_exit_handoff(pair)
         && !crate::native_payload::catalog45_restored_backed_handoff(pair)
+        && !crate::native_payload::catalog45_adoption_handoff(pair)
     {
         return Ok(false);
     }
@@ -249,6 +250,7 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     if crate::native_payload::catalog45_native_publication_transition(pair).is_some()
         || crate::native_payload::catalog45_clean_exit_handoff(pair)
         || crate::native_payload::catalog45_restored_backed_handoff(pair)
+        || crate::native_payload::catalog45_adoption_handoff(pair)
     {
         return CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES;
     }
@@ -1131,6 +1133,7 @@ impl LifecycleService {
             let pair = (checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str());
             if crate::native_payload::catalog45_clean_exit_handoff(pair)
                 || crate::native_payload::catalog45_restored_backed_handoff(pair)
+                || crate::native_payload::catalog45_adoption_handoff(pair)
             {
                 catalog45_activation_saved_document(
                     pair, false, false, checkpoint.saved_document_sha256.as_deref(), document.ok_or_else(invalid)?,

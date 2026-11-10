@@ -91,6 +91,9 @@ impl Operation {
                 target,
             } => {
                 if held.is_some()
+                    || !session.active_furnishing_binding().is_some_and(|binding|
+                        binding.restore.is_none()
+                            && matches!(binding.admission_kind, super::Admission::FreshEmpty | super::Admission::CleanReopen))
                     || !target.valid()
                     || owner.0 == target.workspace_id
                     || !wire::valid_id(&source_artwork_id)

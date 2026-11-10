@@ -789,9 +789,16 @@ const CATALOG45_MODEL_ADOPTION_VALIDATION: (&str, &str, &str) = (
     "0fd5149ea964713218d87b09b41b7d9aa05576ce0b5f94c9d520ac2221e36ff0",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_MODEL_ADOPTION_CARRIED_TARGET: RuntimeTuple = (
+    "c45a91c92a661dbc67aedac1b45f8b4781c065c0",
+    "bc4d0b5c6e228b988077846b2fe92d2715e2f2918bc47cc5ff43b20eb67ed2d4",
+    "6ada7bd42642333218ae623010532065c8cae2fa66a0cd70e3f226ec37dcda18",
+);
+
 fn catalog45_model_adoption_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return tuple == CATALOG45_MODEL_ADOPTION_VALIDATION;
+    return [CATALOG45_MODEL_ADOPTION_VALIDATION, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -850,6 +857,24 @@ pub(crate) fn catalog45_carried_restore_host_matches(tuple: (&str, &str, &str)) 
 pub(crate) fn catalog45_carried_restore_payload(payload: &Payload) -> bool {
     let context = payload.context();
     catalog45_carried_restore_host_matches((&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
+}
+
+/// The existing activation receipt remains pinned to the original payload
+/// after the separately authorized clean adoption handoff.
+pub(crate) fn catalog45_adoption_carried_receipt_payload(tuple: (&str, &str, &str)) -> Option<&'static str> {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return (tuple == CATALOG45_MODEL_ADOPTION_CARRIED_TARGET).then_some(CATALOG45_CARRIED_RESTORE_BASE.2);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; None }
+}
+
+#[cfg(feature = "workspace-v5-owner-validation")]
+pub(crate) fn catalog45_adoption_handoff(pair: (&str, &str)) -> bool {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    return pair.1 == CATALOG45_MODEL_ADOPTION_CARRIED_TARGET.2
+        && [CATALOG45_CARRIED_RESTORE_BASE.2, CATALOG45_CURRENT_ORIGINAL_TARGET.2].contains(&pair.0);
+    #[cfg(not(all(debug_assertions, target_os = "macos")))]
+    { let _ = pair; false }
 }
 
 pub(crate) fn catalog45_carried_restore_source(payload: &Payload) -> bool {
@@ -1062,6 +1087,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_BC96_REQUIRED_MODEL_TARGET.2 == manifest
         || CATALOG45_COMPACT_AND_CANDIDATE_TARGET.2 == manifest
         || CATALOG45_CURRENT_ORIGINAL_TARGET.2 == manifest
+        || CATALOG45_MODEL_ADOPTION_CARRIED_TARGET.2 == manifest
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2 == manifest
         || CATALOG45_RECOVERY_TARGET.2 == manifest
         || CATALOG45_SELECTED_RECOVERY_TARGET.2 == manifest
@@ -1101,7 +1127,24 @@ impl FurnishingTransition {
             if source == CATALOG45_PLACED_EXIT_DOORS && target == CATALOG45_BACKED_BENCH)
     }
 
+    pub(crate) fn retains_catalog45_adoption_carried_restore(self) -> bool {
+        matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045 }
+            if source == CATALOG45_CARRIED_RESTORE_BASE && target == CATALOG45_MODEL_ADOPTION_CARRIED_TARGET)
+    }
+
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if catalog45_adoption_handoff(pair) {
+            let source = if pair.0 == CATALOG45_CARRIED_RESTORE_BASE.2 {
+                CATALOG45_CARRIED_RESTORE_BASE
+            } else {
+                CATALOG45_CURRENT_ORIGINAL_TARGET
+            };
+            return Some(Self::SameCatalog {
+                source,
+                target: CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
         for (source, target) in [
             (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET, CATALOG45_RECOVERY_TARGET),
             (CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET, CATALOG45_SELECTED_RECOVERY_TARGET),
@@ -2417,6 +2460,47 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn adoption_successor_allows_only_the_exact_source_and_carried_handoffs() {
+        let successor = CATALOG45_MODEL_ADOPTION_CARRIED_TARGET;
+        for (source, carried) in [
+            (CATALOG45_CARRIED_RESTORE_BASE, true),
+            (CATALOG45_CURRENT_ORIGINAL_TARGET, false),
+        ] {
+            let transition = FurnishingTransition::from_manifests((source.2, successor.2)).unwrap();
+            assert_eq!(transition.source(), source);
+            assert_eq!(transition.target(), successor);
+            assert_eq!(transition.retains_catalog45_adoption_carried_restore(), carried);
+            assert!(FurnishingTransition::from_manifests((successor.2, source.2)).is_none());
+        }
+        for unrelated in [CATALOG45_BC96_REQUIRED_MODEL_TARGET, CATALOG45_MODEL_ADOPTION_VALIDATION, successor] {
+            assert!(FurnishingTransition::from_manifests((unrelated.2, successor.2)).is_none());
+        }
+        assert_eq!(catalog45_adoption_carried_receipt_payload(successor), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+        assert!(!catalog45_carried_restore_host_matches(successor));
+        assert!(!catalog45_same_version_restore_host_matches(successor));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact local ordinary Catalog 045 carried-target adoption runtime"]
+    fn opens_exact_native_model_adoption_carried_target_payload() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_NATIVE_MODEL_ADOPTION_CARRIED_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert!(payload.ordinary_fresh_furnishing());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(payload.workspace_furnishing_ledger(catalog).is_ok());
+        assert_eq!(payload.native_model_adoption_root().unwrap(), Some(root.as_path()));
+        let (source, producer, manifest) = CATALOG45_MODEL_ADOPTION_CARRIED_TARGET;
+        assert_eq!((payload.context().source_commit.as_str(), payload.producer_sha256(),
+            payload.context().manifest_sha256.as_str()), (source, producer, manifest));
+        assert_eq!(catalog45_adoption_carried_receipt_payload((source, producer, "other")), None);
+        assert_eq!(catalog45_adoption_carried_receipt_payload((source, "other", manifest)), None);
+        assert_eq!(catalog45_adoption_carried_receipt_payload(("other", producer, manifest)), None);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact publication capacity, authored-seat and museum-caption payloads"]
     fn opens_reviewed_catalog45_native_publication_payloads() {
         for (tuple, variable) in CATALOG45_NATIVE_PUBLICATION_TARGETS.iter().zip([
@@ -3538,27 +3622,50 @@ impl Payload {
         self.workspace_v5_validation
     }
     pub(crate) fn native_model_adoption_root(&self) -> Result<Option<&Path>> {
-        const PATH: &str = "platform/scripts/native-model-adoption-capability-v1.json";
-        const BYTES: &[u8] = b"{\"version\":1,\"profile\":\"native-model-adoption-v1\"}\n";
-        const SHA: &str = "1cc2e6bc81fec1ef0aa6b6643dd177feff9480ad690d7b1b75e870b5072ca4a3";
-        let pinned = catalog45_model_adoption_host_matches((
-            &self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256,
-        ));
-        let Some(marker) = self.manifest.files.iter().find(|file| file.path == PATH) else {
-            return if pinned { Err(err("NATIVE_RUNTIME_UNQUALIFIED")) } else { Ok(None) };
-        };
-        if !pinned || marker.link.is_some() || marker.executable != Some(false)
-            || marker.bytes != Some(BYTES.len() as u64) || marker.sha256.as_deref() != Some(SHA)
-            || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045)
-        {
+        let tuple = (
+            self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str(),
+        );
+        let pinned = catalog45_model_adoption_host_matches(tuple);
+        let carried = catalog45_adoption_carried_receipt_payload(tuple).is_some();
+        let declarations: [(&str, &[u8], &str, bool); 2] = [
+            (
+                "platform/scripts/native-model-adoption-capability-v1.json",
+                b"{\"version\":1,\"profile\":\"native-model-adoption-v1\"}\n",
+                "1cc2e6bc81fec1ef0aa6b6643dd177feff9480ad690d7b1b75e870b5072ca4a3",
+                pinned,
+            ),
+            (
+                "platform/scripts/native-model-adoption-carried-target-capability-v1.json",
+                b"{\"version\":1,\"profile\":\"native-model-adoption-carried-target-v1\"}\n",
+                "064a5034b9146eacfebcdbbcde56a8cd8b8e7ba28b27e097113ec11c625f3281",
+                carried,
+            ),
+        ];
+        for (path, bytes, sha, required) in declarations {
+            let marker = self.manifest.files.iter().find(|file| file.path == path);
+            if marker.is_some() != required || marker.is_some_and(|file| file.link.is_some()
+                || file.executable != Some(false) || file.bytes != Some(bytes.len() as u64)
+                || file.sha256.as_deref() != Some(sha))
+            {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+        }
+        if !pinned {
+            return Ok(None);
+        }
+        if self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         self.recheck()?;
-        let (bytes, pin) = crate::hosted_runtime_file::bounded(&self.root.join(PATH), BYTES.len() as u64)?;
-        if bytes != BYTES {
-            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        for (path, expected, _, required) in declarations {
+            if required {
+                let (bytes, pin) = crate::hosted_runtime_file::bounded(&self.root.join(path), expected.len() as u64)?;
+                if bytes != expected {
+                    return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+                }
+                pin.check()?;
+            }
         }
-        pin.check()?;
         Ok(Some(&self.root))
     }
 
