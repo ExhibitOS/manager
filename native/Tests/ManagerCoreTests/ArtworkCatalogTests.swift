@@ -171,10 +171,11 @@ final class ArtworkCatalogTests: XCTestCase {
         XCTAssertThrowsError(try reply(fields).renderedThumbnail(matching: request))
         fields["pngBase64"] = png
 
-        for (key, value) in [("sourceAssetId", "../foreign"), ("sourceSha256", sourceHash.uppercased()),
+        let invalidClaims: [(String, Any)] = [("sourceAssetId", "../foreign"), ("sourceSha256", sourceHash.uppercased()),
                              ("displaySha256", "missing digest"), ("pngSha256", sourceHash),
                              ("recipeId", "foreign-recipe"), ("toolId", "foreign-tool"), ("modelBytes", 0),
-                             ("epoch", UUID().uuidString.lowercased())] {
+                             ("epoch", UUID().uuidString.lowercased())]
+        for (key, value) in invalidClaims {
             var invalid = fields
             invalid[key] = value
             XCTAssertThrowsError(try reply(invalid).renderedThumbnail(matching: request), key)
