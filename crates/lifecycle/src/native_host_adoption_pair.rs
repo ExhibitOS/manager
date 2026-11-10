@@ -19,6 +19,17 @@ fn unavailable() -> LifecycleError {
     err("NATIVE_MODEL_ADOPTION_PROFILE_PAIR_UNAVAILABLE")
 }
 
+fn adoption_action_allowed(at_target: bool, input: &Input) -> bool {
+    match input {
+        Input::StageSource { .. } | Input::ReleasePrecommit { .. } => !at_target,
+        Input::PreviewTarget { .. } | Input::ConfirmTarget { .. }
+        | Input::StatusTarget { .. } | Input::SettleTarget { .. }
+        | Input::DisposeTarget { .. } => at_target,
+        Input::RetainedOperation => true,
+        _ => false,
+    }
+}
+
 impl AdoptionPair {
     pub fn open(
         source_profile: PathBuf,
@@ -63,10 +74,7 @@ impl AdoptionPair {
                 Input::SwitchTargetProfile { operation_id } if !self.at_target => {
                     return self.switch_target(selection_token, operation_id);
                 }
-                Input::StageSource { .. } | Input::ReleasePrecommit { .. } if !self.at_target => (),
-                Input::PreviewTarget { .. } | Input::ConfirmTarget { .. }
-                | Input::StatusTarget { .. } | Input::SettleTarget { .. } if self.at_target => (),
-                Input::RetainedOperation => (),
+                input if adoption_action_allowed(self.at_target, input) => (),
                 _ => return Err(unavailable()),
             },
             UiCommand::Context | UiCommand::NativeStart { .. } | UiCommand::NativeStop { .. }
@@ -109,5 +117,37 @@ impl AdoptionPair {
     pub fn shutdown(&mut self) {
         self.target.shutdown();
         self.source.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn model_adoption_disposition_and_commit_are_only_dispatched_at_target() {
+        let operation = "00000000-0000-4000-8000-000000000001";
+        let digest = "a".repeat(64);
+        for frame in [
+            json!({"action":"dispose_target","operationId":operation,"grantSha256":digest,
+                "exhibitionId":"00000000-0000-4000-8000-000000000002"}),
+            json!({"action":"confirm_target","operationId":operation,"grantSha256":digest,"expectedRevision":1}),
+            json!({"action":"preview_target","operationId":operation,"expectedRevision":1}),
+            json!({"action":"status_target","operationId":operation,"grantSha256":digest}),
+            json!({"action":"settle_target","operationId":operation,"grantSha256":digest,"retire":false}),
+        ] {
+            let input: Input = serde_json::from_value(frame).unwrap();
+            assert!(adoption_action_allowed(true, &input));
+            assert!(!adoption_action_allowed(false, &input));
+        }
+        let release = Input::ReleasePrecommit { operation_id: operation.into() };
+        assert!(adoption_action_allowed(false, &release));
+        assert!(!adoption_action_allowed(true, &release));
+        assert!(adoption_action_allowed(false, &Input::RetainedOperation));
+        assert!(adoption_action_allowed(true, &Input::RetainedOperation));
+        let switch = Input::SwitchTargetProfile { operation_id: operation.into() };
+        assert!(!adoption_action_allowed(false, &switch));
+        assert!(!adoption_action_allowed(true, &switch));
     }
 }
