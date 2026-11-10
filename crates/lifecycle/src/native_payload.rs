@@ -2485,7 +2485,15 @@ mod normal_oex_release_declaration_tests {
     #[ignore = "requires the exact local ordinary Catalog 045 carried-target adoption runtime"]
     fn opens_exact_native_model_adoption_carried_target_payload() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_NATIVE_MODEL_ADOPTION_CARRIED_RUNTIME").unwrap());
-        let payload = Payload::open(&root).unwrap();
+        let predecessor = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_NATIVE_MODEL_ADOPTION_CARRIED_PREDECESSOR").unwrap());
+        let source = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_NATIVE_MODEL_ADOPTION_SOURCE_PREDECESSOR").unwrap());
+        let payload = Payload::open_saved_workspace_transition(&root).unwrap();
+        for (path, pin) in [(predecessor, CATALOG45_CARRIED_RESTORE_BASE), (source, CATALOG45_CURRENT_ORIGINAL_TARGET)] {
+            let existing = Payload::open_saved_workspace_transition(&path).unwrap();
+            assert_eq!(existing.context().manifest_sha256, pin.2);
+            let transition = FurnishingTransition::from_manifests((pin.2, &payload.context().manifest_sha256)).unwrap();
+            assert_eq!(transition.source(), pin);
+        }
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
         assert!(payload.ordinary_fresh_furnishing());
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
@@ -3480,6 +3488,7 @@ impl Payload {
             CATALOG45_RENDERED_SCULPTURE_THUMBNAIL, CATALOG45_NATIVE_PUBLICATION_CAPACITY,
             CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
             CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH,
+            CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = payload.retained_furnishing_catalog().or(
             ordinary_catalog45.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
