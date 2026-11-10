@@ -804,13 +804,26 @@ pub(crate) fn catalog45_same_version_restore_host_matches(tuple: (&str, &str, &s
     { let _ = tuple; false }
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_CARRIED_RESTORE_BASE: (&str, &str, &str) = (
+    "ded4a9a77c052650849770fc7a754c517334ee74",
+    "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
+    "d0209c6ac9980a1507e53fc7a5eaa2b6b254bb60b6a8a1feb2f72d98e48d2874",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_CARRIED_RESTORE_HOSTS: [(&str, &str, &str); 2] = [
+    CATALOG45_CARRIED_RESTORE_BASE,
+    (
+        "3dfa5c1b430973c59d86a50796bfd5377f2dbde6",
+        "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
+        "1bfd19cd28329a63e2f81527de380e65c3417f1242cdfa243b92cf87f0315fb4",
+    ),
+];
+
 pub(crate) fn catalog45_carried_restore_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return tuple == (
-        "ded4a9a77c052650849770fc7a754c517334ee74",
-        "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
-        "d0209c6ac9980a1507e53fc7a5eaa2b6b254bb60b6a8a1feb2f72d98e48d2874",
-    );
+    return CATALOG45_CARRIED_RESTORE_HOSTS.contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2347,8 +2360,20 @@ mod normal_oex_release_declaration_tests {
             &context.source_commit, payload.producer_sha256(),
             "ea2570531e6a988d1333f4f8a0898f972f75da24919a32e47c75fff638bdbf67",
         )));
+        let other = CATALOG45_CARRIED_RESTORE_HOSTS.iter()
+            .find(|host| host.0 != context.source_commit).unwrap();
+        assert!(!catalog45_carried_restore_host_matches((
+            &context.source_commit, payload.producer_sha256(), other.2,
+        )));
+        assert!(!catalog45_carried_restore_host_matches((
+            &context.source_commit, "unreviewed-producer", &context.manifest_sha256,
+        )));
         assert!(Payload::open_workspace_v5_validation(&root, false).is_err());
-        assert!(payload.static_detail_export_resources(true).is_ok());
+        if context.manifest_sha256 == CATALOG45_CARRIED_RESTORE_BASE.2 {
+            assert!(payload.static_detail_export_resources(true).is_ok());
+        } else {
+            assert_eq!(payload.static_detail_export_resources(true).unwrap_err().code, "NATIVE_STATIC_DETAIL_UNAVAILABLE");
+        }
         assert_eq!(payload.static_detail_export_resources(false).unwrap_err().code, "NATIVE_STATIC_DETAIL_UNAVAILABLE");
     }
 
@@ -4275,7 +4300,7 @@ impl Payload {
             || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == provenance
             || (private_editor
                 && ([CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH].contains(&provenance)
-                    || catalog45_carried_restore_host_matches(provenance)))
+                    || CATALOG45_CARRIED_RESTORE_BASE == provenance))
             || (catalog45_recovery_host_matches(provenance)
                 && !self.catalog45_pre_ready_preservation_validation()
                 && !self.catalog45_pre_ready_hayes_preservation_validation());

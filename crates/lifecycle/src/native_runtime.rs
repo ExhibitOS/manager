@@ -1704,6 +1704,7 @@ const { isDeepStrictEqual } = require('node:util');
             if matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_) | HayesBootstrap::Spent) {
                 self.hayes_bootstrap = if self.payload.ordinary_hayes_release()
                     || self.payload.ordinary_fresh_furnishing()
+                    || crate::native_payload::catalog45_carried_restore_payload(&self.payload)
                 {
                     HayesBootstrap::Disabled
                 } else {

@@ -472,7 +472,8 @@ public actor AuthoringAPI {
         "bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338",
         "ebbf0aeabf013f5071151580495c9c7e5ff6812cbd995769b5e347e01ae92c0b",
         "7f76b19894fe3a9824a640cf1856ba7c828d5bd3201ede0da5d1c53a501bd1e7",
-        "d31372305fd54f8d42cec1ebc76bf0ec4d47cf36cb4ece658bca08195687748e"
+        "d31372305fd54f8d42cec1ebc76bf0ec4d47cf36cb4ece658bca08195687748e",
+        "1bfd19cd28329a63e2f81527de380e65c3417f1242cdfa243b92cf87f0315fb4"
     ]
     private static let workspaceInfoStandPreparationManifestPin =
         "cfc795c35628e15a9f91b71dcca0587023a0b249b2984a2615973b72bc6ed32f"
