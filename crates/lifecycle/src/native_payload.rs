@@ -2344,7 +2344,8 @@ mod normal_oex_release_declaration_tests {
         assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
         assert!(payload.ordinary_fresh_furnishing());
         assert!(payload.static_export_resources(true).is_ok());
-        assert!(payload.static_detail_export_resources(true).is_err());
+        assert!(payload.static_detail_export_resources(true).is_ok());
+        assert!(payload.static_detail_export_resources(false).is_err());
         assert!(!saved_workspace_transition_supported((CATALOG45_PREPARED_SIGN_AUDIO.2, CATALOG45_PLACED_EXIT_DOORS.2)));
     }
 
@@ -2366,6 +2367,8 @@ mod normal_oex_release_declaration_tests {
         assert!(!saved_workspace_transition_supported((pair.1, pair.0)));
         assert!(!source.ordinary_fresh_furnishing());
         assert!(target.ordinary_fresh_furnishing());
+        assert!(source.static_detail_export_resources(true).is_err());
+        assert!(target.static_detail_export_resources(true).is_ok());
         assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
     }
 
@@ -4097,6 +4100,7 @@ impl Payload {
             || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
             || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance
             || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == provenance
+            || (private_editor && CATALOG45_PLACED_EXIT_DOORS == provenance)
             || (catalog45_recovery_host_matches(provenance)
                 && !self.catalog45_pre_ready_preservation_validation()
                 && !self.catalog45_pre_ready_hayes_preservation_validation());
