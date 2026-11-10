@@ -47,6 +47,11 @@ directories, and an unused port triple to initialize the owned workspace.
 Close that owner session after verifying preparation. The preview is headless.
 For GUI validation, use the existing fixed `scripts/manager-validation-gui.py`
 entry with the reviewed source build, runtime, profile, and approved signature.
-The fixed launcher must verify the installed bundle before launch. Verify Help
-from that approved instance when its source resources have been prepared. Keep
-the source checkout, runtime inventory, and verification results together.
+The fixed launcher verifies the installed bundle before launch. Run `attach`
+with the PID from the launch receipt before selecting the running app in
+Computer Use. Pass the absolute `app` path from the verified attachment
+receipt. App display-name resolution can start a different installed copy.
+If the verified process exits or the path changes, return to the fixed launcher
+before resuming. Verify Help from the approved instance when its source
+resources have been prepared. Keep the source checkout, runtime inventory, and
+verification results together.
