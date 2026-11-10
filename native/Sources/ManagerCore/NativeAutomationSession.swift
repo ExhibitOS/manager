@@ -1379,6 +1379,21 @@ public actor NativeAutomationSession {
                 selectedOEXFormat = nil
             }
             result = .object(["document": storedValue, "receipt": recorded])
+        case "room-audio-apply":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["roomId", "etag", "settings"])
+            guard selectedOEXFormat == nil, fields["inputPath"] == nil, fields["outputPath"] == nil,
+                  let etag = current.etag, command["etag"] == .string(etag), let roomId = command["roomId"].string,
+                  case .object(let settings) = command["settings"] else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            if let draft = try await api.prepareRoomAudio(RoomAudioSettings(fields: settings), roomId: roomId, in: current) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "floor-appearance-apply":
             try checkedRevision(request, current)
             let policy = try await checkSavedSurfacePolicy(current, api: api)

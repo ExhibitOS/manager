@@ -111,6 +111,7 @@ final class ContinuityControlsTests: XCTestCase {
         var changed = base; try changed.replaceCandidate(candidate)
         var withOtherExperience = candidate
         withOtherExperience["extensions"][ConcreteFootsteps.experienceNamespace]["rooms"] = .array([.object(["roomId": base.rooms[0]["id"], "reverb": .number(0.2)])])
+        withOtherExperience["extensions"][ConcreteFootsteps.experienceNamespace]["audioDefaults"] = .object(["soundOn": .bool(true)])
         try changed.replaceCandidate(withOtherExperience)
         let repeated = try ConcreteFootsteps.proposedCandidate(in: changed, target: target, resourcesAvailable: true)
         XCTAssertEqual(repeated, withOtherExperience, "No duplicate family, floor entry or extra gain")

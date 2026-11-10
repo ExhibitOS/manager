@@ -18,8 +18,7 @@ struct WorkspaceFurnishingIntakeView: View {
         return value
     }()
     @State private var snapshot: ImportFileSnapshot?
-    @State private var bundledItems: [BundledWorkspaceFurnishings.Item] = []
-    @State private var bundledRoot: URL?
+    @State private var bundledCatalog: BundledWorkspaceFurnishings.Catalog?
     @State private var choosing = false
     @State private var busy = false
     @State private var message: String?
@@ -110,7 +109,7 @@ struct WorkspaceFurnishingIntakeView: View {
         .task {
             if let catalog = try? await Task.detached(priority: .userInitiated, operation: { try BundledWorkspaceFurnishings.catalog() }).value,
                !Task.isCancelled, access == model.viewportAccessID {
-                bundledRoot = catalog.0; bundledItems = catalog.1
+                bundledCatalog = catalog
             }
             await reload()
         }
@@ -118,12 +117,12 @@ struct WorkspaceFurnishingIntakeView: View {
 
     private var newSection: some View {
         Section("GLB 등록") {
-            if !bundledItems.isEmpty {
+            if let bundledCatalog, !bundledCatalog.items.isEmpty {
                 Menu("기본 비품 선택") {
-                    ForEach(bundledItems) { item in
+                    ForEach(bundledCatalog.items) { item in
                         Button(item.name) { Task { await selectBundled(item) } }
                             .disabled(item.kind == .stool && !model.workspaceFurnishingStoolAvailable ||
-                                      item.kind == .infoStand && !model.workspaceFurnishingRoomVisualAvailable)
+                                      (item.kind == .infoStand || item.kind == .barrier) && !model.workspaceFurnishingRoomVisualAvailable)
                     }
                 }
             }
@@ -370,8 +369,8 @@ struct WorkspaceFurnishingIntakeView: View {
 
     private func selectBundled(_ item: BundledWorkspaceFurnishings.Item) async {
         await perform {
-            guard let root = bundledRoot, let selectedKind = item.kind else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
-            let file = try await BundledWorkspaceFurnishings.load(item, root: root)
+            guard let bundledCatalog, let selectedKind = item.kind else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            let file = try await BundledWorkspaceFurnishings.load(item.id, from: bundledCatalog)
             try Task.checkCancellation()
             guard access == model.viewportAccessID, selected == nil, request == nil else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
             _ = try WorkspaceFurnishingModel(snapshot: file)
@@ -386,7 +385,7 @@ struct WorkspaceFurnishingIntakeView: View {
             bundledRights.permissions.export = true
             bundledRights.permissions.commercial = true
             kind = selectedKind; name = item.name
-            provenance = "ExhibitOS default furnishings 1.2.0, \(item.catalogId), original-v1."
+            provenance = bundledCatalog.provenance(for: item)
             rights = bundledRights; snapshot = file
         }
     }

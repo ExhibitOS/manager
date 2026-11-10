@@ -964,6 +964,35 @@ final class ExhibitionModel: ObservableObject {
         return !artworkId.isEmpty
     }
     var canExport: Bool { !busy && !placingArtwork && !dirty && state?.etag != nil && draft != nil }
+    var canEditRoomAudio: Bool { !busy && roomAudioAvailable }
+    private var roomAudioAvailable: Bool {
+        !entrancePreviewActive && !immutable && !dirty && !placingArtwork &&
+            viewportController.editingContextActive && state?.etag != nil && api != nil
+    }
+
+    func roomAudioTracks() async throws -> [ApprovedRoomAudioTrack] {
+        guard canEditRoomAudio, let api, let state else { throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED") }
+        return try await api.roomAudioTracks(in: state)
+    }
+
+    func applyRoomAudio(_ settings: RoomAudioSettings, roomId: String, revision: UInt64) async {
+        guard canEditRoomAudio else { return }
+        await work {
+            guard let api, var value = state, value.revision == revision, self.roomId == roomId else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let next = try await api.prepareRoomAudio(settings, roomId: roomId, in: value)
+            guard roomAudioAvailable, self.api === api, state?.revision == revision,
+                  state?.workspaceId == value.workspaceId, state?.tenantId == value.tenantId,
+                  state?.principalId == value.principalId, self.roomId == roomId else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard let next else { return }
+            value.draft = next
+            try await persist(value)
+            notice = "공간 소리를 이 Mac에 적용했습니다. 전시를 저장하세요."
+        }
+    }
     @Published private(set) var sceneSnapshotting = false
     @Published private(set) var sceneSnapshotStatus = ""
     var canCaptureSceneSnapshot: Bool {

@@ -234,6 +234,9 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FLOOR_SETTINGS_INVALID", "FLOOR_PRESET_REQUIRED": return "바닥 재질과 변경할 항목을 선택하고 입력 범위를 확인하세요."
         case "WALL_FINISH_INVALID", "WALL_FINISH_PREVIEW_FAILED": return "선택한 벽과 마감 수치를 확인하세요. 문·작품과의 여유 공간이 필요하며 기존 설정과 입력은 유지됩니다."
         case "FLOOR_TARGET_INVALID", "CONCRETE_FOOTSTEPS_INVALID": return "실제 바닥 표면을 선택하고 기존 발소리 설정을 확인하세요. 바닥 외관과 다른 소리는 유지됩니다."
+        case "ROOM_AUDIO_SAVE_REQUIRED": return "편집 가능한 전시를 저장한 뒤 공간 소리를 설정하세요."
+        case "ROOM_AUDIO_TRACK_UNAVAILABLE": return "이 전시에서 공개 재생과 내보내기를 허용한 승인 WAV를 선택하세요."
+        case "ROOM_AUDIO_MEDIA_LIMIT": return "전시에 연결할 수 있는 오디오 파일 수를 초과했습니다."
         case "FLOOR_SOUND_CONFLICT": return "선택한 바닥에 재질 소리 설정이 있습니다. 기존 설정을 바꾸지 않고 콘크리트 발소리 선택을 중단했습니다."
         case "EXHIBITION_EXPORT_SAVE_REQUIRED": return "현재 입력을 전시 저장본에 반영한 뒤 내보내세요."
         case "VIEWER_ENTRANCE_INVALID": return "시작 화면의 작가·소개·이미지 설정을 확인하세요. 작가는 512자, 소개는 4,096자, 입장권 제목은 160자, 안내는 512자, 이미지 설명은 2,048자까지 지원하며, 표지는 전시에 포함한 8 MiB 이하 PNG와 설명이 필요합니다."
@@ -392,6 +395,8 @@ public actor AuthoringAPI {
         "375672ab366c52a8a177e2815fda65382708aba8126461a903268534918b43fe"
     private static let savedHeadMuseumCaptionManifestPin =
         "4fbd168027090f38776bd75990e27ed336db6c65d15c4af3f17bf428d140440b"
+    private static let savedHeadPreparedSignAudioManifestPin =
+        "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a"
     private static let nativePublicationCapacityManifestPin =
         "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203"
     private static let renderedSculptureThumbnailOexRuntimeManifestPin =
@@ -882,6 +887,54 @@ public actor AuthoringAPI {
         let response: NativeStudioResponse = try await request(path, method: etag == nil ? "POST" : "PUT", body: body, ifMatch: etag)
         guard response.draft.id == draft.id, response.draft == draft else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
         return response
+    }
+
+    public func roomAudioTracks(in document: NativeDocumentState) async throws -> [ApprovedRoomAudioTrack] {
+        let draft = try await roomAudioHead(document)
+        return try await approvedRoomAudioTracks(exhibitionId: draft.id)
+    }
+
+    public func prepareRoomAudio(_ settings: RoomAudioSettings, roomId: String,
+                                 in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        let heldGeneration = generation
+        var draft = try await roomAudioHead(document)
+        var track: ApprovedRoomAudioTrack?
+        if case .asset(let id) = settings.bgm {
+            track = try await approvedRoomAudioTracks(exhibitionId: draft.id).first {
+                $0.id.lowercased() == id.lowercased()
+            }
+            guard track != nil else { throw AuthoringFailure("ROOM_AUDIO_TRACK_UNAVAILABLE") }
+        }
+        let saved = try await exhibition(draft.id)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard saved.etag == document.etag, saved.draft == draft else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let candidate = try settings.proposedCandidate(in: draft, roomId: roomId, approvedTrack: track)
+        guard candidate != draft.candidate else { return nil }
+        try draft.replaceCandidate(candidate)
+        return draft
+    }
+
+    private func roomAudioHead(_ document: NativeDocumentState) async throws -> NativeExhibitionDraft {
+        guard nativeSession, document.tenantId == tenant, session?.userId == document.principalId,
+              !document.dirty, let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED")
+        }
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard policy.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        guard policy.confirmsOrdinaryDraft else { throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED") }
+        return draft
+    }
+
+    private func approvedRoomAudioTracks(exhibitionId: String) async throws -> [ApprovedRoomAudioTrack] {
+        struct Catalog: Decodable, Sendable { let items: [ApprovedRoomAudioTrack.CatalogItem] }
+        let catalog: Catalog = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/audio")
+        guard catalog.items.count <= 64, Set(catalog.items.map { $0.id.lowercased() }).count == catalog.items.count else {
+            throw AuthoringFailure("RESPONSE_INVALID")
+        }
+        let now = Date()
+        return catalog.items.compactMap { $0.eligible(at: now) }
     }
     /// Use the original comparison and request ID on replay. A historical
     /// receipt becomes a local save only if it still matches a fresh GET.
@@ -2242,6 +2295,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
+            || manifest == savedHeadPreparedSignAudioManifestPin
         #else
         false
         #endif

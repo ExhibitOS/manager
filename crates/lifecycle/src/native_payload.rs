@@ -654,6 +654,13 @@ pub(crate) const CATALOG45_DEFAULT_FRAME: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_PREPARED_SIGN_AUDIO: RuntimeTuple = (
+    "3b0adc9d70ddd143c3afa884d9647b679dc1061d",
+    "83d230e2cab53d7c4472b3640de01f5937088559f9dfaff41b4db32df58b16be",
+    "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG45_PRODUCT_IMAGE: RuntimeTuple = (
     "d33714b74d2b12ad1bc089bd8180ad0a49974894",
     "29cdc6fd07e1c5d4e5fda06a2c37270d7023024d76a7cc3d31596af9f1c7a921",
@@ -711,6 +718,7 @@ const CATALOG45_NATIVE_PUBLICATION_TARGETS: &[RuntimeTuple] = &[
         "22d253f8928d7dee5e2d01e8ce65e20cd24f10b7bfa0251b1eb8371aca8e8fc9",
     ),
     CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
+    CATALOG45_PREPARED_SIGN_AUDIO,
 ];
 
 fn catalog45_native_publication_host_matches(tuple: (&str, &str, &str)) -> bool {
@@ -858,6 +866,7 @@ pub(crate) fn catalog45_native_publication_transition(pair: (&str, &str)) -> Opt
     [
         (CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET, CATALOG45_NATIVE_PUBLICATION_CAPACITY),
         (CATALOG45_NATIVE_PUBLICATION_CAPACITY, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS),
+        (CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS, CATALOG45_PREPARED_SIGN_AUDIO),
     ].into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -902,6 +911,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2 == manifest
         || CATALOG45_NATIVE_PUBLICATION_CAPACITY.2 == manifest
         || CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS.2 == manifest
+        || CATALOG45_PREPARED_SIGN_AUDIO.2 == manifest
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
@@ -2195,6 +2205,28 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact museum-caption and prepared-sign/audio runtime payloads"]
+    fn opens_reviewed_prepared_sign_audio_catalog45_pair() {
+        let old = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_MUSEUM_CAPTIONS_RUNTIME").unwrap());
+        let new = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PREPARED_SIGN_AUDIO_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&old).unwrap();
+        let target = Payload::open_saved_workspace_transition(&new).unwrap();
+        let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(catalog45_native_publication_transition(pair), Some((
+            CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS, CATALOG45_PREPARED_SIGN_AUDIO,
+        )));
+        assert!(!saved_workspace_transition_supported((pair.1, pair.0)));
+        assert!(target.ordinary_fresh_furnishing());
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
+        assert!(target.static_detail_export_resources(false).is_ok());
+        assert!(target.static_detail_export_resources(true).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&new, true).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact combined catalog 045 and its sealed retained-image recovery successor"]
     fn opens_reviewed_catalog45_retained_image_recovery() {
         let source_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_RETAINED_PRODUCT_IMAGE_RUNTIME").unwrap());
@@ -2981,6 +3013,7 @@ impl Payload {
         let ordinary_catalog45 = [
             CATALOG45_RENDERED_SCULPTURE_THUMBNAIL, CATALOG45_NATIVE_PUBLICATION_CAPACITY,
             CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
+            CATALOG45_PREPARED_SIGN_AUDIO,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = payload.retained_furnishing_catalog().or(
             ordinary_catalog45.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
