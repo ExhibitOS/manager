@@ -25,12 +25,20 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var choosing = false
     @State private var busyActivity: String?
     @State private var message: String?
-    @State private var request: (id: String, details: WorkspaceFurnishingDetails, policy: WorkspaceArtworkFramePreparationPolicy?)?
+    struct PendingRequest {
+        let access: UUID
+        let id: String
+        let details: WorkspaceFurnishingDetails
+        let policy: WorkspaceArtworkFramePreparationPolicy?
+    }
+    @Binding private var pendingRequest: PendingRequest?
+    private var request: PendingRequest? {
+        get { pendingRequest?.access == access ? pendingRequest : nil }
+        nonmutating set { pendingRequest = newValue }
+    }
     @State private var selected: WorkspaceFurnishingIntake?
     @State private var intakes: [WorkspaceFurnishingIntake] = []
     @State private var intakeCursor: String?
-    @State private var library: [WorkspaceFurnishingSummary] = []
-    @State private var catalogCursor: String?
     @State private var target: WorkspaceFurnishingSummary?
     @State private var reviewedInfoStand: (furnishing: WorkspaceFurnishing, intakeId: String)?
     @State private var room = ""
@@ -46,12 +54,13 @@ struct WorkspaceFurnishingIntakeView: View {
 
     init(model: ExhibitionModel, access: UUID, initialKind: WorkspaceFurnishingKind? = nil,
          initialWorkspaceFurnishingID: String? = nil, initialBundledID: String? = nil,
-         onRegistered: @escaping (WorkspaceFurnishing) -> Void = { _ in }) {
+         pendingRequest: Binding<PendingRequest?>, onRegistered: @escaping (WorkspaceFurnishing) -> Void = { _ in }) {
         self.model = model
         self.access = access
         self.initialWorkspaceFurnishingID = initialWorkspaceFurnishingID
         self.initialBundledID = initialBundledID
         self.onRegistered = onRegistered
+        _pendingRequest = pendingRequest
         _kind = State(initialValue: initialKind.flatMap { Self.supports($0, model: model) ? $0 : nil } ?? .pedestal)
     }
 
@@ -65,64 +74,66 @@ struct WorkspaceFurnishingIntakeView: View {
         }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("작업 공간 비품").font(.headline)
-            Form {
-                if let selected { intakeSection(selected) }
-                else if let request {
-                    Section("등록 상태 확인") {
-                        Text(request.details.name)
-                        Button("같은 요청 다시 확인") { Task { await submit() } }
-                        Button("목록에서 찾기") { Task { await reload() } }
-                    }
-                } else { newSection }
+    private var adding: Bool { initialWorkspaceFurnishingID == nil }
+    private var canInteract: Bool { !busy && access == model.viewportAccessID }
+    private var registrationInputComplete: Bool {
+        func filled(_ value: String?) -> Bool { value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
+        return snapshot != nil && filled(name) && filled(provenance) && filled(rights.holder)
+            && (filled(rights.licenseId) || filled(rights.licenseText))
+    }
 
-                Section("등록 기록") {
-                    ForEach(intakes) { intake in
-                        Button("\(intake.declaration.name) · \(status(intake.phase))") {
-                            selected = intake
-                            request = nil
-                            snapshot = nil
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(adding ? "비품 추가" : (target?.name ?? "비품 배치"))
+                    .font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
+                Text(adding ? "작업 공간에 GLB를 등록합니다." : "현재 전시에서 비품의 배치와 연결을 설정합니다.")
+                    .foregroundStyle(.secondary)
+            }.padding(.horizontal, 20).padding(.vertical, 14)
+            Divider()
+            Form {
+                if adding {
+                    if let selected { intakeSection(selected) }
+                    else if let request {
+                        Section("확인이 필요한 등록") {
+                            Text(request.details.name).fontWeight(.semibold)
+                            Text("같은 요청으로 서버의 등록 상태를 확인할 수 있습니다.").foregroundStyle(.secondary)
                         }
+                    } else { newSection }
+                    registrationHistory
+                } else if let target {
+                    switch target.kind {
+                    case .artworkFrame: artworkFrameSection
+                    case .portalFinish: portalSection
+                    default: placementSection(target)
                     }
-                    if intakeCursor != nil {
-                        Button("등록 기록 더 보기") { Task { await loadMore(intake: true) } }
+                    if target.kind == .bench, let seatPolicyETag, seatPolicyETag == model.state?.etag {
+                        WorkspaceBenchSeatEditor(model: model, entry: target, access: access).id(target.id)
                     }
-                }
-                Section("등록한 비품") {
-                    ForEach(library) { entry in
-                        Button("\(entry.name) · v\(entry.version)") { selectWorkspace(entry) }
-                            .disabled(!entry.rightsAvailability.display)
-                    }
-                    if catalogCursor != nil {
-                        Button("비품 더 보기") { Task { await loadMore(intake: false) } }
-                    }
-                }
-                if let target, target.kind != .artworkFrame, target.kind != .portalFinish { placementSection(target) }
-                if let target, target.kind == .bench, let seatPolicyETag, seatPolicyETag == model.state?.etag {
-                    WorkspaceBenchSeatEditor(model: model, entry: target, access: access)
-                        .id(target.id)
-                }
-                if model.workspaceArtworkFrameAvailable { artworkFrameSection }
-                if model.workspacePortalFinishAvailable { portalSection }
-            }.disabled(busy || access != model.viewportAccessID)
-            if access == model.viewportAccessID {
-                if let busyActivity {
-                    ProgressView(busyActivity).controlSize(.small)
-                } else if let selected, [.validating, .cancelling].contains(selected.phase) {
-                    ProgressView(status(selected.phase)).controlSize(.small)
+                } else if !busy, message == nil {
+                    Text("하단 카탈로그에서 배치할 비품을 선택하세요.").foregroundStyle(.secondary)
                 }
             }
-            if let message { Text(message).accessibilityAddTraits(.updatesFrequently) }
-            HStack {
-                Button("목록 새로 고침") { Task { await reload() } }.disabled(busy || access != model.viewportAccessID)
-                Spacer()
-                Button("닫기", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy)
-            }
+            .formStyle(.grouped)
+            .disabled(!canInteract)
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                if access == model.viewportAccessID {
+                    if let busyActivity {
+                        ProgressView(busyActivity).controlSize(.small)
+                    } else if adding, let selected, [.validating, .cancelling].contains(selected.phase) {
+                        ProgressView(status(selected.phase)).controlSize(.small)
+                    }
+                }
+                if let message { Text(message).accessibilityAddTraits(.updatesFrequently) }
+                HStack {
+                    Spacer()
+                    Button("닫기", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy)
+                    if adding { primaryRegistrationAction.disabled(!canInteract) }
+                }
+            }.padding(.horizontal, 20).padding(.vertical, 12)
         }
-        .padding(20)
-        .frame(minWidth: 530, minHeight: 560)
+        .frame(minWidth: 530, idealWidth: 570, minHeight: 510, idealHeight: 590)
         .interactiveDismissDisabled(busy)
         .fileImporter(isPresented: $choosing, allowedContentTypes: [UTType(filenameExtension: "glb") ?? .data]) { result in
             Task {
@@ -139,15 +150,29 @@ struct WorkspaceFurnishingIntakeView: View {
                !Task.isCancelled, access == model.viewportAccessID {
                 bundledCatalog = catalog
             }
-            if let initialBundledID, let item = bundledCatalog?.items.first(where: { $0.id == initialBundledID }) {
+            if request == nil, let initialBundledID, let item = bundledCatalog?.items.first(where: { $0.id == initialBundledID }) {
                 await selectBundled(item)
             }
             await reload(revealing: initialWorkspaceFurnishingID)
         }
     }
 
-    private var newSection: some View {
-        Section("GLB 등록") {
+    @ViewBuilder private var newSection: some View {
+        Section("모델 파일") {
+            HStack {
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(snapshot?.name ?? "선택한 파일 없음")
+                            .lineLimit(1).truncationMode(.middle).help(snapshot?.name ?? "")
+                        if let snapshot {
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(snapshot.data.count), countStyle: .file))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } icon: { Image(systemName: "cube") }
+                Spacer()
+                Button(snapshot == nil ? "GLB 선택" : "GLB 바꾸기") { choosing = true }
+            }
             if let bundledCatalog, !bundledCatalog.items.isEmpty {
                 Menu("기본 비품 선택") {
                     ForEach(bundledCatalog.items) { item in
@@ -156,6 +181,8 @@ struct WorkspaceFurnishingIntakeView: View {
                     }
                 }
             }
+        }
+        Section("비품 정보") {
             Picker("종류", selection: $kind) {
                 Text("받침").tag(WorkspaceFurnishingKind.pedestal)
                 Text("벤치").tag(WorkspaceFurnishingKind.bench)
@@ -177,8 +204,6 @@ struct WorkspaceFurnishingIntakeView: View {
             }
             TextField("이름", text: $name)
             TextField("출처", text: $provenance, axis: .vertical)
-            Button("GLB 선택") { choosing = true }
-            if let snapshot { Text(snapshot.name).lineLimit(1).truncationMode(.middle) }
             if let snapshot, let descriptor = try? WorkspaceFurnishingModel(snapshot: snapshot),
                preparationPolicy(for: descriptor) != nil {
                 Text("등록할 때 서버에서 표시용 액자 모델을 만들고 원본도 보관합니다.").foregroundStyle(.secondary)
@@ -187,23 +212,73 @@ struct WorkspaceFurnishingIntakeView: View {
                 Text("권리자가 등록한 안내판은 원본을 보관합니다. 호환 처리가 필요한 경우 표시용 GLB를 별도로 만들며, 배치하기 전에 등록 모델을 확인할 수 있습니다.")
                     .foregroundStyle(.secondary)
             }
+        }
+        Section("이용 권리") {
             TextField("권리자", text: $rights.holder)
             Picker("권리 근거", selection: $rights.ownership) {
                 Text("내가 권리자").tag("owner")
                 Text("허가를 받음").tag("authorized-licensee")
             }
-            TextField("표시할 크레딧", text: $rights.creditLine)
             TextField("라이선스 ID", text: optional($rights.licenseId))
             TextField("허용 조건", text: optional($rights.licenseText))
-            TextField("권리 시작일 (ISO 8601, 선택)", text: optional($rights.validFrom))
-            TextField("권리 만료일 (ISO 8601, 선택)", text: optional($rights.expiresAt))
             Toggle("전시 허용", isOn: $rights.permissions.display)
-            Toggle("다운로드 허용", isOn: $rights.permissions.download)
-            Toggle("내보내기 허용", isOn: $rights.permissions.export)
-            Toggle("상업적 사용 허용", isOn: $rights.permissions.commercial)
+            DisclosureGroup("크레딧과 추가 권리 설정") {
+                TextField("표시할 크레딧", text: $rights.creditLine)
+                TextField("권리 시작일 (ISO 8601)", text: optional($rights.validFrom))
+                TextField("권리 만료일 (ISO 8601)", text: optional($rights.expiresAt))
+                Toggle("다운로드 허용", isOn: $rights.permissions.download)
+                Toggle("내보내기 허용", isOn: $rights.permissions.export)
+                Toggle("상업적 사용 허용", isOn: $rights.permissions.commercial)
+            }
+        }
+    }
+
+    private var registrationHistory: some View {
+        Section {
+            DisclosureGroup("등록 기록") {
+                if intakes.isEmpty { Text("등록 기록이 없습니다.").foregroundStyle(.secondary) }
+                ForEach(intakes) { intake in
+                    Button("\(intake.declaration.name) · \(status(intake.phase))") {
+                        selected = intake
+                        snapshot = nil
+                    }
+                    .disabled(request != nil || snapshot != nil || selected.map(isUnfinished) == true)
+                }
+                if intakeCursor != nil { Button("등록 기록 더 보기") { Task { await loadMoreIntakes() } } }
+                Button("등록 기록 새로 고침") { Task { await reload() } }
+            }
+        }
+    }
+
+    private func isUnfinished(_ intake: WorkspaceFurnishingIntake) -> Bool {
+        intake.phase != .registered && intake.phase != .cancelled
+    }
+
+    @ViewBuilder private var primaryRegistrationAction: some View {
+        if let selected {
+            switch selected.phase {
+            case .uploading:
+                Button("등록 이어서 진행") { Task { await submit() } }
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .disabled(selected.received == nil && snapshot == nil)
+            case .validating, .cancelling:
+                Button("상태 확인") { Task { await change(nil) } }
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            case .failed:
+                if selected.retryable {
+                    Button("검증 다시 시도") { Task { await change(.retry) } }
+                        .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                }
+            case .registered, .cancelled:
+                Button("새 비품 등록") { self.selected = nil; snapshot = nil }
+                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+            }
+        } else if request != nil {
+            Button("같은 요청 다시 확인") { Task { await submit() } }
+                .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+        } else {
             Button("등록 시작") { Task { await submit() } }
-                .disabled(snapshot == nil || name.isEmpty || provenance.isEmpty || rights.holder.isEmpty
-                          || (rights.licenseId == nil && rights.licenseText == nil))
+                .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction).disabled(!registrationInputComplete)
         }
     }
 
@@ -221,31 +296,32 @@ struct WorkspaceFurnishingIntakeView: View {
             } else {
                 Text(status(intake.phase))
             }
-            Text(intake.declaration.provenance).foregroundStyle(.secondary)
-            if let preparation = intake.preparation {
-                LabeledContent("보정 방식", value: preparation.recipe == .normalizeLegacySignTexture
-                    ? "안내판 텍스처 호환 처리" : "사용하지 않는 탄젠트 속성 제거")
-                LabeledContent("원본 SHA-256") {
-                    Text(preparation.sourceModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
-                }
-                LabeledContent("등록 모델 SHA-256") {
-                    Text(preparation.renderableModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
+            if intake.phase == .uploading && intake.received == nil {
+                Button("같은 GLB 다시 선택") { choosing = true }
+                if let snapshot { Text(snapshot.name).lineLimit(1).truncationMode(.middle) }
+            }
+            if isUnfinished(intake) {
+                Menu("등록 관리") {
+                    Button("상태 다시 확인") { Task { await change(nil) } }
+                    if intake.phase != .cancelling {
+                        Button("등록 취소", role: .destructive) { Task { await change(.cancel) } }
+                    }
+                    Button("현재 등록을 보관하고 새로 시작") { selected = nil; snapshot = nil }
                 }
             }
-            if intake.phase == .uploading {
-                if intake.received == nil {
-                    Button("같은 GLB 다시 선택") { choosing = true }
-                    if let snapshot { Text(snapshot.name).lineLimit(1).truncationMode(.middle) }
+            DisclosureGroup("출처와 모델 세부 정보") {
+                Text(intake.declaration.provenance).foregroundStyle(.secondary)
+                if let preparation = intake.preparation {
+                    LabeledContent("보정 방식", value: preparation.recipe == .normalizeLegacySignTexture
+                        ? "안내판 텍스처 호환 처리" : "사용하지 않는 탄젠트 속성 제거")
+                    LabeledContent("원본 SHA-256") {
+                        Text(preparation.sourceModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                    LabeledContent("등록 모델 SHA-256") {
+                        Text(preparation.renderableModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
+                    }
                 }
-                Button("등록 이어서 진행") { Task { await submit() } }
-                    .disabled(intake.received == nil && snapshot == nil)
             }
-            Button("상태 다시 확인") { Task { await change(nil) } }
-            if intake.retryable { Button("검증 다시 시도") { Task { await change(.retry) } } }
-            if [.uploading, .validating, .failed].contains(intake.phase) {
-                Button("등록 취소") { Task { await change(.cancel) } }
-            }
-            Button("새 등록 준비") { selected = nil; request = nil; snapshot = nil }
         }
     }
 
@@ -282,7 +358,10 @@ struct WorkspaceFurnishingIntakeView: View {
                     }
                     Button("배치용 GLB 확인") { Task { await reviewInfoStand(entry, intakeId: intake.id) } }
                 } else {
-                    Text("배치 모델을 확인할 수 있도록 등록 기록에서 이 안내판을 찾으세요.").foregroundStyle(.secondary)
+                    Text("배치용 모델을 확인하려면 이 안내판의 등록 기록이 필요합니다.").foregroundStyle(.secondary)
+                    if intakeCursor != nil {
+                        Button("등록 기록 더 찾기") { Task { await loadMoreIntakes() } }
+                    }
                 }
             } else {
                 Button("전시에 배치") { Task { await place(entry) } }.disabled(room.isEmpty)
@@ -311,8 +390,6 @@ struct WorkspaceFurnishingIntakeView: View {
                         let opening = portalOpening
                         Task { await applyPortal(openingId: opening, furnishingId: target.id) }
                     }.disabled(portalOpening.isEmpty || !model.canEditWorkspacePortalFinish)
-                } else {
-                    Text("등록한 비품 목록에서 출입구 마감을 선택하세요.").foregroundStyle(.secondary)
                 }
                 if WorkspacePortalFinish.hasAttachment(openingId: portalOpening, in: draft) {
                     Button("문에서 마감 해제") {
@@ -352,8 +429,6 @@ struct WorkspaceFurnishingIntakeView: View {
                         }
                     }
                     .disabled(!model.canEditWorkspaceArtworkFrame)
-                } else if !attached {
-                    Text("등록한 비품 목록에서 액자를 선택하세요.").foregroundStyle(.secondary)
                 }
                 if attached {
                     Button("작품에서 액자 해제") {
@@ -452,17 +527,19 @@ struct WorkspaceFurnishingIntakeView: View {
         await perform {
             let pages = try await model.withWorkspaceFurnishingAccess(access) { api in
                 let intakes = try await api.workspaceFurnishingIntakes()
-                let catalog = try await loadWorkspaceFurnishingCatalog(using: api, revealing: id)
-                let seatPolicyETag = await model.workspaceBenchSeatPolicyETag(using: api)
-                return (intakes, catalog, seatPolicyETag)
+                var entry: WorkspaceFurnishingSummary?
+                if let id {
+                    let catalog = try await loadWorkspaceFurnishingCatalog(using: api, revealing: id)
+                    entry = catalog.items.first { $0.id == id && $0.rightsAvailability.display }
+                }
+                let seatPolicyETag = entry?.kind == .bench ? await model.workspaceBenchSeatPolicyETag(using: api) : nil
+                return (intakes, entry, seatPolicyETag)
             }
             intakes = pages.0.items
             intakeCursor = pages.0.nextCursor
-            library = pages.1.items
-            catalogCursor = pages.1.nextCursor
             seatPolicyETag = pages.2
-            if let id {
-                if let entry = library.first(where: { $0.id == id && $0.rightsAvailability.display }) {
+            if id != nil {
+                if let entry = pages.1 {
                     selectWorkspace(entry)
                 } else {
                     message = "선택한 비품을 배치할 수 없습니다. 등록 상태와 전시 권리를 확인하세요."
@@ -471,21 +548,15 @@ struct WorkspaceFurnishingIntakeView: View {
         }
     }
 
-    private func loadMore(intake: Bool) async {
+    private func loadMoreIntakes() async {
         await perform {
-            if intake {
-                guard let intakeCursor else { return }
-                let page = try await model.withWorkspaceFurnishingAccess(access) { try await $0.workspaceFurnishingIntakes(cursor: intakeCursor) }
-                let known = Set(intakes.map(\.id))
-                intakes.append(contentsOf: page.items.filter { !known.contains($0.id) })
-                self.intakeCursor = page.nextCursor
-            } else {
-                guard let catalogCursor else { return }
-                let page = try await model.withWorkspaceFurnishingAccess(access) { try await $0.workspaceFurnishings(cursor: catalogCursor) }
-                let known = Set(library.map(\.id))
-                library.append(contentsOf: page.items.filter { !known.contains($0.id) })
-                self.catalogCursor = page.nextCursor
+            guard let intakeCursor else { return }
+            let page = try await model.withWorkspaceFurnishingAccess(access) {
+                try await $0.workspaceFurnishingIntakes(cursor: intakeCursor)
             }
+            let known = Set(intakes.map(\.id))
+            intakes.append(contentsOf: page.items.filter { !known.contains($0.id) })
+            self.intakeCursor = page.nextCursor
         }
     }
 
@@ -499,10 +570,10 @@ struct WorkspaceFurnishingIntakeView: View {
             if selected == nil && request == nil {
                 guard let snapshot else { throw AuthoringFailure("FURNISHING_DECLARATION") }
                 let descriptor = try WorkspaceFurnishingModel(snapshot: snapshot)
-                request = (UUID().uuidString.lowercased(), .init(kind: kind,
-                    name: name.trimmingCharacters(in: .whitespacesAndNewlines), rights: rights,
-                    provenance: provenance.trimmingCharacters(in: .whitespacesAndNewlines), model: descriptor),
-                    preparationPolicy(for: descriptor))
+                request = .init(access: access, id: UUID().uuidString.lowercased(),
+                    details: .init(kind: kind, name: name.trimmingCharacters(in: .whitespacesAndNewlines), rights: rights,
+                                   provenance: provenance.trimmingCharacters(in: .whitespacesAndNewlines), model: descriptor),
+                    policy: preparationPolicy(for: descriptor))
             }
             try await model.withWorkspaceFurnishingAccess(access) { api in
                 var intake: WorkspaceFurnishingIntake

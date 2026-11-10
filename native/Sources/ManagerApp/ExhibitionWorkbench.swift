@@ -26,6 +26,7 @@ struct NativeExhibitionView: View {
     @State private var furnishingIntakeKind: WorkspaceFurnishingKind?
     @State private var furnishingIntakeTarget: String?
     @State private var furnishingIntakeBundledID: String?
+    @State private var pendingFurnishingRequest: WorkspaceFurnishingIntakeView.PendingRequest?
     @State private var pendingFurnishingReveal: ExhibitionModel.RegisteredFurnishing?
     @State private var revealedFurnishing: ExhibitionModel.RegisteredFurnishing?
     @State private var artworkCatalogIntakeAccess: UUID?
@@ -191,7 +192,7 @@ struct NativeExhibitionView: View {
             if let workspaceFurnishingAccess {
                 WorkspaceFurnishingIntakeView(model: model, access: workspaceFurnishingAccess,
                     initialKind: furnishingIntakeKind, initialWorkspaceFurnishingID: furnishingIntakeTarget,
-                    initialBundledID: furnishingIntakeBundledID, onRegistered: { item in
+                    initialBundledID: furnishingIntakeBundledID, pendingRequest: $pendingFurnishingRequest, onRegistered: { item in
                         guard workspaceFurnishingAccess == model.viewportAccessID else { return }
                         pendingFurnishingReveal = .init(access: workspaceFurnishingAccess, item: item)
                         self.workspaceFurnishingAccess = nil
@@ -224,6 +225,7 @@ struct NativeExhibitionView: View {
         }
         .inspector(isPresented: inspectorPresented) { inspector }
         .inspectorColumnWidth(min: 240, ideal: 300, max: 420)
+        .onChange(of: model.viewportAccessID) { _, _ in pendingFurnishingRequest = nil }
         .onChange(of: model.selectedPlaqueId) { _, id in if !id.isEmpty { showSelection() } }
         .onChange(of: model.selectedBenchId) { _, id in if !id.isEmpty { showSelection() } }
         .onChange(of: model.selectedLightId) { _, id in if !id.isEmpty { showSelection() } }
@@ -272,7 +274,7 @@ struct NativeExhibitionView: View {
                         .disabled(formLocked || editRestricted)
                 }
                 if model.workspaceFurnishingIntakeAvailable {
-                    Button("작업 공간 비품 등록·배치") { openFurnishingIntake() }
+                    Button("작업 공간 비품 추가") { openFurnishingIntake() }
                         .disabled(formLocked || editRestricted)
                 }
                 Divider()
