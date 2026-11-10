@@ -330,7 +330,8 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
             let placed = try XCTUnwrap(placement.applying(furnishing, to: draft, supportedExtensionVersion: 2))
             let command = try WorkspaceBenchSeatAttachment(benchId: bench, placementId: placementId, furnishingId: furnishing.id,
                 furnishingVersion: 1, modelSha256: sha, width: width, depth: 0.38, height: 0.45, viewpointId: camera, viewpoint: view)
-            return try XCTUnwrap(command.applying(furnishing, to: placed))
+            let next = try command.applying(furnishing, to: placed)
+            return try XCTUnwrap(next)
         }
 
         let next = try attach()
@@ -372,6 +373,20 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
                        placed.candidate["extensions"][WorkspaceFurnishingPlacement.namespace])
         XCTAssertEqual(try BenchSettings.list(in: combined), [seat])
         XCTAssertThrowsError(try proposal.applying(.object(["additions": .array([addition, addition])]), to: draft))
+        XCTAssertThrowsError(try proposal.applying(.object(["additions": .array([])]), to: draft))
+
+        let secondId = UUID().uuidString.lowercased()
+        let secondPlacement = WorkspaceFurnishingPlacement(id: secondId, roomId: room, furnishingId: furnishing.id,
+            furnishingVersion: 1, position: [1, 0, 0], yaw: 0, scale: 1)
+        let both = try XCTUnwrap(secondPlacement.applying(furnishing, to: placed, supportedExtensionVersion: 2))
+        let multi = try WorkspaceDefaultSeatProposal(draft: both, placementIds: [placementId, secondId])
+        let first = try XCTUnwrap(multi.targets.first)
+        var partial = addition
+        partial["bench"]["id"] = .string(first.benchId)
+        partial["bench"]["viewpointId"] = .string(first.viewpointId)
+        partial["viewpoint"]["id"] = .string(first.viewpointId)
+        XCTAssertThrowsError(try multi.applying(.object(["additions": .array([partial])]), to: placed))
+
         let repeated = try WorkspaceDefaultSeatProposal(draft: combined, placementIds: [placementId])
         XCTAssertNil(try repeated.applying(.object(["additions": .array([])]), to: combined))
         XCTAssertEqual(try BenchViewpoint.list(in: combined), [view])
