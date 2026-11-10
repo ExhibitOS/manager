@@ -79,6 +79,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
             } == true
@@ -171,7 +172,8 @@ public actor NativeAutomationSession {
     }
     private func waitExistingStartup(manifest: String) async throws -> NativeHostStatus {
         guard manifest == "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a"
-            || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: manifest) else {
+            || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: manifest)
+            || AuthoringAPI.supportsPreparedSignStartupDrain(manifest: manifest) else {
             return try await waitReady()
         }
         // These runtimes own their startup deadlines. Keep the helper channel
@@ -271,8 +273,10 @@ public actor NativeAutomationSession {
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
+        let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
+            && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
-                || admitsRenderedSculptureThumbnailOex || admitsNativePublication else {
+                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
@@ -280,7 +284,8 @@ public actor NativeAutomationSession {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
         }
         if stored.draft != draft || stored.etag != etag {
-            guard let attempt = try artworkAttempt(at: replacementAttemptPath),
+            guard !admitsPreservationReadback,
+                  let attempt = try artworkAttempt(at: replacementAttemptPath),
                   let command = try? NativeAutomationReplacementCommand(attempt),
                   await admitsReplacement(command, api: api),
                   attempt["operation"] == .string("artwork-replace-reviewed"),
@@ -1072,10 +1077,17 @@ public actor NativeAutomationSession {
         guard fields == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
     }
 
+    static func checkPreservationOperation(_ operation: String?, manifest: String?, allowed: String) throws {
+        if let manifest, AuthoringAPI.supportsPreReadyPreservationReadback(manifest: manifest), operation != allowed {
+            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
@@ -2402,6 +2414,7 @@ public actor NativeAutomationSession {
     }
     /// Control authorization precedes cancellation or shutdown side effects.
     public func authorizeControl(_ request: DocumentValue) async throws {
+        try Self.checkPreservationOperation(request["operation"].string, manifest: runtimeManifest, allowed: "close")
         guard !closed, !closing, context != nil, let identity,
               request["capability"].string == capability,
               request["workspaceId"].string == identity.workspaceId,

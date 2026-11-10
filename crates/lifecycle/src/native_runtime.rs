@@ -415,7 +415,7 @@ fn catalog45_failed_reopen_shape(failed: &Context, startup: Option<Catalog45Star
         && failed.exits.get("postgres") == Some(&0) && failed.exits.get("auxiliary") == Some(&0)
         && failed.exits.get("node") == Some(&node_exit)
         && (startup.is_none() || (!failed.readiness.ready && failed.exits.len() == 3))
-        && (startup != Some(Catalog45StartupRecovery::Unqualified)
+        && (!matches!(startup, Some(Catalog45StartupRecovery::Unqualified | Catalog45StartupRecovery::PreReadyPreservation))
             || (failed.readiness.version.is_none() && failed.readiness.protocol_version.is_none()
                 && failed.readiness.error_code.is_none()))
 }
@@ -468,8 +468,10 @@ fn catalog45_cancelled_startup_is_separate_from_unqualified_stop() {
     };
     let cancelled = Some(Catalog45StartupRecovery::Cancelled);
     let unqualified = Some(Catalog45StartupRecovery::Unqualified);
+    let preservation = Some(Catalog45StartupRecovery::PreReadyPreservation);
     assert!(catalog45_failed_reopen_shape(&context, cancelled));
     assert!(!catalog45_failed_reopen_shape(&context, unqualified));
+    assert!(!catalog45_failed_reopen_shape(&context, preservation));
     assert!(!catalog45_failed_reopen_shape(&context, None));
     context.readiness.ready = true;
     assert!(!catalog45_failed_reopen_shape(&context, cancelled));
@@ -481,13 +483,16 @@ fn catalog45_cancelled_startup_is_separate_from_unqualified_stop() {
     context.failure_code = context.error_code.clone();
     assert!(catalog45_failed_reopen_shape(&context, None));
     assert!(catalog45_failed_reopen_shape(&context, unqualified));
+    assert!(catalog45_failed_reopen_shape(&context, preservation));
     assert!(!catalog45_failed_reopen_shape(&context, cancelled));
     context.readiness.ready = true;
     assert!(!catalog45_failed_reopen_shape(&context, unqualified));
+    assert!(!catalog45_failed_reopen_shape(&context, preservation));
     assert!(catalog45_failed_reopen_shape(&context, None));
     context.readiness.ready = false;
     context.readiness.version = Some("unexpected".into());
     assert!(!catalog45_failed_reopen_shape(&context, unqualified));
+    assert!(!catalog45_failed_reopen_shape(&context, preservation));
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

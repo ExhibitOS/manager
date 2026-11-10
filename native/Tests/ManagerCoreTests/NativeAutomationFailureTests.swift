@@ -4,6 +4,24 @@ import Darwin
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testPreReadyPreservationAutomationRejectsSaveAndOtherCommands() throws {
+        let manifest = "baf33be8865ee1c558874702ca8a772db90a9c59c3ab28759e7fc6ae8d608c86"
+        XCTAssertNoThrow(try NativeAutomationSession.checkPreservationOperation("read", manifest: manifest, allowed: "read"))
+        XCTAssertNoThrow(try NativeAutomationSession.checkPreservationOperation("close", manifest: manifest, allowed: "close"))
+        for operation in ["save", "load-copy", "reopen-saved", "export-static", "close"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkPreservationOperation(operation, manifest: manifest, allowed: "read")) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+        }
+        for operation in ["cancel", "status", "read"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkPreservationOperation(operation, manifest: manifest, allowed: "close")) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+        }
+        let ordinary = "cbf4214bbf755216e8173190ce98ee32fb3f3708bd9c6a25e394eb3ce30e0a0a"
+        XCTAssertNoThrow(try NativeAutomationSession.checkPreservationOperation("save", manifest: ordinary, allowed: "read"))
+    }
+
     func testInstalledExportCommandsRequireExactScopeAndSavedRevisionFields() throws {
         let scope: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId"]
         let export = scope.union(["expectedRevision", "expectedEditVersion", "outputPath"])
