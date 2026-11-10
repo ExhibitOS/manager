@@ -9,7 +9,7 @@ public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
-        "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-status",
+        "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
         "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement"
     ]
 
@@ -567,13 +567,93 @@ public actor NativeAutomationSession {
     }
 
     private func syncArtworkAttempt(at attemptPath: String, errorCode: String = "ARTWORK_REPLACEMENT_UNCERTAIN") throws {
-        for path in [attemptPath, root.path] {
+        for path in [attemptPath, URL(fileURLWithPath: attemptPath).deletingLastPathComponent().path] {
             let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { throw BridgeFailure(errorCode) }
             let synced = Darwin.fsync(fd)
             _ = Darwin.close(fd)
             guard synced == 0 else { throw BridgeFailure(errorCode) }
         }
+    }
+
+    private func exportSavedHead(_ request: DocumentValue, id: String, context: Context,
+                                 current: NativeDocumentState, api: AuthoringAPI) async throws -> NativeStaticExportReceipt {
+        let publicationProfile = "bounded-local-v1"
+        guard let owner = existingWorkspaceV5, let manifest = runtimeManifest, owner.manifestSHA256 == manifest,
+              AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest), selectedOEXFormat == nil,
+              authoringSession?.nativePublicationProfile == publicationProfile,
+              authoringSession?.userId == owner.principalId,
+              current.workspaceId == owner.workspaceId, current.tenantId == owner.tenantId,
+              current.principalId == owner.principalId else { throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE") }
+        try checkedRevision(request, current)
+        let command = try NativeAutomationArtworkRules.command(request, keys: ["etag"])
+        guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag,
+              command["etag"] == .string(etag), let path = request["outputPath"].string else {
+            throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+        }
+        let parent = try Self.exportRootIdentity(root, profile: profile)
+        let destination = URL(fileURLWithPath: path)
+        guard path == destination.path, destination.deletingLastPathComponent().path == root.path else {
+            throw BridgeFailure("AUTOMATION_OUTPUT_INVALID")
+        }
+        let reopened = try await api.exhibition(draft.id)
+        let policy = try await api.nativeViewportPolicy(draft.id)
+        guard reopened.draft == draft, reopened.etag == etag, policy.etag == etag else {
+            throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        guard policy.confirmsOrdinaryDraft else { throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE") }
+
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        guard case .object(let fields) = request else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        let attempt: DocumentValue = .object([
+            "version": .integer(1), "request": .object(fields.filter { $0.key != "capability" }),
+            "runtimeManifestSHA256": .string(manifest), "exhibitionId": .string(draft.id),
+            "draftSHA256": .string(Self.digest(try encoder.encode(draft))),
+            "outputDevice": .string(String(parent.0)), "outputInode": .string(String(parent.1))
+        ])
+        let journal = profile.appendingPathComponent(".automation-saved-head-export-" + id.lowercased() + ".json")
+        let changed = "AUTOMATION_SAVED_HEAD_EXPORT_CHANGED"
+        if let previous = try artworkAttempt(at: journal.path, errorCode: changed) {
+            guard previous == attempt else { throw BridgeFailure(changed) }
+        } else {
+            _ = try output(path)
+            let bytes = try encoder.encode(attempt)
+            guard bytes.count <= 8192 else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            try bytes.write(to: journal, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journal.path)
+        }
+        try syncArtworkAttempt(at: journal.path, errorCode: changed)
+        try Task.checkCancellation()
+        let readiness = try await api.publicationReady(exhibitionId: draft.id, etag: etag, publicationProfile: publicationProfile)
+        guard readiness.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+        guard readiness.status == "READY" else { throw AuthoringFailure("PUBLICATION_NOT_READY") }
+        let frozen = try await api.preparePublication(exhibitionId: draft.id, etag: etag, requestId: id, publicationProfile: publicationProfile)
+        let matches = try await api.publications(exhibitionId: draft.id).filter { $0.publicationId == frozen.publicationId }
+        guard matches == [frozen], frozen.status == "published" else { throw BridgeFailure("PUBLICATION_SCOPE_CHANGED") }
+        try reopened.requireSameComparison(await api.exhibition(draft.id))
+        guard try Self.exportRootIdentity(root, profile: profile) == parent else { throw BridgeFailure(changed) }
+
+        let existing = try await bridge.staticExportStatus(context)
+        if try existing?.canReuse(publicationId: frozen.publicationId, output: path) == true {
+            guard let existing, existing.revisionSha256 == frozen.revisionSha256, existing.privateEditor == true,
+                  existing.workspaceId == owner.workspaceId, existing.tenantId == owner.tenantId,
+                  existing.principalId == owner.principalId,
+                  existing.outputParentIdentity?.device == UInt64(bitPattern: Int64(parent.0)),
+                  existing.outputParentIdentity?.inode == UInt64(parent.1) else { throw BridgeFailure(changed) }
+        } else {
+            _ = try output(path)
+            let head: DocumentValue = .object(["exhibitionId": .string(draft.id), "etag": .string(etag),
+                "revision": request["expectedRevision"], "editVersion": request["expectedEditVersion"],
+                "revisionSha256": .string(frozen.revisionSha256)])
+            _ = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination,
+                                                   privateEditor: true, nativeOriginalDetail: false,
+                                                   outputParentIdentity: parent, savedHead: head)
+        }
+        let receipt = try await waitForStaticExport(context, publication: frozen, path: path, nativeOriginal: false, detailJobId: nil)
+        guard receipt.publicationId == frozen.publicationId, receipt.revisionSha256 == frozen.revisionSha256,
+              receipt.output == path, FileManager.default.fileExists(atPath: path),
+              try Self.exportRootIdentity(root, profile: profile) == parent else { throw BridgeFailure(changed) }
+        return receipt
     }
 
     private func executeCompactModel(_ operation: String, request: DocumentValue, id: String,
@@ -1023,6 +1103,13 @@ public actor NativeAutomationSession {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
+        if operation == "export-static-saved-head" {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
+                                         "expectedRevision", "expectedEditVersion", "outputPath", "command"]
+            guard Set(fields.keys) == expected, id == UUID(uuidString: id)?.uuidString.lowercased() else {
+                throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
+            }
         }
         if ["artwork-placement-move", "artwork-interpretation-set"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
@@ -2139,6 +2226,8 @@ public actor NativeAutomationSession {
                                                     "sha256": .string(sha256), "etag": .string(etag)]
             if !confirmed { receipt["commitState"] = .string("committed-path-unconfirmed") }
             result = .object(receipt)
+        case "export-static-saved-head":
+            result = try value(await exportSavedHead(request, id: id, context: context, current: current, api: api))
         case "export-static", "export-static-native-original":
             try checkedRevision(request, current)
             if installedExportRootIdentity != nil && authoringSession?.nativePublicationProfile != "bounded-local-v1" {
@@ -2238,49 +2327,55 @@ public actor NativeAutomationSession {
                                                                  outputParentIdentity: installedExportRootIdentity)
                 detailJobId = nativeOriginal ? started.jobId : nil
             } else { detailJobId = nil }
-            do {
-                var receipt: NativeStaticExportReceipt?
-                for _ in 0..<1200 {
-                    try Task.checkCancellation()
-                    if let status = try await bridge.staticExportStatus(context), !status.running {
-                        if nativeOriginal && !status.confirmsDetailTerminal(jobId: detailJobId, publicationId: frozen.publicationId, output: path) {
-                            throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
-                        }
-                        guard let accepted = status.receipt, status.errorCode == nil else { throw BridgeFailure(status.errorCode ?? "NATIVE_STATIC_EXPORT_FAILED") }
-                        receipt = accepted; break
-                    }
-                    try await Task.sleep(for: .milliseconds(100))
-                }
-                guard let receipt else { throw BridgeFailure("NATIVE_TIMEOUT") }
-                if nativeOriginal {
-                    guard receipt.publicationId == frozen.publicationId, receipt.revisionSha256 == frozen.revisionSha256,
-                          receipt.output == path, FileManager.default.fileExists(atPath: path) else {
-                        throw BridgeFailure("PUBLICATION_SCOPE_CHANGED")
-                    }
-                }
-                result = try value(receipt)
-            } catch {
-                let ownedBridge = bridge
-                // Both the cancellation request and termination observations
-                // must run outside the already-cancelled operation task.
-                let drained = (try? await Task.detached {
-                    _ = try await ownedBridge.cancelStaticExport(context)
-                    for _ in 0..<1200 {
-                        if let status = try await ownedBridge.staticExportStatus(context), !status.running {
-                            return !nativeOriginal || status.confirmsDetailTerminal(jobId: detailJobId, publicationId: frozen.publicationId, output: path)
-                        }
-                        try await Task.sleep(for: .milliseconds(100))
-                    }
-                    return false
-                }.value) ?? false
-                if drained { throw error }
-                throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
-            }
+            result = try value(await waitForStaticExport(context, publication: frozen, path: path,
+                                                         nativeOriginal: nativeOriginal, detailJobId: detailJobId))
         default: throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
         }
         if !Self.freshResponseOperations.contains(operation) { replay[id] = (bytes, result) }
         return result
     }
+    private func waitForStaticExport(_ context: Context, publication frozen: NativePublication, path: String,
+                                     nativeOriginal: Bool, detailJobId: String?) async throws -> NativeStaticExportReceipt {
+        do {
+            var receipt: NativeStaticExportReceipt?
+            for _ in 0..<1200 {
+                try Task.checkCancellation()
+                if let status = try await bridge.staticExportStatus(context), !status.running {
+                    if nativeOriginal && !status.confirmsDetailTerminal(jobId: detailJobId, publicationId: frozen.publicationId, output: path) {
+                        throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
+                    }
+                    guard let accepted = status.receipt, status.errorCode == nil else { throw BridgeFailure(status.errorCode ?? "NATIVE_STATIC_EXPORT_FAILED") }
+                    receipt = accepted; break
+                }
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            guard let receipt else { throw BridgeFailure("NATIVE_TIMEOUT") }
+            if nativeOriginal {
+                guard receipt.publicationId == frozen.publicationId, receipt.revisionSha256 == frozen.revisionSha256,
+                      receipt.output == path, FileManager.default.fileExists(atPath: path) else {
+                    throw BridgeFailure("PUBLICATION_SCOPE_CHANGED")
+                }
+            }
+            return receipt
+        } catch {
+            let ownedBridge = bridge
+            // Both the cancellation request and termination observations
+            // must run outside the already-cancelled operation task.
+            let drained = (try? await Task.detached {
+                _ = try await ownedBridge.cancelStaticExport(context)
+                for _ in 0..<1200 {
+                    if let status = try await ownedBridge.staticExportStatus(context), !status.running {
+                        return !nativeOriginal || status.confirmsDetailTerminal(jobId: detailJobId, publicationId: frozen.publicationId, output: path)
+                    }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                return false
+            }.value) ?? false
+            if drained { throw error }
+            throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
+        }
+    }
+
     public func close() async throws {
         guard !busy, !closing else { throw BridgeFailure("AUTOMATION_BUSY") }
         guard !closed else { return }

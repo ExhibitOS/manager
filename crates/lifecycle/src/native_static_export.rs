@@ -30,6 +30,16 @@ pub struct Input {
     #[serde(default, deserialize_with = "read_detail_mode")]
     pub detail_mode: Option<DetailMode>,
     output_parent_identity: Option<DirectoryIdentity>,
+    saved_head: Option<SavedHead>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SavedHead {
+    exhibition_id: String,
+    etag: String,
+    revision: u64,
+    edit_version: u64,
+    revision_sha256: String,
 }
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DetailMode {
@@ -1971,18 +1981,39 @@ impl Exporter {
         if self.active() || self.detail_held(&token)? {
             return Err(err("BUSY"));
         }
-        let publication = self.controller.native_publication(&token)?;
-        if publication.pending.is_some() {
-            return Err(err("NATIVE_PUBLICATION_PENDING"));
-        }
-        let completed = publication
-            .completed
-            .ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;
-        if completed.publication.publication_id != input.publication_id
-            || completed.publication.status != "published"
-        {
-            return Err(err("NATIVE_PUBLICATION_STATE_CHANGED"));
-        }
+        let (workspace_id, tenant_id, principal_id, revision_sha256) = if let Some(head) = input.saved_head {
+            if !cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))
+                || payload.context().manifest_sha256 != "cfc795c35628e15a9f91b71dcca0587023a0b249b2984a2615973b72bc6ed32f"
+                || !input.private_editor || input.detail_mode.is_some() || input.output_parent_identity.is_none()
+                || !crate::installations::uuid(&input.publication_id) || !hash_valid(&head.revision_sha256)
+            {
+                return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
+            }
+            let document = self.controller.native_document(&token)?;
+            if document.pending.is_some() || document.revision != head.revision
+                || document.etag.as_deref() != Some(head.etag.as_str())
+                || document.saved_edit_version != Some(head.edit_version)
+                || !document.draft.as_ref().is_some_and(|draft| {
+                    super::native_document::draft_id(draft) == Some(head.exhibition_id.as_str())
+                        && draft["editVersion"].as_u64() == Some(head.edit_version)
+                })
+            {
+                return Err(err("NATIVE_DOCUMENT_STATE_CHANGED"));
+            }
+            (document.workspace_id, document.tenant_id, document.principal_id, head.revision_sha256)
+        } else {
+            let publication = self.controller.native_publication(&token)?;
+            if publication.pending.is_some() {
+                return Err(err("NATIVE_PUBLICATION_PENDING"));
+            }
+            let completed = publication.completed.ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;
+            if completed.publication.publication_id != input.publication_id
+                || completed.publication.status != "published"
+            {
+                return Err(err("NATIVE_PUBLICATION_STATE_CHANGED"));
+            }
+            (publication.workspace_id, publication.tenant_id, publication.principal_id, completed.publication.revision_sha256)
+        };
         let parent = input.output.parent().ok_or_else(bad)?;
         if !input.output.is_absolute()
             || input.output.as_os_str().len() > 4096
@@ -2012,11 +2043,11 @@ impl Exporter {
         let value = Status {
             format: 1,
             job_id: uuid::Uuid::new_v4().to_string(),
-            workspace_id: publication.workspace_id,
-            tenant_id: publication.tenant_id,
-            principal_id: publication.principal_id,
+            workspace_id,
+            tenant_id,
+            principal_id,
             publication_id: input.publication_id,
-            revision_sha256: completed.publication.revision_sha256,
+            revision_sha256,
             output: input.output,
             output_parent_identity: input.output_parent_identity,
             state: "running".into(),

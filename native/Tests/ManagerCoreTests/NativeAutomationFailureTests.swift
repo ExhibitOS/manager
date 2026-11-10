@@ -17,7 +17,7 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertThrowsError(try NativeAutomationSession.checkInstalledExportRequest("read", fields: export)) {
             XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_PROTOCOL_INVALID")
         }
-        for operation in ["save", "import-image", "export-static-native-original"] {
+        for operation in ["save", "import-image", "export-static-native-original", "export-static-saved-head"] {
             XCTAssertThrowsError(try NativeAutomationSession.checkInstalledExportRequest(operation, fields: scope)) {
                 XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
             }
@@ -93,6 +93,7 @@ final class NativeAutomationFailureTests: XCTestCase {
         let prior = (request, stale)
         let status = try NativeAutomationSession.replayResponse(for: "artwork-status", prior: prior, matching: request)
         XCTAssertEqual(status ?? current, current)
+        XCTAssertNil(try NativeAutomationSession.replayResponse(for: "export-static-saved-head", prior: prior, matching: request))
         XCTAssertEqual(try NativeAutomationSession.replayResponse(for: "artwork-approve", prior: prior, matching: request), stale)
         XCTAssertThrowsError(try NativeAutomationSession.replayResponse(
             for: "artwork-approve", prior: prior, matching: Data("changed request".utf8))) {
