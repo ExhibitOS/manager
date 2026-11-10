@@ -907,9 +907,9 @@ public actor NativeAutomationSession {
         case "workspace-furnishing-intake-create":
             let commandKeys: Set<String> = ["kind", "name", "rights", "provenance", "model"]
             guard case .object(var fields) = request["command"] else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let policy: WorkspaceArtworkFramePreparationPolicy?
+            let policy: WorkspaceFurnishingPreparationPolicy?
             if let input = fields.removeValue(forKey: "preparationPolicy") {
-                guard let name = input.string, let selected = WorkspaceArtworkFramePreparationPolicy(rawValue: name) else {
+                guard let name = input.string, let selected = WorkspaceFurnishingPreparationPolicy(rawValue: name) else {
                     throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
                 }
                 policy = selected

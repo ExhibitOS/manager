@@ -187,6 +187,45 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         }
     }
 
+    func testInfoStandPreparationBindsProducerAndAllowsCompatibleOriginal() throws {
+        let policy = WorkspaceFurnishingPreparationPolicy.normalizeLegacySignTexture
+        let manifest = String(repeating: "c", count: 64)
+        var compatible = try registered()
+        compatible["preparationPolicy"] = .string(policy.rawValue)
+        compatible["declaration"]["kind"] = .string("info-stand")
+        compatible["declaration"]["rights"]["holder"] = .string("ExhibitOS")
+        compatible["declaration"]["model"]["bytes"] = .integer(128)
+        compatible["received"]["bytes"] = .integer(128)
+        let source = compatible["declaration"]["model"]
+        var descriptor = compatible["declaration"]
+        descriptor["id"] = .string(furnishingId)
+        descriptor["version"] = .integer(1)
+        compatible["furnishing"] = descriptor
+        try intake(compatible).check(supportedExtensionVersion: 3, infoStandPreparationManifest: manifest)
+        XCTAssertThrowsError(try intake(compatible).check(supportedExtensionVersion: 3))
+
+        var prepared = compatible
+        let renderable: DocumentValue = .object([
+            "mime": .string("model/gltf-binary"), "bytes": .integer(112),
+            "sha256": .string(String(repeating: "b", count: 64)),
+        ])
+        prepared["furnishing"]["model"] = renderable
+        XCTAssertThrowsError(try intake(prepared).check(supportedExtensionVersion: 3, infoStandPreparationManifest: manifest))
+        prepared["preparation"] = .object([
+            "recipe": .string(policy.rawValue), "sourceModel": source, "renderableModel": renderable,
+            "runtimeManifestSHA256": .string(manifest),
+        ])
+        let value = try intake(prepared)
+        try value.check(details: value.declaration, expectedPolicy: policy,
+                        supportedExtensionVersion: 3, infoStandPreparationManifest: manifest)
+        XCTAssertThrowsError(try value.check(supportedExtensionVersion: 3, infoStandPreparationManifest: modelSHA256))
+        let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(value))
+        XCTAssertEqual(encoded["preparation"], prepared["preparation"])
+
+        prepared["preparation"]["sourceModel"] = renderable
+        XCTAssertThrowsError(try intake(prepared).check(supportedExtensionVersion: 3, infoStandPreparationManifest: manifest))
+    }
+
     func testPortalFinishRoundTripPreservesV5FurnishingsAndDoor() throws {
         var wire = try registered()
         wire["furnishing"]["kind"] = .string("portal-finish")

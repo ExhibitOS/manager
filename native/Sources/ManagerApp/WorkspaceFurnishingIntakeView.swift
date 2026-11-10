@@ -177,7 +177,8 @@ struct WorkspaceFurnishingIntakeView: View {
             Text(status(intake.phase))
             Text(intake.declaration.provenance).foregroundStyle(.secondary)
             if let preparation = intake.preparation {
-                LabeledContent("보정 방식", value: "사용하지 않는 탄젠트 속성 제거")
+                LabeledContent("보정 방식", value: preparation.recipe == .normalizeLegacySignTexture
+                    ? "안내판 텍스처 호환 처리" : "사용하지 않는 탄젠트 속성 제거")
                 LabeledContent("원본 SHA-256") {
                     Text(preparation.sourceModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
                 }
