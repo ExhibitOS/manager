@@ -2356,9 +2356,10 @@ public actor AuthoringAPI {
         #endif
     }
 
-    nonisolated static func supportsPreparedSignStartupDrain(manifest: String) -> Bool {
+    nonisolated static func supportsPinnedStartupDrain(manifest: String) -> Bool {
         #if DEBUG
-        manifest == savedHeadPreparedSignAudioManifestPin || supportsPreReadyPreservationReadback(manifest: manifest)
+        manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
+            || supportsPreReadyPreservationReadback(manifest: manifest)
         #else
         false
         #endif
