@@ -248,6 +248,7 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     #[cfg(feature = "workspace-v5-owner-validation")]
     if crate::native_payload::catalog45_native_publication_transition(pair).is_some()
         || crate::native_payload::catalog45_clean_exit_handoff(pair)
+        || crate::native_payload::catalog45_restored_backed_handoff(pair)
     {
         return CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES;
     }
@@ -1704,6 +1705,13 @@ mod tests {
         let pre_ready_hayes = (prepared_sign_audio, pre_ready_hayes_preservation);
         let clean_exit_handoff = (pre_ready_hayes_preservation, placed_exit_doors);
         assert_eq!(checkpoint_inventory_limit(clean_exit_handoff, None), publication_limit);
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        {
+            let backed_bench = "f8d5933a2c2e361154dbcc9cb4a332144ca9217e5edb363fdd5056ee70aed702";
+            assert_eq!(checkpoint_inventory_limit((placed_exit_doors, backed_bench), None), publication_limit);
+            assert_eq!(checkpoint_inventory_limit((backed_bench, placed_exit_doors), None), default);
+            assert_eq!(checkpoint_inventory_limit((backed_bench, backed_bench), None), default);
+        }
         assert_eq!(checkpoint_inventory_limit((placed_exit_doors, pre_ready_hayes_preservation), None), default);
         assert!(startup_cancellation_proof_matches(clean_exit_handoff, None, None));
         assert!(!startup_cancellation_proof_matches(clean_exit_handoff, None, Some(&proof)));
