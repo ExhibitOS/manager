@@ -40,10 +40,23 @@ enum BundledWorkspaceFurnishings {
     private static let generated: [String: WorkspaceFurnishingKind] = [
         "closed-exit-door": .barrier, "exit-pictogram-sign": .infoStand
     ]
+    private static let sculptureBench = "sculpture-gallery-bench"
     private static let manifests = [
         7079: (version: "1.2.0", digest: "db9427c19ecaaceb3029c49bd4700955fa9a0b2cb568b422d5238f589e44f4e1"),
         9246: (version: "1.4.0", digest: "7073f8f6dfd7a1c44e8e2b7206b503a35fa1a59eb992d08191dde5f6c6e86e6e"),
+        10119: (version: "1.5.0", digest: "c62c8e910e7f2920e989b2d1d76d37ab959d04c2c443dc5631d4478ed5056b0f"),
     ]
+    private static func supportedItems(version: String) -> [String: WorkspaceFurnishingKind] {
+        switch version {
+        case "1.2.0": return allowed
+        case "1.4.0": return allowed.merging(generated) { first, _ in first }
+        case "1.5.0":
+            var items = allowed.merging(generated) { first, _ in first }
+            items[sculptureBench] = .bench
+            return items
+        default: return [:]
+        }
+    }
     private static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
     private static func bounded(_ url: URL, sizes: Set<Int>) throws -> Data {
         let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
@@ -52,7 +65,7 @@ enum BundledWorkspaceFurnishings {
         defer { try? handle.close() }
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              let size = Int(exactly: before.st_size), sizes.contains(size), (1...9246).contains(size),
+              let size = Int(exactly: before.st_size), sizes.contains(size), (1...10_119).contains(size),
               let data = try handle.read(upToCount: size + 1), data.count == size,
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,
@@ -68,7 +81,9 @@ enum BundledWorkspaceFurnishings {
         return url
     }
     private static func directory(for id: String) -> String {
-        let source = generated[id] == nil ? "user-authored-20261027" : "generated-20261109"
+        let source: String
+        if id == sculptureBench { source = "generated-20261110" }
+        else { source = generated[id] == nil ? "user-authored-20261027" : "generated-20261109" }
         return "assets/furnishings/\(source)/\(id)/"
     }
 
@@ -82,7 +97,7 @@ enum BundledWorkspaceFurnishings {
         let data = try bounded(manifestURL, sizes: Set(manifests.keys))
         guard let pin = manifests[data.count], digest(data) == pin.digest else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
         let manifest = try JSONDecoder().decode(Manifest.self, from: data)
-        let supported = pin.version == "1.4.0" ? allowed.merging(generated) { first, _ in first } : allowed
+        let supported = supportedItems(version: pin.version)
         let items = manifest.assets.filter { supported[$0.id] != nil }
         guard manifest.schema == "org.exhibitos.default-furnishings/v1", manifest.bundleVersion == pin.version,
               items.count == supported.count, Set(items.map(\.id)) == Set(supported.keys),
@@ -108,7 +123,7 @@ enum BundledWorkspaceFurnishings {
     }
 
     static func load(_ id: String, from catalog: Catalog) async throws -> ImportFileSnapshot {
-        let kind = allowed[id] ?? (catalog.version == "1.4.0" ? generated[id] : nil)
+        let kind = supportedItems(version: catalog.version)[id]
         guard let kind, let item = catalog.items.first(where: { $0.id == id }), item.kind == kind, valid(item) else {
             throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
         }
