@@ -93,7 +93,7 @@ struct BottomFurnishingCatalogView: View {
     @ObservedObject var model: ExhibitionModel
     @ObservedObject private var controller: NativeViewportController
     let ready: Bool
-    let registeredFurnishingID: String?
+    let registeredFurnishing: ExhibitionModel.RegisteredFurnishing?
     let onSelect: (BottomFurnishingCatalogRow) -> Void
     let onAdd: (WorkspaceFurnishingKind?) -> Void
     let catalogDrag: CatalogDragSession?
@@ -114,13 +114,13 @@ struct BottomFurnishingCatalogView: View {
         let reveal: String?
     }
 
-    init(model: ExhibitionModel, ready: Bool, registeredFurnishingID: String?,
+    init(model: ExhibitionModel, ready: Bool, registeredFurnishing: ExhibitionModel.RegisteredFurnishing?,
          onSelect: @escaping (BottomFurnishingCatalogRow) -> Void,
          onAdd: @escaping (WorkspaceFurnishingKind?) -> Void, catalogDrag: CatalogDragSession? = nil) {
         self.model = model
         self.controller = model.viewportController
         self.ready = ready
-        self.registeredFurnishingID = registeredFurnishingID
+        self.registeredFurnishing = registeredFurnishing
         self.onSelect = onSelect
         self.onAdd = onAdd
         self.catalogDrag = catalogDrag
@@ -128,7 +128,24 @@ struct BottomFurnishingCatalogView: View {
 
     private var loadScope: LoadScope {
         .init(access: model.viewportAccessID, available: ready && model.workspaceFurnishingIntakeAvailable,
-              reveal: registeredFurnishingID)
+              reveal: currentRegistration?.item.id)
+    }
+
+    private var currentRegistration: ExhibitionModel.RegisteredFurnishing? {
+        guard registeredFurnishing?.access == model.viewportAccessID else { return nil }
+        return registeredFurnishing
+    }
+
+    private struct ThumbnailWork: Equatable {
+        let registration: ExhibitionModel.RegisteredFurnishing
+        let sequence: Int
+    }
+
+    private var thumbnailWork: ThumbnailWork? {
+        guard workspaceVisible, let registration = currentRegistration,
+              workspace.contains(where: { $0.id == registration.item.id && $0.rightsAvailability.display }),
+              model.furnishingThumbnailFrameReady, controller.furnishingThumbnailSupported else { return nil }
+        return .init(registration: registration, sequence: controller.acceptedSequence)
     }
 
     private var workspaceVisible: Bool { loadScope.available && loadedScope?.access == loadScope.access }
@@ -183,7 +200,20 @@ struct BottomFurnishingCatalogView: View {
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal) {
                         LazyHStack(alignment: .top, spacing: 8) {
-                            ForEach(visibleRows) { row in draggableCard(row).id(row.id) }
+                            ForEach(visibleRows) { row in
+                                HStack(spacing: 2) {
+                                    draggableCard(row)
+                                    if case .workspace(let item) = row, item.id == currentRegistration?.item.id,
+                                       case .failed = model.furnishingThumbnail(for: item) {
+                                        Button("미리보기 다시 만들기", systemImage: "arrow.clockwise") {
+                                            guard let work = thumbnailWork else { return }
+                                            Task { await model.loadFurnishingThumbnail(work.registration, retry: true) }
+                                        }
+                                            .labelStyle(.iconOnly)
+                                            .disabled(thumbnailWork == nil)
+                                    }
+                                }.id(row.id)
+                            }
                         }.padding(2)
                     }.frame(height: 62)
                     .onChange(of: selectedID, initial: true) { _, id in
@@ -212,6 +242,10 @@ struct BottomFurnishingCatalogView: View {
         }
         .task(id: sharedAvailable ? model.viewportAccessID : nil) { if sharedAvailable { await model.loadSharedFurnishingCatalog() } }
         .task(id: loadScope) { await loadIfNeeded() }
+        .task(id: thumbnailWork) {
+            guard let work = thumbnailWork else { return }
+            await model.loadFurnishingThumbnail(work.registration, retry: false)
+        }
         .onChange(of: model.busy || loading) { _, blocked in if !blocked { Task { await loadIfNeeded() } } }
     }
 
@@ -233,9 +267,15 @@ struct BottomFurnishingCatalogView: View {
             selectedID = row.id
             onSelect(row)
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Label(row.name, systemImage: row.category.symbol).font(.caption.weight(.semibold)).lineLimit(1)
-                Text(row.sourceLabel).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            HStack(spacing: 5) {
+                preview(row)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.name).font(.caption.weight(.semibold)).lineLimit(1)
+                    Text(row.sourceLabel).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    if let status = previewStatus(row) {
+                        Text(status).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
             }
             .padding(7).frame(width: 145, alignment: .leading)
             .background(selected ? Color.accentColor.opacity(0.10) : Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
@@ -244,7 +284,36 @@ struct BottomFurnishingCatalogView: View {
         .buttonStyle(.plain)
         .disabled(!canSelect || !row.selectable)
         .accessibilityLabel("\(row.name), \(row.sourceLabel)")
+        .accessibilityValue(previewStatus(row) ?? "")
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    @ViewBuilder private func preview(_ row: BottomFurnishingCatalogRow) -> some View {
+        if case .workspace(let item) = row, case .ready(let image, let expires) = model.furnishingThumbnail(for: item) {
+            if let expires {
+                TimelineView(.explicit([.now, expires])) { context in
+                    if context.date < expires { Image(nsImage: image).resizable().scaledToFit() }
+                    else { Image(systemName: row.category.symbol) }
+                }.frame(width: 32, height: 32).accessibilityHidden(true)
+            } else {
+                Image(nsImage: image).resizable().scaledToFit().frame(width: 32, height: 32).accessibilityHidden(true)
+            }
+        } else {
+            Image(systemName: row.category.symbol).frame(width: 24, height: 32).accessibilityHidden(true)
+        }
+    }
+
+    private func previewStatus(_ row: BottomFurnishingCatalogRow) -> String? {
+        guard case .workspace(let item) = row, item.rightsAvailability.display,
+              currentRegistration?.item.id == item.id else { return nil }
+        switch model.furnishingThumbnail(for: item) {
+        case .ready: return nil
+        case .failed: return "미리보기 실패"
+        case .rendering: return "미리보기 만드는 중"
+        case nil:
+            return model.furnishingThumbnailFrameReady && !controller.furnishingThumbnailSupported
+                ? "미리보기 지원 안 함" : "미리보기 대기"
+        }
     }
 
     private func loadIfNeeded() async {

@@ -26,7 +26,8 @@ struct NativeExhibitionView: View {
     @State private var furnishingIntakeKind: WorkspaceFurnishingKind?
     @State private var furnishingIntakeTarget: String?
     @State private var furnishingIntakeBundledID: String?
-    @State private var revealedFurnishingID: String?
+    @State private var pendingFurnishingReveal: ExhibitionModel.RegisteredFurnishing?
+    @State private var revealedFurnishing: ExhibitionModel.RegisteredFurnishing?
     @State private var artworkCatalogIntakeAccess: UUID?
     @StateObject private var catalogDrag = CatalogDragSession()
     @State private var catalogTab = CatalogTab.artwork
@@ -140,7 +141,7 @@ struct NativeExhibitionView: View {
                     addArtwork: { if !formLocked, !editRestricted { artworkCatalogIntakeAccess = model.viewportAccessID } },
                     catalogDrag: editRestricted ? nil : catalogDrag)
             case .furnishings:
-                BottomFurnishingCatalogView(model: model, ready: ready, registeredFurnishingID: revealedFurnishingID,
+                BottomFurnishingCatalogView(model: model, ready: ready, registeredFurnishing: revealedFurnishing,
                     onSelect: selectFurnishing, onAdd: { openFurnishingIntake(kind: $0) }, catalogDrag: editRestricted ? nil : catalogDrag)
             }
         }.background(Color(nsColor: .controlBackgroundColor))
@@ -180,14 +181,19 @@ struct NativeExhibitionView: View {
         .sheet(isPresented: Binding(get: { workspaceMaterialAccess != nil }, set: { if !$0 { workspaceMaterialAccess = nil } })) {
             if let workspaceMaterialAccess { WorkspaceMaterialIntakeView(model: model, access: workspaceMaterialAccess) }
         }
-        .sheet(isPresented: Binding(get: { workspaceFurnishingAccess != nil }, set: { if !$0 { workspaceFurnishingAccess = nil } })) {
+        .sheet(isPresented: Binding(get: { workspaceFurnishingAccess != nil }, set: { if !$0 { workspaceFurnishingAccess = nil } }),
+               onDismiss: {
+                   defer { pendingFurnishingReveal = nil }
+                   guard let registration = pendingFurnishingReveal, registration.access == model.viewportAccessID else { return }
+                   revealedFurnishing = registration
+                   catalogTab = .furnishings
+               }) {
             if let workspaceFurnishingAccess {
                 WorkspaceFurnishingIntakeView(model: model, access: workspaceFurnishingAccess,
                     initialKind: furnishingIntakeKind, initialWorkspaceFurnishingID: furnishingIntakeTarget,
-                    initialBundledID: furnishingIntakeBundledID, onRegistered: { id in
+                    initialBundledID: furnishingIntakeBundledID, onRegistered: { item in
                         guard workspaceFurnishingAccess == model.viewportAccessID else { return }
-                        revealedFurnishingID = id
-                        catalogTab = .furnishings
+                        pendingFurnishingReveal = .init(access: workspaceFurnishingAccess, item: item)
                         self.workspaceFurnishingAccess = nil
                     })
             }

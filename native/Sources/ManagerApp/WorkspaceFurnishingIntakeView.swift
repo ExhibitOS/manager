@@ -9,7 +9,7 @@ struct WorkspaceFurnishingIntakeView: View {
     let access: UUID
     let initialWorkspaceFurnishingID: String?
     let initialBundledID: String?
-    let onRegistered: (String) -> Void
+    let onRegistered: (WorkspaceFurnishing) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var kind = WorkspaceFurnishingKind.pedestal
     @State private var name = ""
@@ -46,7 +46,7 @@ struct WorkspaceFurnishingIntakeView: View {
 
     init(model: ExhibitionModel, access: UUID, initialKind: WorkspaceFurnishingKind? = nil,
          initialWorkspaceFurnishingID: String? = nil, initialBundledID: String? = nil,
-         onRegistered: @escaping (String) -> Void = { _ in }) {
+         onRegistered: @escaping (WorkspaceFurnishing) -> Void = { _ in }) {
         self.model = model
         self.access = access
         self.initialWorkspaceFurnishingID = initialWorkspaceFurnishingID
@@ -406,8 +406,8 @@ struct WorkspaceFurnishingIntakeView: View {
         do {
             try await work()
             if !Task.isCancelled, access == model.viewportAccessID, selected?.phase == .registered,
-               let id = selected?.furnishing?.id, id != registeredBefore {
-                onRegistered(id)
+               let item = selected?.furnishing, item.id != registeredBefore {
+                onRegistered(item)
             }
         }
         catch {

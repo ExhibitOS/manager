@@ -167,6 +167,10 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public let boundedReadOnly: Bool?
     public let editingCapability: NativeBoundedEditCapability?
     public var supportsArtworkThumbnail: Bool { accepted && capabilities?.contains("artwork-thumbnail-v1") == true }
+    public var supportsFurnishingThumbnail: Bool {
+        accepted && boundedReadOnly == false && editingCapability == nil
+            && capabilities?.contains(ViewportFurnishingThumbnailRequest.capability) == true
+    }
     public var supportsRenderedArtworkThumbnail: Bool {
         supportsArtworkThumbnail && boundedReadOnly == false && capabilities?.contains("rendered-display-preview-v1") == true
     }

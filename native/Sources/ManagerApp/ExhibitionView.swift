@@ -49,6 +49,106 @@ final class ExhibitionModel: ObservableObject {
     private var catalogTask: Task<Void, Never>?
     @Published private(set) var catalogImages: [String: NSImage] = [:]
     @Published private(set) var catalogPreviewFailures: Set<String> = []
+    struct RegisteredFurnishing: Equatable {
+        let access: UUID
+        let item: WorkspaceFurnishing
+    }
+
+    private struct FurnishingThumbnailKey: Hashable {
+        let access: UUID, tenant: String, principal: String, furnishingID: String
+        let version: Int, modelBytes: Int
+        let modelSHA256: String, recipe: String, tool: String
+    }
+
+    enum FurnishingThumbnail {
+        case rendering(UUID), ready(NSImage, expires: Date?), failed
+    }
+
+    @Published private var furnishingThumbnails: [FurnishingThumbnailKey: FurnishingThumbnail] = [:]
+    private var furnishingThumbnailOrder: [FurnishingThumbnailKey] = []
+
+    private func furnishingThumbnailKey(_ registration: RegisteredFurnishing) -> FurnishingThumbnailKey? {
+        guard registration.access == viewportAccessID, let state else { return nil }
+        let item = registration.item, model = item.details.model
+        return .init(access: registration.access, tenant: state.tenantId, principal: state.principalId,
+                     furnishingID: item.id, version: item.version, modelBytes: model.bytes, modelSHA256: model.sha256,
+                     recipe: ViewportFurnishingThumbnailRequest.recipe, tool: ViewportFurnishingThumbnailRequest.tool)
+    }
+
+    func furnishingThumbnail(for item: WorkspaceFurnishingSummary) -> FurnishingThumbnail? {
+        guard workspaceFurnishingIntakeAvailable, item.rightsAvailability.display, let state,
+              let key = furnishingThumbnailOrder.last(where: {
+                  $0.access == viewportAccessID && $0.tenant == state.tenantId && $0.principal == state.principalId
+                      && $0.furnishingID == item.id && $0.version == item.version
+              }) else { return nil }
+        return furnishingThumbnails[key]
+    }
+
+    var furnishingThumbnailFrameReady: Bool {
+        workspaceFurnishingIntakeAvailable && !busy && !immutable && !entrancePreviewActive
+            && viewportController.acknowledgesFurnishingThumbnail(draft: viewportDraft, tenantId: state?.tenantId,
+                                                                  principalId: state?.principalId)
+    }
+
+    func loadFurnishingThumbnail(_ registration: RegisteredFurnishing, retry: Bool) async {
+        let controller = viewportController
+        guard furnishingThumbnailFrameReady, controller.furnishingThumbnailSupported,
+              let key = furnishingThumbnailKey(registration), let api, let draft = viewportDraft else { return }
+        switch furnishingThumbnails[key] {
+        case .ready: return
+        case .failed where !retry: return
+        case .rendering where retry: return
+        default: break
+        }
+        let job = UUID(), sequence = controller.acceptedSequence, context = controller.editingContextGeneration
+        func current() -> Bool {
+            guard case .rendering(let running) = furnishingThumbnails[key], running == job else { return false }
+            return self.api === api && furnishingThumbnailKey(registration) == key && viewportDraft == draft
+                && controller.acceptedSequence == sequence && controller.editingContextGeneration == context
+                && furnishingThumbnailFrameReady
+        }
+        furnishingThumbnailOrder.removeAll { $0 == key }
+        furnishingThumbnailOrder.append(key)
+        if furnishingThumbnailOrder.count > 16 {
+            furnishingThumbnails.removeValue(forKey: furnishingThumbnailOrder.removeFirst())
+        }
+        furnishingThumbnails[key] = .rendering(job)
+        defer {
+            if case .rendering(let running) = furnishingThumbnails[key], running == job {
+                furnishingThumbnails.removeValue(forKey: key)
+                furnishingThumbnailOrder.removeAll { $0 == key }
+            }
+        }
+        do {
+            // This read does not set the editor's global busy flag, which would disable the very frame it needs.
+            let item = try await api.workspaceFurnishing(key.furnishingID, version: key.version)
+            let rights = item.details.rights
+            var expires: Date?
+            if let deadline = rights.expiresAt {
+                let formatter = ISO8601DateFormatter()
+                expires = formatter.date(from: deadline)
+                if expires == nil {
+                    formatter.formatOptions.insert(.withFractionalSeconds)
+                    expires = formatter.date(from: deadline)
+                }
+                guard let expires, expires > .now else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            }
+            guard item == registration.item, rights.permissions.display else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            try Task.checkCancellation()
+            guard current() else { return }
+            let data = try await controller.furnishingThumbnail(item, draft: draft)
+            try Task.checkCancellation()
+            guard current(), expires.map({ $0 > .now }) ?? true else { return }
+            guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                  image.width == 256, image.height == 256 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+            furnishingThumbnails[key] = .ready(NSImage(cgImage: image, size: NSSize(width: 256, height: 256)), expires: expires)
+        } catch {
+            guard !Task.isCancelled, current() else { return }
+            furnishingThumbnails[key] = .failed
+        }
+    }
+
     private var catalogImageOrder: [String] = []
     private var catalogThumbnailTail: Task<Void, Never>?
     private var catalogThumbnailTailId: UUID?
@@ -955,7 +1055,12 @@ final class ExhibitionModel: ObservableObject {
         return .init(surfaceId: fields.surfaceId, material: try fields.command().material, texture: try texture.binding())
     }
     var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && viewportController.connected }
-    @Published private(set) var viewportAccessID = UUID()
+    @Published private(set) var viewportAccessID = UUID() {
+        didSet {
+            furnishingThumbnails.removeAll()
+            furnishingThumbnailOrder.removeAll()
+        }
+    }
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
     @Published private var future: [NativeExhibitionDraft] = []

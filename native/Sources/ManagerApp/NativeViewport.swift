@@ -58,6 +58,7 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var planSupported = false
     @Published fileprivate(set) var thumbnailSupported = false
     @Published fileprivate(set) var renderedThumbnailSupported = false
+    @Published fileprivate(set) var furnishingThumbnailSupported = false
     @Published fileprivate(set) var sceneSnapshotSupported = false
     @Published fileprivate(set) var sceneSnapshotInspectionSupported = false
     @Published fileprivate(set) var findSelectionSupported = false
@@ -146,6 +147,7 @@ final class NativeViewportController: ObservableObject {
         throw AuthoringFailure("VIEWPORT_FRAME_STALE")
     }
     @Published fileprivate(set) var acceptedSequence = 0
+    fileprivate var registeredFurnishingThumbnailAction: ((WorkspaceFurnishing, NativeExhibitionDraft) async throws -> Data)?
     fileprivate var thumbnailAction: ((String, Int) async throws -> (ViewportThumbnailReply, ViewportThumbnailRequest))?
     fileprivate var sceneSnapshotAction: ((NativeStudioResponse, SceneSnapshotCamera, String) async throws -> SceneSnapshotResult)?
     #if DEBUG
@@ -226,6 +228,18 @@ final class NativeViewportController: ObservableObject {
         let (reply, request) = try await thumbnailAction(artworkId, revision)
         return try reply.pngData(matching: request)
     }
+    func acknowledgesFurnishingThumbnail(draft: NativeExhibitionDraft?, tenantId: String?, principalId: String?) -> Bool {
+        editingContextActive && acknowledgedFrame?.disabled == false && acknowledgedBoundedEdit == nil
+            && acknowledges(draft: draft, tenantId: tenantId, principalId: principalId)
+    }
+
+    func furnishingThumbnail(_ item: WorkspaceFurnishing, draft: NativeExhibitionDraft) async throws -> Data {
+        guard furnishingThumbnailSupported, let registeredFurnishingThumbnailAction else {
+            throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE")
+        }
+        return try await registeredFurnishingThumbnailAction(item, draft)
+    }
+
     func renderedThumbnail(artworkId: String, revision: Int) async throws -> ViewportRenderedThumbnail {
         guard connected, renderedThumbnailSupported, let thumbnailAction else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         let (reply, request) = try await thumbnailAction(artworkId, revision)
@@ -400,7 +414,7 @@ struct NativeViewport: NSViewRepresentable {
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false }
             if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.wallFinishAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
-            if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.catalogDropAction = nil; controller.catalogDropSupported = false; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
+            if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.registeredFurnishingThumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.catalogDropAction = nil; controller.catalogDropSupported = false; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
         private func restoreSnapshotPolicy(_ id: UUID? = nil) {
             guard let held = snapshotPolicy, id == nil || held.id == id else { return }
@@ -438,7 +452,7 @@ struct NativeViewport: NSViewRepresentable {
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
                 sendTask?.cancel(); sendTask = nil
-                controller.connected = false; controller.rendering = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0
+                controller.connected = false; controller.rendering = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0
                 let installGeneration = generation
                 Task { await install(page: page, generation: installGeneration) }
             }
@@ -497,7 +511,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.sceneProgress = nil
@@ -541,6 +555,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.planSupported = acceptance.supportsPlan
                         self.controller.thumbnailSupported = acceptance.supportsArtworkThumbnail
                         self.controller.renderedThumbnailSupported = acceptance.supportsRenderedArtworkThumbnail
+                        self.controller.furnishingThumbnailSupported = acceptance.supportsFurnishingThumbnail
                         self.controller.sceneSnapshotSupported = acceptance.supportsSceneSnapshot
                         self.controller.sceneSnapshotInspectionSupported = acceptance.supportsSceneSnapshotInspection
                         self.controller.findSelectionSupported = acceptance.supportsFindSelection
@@ -1021,6 +1036,34 @@ struct NativeViewport: NSViewRepresentable {
                       CGImageSourceGetCount(image) == 1, let decoded = CGImageSourceCreateImageAtIndex(image, 0, nil),
                       decoded.width == SceneSnapshotViewportRequest.width, decoded.height == SceneSnapshotViewportRequest.height else { throw AuthoringFailure("SCENE_SNAPSHOT_INVALID") }
                 return result
+            }
+            controller.registeredFurnishingThumbnailAction = { [weak self] item, draft in
+                guard let self, self.active, self.controller.owner == self.epoch, self.controller.furnishingThumbnailSupported,
+                      let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence,
+                      !self.parent.interactionDisabled,
+                      self.controller.acknowledgesFurnishingThumbnail(draft: draft, tenantId: frame.tenantId, principalId: frame.principalId) else {
+                    throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+                }
+                let generation = self.generation, context = self.controller.editingContextGeneration
+                let request = try ViewportFurnishingThumbnailRequest(frame: frame, furnishing: item)
+                let value = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+                let response = try await web.callAsyncJavaScript("return await window.exhibitosViewport.furnishingThumbnailV1(JSON.parse(requestJSON));",
+                    arguments: ["requestJSON": value], in: nil, contentWorld: .page)
+                try Task.checkCancellation()
+                guard self.active, self.generation == generation, self.controller.editingContextGeneration == context,
+                      self.controller.owner == self.epoch, self.latest?.sequence == frame.sequence,
+                      self.controller.acceptedSequence == frame.sequence, !self.parent.interactionDisabled,
+                      self.controller.acknowledgesFurnishingThumbnail(draft: draft, tenantId: frame.tenantId, principalId: frame.principalId) else {
+                    throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+                }
+                let fields: Set<String> = ["version", "epoch", "sequence", "tenantId", "principalId", "requestId",
+                    "furnishingId", "furnishingVersion", "modelSha256", "modelBytes", "recipeId", "toolId", "pngBase64", "pngSha256", "width", "height"]
+                guard let reply = response as? [String: Any], Set(reply.keys) == fields,
+                      let png = reply["pngBase64"] as? String, png.utf8.count <= 699_052,
+                      JSONSerialization.isValidJSONObject(reply) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+                let bytes = try JSONSerialization.data(withJSONObject: reply)
+                guard bytes.count <= 710_000 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+                return try JSONDecoder().decode(ViewportFurnishingThumbnailReply.self, from: bytes).pngData(matching: request)
             }
             controller.thumbnailAction = { [weak self] artworkId, revision in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.thumbnailSupported,
