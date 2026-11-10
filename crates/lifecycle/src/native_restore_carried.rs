@@ -72,6 +72,34 @@ fn check_manifest(manifest: &Value, archive_id: &str, proof: &RestoreProof) -> R
     Ok(())
 }
 
+fn check_cold_runs(sidecar: &Value, current: &Value, writer: &Value, diagnostic: &Value, cold: &Value) -> Result<()> {
+    let writer_id = sidecar["writerGeneration"].as_str().filter(|id| uuid(id)).ok_or_else(bad)?;
+    let diagnostic_id = sidecar["diagnosticJobId"].as_str().filter(|id| uuid(id)).ok_or_else(bad)?;
+    let binding_hash = sidecar["writerBindingSha256"].as_str().filter(|sha| hash_valid(sha)).ok_or_else(bad)?;
+    for run in [writer, diagnostic] {
+        if run["format"] != 1 || run["state"] != "stopped" || run["readiness"]["ready"] != false
+            || run["exits"]["postgres"] != 0 || run["exits"]["auxiliary"] != 0
+            || ["postgresPid", "nodePid", "auxiliaryPid", "errorCode", "failureCode"]
+                .iter().any(|field| run.get(field).is_none_or(|value| !value.is_null()))
+        {
+            return Err(bad());
+        }
+    }
+    if writer_id == diagnostic_id || current["format"] != 1 || current["id"] != diagnostic_id
+        || current["furnishing"]["generation"] != writer_id || writer["jobId"] != writer_id
+        || diagnostic["jobId"] != diagnostic_id || diagnostic["ports"] != writer["ports"]
+        || diagnostic["exits"].get("node").is_some() || diagnostic.get("furnishingCompletion").is_some()
+        || writer["exits"]["node"] != 0 || writer["furnishingCompletion"]["bindingSha256"] != binding_hash
+        || writer["furnishingCompletion"].get("consumedBy").is_none_or(|value| !value.is_null())
+        || cold["diagnosticJobId"] != diagnostic_id || cold["writerGeneration"] != writer_id
+        || cold["writerBindingSha256"] != binding_hash || cold["portsClosed"] != true
+        || cold["released"] != true || cold["execution_ended"] != true || cold["helperExit"] != 0
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
 pub(super) struct Handoff {
     pub source_payload: Payload,
     original_plan: Plan,
@@ -107,7 +135,8 @@ impl Handoff {
         let current: Value = serde_json::from_slice(&read("native-current-run.json", 8192)?).map_err(|_| bad())?;
         let cold: Value = serde_json::from_slice(&read("r62-cold-return-release.json", 4096)?).map_err(|_| bad())?;
         let writer: Value = serde_json::from_slice(&read("writer-state.json", 4096)?).map_err(|_| bad())?;
-        let _: Value = serde_json::from_slice(&read("diagnostic-state.json", 4096)?).map_err(|_| bad())?;
+        let diagnostic: Value = serde_json::from_slice(&read("diagnostic-state.json", 4096)?).map_err(|_| bad())?;
+        check_cold_runs(&sidecar, &current, &writer, &diagnostic, &cold)?;
         let proof = plan.restore_proof.clone().ok_or_else(bad)?;
         let binding = &current["furnishing"];
         if files.len() != 7 || sidecar["sourceCold"] != true || sidecar["sourcesRechecked"] != true
@@ -120,15 +149,11 @@ impl Handoff {
             || !proof.matches(&plan.id, &plan.backup_id, &plan.manifest_sha256, &plan.system_identifier)
             || proof.provenance_row_count == 0
             || binding["phase"] != "clean" || binding["owner"] != sidecar["owner"]
-            || binding["physical"] != sidecar["physical"] || binding["generation"] != sidecar["writerGeneration"]
+            || binding["physical"] != sidecar["physical"]
             || binding["restore"]["provenance"] != serde_json::to_value(&proof).map_err(|_| bad())?
-            || current["id"] != sidecar["writerGeneration"] || writer["jobId"] != sidecar["writerGeneration"]
-            || writer["state"] != "stopped"
-            || writer["furnishingCompletion"]["bindingSha256"] != sidecar["writerBindingSha256"]
-            || !writer["furnishingCompletion"]["consumedBy"].is_null()
-            || cold["backupId"] != sidecar["r62BackupId"] || cold["writerBindingSha256"] != sidecar["writerBindingSha256"]
+            || cold["backupId"] != sidecar["r62BackupId"]
             || cold["encryptedManifestSha256"] != ARCHIVE_CIPHER_SHA256
-            || cold["verifiedPlaintextManifestSha256"] != ARCHIVE_MANIFEST_SHA256 || cold["released"] != true
+            || cold["verifiedPlaintextManifestSha256"] != ARCHIVE_MANIFEST_SHA256
         { return Err(bad()); }
         proof.matches_manifest(&manifest)?;
         let source_payload = Payload::open(&input.source_payload)?;
@@ -169,5 +194,45 @@ impl Handoff {
         }
         proof.matches_manifest(manifest, &plan.backup_id)?;
         Ok(proof)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn cold_runs_keep_database_diagnostic_distinct_from_writer_completion() {
+        let writer_id = "00000000-0000-4000-8000-000000000001";
+        let diagnostic_id = "00000000-0000-4000-8000-000000000002";
+        let binding_hash = "a".repeat(64);
+        let sidecar = json!({
+            "writerGeneration": writer_id, "diagnosticJobId": diagnostic_id,
+            "writerBindingSha256": binding_hash,
+        });
+        let current = json!({"format": 1, "id": diagnostic_id, "furnishing": {"generation": writer_id}});
+        let mut diagnostic = json!({
+            "format": 1, "jobId": diagnostic_id, "state": "stopped",
+            "ports": {"postgres": 57001, "api": 57002, "web": 57003}, "readiness": {"ready": false},
+            "postgresPid": null, "nodePid": null, "auxiliaryPid": null, "errorCode": null,
+            "failureCode": null, "exits": {"postgres": 0, "auxiliary": 0},
+        });
+        let mut writer = diagnostic.clone();
+        writer["jobId"] = json!(writer_id);
+        writer["exits"]["node"] = json!(0);
+        writer["furnishingCompletion"] = json!({"bindingSha256": binding_hash, "consumedBy": null});
+        let cold = json!({
+            "writerGeneration": writer_id, "diagnosticJobId": diagnostic_id,
+            "writerBindingSha256": binding_hash, "portsClosed": true, "released": true,
+            "execution_ended": true, "helperExit": 0,
+        });
+        assert!(check_cold_runs(&sidecar, &current, &writer, &diagnostic, &cold).is_ok());
+
+        let mut wrong_current = current.clone();
+        wrong_current["id"] = json!(writer_id);
+        assert!(check_cold_runs(&sidecar, &wrong_current, &writer, &diagnostic, &cold).is_err());
+        diagnostic["exits"]["node"] = json!(0);
+        assert!(check_cold_runs(&sidecar, &current, &writer, &diagnostic, &cold).is_err());
     }
 }
