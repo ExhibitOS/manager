@@ -307,6 +307,11 @@ public actor NativeBridge {
     }
     public func startStaticExport(_ context: Context, publicationId: String, output: URL, privateEditor: Bool = false, nativeOriginalDetail: Bool = false,
                                   outputParentIdentity: (dev_t, ino_t)? = nil) throws -> NativeStaticExportStatus {
+        try startStaticExport(context, publicationId: publicationId, output: output, privateEditor: privateEditor,
+                              nativeOriginalDetail: nativeOriginalDetail, outputParentIdentity: outputParentIdentity, savedHead: nil)
+    }
+    func startStaticExport(_ context: Context, publicationId: String, output: URL, privateEditor: Bool, nativeOriginalDetail: Bool,
+                           outputParentIdentity: (dev_t, ino_t)?, savedHead: DocumentValue?) throws -> NativeStaticExportStatus {
         guard output.isFileURL else { throw BridgeFailure("NATIVE_STATIC_OUTPUT_INVALID") }
         var export: [String: Any] = ["publicationId": publicationId, "output": output.path]
         if privateEditor { export["privateEditor"] = true }
@@ -314,6 +319,7 @@ public actor NativeBridge {
         if let (device, inode) = outputParentIdentity {
             export["outputParentIdentity"] = ["device": UInt64(bitPattern: Int64(device)), "inode": UInt64(inode)]
         }
+        if let savedHead { export["savedHead"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(savedHead)) }
         return try request("static_export", fields: ["selection_token": context.selectionToken, "export": export])
     }
     public func cancelStaticExport(_ context: Context) throws -> NativeStaticExportStatus? {

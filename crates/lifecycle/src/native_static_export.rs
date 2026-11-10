@@ -3,8 +3,11 @@
 //! Explicit detail export uses the selected owner’s private child pipe.
 use super::*;
 use crate::{
-    maintenance_source::DirectoryPin, native_payload::Payload, native_runtime::StaticDetailAuthority,
+    maintenance_source::DirectoryPin, native_payload::Payload, native_runtime::{Session, StaticDetailAuthority},
 };
+
+pub(crate) const SAVED_HEAD_RUNTIME: &str =
+    "cfc795c35628e15a9f91b71dcca0587023a0b249b2984a2615973b72bc6ed32f";
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{CStr, CString, OsStr, OsString},
@@ -30,6 +33,73 @@ pub struct Input {
     #[serde(default, deserialize_with = "read_detail_mode")]
     pub detail_mode: Option<DetailMode>,
     output_parent_identity: Option<DirectoryIdentity>,
+    saved_head: Option<SavedHead>,
+    #[serde(skip)]
+    saved_head_verified: bool,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SavedHead {
+    exhibition_id: String,
+    etag: String,
+    request_id: String,
+    revision: u64,
+    edit_version: u64,
+    revision_sha256: String,
+}
+impl Input {
+    pub(crate) fn verify_saved_head_receipt(&mut self, session: &mut Session) -> Result<()> {
+        if let Some(head) = &self.saved_head {
+            if !self.private_editor || self.detail_mode.is_some() || self.output_parent_identity.is_none() {
+                return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
+            }
+            session.confirm_saved_head_publication(head, &self.publication_id)?;
+            self.saved_head_verified = true;
+        }
+        Ok(())
+    }
+}
+impl SavedHead {
+    pub(crate) fn receipt_query(&self, publication: &str, tenant: &str, principal: &str, session_hash: &str) -> Result<String> {
+        let bad = || err("NATIVE_SAVED_HEAD_PUBLICATION_UNCONFIRMED");
+        if ![publication, tenant, principal, &self.exhibition_id, &self.request_id]
+            .into_iter().all(crate::installations::uuid)
+            || !hash_valid(&self.revision_sha256) || !hash_valid(session_hash)
+            || self.edit_version == 0 || self.edit_version > i32::MAX as u64
+        {
+            return Err(bad());
+        }
+        let (revision, etag_hash) = self.etag.strip_prefix("\"studio-r")
+            .and_then(|etag| etag.strip_suffix('"'))
+            .and_then(|etag| etag.split_once('-')).ok_or_else(bad)?;
+        let draft_revision = revision.parse::<i32>().ok().filter(|value| *value > 0 && value.to_string() == revision)
+            .ok_or_else(bad)?;
+        if !hash_valid(etag_hash) { return Err(bad()); }
+        // This is the pinned Platform's ordinary idempotency hash. Only its
+        // digest enters SQL, along with validated UUIDs, digests and integers.
+        let quoted_etag = serde_json::to_string(&self.etag).map_err(|_| bad())?;
+        let request_hash = digest(format!(r#"{{"id":"{}","requestId":"{}","match":{quoted_etag}}}"#,
+            self.exhibition_id, self.request_id).as_bytes());
+        let Self { exhibition_id, request_id, edit_version, revision_sha256, .. } = self;
+        Ok(format!("SELECT EXISTS (
+            SELECT 1 FROM public.publication_requests r
+            JOIN public.studio_publications p ON (p.tenant_id,p.id)=(r.tenant_id,r.publication_id)
+            JOIN public.publication_states s ON s.publication_id=p.id
+            JOIN public.exhibitions e ON (e.tenant_id,e.id)=(p.tenant_id,p.exhibition_id)
+            JOIN public.auth_sessions a ON (a.tenant_id,a.user_id)=(r.tenant_id,r.user_id)
+            JOIN public.memberships m ON (m.tenant_id,m.user_id)=(a.tenant_id,a.user_id)
+            JOIN public.users u ON u.id=a.user_id
+            JOIN public.tenants t ON t.id=a.tenant_id
+            WHERE r.tenant_id='{tenant}' AND r.user_id='{principal}' AND r.request_id='{request_id}'
+              AND r.payload_sha256='{request_hash}' AND p.id='{publication}' AND p.created_by=r.user_id
+              AND p.exhibition_id='{exhibition_id}' AND p.draft_revision={draft_revision}
+              AND p.revision_sha256='{revision_sha256}' AND s.status='published'
+              AND e.studio_managed AND e.deleted_at IS NULL AND e.studio_owner_user_id=r.user_id
+              AND e.revision=p.draft_revision AND e.metadata->>'editVersion'='{edit_version}'
+              AND a.token_hash='{session_hash}' AND NOT a.revoked AND a.expires_at>now()
+              AND m.role IN ('admin','curator','artist')
+              AND NOT u.disabled AND t.deleted_at IS NULL)"))
+    }
 }
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DetailMode {
@@ -1967,22 +2037,49 @@ impl Exporter {
         port: u16,
         detail_authority: Option<StaticDetailAuthority<'_>>,
     ) -> Result<Status> {
-        self.status(&token)?;
-        if self.active() || self.detail_held(&token)? {
+        let current = self.status(&token)?;
+        if (self.active() && !input.saved_head_verified) || self.detail_held(&token)? {
             return Err(err("BUSY"));
         }
-        let publication = self.controller.native_publication(&token)?;
-        if publication.pending.is_some() {
-            return Err(err("NATIVE_PUBLICATION_PENDING"));
-        }
-        let completed = publication
-            .completed
-            .ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;
-        if completed.publication.publication_id != input.publication_id
-            || completed.publication.status != "published"
+        let (workspace_id, tenant_id, principal_id, revision_sha256) = if let Some(head) = input.saved_head {
+            if !input.saved_head_verified { return Err(err("NATIVE_SAVED_HEAD_PUBLICATION_UNCONFIRMED")); }
+            let document = self.controller.native_document(&token)?;
+            if document.pending.is_some() || document.revision != head.revision
+                || document.etag.as_deref() != Some(head.etag.as_str())
+                || document.saved_edit_version != Some(head.edit_version)
+                || !document.draft.as_ref().is_some_and(|draft| {
+                    super::native_document::draft_id(draft) == Some(head.exhibition_id.as_str())
+                        && draft["editVersion"].as_u64() == Some(head.edit_version)
+                })
+            {
+                return Err(err("NATIVE_DOCUMENT_STATE_CHANGED"));
+            }
+            (document.workspace_id, document.tenant_id, document.principal_id, head.revision_sha256)
+        } else {
+            let publication = self.controller.native_publication(&token)?;
+            if publication.pending.is_some() {
+                return Err(err("NATIVE_PUBLICATION_PENDING"));
+            }
+            let completed = publication.completed.ok_or_else(|| err("NATIVE_PUBLICATION_REQUIRED"))?;
+            if completed.publication.publication_id != input.publication_id
+                || completed.publication.status != "published"
+            {
+                return Err(err("NATIVE_PUBLICATION_STATE_CHANGED"));
+            }
+            (publication.workspace_id, publication.tenant_id, publication.principal_id, completed.publication.revision_sha256)
+        };
+        if input.saved_head_verified && let Some(status) = current
+            && status.publication_id == input.publication_id && status.revision_sha256 == revision_sha256
+            && status.output == input.output && status.output_parent_identity == input.output_parent_identity
+            && status.private_editor && status.workspace_id == workspace_id && status.tenant_id == tenant_id
+            && status.principal_id == principal_id
         {
-            return Err(err("NATIVE_PUBLICATION_STATE_CHANGED"));
+            if status.state == "completed" && status.receipt.as_ref() != Some(&verify_output(&status)?) {
+                return Err(bad());
+            }
+            return Ok(status);
         }
+        if self.active() { return Err(err("BUSY")); }
         let parent = input.output.parent().ok_or_else(bad)?;
         if !input.output.is_absolute()
             || input.output.as_os_str().len() > 4096
@@ -2012,11 +2109,11 @@ impl Exporter {
         let value = Status {
             format: 1,
             job_id: uuid::Uuid::new_v4().to_string(),
-            workspace_id: publication.workspace_id,
-            tenant_id: publication.tenant_id,
-            principal_id: publication.principal_id,
+            workspace_id,
+            tenant_id,
+            principal_id,
             publication_id: input.publication_id,
-            revision_sha256: completed.publication.revision_sha256,
+            revision_sha256,
             output: input.output,
             output_parent_identity: input.output_parent_identity,
             state: "running".into(),
@@ -2293,6 +2390,27 @@ mod detail_tests {
     use std::io::Cursor;
 
     const JOB: &str = "30a37355-6bc3-4a94-af50-8eafcc7c77e2";
+
+    #[test]
+    fn saved_head_receipt_uses_the_exact_ordinary_request_and_rejects_caller_proof() {
+        let mut wire = serde_json::json!({
+            "publicationId": JOB, "output": "/tmp/export", "savedHead": {
+                "exhibitionId": JOB, "requestId": JOB, "etag": format!("\"studio-r6-{}\"", "a".repeat(64)),
+                "revision": 18, "editVersion": 6, "revisionSha256": "b".repeat(64)
+            }
+        });
+        let input: Input = serde_json::from_value(wire.clone()).unwrap();
+        assert!(!input.saved_head_verified);
+        let mut head = input.saved_head.unwrap();
+        let session_hash = "c".repeat(64);
+        let query = head.receipt_query(JOB, JOB, JOB, &session_hash).unwrap();
+        assert!(query.contains("r.payload_sha256='e3a34d5fb0b2c5246b094394e254459b7d2fd7ee93c44059af69ecab08f256b9'"));
+        assert!(query.contains("p.draft_revision=6"));
+        head.etag = format!("\"studio-r06-{}\"", "a".repeat(64));
+        assert!(head.receipt_query(JOB, JOB, JOB, &session_hash).is_err());
+        wire["savedHeadVerified"] = true.into();
+        assert!(serde_json::from_value::<Input>(wire).is_err());
+    }
 
     fn frame(body: &[u8]) -> Vec<u8> {
         let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
