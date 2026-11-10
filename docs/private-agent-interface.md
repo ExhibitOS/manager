@@ -239,6 +239,8 @@ Operations:
   `placementId`, `furnishingId`, `furnishingVersion` and `modelSha256`. Omit
   `viewpoint` so the command preserves the existing camera. Save the staged
   first link and reopen to verify it. An exact replay leaves the draft intact.
+  The macOS debug catalogue 1.5 payload (manifest `f8d5933a…`) supports
+  fresh personal startup and clean same-payload reopen for this workflow.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at
