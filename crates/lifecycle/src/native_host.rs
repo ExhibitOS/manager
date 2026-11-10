@@ -52,6 +52,9 @@ pub struct Status {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hayes_receipt: Option<Value>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre_ready_guard_diagnostic: Option<Value>,
 }
 struct State {
     root: Option<PathBuf>,
@@ -79,6 +82,8 @@ struct State {
     oex_put_authorized: bool,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes_receipt: Option<Value>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pre_ready_guard_diagnostic: Option<Value>,
 }
 impl State {
     fn retire_completed_oex_after_drain(&mut self) -> Option<Session> {
@@ -194,6 +199,8 @@ impl Host {
                 oex_put_authorized: false,
                 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
                 hayes_receipt: None,
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                pre_ready_guard_diagnostic: None,
             })),
             worker: None,
         }
@@ -418,6 +425,8 @@ impl Host {
             hayes_original_ready: !state.busy && state.session.as_ref().is_some_and(Session::ordinary_hayes_available),
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             hayes_receipt: state.hayes_receipt.clone(),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            pre_ready_guard_diagnostic: state.pre_ready_guard_diagnostic.clone(),
         })
     }
     fn launch(&mut self, token: String, work: Work) -> Result<Status> {
@@ -474,6 +483,8 @@ impl Host {
             state.error = None;
             state.stop_requested = matches!(work, Work::Stop);
             state.runtime = None;
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            { state.pre_ready_guard_diagnostic = None; }
             state.operation = match &work {
                 Work::Prepare(_) => "preparing",
                 Work::Start => "starting",
@@ -611,6 +622,14 @@ impl Host {
                                     controller.recover_local_personal_runtime_transition(
                                         &token, &staging, &key_file, saved_workspace_host, retained_product_image.as_ref(),
                                     )?;
+                                }
+                                #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+                                LocalPersonalTransition::InspectPreReadyGuard { staging, key_file, failed_generation, recovery_receipt_sha256 } => {
+                                    let target = Payload::open_saved_workspace_transition(&resources)?;
+                                    let receipt = controller.inspect_pre_ready_guard(
+                                        &token, &target, &staging, &key_file, &failed_generation, &recovery_receipt_sha256,
+                                    )?;
+                                    shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.pre_ready_guard_diagnostic = Some(receipt);
                                 }
                             }
                         }
@@ -996,10 +1015,18 @@ impl Host {
                         | LocalPersonalTransition::ActivateSelected045 { .. }, ..
                 }, .. }
             );
-            if transition_entry && !self.workspace_v5_maintenance_only {
+            #[cfg(target_os = "macos")]
+            let guard_diagnostic = matches!(&request.command, UiCommand::NativeMaintenance {
+                maintenance: Input::LocalPersonalTransition {
+                    transition: LocalPersonalTransition::InspectPreReadyGuard { .. }, ..
+                }, ..
+            });
+            #[cfg(not(target_os = "macos"))]
+            let guard_diagnostic = false;
+            if (transition_entry || guard_diagnostic) && !self.workspace_v5_maintenance_only {
                 return Err(err("NATIVE_PROTOCOL_INVALID"));
             }
-            if self.workspace_v5_maintenance_only && !matches!(
+            if self.workspace_v5_maintenance_only && !guard_diagnostic && !matches!(
                 &request.command,
                 UiCommand::Context | UiCommand::NativeStatus { .. } |
                 UiCommand::NativeMaintenance { maintenance: Input::CreateKey { .. }, .. } |

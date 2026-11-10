@@ -401,12 +401,12 @@ impl InstallationController {
         task(service)
     })}
     #[cfg(all(target_os = "macos", debug_assertions))]
-    pub(crate) fn with_personal_transition(
+    pub(crate) fn with_personal_transition<T>(
         &self,
         token: &str,
         retained: Option<&native_maintenance::RetainedProductImage>,
-        task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<()>,
-    ) -> Result<()> {
+        task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<T>,
+    ) -> Result<T> {
         self.with_current_mutation(token, |service| {
             match fs::symlink_metadata(service.root.join("native-restore-current.json")) {
                 Ok(_) => return Err(err("NATIVE_RESTORE_PENDING")),
@@ -439,6 +439,23 @@ impl InstallationController {
             }
             task(service, &profile.root, &document)
         })
+    }
+
+    #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
+    pub(crate) fn personal_transition_journal_digests(&self, service: &LifecycleService, profile: &Path) -> Result<Vec<Option<String>>> {
+        let journals = [
+            (self.document_unlocked(service)?.0, 2_200_000),
+            (self.upload_unlocked(service)?.0, native_upload::LIMIT),
+            (self.publication_unlocked(service)?.0, 2_200_000),
+            (self.oex_import_unlocked(service)?.0, 65_536),
+        ];
+        journals.iter().map(|(name, limit)| {
+            match fs::symlink_metadata(profile.join(name)) {
+                Ok(_) => Ok(Some(digest(&installation_backup::source_bytes(profile, name, *limit, true)?))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(_) => Err(err("STATE_UNAVAILABLE")),
+            }
+        }).collect()
     }
 
     #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
