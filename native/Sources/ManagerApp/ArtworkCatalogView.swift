@@ -144,8 +144,10 @@ struct ArtworkCatalogView: View {
     @ViewBuilder private func draggableCard(_ entry: ArtworkCatalogEntry) -> some View {
         if let catalogDrag, controller.catalogDropSupported, ready, model.canPlaceVisually(entry) {
             catalogCard(entry).onDrag { catalogDrag.provider(for: .artwork(entry), model: model) }
+                .onAppear { CatalogDropTrace.record("artworkCardDraggable") }
         } else {
             catalogCard(entry)
+                .onAppear { CatalogDropTrace.record("artworkCardUnavailable", "session=\(catalogDrag != nil) capability=\(controller.catalogDropSupported) ready=\(ready) canPlace=\(model.canPlaceVisually(entry))") }
         }
     }
     private func catalogCard(_ entry: ArtworkCatalogEntry) -> some View {

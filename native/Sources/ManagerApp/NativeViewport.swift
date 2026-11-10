@@ -560,6 +560,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.sceneSnapshotInspectionSupported = acceptance.supportsSceneSnapshotInspection
                         self.controller.findSelectionSupported = acceptance.supportsFindSelection
                         self.controller.catalogDropSupported = acceptance.supportsCatalogDrop
+                        CatalogDropTrace.record("frameAccepted", "catalog=\(acceptance.supportsCatalogDrop) disabled=\(frame.disabled) bounded=\(acceptance.boundedReadOnly == true) editing=\(self.controller.editingContextActive)")
                         self.controller.placementSupported = acceptance.supportsArtworkPlacement
                         self.controller.furnishingVisualsSupported = acceptance.supportsFurnishingVisuals
                         self.controller.sharedFurnishingVisualsSupported = acceptance.supportsSharedFurnishingVisuals
@@ -912,6 +913,7 @@ struct NativeViewport: NSViewRepresentable {
                 let generation = self.generation, context = self.controller.editingContextGeneration
                 let requestID = UUID().uuidString
                 let json = String(decoding: try JSONEncoder().encode(query.value(frame: frame, requestID: requestID)), as: UTF8.self)
+                CatalogDropTrace.record("webKitDispatch", "phase=\(query.phase.rawValue) kind=\(query.kind.rawValue)")
                 let response = try await web.callAsyncJavaScript("return await window.exhibitosViewport.catalogDropTarget(JSON.parse(requestJSON));",
                     arguments: ["requestJSON": json], in: nil, contentWorld: .page)
                 try Task.checkCancellation()
@@ -923,7 +925,9 @@ struct NativeViewport: NSViewRepresentable {
                 }
                 let bytes = try JSONSerialization.data(withJSONObject: response)
                 guard bytes.count <= 4096 else { throw AuthoringFailure("CATALOG_DROP_INVALID") }
-                return try query.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes), frame: frame, requestID: requestID)
+                let hit = try query.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes), frame: frame, requestID: requestID)
+                CatalogDropTrace.record("webKitReply", "phase=\(query.phase.rawValue) hit=\(hit != nil)")
+                return hit
             }
             controller.placementAction = { [weak self] intent, phase, target in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.placementSupported, !self.inspectorPending,
@@ -1220,6 +1224,7 @@ struct NativeViewportArea: View {
                             .onDrop(of: [CatalogDragSession.contentType], delegate: CatalogViewportDrop(
                                 model: model, controller: controller, session: catalogDrag,
                                 surfaceSize: geometry.size, enabled: editable))
+                            .onAppear { CatalogDropTrace.record("receiverAttached", "enabled=\(editable)") }
                     } else {
                         viewportSurface(credentials: credentials, draft: draft)
                     }
