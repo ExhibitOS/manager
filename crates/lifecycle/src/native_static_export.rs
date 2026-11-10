@@ -87,6 +87,7 @@ impl SavedHead {
             JOIN public.publication_states s ON s.publication_id=p.id
             JOIN public.exhibitions e ON (e.tenant_id,e.id)=(p.tenant_id,p.exhibition_id)
             JOIN public.auth_sessions a ON (a.tenant_id,a.user_id)=(r.tenant_id,r.user_id)
+            JOIN public.memberships m ON (m.tenant_id,m.user_id)=(a.tenant_id,a.user_id)
             JOIN public.users u ON u.id=a.user_id
             JOIN public.tenants t ON t.id=a.tenant_id
             WHERE r.tenant_id='{tenant}' AND r.user_id='{principal}' AND r.request_id='{request_id}'
@@ -96,6 +97,7 @@ impl SavedHead {
               AND e.studio_managed AND e.deleted_at IS NULL AND e.studio_owner_user_id=r.user_id
               AND e.revision=p.draft_revision AND e.metadata->>'editVersion'='{edit_version}'
               AND a.token_hash='{session_hash}' AND NOT a.revoked AND a.expires_at>now()
+              AND m.role IN ('admin','curator','artist')
               AND NOT u.disabled AND t.deleted_at IS NULL)"))
     }
 }
