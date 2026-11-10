@@ -185,6 +185,10 @@ impl Grant {
         Ok(())
     }
 
+    pub(crate) fn has_source_credit(&self) -> bool {
+        self.source_credit_line.is_some()
+    }
+
     pub(crate) fn digest(&self) -> Result<String> {
         // Sort keys recursively to match Platform's canonicalModelValue.
         // Attribution is hashed as its exact UTF-8 content.

@@ -143,6 +143,7 @@ impl Operation {
                 let grant = response.grant;
                 grant.check(wire::now_ms()?)?;
                 if grant.operation_id != operation_id
+                    || grant.has_source_credit() != session.payload.native_model_adoption_original_target()
                     || grant.expires_at != expires_at
                     || grant.target != target
                     || grant.original != original
