@@ -2315,6 +2315,7 @@ mod normal_oex_release_declaration_tests {
         assert!(!saved_workspace_transition_supported((CATALOG45_PRE_READY_PRESERVATION_TARGET.2, pair.1)));
         assert!(new.catalog45_recovery_validation());
         assert!(!new.ordinary_fresh_furnishing());
+        assert!(new.static_detail_export_resources(false).is_err());
         assert!(new.static_detail_export_resources(true).is_err());
         let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
         assert_eq!(old.workspace_furnishing_ledger(catalog).unwrap(), new.workspace_furnishing_ledger(catalog).unwrap());
@@ -4062,7 +4063,9 @@ impl Payload {
             || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
             || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance
             || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == provenance
-            || (catalog45_recovery_host_matches(provenance) && !self.catalog45_pre_ready_preservation_validation());
+            || (catalog45_recovery_host_matches(provenance)
+                && !self.catalog45_pre_ready_preservation_validation()
+                && !self.catalog45_pre_ready_hayes_preservation_validation());
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         let combined_local_validation = false;
         if (CATALOG40_WHEAT_DETAIL != Some(provenance)
