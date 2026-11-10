@@ -3,6 +3,16 @@ import AppKit
 import ManagerCore
 import SwiftUI
 import UniformTypeIdentifiers
+import OSLog
+
+enum CatalogDropTrace {
+    static func record(_ event: String, _ state: String = "") {
+        #if DEBUG
+        Logger(subsystem: "org.exhibitos.manager.validation", category: "catalog-drop")
+            .notice("Catalog drop event=\(event, privacy: .public) \(state, privacy: .public)")
+        #endif
+    }
+}
 
 enum CatalogDropKind: String {
     case artwork, floor, frame, light
@@ -119,6 +129,7 @@ final class CatalogDragSession: ObservableObject {
     }
 
     func provider(for item: CatalogDragItem, model: ExhibitionModel) -> NSItemProvider {
+        CatalogDropTrace.record("providerRequested", "draft=\(model.draft != nil) dropping=\(dropping) kind=\(item.kind.rawValue)")
         guard let draft = model.draft, !dropping else { return NSItemProvider() }
         cancelHover()
         let source = Source(token: UUID(), item: item, access: model.viewportAccessID, draft: draft)
@@ -127,9 +138,11 @@ final class CatalogDragSession: ObservableObject {
         let provider = NSItemProvider()
         let bytes = Data(source.token.uuidString.utf8)
         provider.registerDataRepresentation(forTypeIdentifier: Self.contentType.identifier, visibility: .ownProcess) { completion in
+            CatalogDropTrace.record("providerRepresentationRequested")
             completion(bytes, nil)
             return nil
         }
+        CatalogDropTrace.record("providerCreated", "kind=\(item.kind.rawValue)")
         return provider
     }
 
@@ -170,6 +183,7 @@ final class CatalogDragSession: ObservableObject {
 
     func claim(_ token: UUID) -> Bool {
         guard active?.token == token, !dropping else { return false }
+        CatalogDropTrace.record("acceptedToken")
         cancelHover()
         active = nil
         dropping = true
@@ -214,7 +228,10 @@ struct CatalogViewportDrop: DropDelegate {
     }
 
     func validateDrop(info: DropInfo) -> Bool {
-        source != nil && info.hasItemsConforming(to: [CatalogDragSession.contentType])
+        let available = source != nil
+        let conforms = info.hasItemsConforming(to: [CatalogDragSession.contentType])
+        CatalogDropTrace.record("receiverGuard", "source=\(available) conforms=\(conforms) enabled=\(enabled) connected=\(controller.connected) capability=\(controller.catalogDropSupported) editing=\(controller.editingContextActive) controllerReadOnly=\(controller.boundedReadOnly) immutable=\(model.immutable) boundedCapability=\(model.boundedPlacementCapability != nil) policyPending=\(model.boundedPolicyPending) modelReadOnly=\(model.boundedReadOnly) catalog=\(model.canSelectCatalog) threeD=\(model.viewportPresentation == .threeD) active=\(session.active != nil) matches=\(session.active?.matches(model) == true) dropping=\(session.dropping)")
+        return available && conforms
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
@@ -227,6 +244,7 @@ struct CatalogViewportDrop: DropDelegate {
     func dropExited(info: DropInfo) { session.leave(controller) }
 
     func performDrop(info: DropInfo) -> Bool {
+        CatalogDropTrace.record("performDrop", "source=\(source != nil) point=\(normalized(info.location) != nil)")
         guard let source, let point = normalized(info.location) else { return false }
         // SwiftUI exposes the item providers only while performing the drop.
         let providers = info.itemProviders(for: [CatalogDragSession.contentType])
@@ -234,6 +252,7 @@ struct CatalogViewportDrop: DropDelegate {
         let sequence = controller.acceptedSequence
         let context = controller.editingContextGeneration
         provider.loadDataRepresentation(forTypeIdentifier: CatalogDragSession.contentType.identifier) { bytes, _ in
+            CatalogDropTrace.record("providerDataReceived", "matches=\(bytes == Data(source.token.uuidString.utf8))")
             guard let bytes, bytes == Data(source.token.uuidString.utf8) else { return }
             Task { @MainActor in
                 guard self.source?.token == source.token, controller.acceptedSequence == sequence,
@@ -319,7 +338,9 @@ struct CatalogViewportDrop: DropDelegate {
             }
             session.complete(changed ? "카탈로그 항목을 배치했습니다. 전시를 저장하거나 되돌릴 수 있습니다."
                 : "선택한 비품이 이미 연결되어 있습니다.")
+            CatalogDropTrace.record("placementCompleted", "changed=\(changed)")
         } catch {
+            CatalogDropTrace.record("placementRejected")
             if let placement, model.artworkPlacement?.requestId == placement.requestId {
                 await model.cancelVisualArtworkPlacement()
             }

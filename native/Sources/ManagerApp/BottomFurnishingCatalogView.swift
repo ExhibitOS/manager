@@ -253,8 +253,10 @@ struct BottomFurnishingCatalogView: View {
         if let catalogDrag, let item = CatalogDragItem(furnishing: row), controller.catalogDropSupported,
            canSelect, row.selectable, model.viewportPresentation == .threeD {
             card(row).onDrag { catalogDrag.provider(for: item, model: model) }
+                .onAppear { CatalogDropTrace.record("furnishingCardDraggable") }
         } else {
             card(row)
+                .onAppear { CatalogDropTrace.record("furnishingCardUnavailable", "session=\(catalogDrag != nil) item=\(CatalogDragItem(furnishing: row) != nil) capability=\(controller.catalogDropSupported) canSelect=\(canSelect) selectable=\(row.selectable) threeD=\(model.viewportPresentation == .threeD)") }
         }
     }
 
