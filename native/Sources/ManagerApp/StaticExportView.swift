@@ -9,6 +9,7 @@ final class StaticExportModel: ObservableObject {
     @Published private(set) var choosing = false
     @Published private(set) var failure: BridgeFailure?
     @Published private(set) var notice = ""
+    @Published private(set) var starting = false
     var running: Bool { status?.running == true }
     private var read: (() async throws -> NativeStaticExportStatus?)?
     private var start: ((String, URL, Bool) async throws -> NativeStaticExportStatus)?
@@ -47,6 +48,8 @@ final class StaticExportModel: ObservableObject {
         guard answer == .OK, let parent = panel.url else { notice = "저장을 취소했습니다."; return }
         let prefix = privateEditor ? "ExhibitOS-개인사본-" : "ExhibitOS-전시-"
         let output = parent.resolvingSymlinksInPath().appendingPathComponent(prefix + String(UUID().uuidString.lowercased().prefix(8)), isDirectory: true)
+        starting = true
+        defer { starting = false }
         do { status = try await start(completed.publication.publicationId, output, privateEditor); follow() }
         catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_STATIC_EXPORT_FAILED") }
     }
@@ -82,7 +85,11 @@ struct NativeStaticExportView: View {
                     .disabled(!ready || model.running || model.choosing)
                 Text("CC0 작품과 자료로 개인 사본을 편집할 수 있는 로컬 폴더를 만듭니다.").font(.callout).foregroundStyle(.secondary)
             } else { Text("먼저 위에서 공개용 저장본을 준비하세요.").foregroundStyle(.secondary) }
-            if model.running { ProgressView("전시 파일을 저장하고 확인하고 있습니다…"); Button("파일 저장 중단") { Task { await model.cancelExport() } } }
+            if model.starting && !model.running { ProgressView("정적 전시 파일 저장을 준비하고 있습니다…") }
+            if model.running {
+                if model.failure == nil { ProgressView("전시 파일을 저장하고 확인하고 있습니다…") }
+                Button("파일 저장 중단") { Task { await model.cancelExport() } }
+            }
             if let value = model.status {
                 if value.state == "completed", let receipt = value.receipt {
                     if completed?.publication.publicationId != receipt.publicationId { Text("이전에 준비한 전시의 저장 결과입니다.").foregroundStyle(.secondary) }

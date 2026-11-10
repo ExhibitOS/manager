@@ -167,12 +167,17 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public let boundedReadOnly: Bool?
     public let editingCapability: NativeBoundedEditCapability?
     public var supportsArtworkThumbnail: Bool { accepted && capabilities?.contains("artwork-thumbnail-v1") == true }
+    public var supportsFurnishingThumbnail: Bool {
+        accepted && boundedReadOnly == false && editingCapability == nil
+            && capabilities?.contains(ViewportFurnishingThumbnailRequest.capability) == true
+    }
     public var supportsRenderedArtworkThumbnail: Bool {
         supportsArtworkThumbnail && boundedReadOnly == false && capabilities?.contains("rendered-display-preview-v1") == true
     }
     public var supportsSceneSnapshot: Bool { accepted && capabilities?.contains("scene-snapshot-v1") == true }
     public var supportsSceneSnapshotInspection: Bool { accepted && capabilities?.contains("scene-snapshot-inspection-v1") == true }
     public var supportsFindSelection: Bool { accepted && capabilities?.contains("find-selection-v1") == true }
+    public var supportsCatalogDrop: Bool { accepted && capabilities?.contains("catalog-drop-target-v1") == true }
     public var supportsArtworkPlacement: Bool { accepted && capabilities?.contains("place-artwork-v1") == true }
     public var supportsFurnishingVisuals: Bool { accepted && capabilities?.contains("furnishing-visuals-v1") == true }
     public var supportsSharedFurnishingVisuals: Bool { accepted && capabilities?.contains("furnishing-visuals-v2") == true }

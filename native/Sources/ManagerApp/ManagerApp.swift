@@ -54,6 +54,7 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var staticExport = StaticExportModel()
     @Published private(set) var hosting = HostingModel()
     @Published private(set) var maintenanceNotice = ""
+    @Published private(set) var maintenanceProgress: String?
     @Published private(set) var backupLocation: URL?
     var pendingRestoration: Bool { native?.restoration.map { $0.state != "activated" } == true }
     var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !authoring.modelWorkerPending && !exhibitions.busy && !exhibitions.oexImport.busy && !exhibitions.oexImport.hasPendingWork && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
@@ -61,6 +62,7 @@ final class ManagerModel: ObservableObject {
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
     private var authoringConnection: (jobID: String?, task: Task<Void, Never>)?
+    @Published private(set) var authoringConnectionStatus: String?
     private struct RetainedAuthoring {
         let selectionToken: String
         let installationId: String
@@ -176,7 +178,8 @@ final class ManagerModel: ObservableObject {
         guard exhibitions.beginEntranceCredentialRenewal() else { return }
         exhibitions.invalidateCatalogThumbnailAuthority()
         busy = true
-        defer { busy = false }
+        authoringConnectionStatus = "로컬 제작 상태를 확인하고 있습니다…"
+        defer { authoringConnectionStatus = nil; busy = false }
         do {
             await bindStaticExport()
             guard authoring.configure(native?.configuration, ready: ready, runtimeJobID: runtimeJobID),
@@ -200,6 +203,7 @@ final class ManagerModel: ObservableObject {
                 return self.context?.selectionToken == context.selectionToken && observed.selectedOex == false
                     && observed.runtime?.readiness.ready == true
             }
+            authoringConnectionStatus = "작업 공간의 편집 권한을 확인하고 있습니다…"
             let credentials: LocalAuthoringSession
             if status.selectedOex == true, let binding = retainedAuthoring {
                 guard binding.matches(context: self.context, status: status),
@@ -258,6 +262,7 @@ final class ManagerModel: ObservableObject {
                           Self.sameSession(binding.session, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                 }
                 let boundedWorkspace = context.installations.first(where: { $0.id == context.activeId })?.kind == "oex-import"
+                authoringConnectionStatus = "이 Mac에 보관한 전시 입력을 읽고 있습니다…"
                 await exhibitions.connect(api: api, session: session, credentials: credentials,
                     selectedBoundedPolicy: selected, ordinaryBoundedRuntime: boundedWorkspace && !selected,
                     boundedRuntimeQualified: gate.oex027Qualified == true,
@@ -266,6 +271,7 @@ final class ManagerModel: ObservableObject {
                       self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId,
                       authoring.exhibitionAPI === api, let current = authoring.session, Self.sameSession(current, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                 guard !exhibitions.oexImport.busy else { exhibitions.entranceCredentialRenewalFailed(); return }
+                authoringConnectionStatus = "가져오기와 공개 작업의 이전 상태를 확인하고 있습니다…"
                 await exhibitions.oexImport.connect(api: api, session: session, read: { try await bridge.oexImportState(context) }, save: { state in try await bridge.saveOEXImportState(context, state: state) },
                     freshBounded: native?.selectedOex == true && ready, bridge: bridge, context: context,
                     mayBeginBounded: { [weak self] in guard let self, let document = self.exhibitions.state else { return false }; return !self.busy && self.authoringConnection == nil && !self.authoring.busy && !self.exhibitions.dirty && !self.exhibitions.busy && document.draft == nil && document.pending == nil },
@@ -384,10 +390,13 @@ final class ManagerModel: ObservableObject {
     func makeBackup(key: URL, destination: URL) async {
         guard canMaintain, !pendingRestoration, let bridge, let context else { return }
         busy = true; failure = nil; maintenanceNotice = ""; backupLocation = nil
-        defer { busy = false }
+        defer { maintenanceProgress = nil; busy = false }
         do {
+            maintenanceProgress = "백업을 위해 로컬 제작을 정지하고 있습니다…"
             try await stopForMaintenance(bridge, context)
+            maintenanceProgress = "백업 키 파일을 준비하고 있습니다…"
             try await bridge.createBackupKey(context, at: key)
+            maintenanceProgress = "백업을 저장하고 무결성을 확인하고 있습니다…"
             native = try await bridge.backup(context, key: key, destination: destination)
             backupLocation = destination
             maintenanceNotice = "백업과 키 파일을 서로 다른 장소에 보관하세요. 완료 후 로컬 제작을 다시 시작할 수 있습니다."
@@ -397,19 +406,23 @@ final class ManagerModel: ObservableObject {
     func restoreBackup(source: URL, key: URL, createWorkspace: Bool) async {
         guard canMaintain, let bridge, var selected = context else { return }
         busy = true; failure = nil; maintenanceNotice = ""
-        defer { busy = false }
+        defer { maintenanceProgress = nil; busy = false }
         do {
+            maintenanceProgress = "복원을 위해 로컬 제작을 정지하고 있습니다…"
             try await stopForMaintenance(bridge, selected)
             if createWorkspace {
+                maintenanceProgress = "복원할 새 작업 공간을 만들고 있습니다…"
                 selected = try await bridge.createRecoveryWorkspace(selected)
                 context = selected
                 replaceWorkspaceModels()
                 native = try await bridge.nativeStatus(selected)
             }
             if native?.configuration == nil && !pendingRestoration {
+                maintenanceProgress = "복원 환경을 준비하고 있습니다…"
                 native = try await bridge.prepare(selected)
                 try await waitForMaintenanceIdle(bridge, selected)
             }
+            maintenanceProgress = "백업을 확인하고 새 작업 공간에 복원하고 있습니다…"
             native = try await bridge.restore(selected, key: key, source: source)
             maintenanceNotice = "백업을 새 작업 공간에서 확인하고 있습니다. 원래 작업 공간은 보관됩니다."
             schedulePoll()
@@ -418,8 +431,9 @@ final class ManagerModel: ObservableObject {
     func activateRestoration() async {
         guard canMaintain, let bridge, let context, let restoration = native?.restoration, restoration.state == "staged" else { return }
         busy = true; failure = nil; maintenanceNotice = ""
-        defer { busy = false }
+        defer { maintenanceProgress = nil; busy = false }
         do {
+            maintenanceProgress = "복원한 파일과 작업 공간을 다시 확인하고 있습니다…"
             native = try await bridge.activateRestoration(context, id: restoration.id)
             replaceWorkspaceModels()
             maintenanceNotice = "복원한 파일과 작업 공간을 다시 확인하고 있습니다."
@@ -684,7 +698,7 @@ struct ManagerView: View {
                     }
                     if model.quitting { ProgressView(model.finalizingRestoration ? "복원 최종 확인을 마친 뒤 종료합니다…" : "로컬 작업을 정지한 뒤 종료합니다…") }
                     else if model.runtimeBusy { ProgressView(operationTitle) }
-                    else if model.busy { ProgressView("확인 중…").accessibilityLabel("상태 확인 중") }
+                    else if model.busy { ProgressView(model.maintenanceProgress ?? model.authoringConnectionStatus ?? "상태를 확인하고 있습니다…") }
                     if let failure = model.failure {
                         VStack(alignment: .leading, spacing: 8) {
                             Label(failure.localizedDescription, systemImage: "exclamationmark.triangle")
@@ -704,7 +718,8 @@ struct ManagerView: View {
                                  oexImport: model.exhibitions.oexImport, ready: model.ready,
                                  freshOEXOperationActive: model.native?.busy == true && model.native?.selectedOex == true && model.native?.operation == "importing_oex",
                                  mode: model.presentation?.mode ?? .beginner,
-                                 connect: { await model.connectPersonalAuthoring() }, active: workbenchActive,
+                                 connect: { await model.connectPersonalAuthoring() }, authoringConfiguration: model.native?.configuration,
+                                 authoringRuntimeJobID: model.native?.runtime?.jobId, active: workbenchActive,
                                  readOnly: model.presentation?.step == .preview,
                                  canCreateOEXWorkspace: model.canMaintain && !model.pendingRestoration,
                                  createOEXWorkspace: { await model.createOEXWorkspace() },
@@ -743,7 +758,7 @@ struct ManagerView: View {
         if workbenchActive && (model.quitting || model.runtimeBusy || model.busy || model.failure != nil) {
             VStack(alignment: .leading, spacing: 8) {
                 if model.quitting || model.runtimeBusy || model.busy {
-                    ProgressView(model.quitting ? "로컬 작업을 정지하고 있습니다…" : model.runtimeBusy ? operationTitle : "작업 공간을 연결하고 있습니다…")
+                    ProgressView(model.quitting ? "로컬 작업을 정지하고 있습니다…" : model.runtimeBusy ? operationTitle : model.maintenanceProgress ?? model.authoringConnectionStatus ?? "상태를 확인하고 있습니다…")
                         .controlSize(.small)
                 }
                 if let failure = model.failure {
@@ -823,7 +838,12 @@ struct ManagerView: View {
     private var operationTitle: String {
         switch model.native?.operation {
         case "preparing": "제작 환경을 준비하고 있습니다…"
-        case "starting": "로컬 제작을 시작하고 있습니다…"
+        case "starting":
+            switch model.native?.runtime?.state {
+            case "starting_database": "로컬 데이터베이스를 시작하고 있습니다…"
+            case "starting_services": "로컬 제작 서비스의 준비 상태를 확인하고 있습니다…"
+            default: "로컬 제작을 시작하고 있습니다…"
+            }
         case "importing_oex": "OEX를 검증하고 전시를 가져오고 있습니다…"
         case "stopping": "로컬 작업을 정지하고 있습니다…"
         case "backing_up": "백업을 저장하고 무결성을 확인하고 있습니다…"

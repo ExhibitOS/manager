@@ -694,6 +694,27 @@ pub(crate) const CATALOG45_PLACED_EXIT_DOORS: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_DEFAULT_SEATS: RuntimeTuple = (
+    "170f7b39c335cac4d906d4a1116cc567dea78509",
+    "a6cab25d569db1ad4cb3f1c3cc29d9019c2573241e7465441e923ca2fc74a721",
+    "ca92c7530f594462e459bdf16ff9cd64cc1dd1ffc0d68ab4b13c31e7ea3a7630",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_BACKED_BENCH: RuntimeTuple = (
+    "9f938be182e0c30066d7675457a0306bb89048ed",
+    "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
+    "f8d5933a2c2e361154dbcc9cb4a332144ca9217e5edb363fdd5056ee70aed702",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_BOTTOM_CATALOG: RuntimeTuple = (
+    "1022863c07e6673ad0acf29225ecedc6d48871dd",
+    "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
+    "4a0bbccc8ef04c6734407fd448f2b68e6b25a6a7d5f5b0afc33878be5aa29d4d",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const CATALOG45_PRODUCT_IMAGE: RuntimeTuple = (
     "d33714b74d2b12ad1bc089bd8180ad0a49974894",
     "29cdc6fd07e1c5d4e5fda06a2c37270d7023024d76a7cc3d31596af9f1c7a921",
@@ -768,6 +789,9 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
         || CATALOG45_SAVED_HEAD_MODULAR_PORTAL == tuple
         || CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE == tuple
         || CATALOG45_PLACED_EXIT_DOORS == tuple
+        || CATALOG45_DEFAULT_SEATS == tuple
+        || CATALOG45_BACKED_BENCH == tuple
+        || CATALOG45_BOTTOM_CATALOG == tuple
         || catalog45_native_publication_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -780,8 +804,57 @@ pub(crate) fn catalog45_same_version_restore_host_matches(tuple: (&str, &str, &s
     { let _ = tuple; false }
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_CARRIED_RESTORE_BASE: (&str, &str, &str) = (
+    "ded4a9a77c052650849770fc7a754c517334ee74",
+    "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
+    "d0209c6ac9980a1507e53fc7a5eaa2b6b254bb60b6a8a1feb2f72d98e48d2874",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_CARRIED_RESTORE_HOSTS: [(&str, &str, &str); 2] = [
+    CATALOG45_CARRIED_RESTORE_BASE,
+    (
+        "3dfa5c1b430973c59d86a50796bfd5377f2dbde6",
+        "0a0669e95010371c2dc379285930d166d4bac30506d88f89326b4264ebd0a385",
+        "1bfd19cd28329a63e2f81527de380e65c3417f1242cdfa243b92cf87f0315fb4",
+    ),
+];
+
+pub(crate) fn catalog45_carried_restore_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CATALOG45_CARRIED_RESTORE_HOSTS.contains(&tuple);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
+pub(crate) fn catalog45_carried_restore_payload(payload: &Payload) -> bool {
+    let context = payload.context();
+    catalog45_carried_restore_host_matches((&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
+}
+
+pub(crate) fn catalog45_carried_restore_source(payload: &Payload) -> bool {
+    let context = payload.context();
+    catalog45_same_version_restore_host_matches((&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
+}
+
 pub(crate) fn native_restore_provenance_host_matches(catalog: u32, tuple: (&str, &str, &str)) -> bool {
     catalog == 40 || (catalog == 45 && catalog45_same_version_restore_host_matches(tuple))
+}
+
+/// Existing activated restore receipt for the exact backed-bench transition.
+pub(crate) fn catalog45_retained_restore_payload(tuple: (&str, &str, &str)) -> Option<&'static str> {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return (tuple == CATALOG45_BACKED_BENCH).then_some(CATALOG45_PLACED_EXIT_DOORS.2);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; None }
+}
+
+pub(crate) fn catalog45_restored_backed_handoff(pair: (&str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return pair == (CATALOG45_PLACED_EXIT_DOORS.2, CATALOG45_BACKED_BENCH.2);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = pair; false }
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -982,6 +1055,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_PRE_READY_PRESERVATION_TARGET.2 == manifest
         || CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET.2 == manifest
         || CATALOG45_PLACED_EXIT_DOORS.2 == manifest
+        || CATALOG45_BACKED_BENCH.2 == manifest
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
@@ -1001,6 +1075,11 @@ pub(crate) enum FurnishingTransition {
 impl FurnishingTransition {
     pub(crate) fn startup_recovery(self) -> Option<Catalog45StartupRecovery> {
         catalog45_startup_recovery((self.source().2, self.target().2))
+    }
+
+    pub(crate) fn retains_catalog45_restore(self) -> bool {
+        matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045 }
+            if source == CATALOG45_PLACED_EXIT_DOORS && target == CATALOG45_BACKED_BENCH)
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
@@ -1084,6 +1163,13 @@ impl FurnishingTransition {
             return Some(Self::SameCatalog {
                 source: CATALOG45_PRE_READY_HAYES_PRESERVATION_TARGET,
                 target: CATALOG45_PLACED_EXIT_DOORS,
+                catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            });
+        }
+        if catalog45_restored_backed_handoff(pair) {
+            return Some(Self::SameCatalog {
+                source: CATALOG45_PLACED_EXIT_DOORS,
+                target: CATALOG45_BACKED_BENCH,
                 catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             });
         }
@@ -2259,6 +2345,40 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact reviewed catalog 045 carried restore runtime"]
+    fn opens_reviewed_catalog45_carried_restore_payload() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_CATALOG45_CARRIED_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let context = payload.context();
+        assert!(catalog45_carried_restore_payload(&payload));
+        assert!(!payload.ordinary_fresh_furnishing());
+        assert!(!catalog45_carried_restore_source(&payload));
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(payload.workspace_furnishing_ledger(catalog).is_ok());
+        assert!(!catalog45_carried_restore_host_matches((
+            &context.source_commit, payload.producer_sha256(),
+            "ea2570531e6a988d1333f4f8a0898f972f75da24919a32e47c75fff638bdbf67",
+        )));
+        let other = CATALOG45_CARRIED_RESTORE_HOSTS.iter()
+            .find(|host| host.0 != context.source_commit).unwrap();
+        assert!(!catalog45_carried_restore_host_matches((
+            &context.source_commit, payload.producer_sha256(), other.2,
+        )));
+        assert!(!catalog45_carried_restore_host_matches((
+            &context.source_commit, "unreviewed-producer", &context.manifest_sha256,
+        )));
+        assert!(Payload::open_workspace_v5_validation(&root, false).is_err());
+        if context.manifest_sha256 == CATALOG45_CARRIED_RESTORE_BASE.2 {
+            assert!(payload.static_detail_export_resources(true).is_ok());
+        } else {
+            assert_eq!(payload.static_detail_export_resources(true).unwrap_err().code, "NATIVE_STATIC_DETAIL_UNAVAILABLE");
+        }
+        assert_eq!(payload.static_detail_export_resources(false).unwrap_err().code, "NATIVE_STATIC_DETAIL_UNAVAILABLE");
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact publication capacity, authored-seat and museum-caption payloads"]
     fn opens_reviewed_catalog45_native_publication_payloads() {
         for (tuple, variable) in CATALOG45_NATIVE_PUBLICATION_TARGETS.iter().zip([
@@ -2278,6 +2398,72 @@ mod normal_oex_release_declaration_tests {
             assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
             assert!(!catalog45_native_publication_host_matches((tuple.0, tuple.1, CATALOG45_STARTUP_CANCEL_RECOVERY_TARGET.2)));
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact packaged default-seat runtime"]
+    fn opens_catalog45_default_seats_for_ordinary_startup_only() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DEFAULT_SEAT_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        let pin = CATALOG45_DEFAULT_SEATS;
+        let old = CATALOG45_PLACED_EXIT_DOORS;
+        assert_eq!(payload.manifest_sha256, pin.2);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
+        assert!(payload.static_export_resources(true).is_ok());
+        assert!(!ordinary_fresh_catalog45_host_matches((pin.0, old.1, pin.2)));
+        assert!(!ordinary_fresh_catalog45_host_matches((pin.0, pin.1, old.2)));
+        assert!(!catalog45_same_version_restore_host_matches(pin));
+        assert!(!catalog45_recovery_host_matches(pin));
+        assert!(Payload::open_saved_workspace_transition(&root).is_err());
+        assert!(!saved_workspace_transition_supported((old.2, pin.2)));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact backed-bench and catalogue 1.5 payload"]
+    fn opens_catalog45_backed_bench_for_ordinary_startup_and_retained_restore_transition() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BACKED_BENCH_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        let pin = CATALOG45_BACKED_BENCH;
+        assert_eq!(payload.manifest_sha256, pin.2);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
+        assert!(payload.static_export_resources(true).is_ok());
+        assert!(!ordinary_fresh_catalog45_host_matches((pin.0, pin.1, CATALOG45_DEFAULT_SEATS.2)));
+        assert!(payload.static_detail_export_resources(true).is_ok());
+        assert!(!catalog45_same_version_restore_host_matches(pin));
+        assert!(!catalog45_recovery_host_matches(pin));
+        assert!(Payload::open_saved_workspace_transition(&root).is_ok());
+        assert!(saved_workspace_transition_supported((CATALOG45_PLACED_EXIT_DOORS.2, pin.2)));
+        assert!(!saved_workspace_transition_supported((pin.2, CATALOG45_PLACED_EXIT_DOORS.2)));
+        assert!(!saved_workspace_transition_supported((CATALOG45_DEFAULT_SEATS.2, pin.2)));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact bottom-catalog viewport payload"]
+    fn opens_catalog45_bottom_catalog_for_ordinary_startup_only() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BOTTOM_CATALOG_RUNTIME").unwrap());
+        let payload = Payload::open(&root).unwrap();
+        let pin = CATALOG45_BOTTOM_CATALOG;
+        let catalog = WorkspaceFurnishingCatalog::RequiredModelPreparation045;
+        assert_eq!(payload.manifest_sha256, pin.2);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 45);
+        assert!(payload.static_export_resources(true).is_ok());
+        assert!(!ordinary_fresh_catalog45_host_matches((pin.0, pin.1, CATALOG45_BACKED_BENCH.2)));
+        assert!(!catalog45_same_version_restore_host_matches(pin));
+        assert!(!catalog45_recovery_host_matches(pin));
+        assert!(Payload::open_saved_workspace_transition(&root).is_err());
+        assert!(!saved_workspace_transition_supported((CATALOG45_BACKED_BENCH.2, pin.2)));
+        assert!(!saved_workspace_transition_supported((CATALOG45_PLACED_EXIT_DOORS.2, pin.2)));
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3171,7 +3357,7 @@ impl Payload {
         let ordinary_catalog45 = [
             CATALOG45_RENDERED_SCULPTURE_THUMBNAIL, CATALOG45_NATIVE_PUBLICATION_CAPACITY,
             CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
-            CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PLACED_EXIT_DOORS,
+            CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = payload.retained_furnishing_catalog().or(
             ordinary_catalog45.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
@@ -3345,6 +3531,7 @@ impl Payload {
         let wheat_grant: Option<(&str, &str, &str)> = None;
         let pinned_portal = self.retained_furnishing_catalog().is_some()
             || self.ordinary_fresh_furnishing()
+            || catalog45_carried_restore_payload(self)
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                     && self.manifest_sha256 == manifest);
@@ -3421,7 +3608,7 @@ impl Payload {
             return Err(unqualified());
         }
         let model_preparation_pinned = required_model_preparation_host_matches(tuple)
-            || self.ordinary_fresh_furnishing();
+            || self.ordinary_fresh_furnishing() || catalog45_carried_restore_host_matches(tuple);
         let model_preparation_declared = self.manifest.files.iter().any(|file|
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {
@@ -4111,7 +4298,9 @@ impl Payload {
             || CATALOG45_CURRENT_ORIGINAL_TARGET == provenance
             || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET == provenance
             || CATALOG45_RETAINED_PRODUCT_IMAGE_TARGET == provenance
-            || (private_editor && CATALOG45_PLACED_EXIT_DOORS == provenance)
+            || (private_editor
+                && ([CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH].contains(&provenance)
+                    || CATALOG45_CARRIED_RESTORE_BASE == provenance))
             || (catalog45_recovery_host_matches(provenance)
                 && !self.catalog45_pre_ready_preservation_validation()
                 && !self.catalog45_pre_ready_hayes_preservation_validation());

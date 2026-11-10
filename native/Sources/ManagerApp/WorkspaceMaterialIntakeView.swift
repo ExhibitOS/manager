@@ -21,7 +21,7 @@ struct WorkspaceMaterialIntakeView: View {
     @State private var files: [WorkspaceMaterialRole: ImportFileSnapshot] = [:]
     @State private var role = WorkspaceMaterialRole.color
     @State private var choosing = false
-    @State private var busy = false
+    @State private var busyActivity: String?
     @State private var declaration: WorkspaceMaterialDeclaration?
     @State private var intake: WorkspaceMaterialIntake?
     @State private var preview: NSImage?
@@ -35,6 +35,7 @@ struct WorkspaceMaterialIntakeView: View {
     @State private var repeatLength = "2"
     @State private var rotationDegrees = "0"
     @State private var bindingNotice: String?
+    private var busy: Bool { busyActivity != nil }
 
     private func surfaceLabel(_ kind: WorkspaceMaterialKind) -> String {
         kind == .floor ? "바닥" : "벽"
@@ -75,7 +76,7 @@ struct WorkspaceMaterialIntakeView: View {
     }
     private var status: String {
         switch intake?.phase {
-        case .uploading: "파일 수신 \(intake?.received.count ?? 0) / \(declaration?.maps.count ?? 0)"
+        case .uploading: "파일 수신 대기"
         case .validating: "파일과 권리 확인 중"
         case .cancelling: "취소 처리 중"
         case .registered: "작업공간에 등록됨"
@@ -174,9 +175,19 @@ struct WorkspaceMaterialIntakeView: View {
             }
             .formStyle(.grouped)
             .disabled(busy || declaration != nil)
-            if busy || intake?.phase == .validating || intake?.phase == .cancelling {
+            if let intake, intake.phase == .uploading, let declaration, !declaration.maps.isEmpty {
+                ProgressView(value: Double(intake.received.count), total: Double(declaration.maps.count)) {
+                    Text("재질 파일 수신 확인")
+                } currentValueLabel: {
+                    let fraction = Double(intake.received.count) / Double(declaration.maps.count)
+                    Text("\(intake.received.count) / \(declaration.maps.count)개 · \(Int(fraction * 100))%")
+                }.controlSize(.small)
+            }
+            if let busyActivity {
+                ProgressView(busyActivity).controlSize(.small)
+            } else if intake?.phase == .validating || intake?.phase == .cancelling {
                 ProgressView(status).controlSize(.small)
-            } else {
+            } else if intake?.phase != .uploading {
                 Text(status).accessibilityAddTraits(.updatesFrequently)
             }
             if let errorMessage { Text(errorMessage).foregroundStyle(.secondary) }
@@ -227,10 +238,10 @@ struct WorkspaceMaterialIntakeView: View {
         }.disabled(busy)
     }
 
-    private func perform(_ work: () async throws -> Void) async {
+    private func perform(_ activity: String = "재질 상태를 확인하고 있습니다…", _ work: () async throws -> Void) async {
         guard !busy else { return }
-        busy = true; errorMessage = nil
-        defer { busy = false }
+        busyActivity = activity; errorMessage = nil
+        defer { busyActivity = nil }
         do { try await work() }
         catch {
             let failure = error as? AuthoringFailure ?? AuthoringFailure((error as? BridgeFailure)?.code ?? "CONNECTION_FAILED")
@@ -249,7 +260,7 @@ struct WorkspaceMaterialIntakeView: View {
     }
 
     private func submit() async {
-        await perform {
+        await perform("재질 등록 요청을 확인하고 있습니다…") {
             if declaration == nil {
                 let maps = try Dictionary(uniqueKeysWithValues: files.map { role, file in
                     (role.rawValue, try WorkspaceMaterialMap(snapshot: file, role: role))
@@ -274,8 +285,10 @@ struct WorkspaceMaterialIntakeView: View {
                 guard let intake, intake.phase == .uploading else { return }
                 for role in WorkspaceMaterialRole.allCases where intake.received[role.rawValue] == nil {
                     guard let snapshot = files[role] else { continue }
+                    busyActivity = label(role) + " 맵을 전송하고 있습니다…"
                     try remember(await api.uploadWorkspaceMaterial(intake.intakeId, role: role, snapshot: snapshot))
                 }
+                busyActivity = "재질 파일과 권리 확인 결과를 기다리고 있습니다…"
                 try remember(await api.workspaceMaterialAction(intake.intakeId, .complete))
             }
         }
@@ -292,7 +305,7 @@ struct WorkspaceMaterialIntakeView: View {
 
     private func change(_ action: WorkspaceMaterialIntakeAction) async {
         guard let id = intake?.intakeId else { return }
-        await perform {
+        await perform(action == .cancel ? "등록 취소를 확인하고 있습니다…" : "재질 파일과 권리 확인 결과를 기다리고 있습니다…") {
             try await model.withWorkspaceMaterialAccess(access) { api in
                 try remember(await api.workspaceMaterialAction(id, action))
             }

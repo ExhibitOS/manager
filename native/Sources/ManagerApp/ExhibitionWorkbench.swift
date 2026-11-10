@@ -14,6 +14,8 @@ struct NativeExhibitionView: View {
     var freshOEXOperationActive = false
     let mode: Mode
     let connect: () async -> Void
+    var authoringConfiguration: NativeConfiguration?
+    var authoringRuntimeJobID: String?
     var active = true
     var readOnly = false
     var canCreateOEXWorkspace = false
@@ -21,6 +23,15 @@ struct NativeExhibitionView: View {
     @State private var confirmOEXWorkspace = false
     @State private var workspaceMaterialAccess: UUID?
     @State private var workspaceFurnishingAccess: UUID?
+    @State private var furnishingIntakeKind: WorkspaceFurnishingKind?
+    @State private var furnishingIntakeTarget: String?
+    @State private var furnishingIntakeBundledID: String?
+    @State private var pendingFurnishingRequest: WorkspaceFurnishingIntakeView.PendingRequest?
+    @State private var pendingFurnishingReveal: ExhibitionModel.RegisteredFurnishing?
+    @State private var revealedFurnishing: ExhibitionModel.RegisteredFurnishing?
+    @State private var artworkCatalogIntakeAccess: UUID?
+    @StateObject private var catalogDrag = CatalogDragSession()
+    @State private var catalogTab = CatalogTab.artwork
     var connectionAllowed = true
     var edit: () -> Void = {}
     var publish: () -> Void = {}
@@ -36,6 +47,11 @@ struct NativeExhibitionView: View {
     @State private var returningToScene = false
     @State private var needsConnection = true
     @State private var inspectorInputs: [String: InstallationInspectorState] = [:]
+
+    private enum CatalogTab: String, CaseIterable {
+        case artwork, furnishings
+        var title: String { self == .artwork ? "작품" : "비품" }
+    }
 
     private enum InspectorScope: String, CaseIterable, Identifiable {
         case selection, lighting, floor, roomAudio, cover, exhibition, viewingPlan, output
@@ -92,6 +108,46 @@ struct NativeExhibitionView: View {
         } else { coverPurpose = false; returningToScene = false; scope = .selection; if readOnly { edit() } }
     }
 
+    private func openFurnishingIntake(kind: WorkspaceFurnishingKind? = nil, target: String? = nil, bundled: String? = nil) {
+        guard !formLocked, !editRestricted, model.workspaceFurnishingIntakeAvailable else { return }
+        furnishingIntakeKind = kind
+        furnishingIntakeTarget = target
+        furnishingIntakeBundledID = bundled
+        workspaceFurnishingAccess = model.viewportAccessID
+    }
+
+    private func selectFurnishing(_ row: BottomFurnishingCatalogRow) {
+        switch row {
+        case .workspace(let item): openFurnishingIntake(target: item.id)
+        case .bundled(let item): openFurnishingIntake(bundled: item.id)
+        case .shared(_, _, let host):
+            showSelection()
+            guard !formLocked, !editRestricted, model.canEditSharedFurnishing,
+                  let target = model.sharedFurnishingTarget, target.0 == host,
+                  var form = model.sharedFurnishing, form.host == host, form.hostId == target.1 else { return }
+            form.selected = true
+            model.sharedFurnishing = form
+        }
+    }
+
+    private func bottomCatalog(condensed: Bool) -> some View {
+        VStack(spacing: 0) {
+            Picker("카탈로그", selection: $catalogTab) {
+                ForEach(CatalogTab.allCases, id: \.self) { Text($0.title).tag($0) }
+            }.pickerStyle(.segmented).frame(maxWidth: 220)
+                .padding(.horizontal, 8).padding(.top, 6)
+            switch catalogTab {
+            case .artwork:
+                ArtworkCatalogView(model: model, controller: controller, ready: ready, compact: true, condensed: condensed,
+                    addArtwork: { if !formLocked, !editRestricted { artworkCatalogIntakeAccess = model.viewportAccessID } },
+                    catalogDrag: editRestricted ? nil : catalogDrag)
+            case .furnishings:
+                BottomFurnishingCatalogView(model: model, ready: ready, registeredFurnishing: revealedFurnishing,
+                    onSelect: selectFurnishing, onAdd: { openFurnishingIntake(kind: $0) }, catalogDrag: editRestricted ? nil : catalogDrag)
+            }
+        }.background(Color(nsColor: .controlBackgroundColor))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             workbenchToolbar
@@ -102,7 +158,7 @@ struct NativeExhibitionView: View {
                 VStack(spacing: 0) {
                     // This node stays at the same structural position for all
                     // modes, purposes, sidebar and inspector presentations.
-                    NativeViewportArea(model: model, ready: ready, editable: active && !readOnly && NativeViewportAccess.frameMayBeEditable(immutable: model.viewportReadOnly, boundedAdmission: model.boundedPlacementCapability != nil), controller: controller, workbench: true, mode: mode)
+                    NativeViewportArea(model: model, ready: ready, editable: active && !readOnly && NativeViewportAccess.frameMayBeEditable(immutable: model.viewportReadOnly, boundedAdmission: model.boundedPlacementCapability != nil), controller: controller, workbench: true, mode: mode, catalogDrag: catalogDrag)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if coverPurpose {
                         Divider()
@@ -110,12 +166,15 @@ struct NativeExhibitionView: View {
                             .padding(8)
                     } else if !readOnly {
                         Divider()
-                        ArtworkCatalogView(model: model, controller: controller, ready: ready, compact: true, condensed: geometry.size.height < 500)
+                        bottomCatalog(condensed: geometry.size.height < 500)
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             }
             Divider()
+            if !catalogDrag.feedback.isEmpty {
+                Text(catalogDrag.feedback).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
+            }
             feedback
         }
         .background(Color(nsColor: .windowBackgroundColor))
@@ -123,11 +182,50 @@ struct NativeExhibitionView: View {
         .sheet(isPresented: Binding(get: { workspaceMaterialAccess != nil }, set: { if !$0 { workspaceMaterialAccess = nil } })) {
             if let workspaceMaterialAccess { WorkspaceMaterialIntakeView(model: model, access: workspaceMaterialAccess) }
         }
-        .sheet(isPresented: Binding(get: { workspaceFurnishingAccess != nil }, set: { if !$0 { workspaceFurnishingAccess = nil } })) {
-            if let workspaceFurnishingAccess { WorkspaceFurnishingIntakeView(model: model, access: workspaceFurnishingAccess) }
+        .sheet(isPresented: Binding(get: { workspaceFurnishingAccess != nil }, set: { if !$0 { workspaceFurnishingAccess = nil } }),
+               onDismiss: {
+                   defer { pendingFurnishingReveal = nil }
+                   guard let registration = pendingFurnishingReveal, registration.access == model.viewportAccessID else { return }
+                   revealedFurnishing = registration
+                   catalogTab = .furnishings
+               }) {
+            if let workspaceFurnishingAccess {
+                WorkspaceFurnishingIntakeView(model: model, access: workspaceFurnishingAccess,
+                    initialKind: furnishingIntakeKind, initialWorkspaceFurnishingID: furnishingIntakeTarget,
+                    initialBundledID: furnishingIntakeBundledID, pendingRequest: $pendingFurnishingRequest, onRegistered: { item in
+                        guard workspaceFurnishingAccess == model.viewportAccessID else { return }
+                        pendingFurnishingReveal = .init(access: workspaceFurnishingAccess, item: item)
+                        self.workspaceFurnishingAccess = nil
+                    })
+            }
+        }
+        .sheet(isPresented: Binding(get: { artworkCatalogIntakeAccess != nil },
+            set: { if !$0 { artworkCatalogIntakeAccess = nil } })) {
+            if let access = artworkCatalogIntakeAccess {
+                VStack(alignment: .leading) {
+                    ScrollView {
+                        NativeAuthoringView(model: authoring, configuration: authoringConfiguration, ready: ready,
+                            runtimeJobID: authoringRuntimeJobID, mode: mode, connect: connect, catalogIntake: true,
+                            onCatalogArtworkApproved: { id, revision in
+                                guard artworkCatalogIntakeAccess == access, model.viewportAccessID == access else { return }
+                                artworkCatalogIntakeAccess = nil
+                                Task {
+                                    guard model.viewportAccessID == access else { return }
+                                    await model.revealApprovedCatalogArtwork(id, revision: revision)
+                                }
+                            })
+                    }
+                    HStack {
+                        Spacer()
+                        Button("닫기") { artworkCatalogIntakeAccess = nil }.disabled(authoring.busy || authoring.hasWaitingIntake)
+                    }
+                }.padding().frame(minWidth: 520, idealWidth: 640, minHeight: 420, idealHeight: 640)
+                    .interactiveDismissDisabled(authoring.busy || authoring.hasWaitingIntake)
+            }
         }
         .inspector(isPresented: inspectorPresented) { inspector }
         .inspectorColumnWidth(min: 240, ideal: 300, max: 420)
+        .onChange(of: model.viewportAccessID) { _, _ in pendingFurnishingRequest = nil }
         .onChange(of: model.selectedPlaqueId) { _, id in if !id.isEmpty { showSelection() } }
         .onChange(of: model.selectedBenchId) { _, id in if !id.isEmpty { showSelection() } }
         .onChange(of: model.selectedLightId) { _, id in if !id.isEmpty { showSelection() } }
@@ -176,7 +274,7 @@ struct NativeExhibitionView: View {
                         .disabled(formLocked || editRestricted)
                 }
                 if model.workspaceFurnishingIntakeAvailable {
-                    Button("작업 공간 비품 등록·배치") { workspaceFurnishingAccess = model.viewportAccessID }
+                    Button("작업 공간 비품 추가") { openFurnishingIntake() }
                         .disabled(formLocked || editRestricted)
                 }
                 Divider()
@@ -226,7 +324,9 @@ struct NativeExhibitionView: View {
             } else if model.notice.isEmpty {
                 Text("전시 저장됨").foregroundStyle(.secondary)
             }
-            if model.busy && !model.exporting { ProgressView("전시를 확인하고 있습니다…").controlSize(.small) }
+            if model.busy && !model.exporting {
+                ProgressView(model.openingStage?.title ?? "전시를 확인하고 있습니다…").controlSize(.small)
+            }
             if let failure = model.failure {
                 HStack(alignment: .top) {
                     Label(failure.code == "PLACEMENT_INVALID" ? "위치 X·Y·Z에 올바른 미터 값을 입력하거나 위치 입력을 취소하세요." : failure.localizedDescription, systemImage: "exclamationmark.triangle")

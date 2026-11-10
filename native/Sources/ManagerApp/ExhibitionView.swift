@@ -7,6 +7,20 @@ import ManagerCore
 
 @MainActor
 final class ExhibitionModel: ObservableObject {
+    enum OpeningStage {
+        case creating, loadingSaved, refreshingArtwork
+
+        var title: String {
+            switch self {
+            case .creating: "새 전시 입력을 만들고 있습니다…"
+            case .loadingSaved: "저장한 전시 입력과 편집 권한을 확인하고 있습니다…"
+            case .refreshingArtwork: "작품 목록을 새로 확인하고 있습니다…"
+            }
+        }
+    }
+
+    @Published private(set) var openingStage: OpeningStage?
+
     let oexImport = OEXImportModel()
     @Published private(set) var state: NativeDocumentState?
     @Published private(set) var items: [NativeExhibitionSummary] = []
@@ -16,6 +30,7 @@ final class ExhibitionModel: ObservableObject {
     @Published var catalogQuery = ""
     @Published var catalogFilter = ArtworkCatalogFilter.all
     @Published private(set) var catalogArtworkId = ""
+    @Published private(set) var catalogRevealID: String?
     @Published private(set) var catalogStatus = ""
     @Published private(set) var artworkPlacement: ArtworkPlacementIntent?
     @Published private(set) var artworkPlacementTarget: ViewportPlacementTarget?
@@ -23,13 +38,117 @@ final class ExhibitionModel: ObservableObject {
     private var placementAttempt: UUID?
     var placingArtwork: Bool { artworkPlacement != nil || placementApplying }
     var canPlaceVisually: Bool {
-        guard let entry = catalogEntries[catalogArtworkId], !ArtworkSizePresentation(entry.artwork).sourceUnitsUnknown else { return false }
+        guard let entry = catalogEntries[catalogArtworkId] else { return false }
+        return canPlaceVisually(entry)
+    }
+    func canPlaceVisually(_ entry: ArtworkCatalogEntry) -> Bool {
+        guard !ArtworkSizePresentation(entry.artwork).sourceUnitsUnknown else { return false }
         return canSelectCatalog && !immutable && viewportPresentation == .threeD && viewportController.connected && viewportController.placementSupported
     }
     @Published private(set) var libraryCursor: String?
     private var catalogTask: Task<Void, Never>?
     @Published private(set) var catalogImages: [String: NSImage] = [:]
     @Published private(set) var catalogPreviewFailures: Set<String> = []
+    struct RegisteredFurnishing: Equatable {
+        let access: UUID
+        let item: WorkspaceFurnishing
+    }
+
+    private struct FurnishingThumbnailKey: Hashable {
+        let access: UUID, tenant: String, principal: String, furnishingID: String
+        let version: Int, modelBytes: Int
+        let modelSHA256: String, recipe: String, tool: String
+    }
+
+    enum FurnishingThumbnail {
+        case rendering(UUID), ready(NSImage, expires: Date?), failed
+    }
+
+    @Published private var furnishingThumbnails: [FurnishingThumbnailKey: FurnishingThumbnail] = [:]
+    private var furnishingThumbnailOrder: [FurnishingThumbnailKey] = []
+
+    private func furnishingThumbnailKey(_ registration: RegisteredFurnishing) -> FurnishingThumbnailKey? {
+        guard registration.access == viewportAccessID, let state else { return nil }
+        let item = registration.item, model = item.details.model
+        return .init(access: registration.access, tenant: state.tenantId, principal: state.principalId,
+                     furnishingID: item.id, version: item.version, modelBytes: model.bytes, modelSHA256: model.sha256,
+                     recipe: ViewportFurnishingThumbnailRequest.recipe, tool: ViewportFurnishingThumbnailRequest.tool)
+    }
+
+    func furnishingThumbnail(for item: WorkspaceFurnishingSummary) -> FurnishingThumbnail? {
+        guard workspaceFurnishingIntakeAvailable, item.rightsAvailability.display, let state,
+              let key = furnishingThumbnailOrder.last(where: {
+                  $0.access == viewportAccessID && $0.tenant == state.tenantId && $0.principal == state.principalId
+                      && $0.furnishingID == item.id && $0.version == item.version
+              }) else { return nil }
+        return furnishingThumbnails[key]
+    }
+
+    var furnishingThumbnailFrameReady: Bool {
+        workspaceFurnishingIntakeAvailable && !busy && !immutable && !entrancePreviewActive
+            && viewportController.acknowledgesFurnishingThumbnail(draft: viewportDraft, tenantId: state?.tenantId,
+                                                                  principalId: state?.principalId)
+    }
+
+    func loadFurnishingThumbnail(_ registration: RegisteredFurnishing, retry: Bool) async {
+        let controller = viewportController
+        guard furnishingThumbnailFrameReady, controller.furnishingThumbnailSupported,
+              let key = furnishingThumbnailKey(registration), let api, let draft = viewportDraft else { return }
+        switch furnishingThumbnails[key] {
+        case .ready: return
+        case .failed where !retry: return
+        case .rendering where retry: return
+        default: break
+        }
+        let job = UUID(), sequence = controller.acceptedSequence, context = controller.editingContextGeneration
+        func current() -> Bool {
+            guard case .rendering(let running) = furnishingThumbnails[key], running == job else { return false }
+            return self.api === api && furnishingThumbnailKey(registration) == key && viewportDraft == draft
+                && controller.acceptedSequence == sequence && controller.editingContextGeneration == context
+                && furnishingThumbnailFrameReady
+        }
+        furnishingThumbnailOrder.removeAll { $0 == key }
+        furnishingThumbnailOrder.append(key)
+        if furnishingThumbnailOrder.count > 16 {
+            furnishingThumbnails.removeValue(forKey: furnishingThumbnailOrder.removeFirst())
+        }
+        furnishingThumbnails[key] = .rendering(job)
+        defer {
+            if case .rendering(let running) = furnishingThumbnails[key], running == job {
+                furnishingThumbnails.removeValue(forKey: key)
+                furnishingThumbnailOrder.removeAll { $0 == key }
+            }
+        }
+        do {
+            // This read does not set the editor's global busy flag, which would disable the very frame it needs.
+            let item = try await api.workspaceFurnishing(key.furnishingID, version: key.version)
+            let rights = item.details.rights
+            var expires: Date?
+            if let deadline = rights.expiresAt {
+                let formatter = ISO8601DateFormatter()
+                expires = formatter.date(from: deadline)
+                if expires == nil {
+                    formatter.formatOptions.insert(.withFractionalSeconds)
+                    expires = formatter.date(from: deadline)
+                }
+                guard let expires, expires > .now else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            }
+            guard item == registration.item, rights.permissions.display else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            try Task.checkCancellation()
+            guard current() else { return }
+            let data = try await controller.furnishingThumbnail(item, draft: draft)
+            try Task.checkCancellation()
+            guard current(), expires.map({ $0 > .now }) ?? true else { return }
+            guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+                  image.width == 256, image.height == 256 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+            furnishingThumbnails[key] = .ready(NSImage(cgImage: image, size: NSSize(width: 256, height: 256)), expires: expires)
+        } catch {
+            guard !Task.isCancelled, current() else { return }
+            furnishingThumbnails[key] = .failed
+        }
+    }
+
     private var catalogImageOrder: [String] = []
     private var catalogThumbnailTail: Task<Void, Never>?
     private var catalogThumbnailTailId: UUID?
@@ -936,7 +1055,12 @@ final class ExhibitionModel: ObservableObject {
         return .init(surfaceId: fields.surfaceId, material: try fields.command().material, texture: try texture.binding())
     }
     var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && viewportController.connected }
-    @Published private(set) var viewportAccessID = UUID()
+    @Published private(set) var viewportAccessID = UUID() {
+        didSet {
+            furnishingThumbnails.removeAll()
+            furnishingThumbnailOrder.removeAll()
+        }
+    }
     private(set) var viewportCredentials: LocalAuthoringSession?
     @Published private var past: [NativeExhibitionDraft] = []
     @Published private var future: [NativeExhibitionDraft] = []
@@ -2369,6 +2493,13 @@ final class ExhibitionModel: ObservableObject {
         libraryCursor = artworks.nextCursor
         refreshCatalogMetadata()
     }
+    var catalogMetadataProgress: (processed: Int, total: Int)? {
+        guard catalogTask != nil else { return nil }
+        let processed = library.filter { row in
+            catalogEntries[row.id]?.revision == row.revision || catalogFailures.contains(row.id)
+        }.count
+        return processed < library.count ? (processed, library.count) : nil
+    }
     private func refreshCatalogMetadata() {
         catalogTask?.cancel()
         let current = Dictionary(library.map { ($0.id, $0.revision) }, uniquingKeysWith: { _, newer in newer })
@@ -2409,6 +2540,48 @@ final class ExhibitionModel: ObservableObject {
             refreshCatalogMetadata()
         }
     }
+    func revealApprovedCatalogArtwork(_ id: String, revision: Int) async {
+        guard canSelectCatalog, !immutable, let api, let base = draft else { return }
+        let access = viewportAccessID
+        var revealed: ArtworkSummary?
+        await work {
+            let approved = try await api.studioArtwork(id).artwork
+            let cms = approved["extensions"]["org.exhibitos.studio/cms"]
+            guard cms["artworkId"].string == id, cms["revision"].integer == Int64(revision) else {
+                throw AuthoringFailure("ARTWORK_SCOPE_CHANGED")
+            }
+            let first = try await api.artworks()
+            var page = first
+            var seenCursors: Set<String> = []
+            while true {
+                try Task.checkCancellation()
+                guard self.api === api, viewportAccessID == access, draft == base, !immutable else {
+                    throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+                }
+                if let row = page.items.first(where: { $0.id == id }) {
+                    guard !row.archived, row.revision == revision, row.approvedRevision == revision else {
+                        throw AuthoringFailure("ARTWORK_SCOPE_CHANGED")
+                    }
+                    library = first.items.filter { !$0.archived && $0.approvedRevision == $0.revision && $0.id != id }
+                    library.insert(row, at: 0)
+                    libraryCursor = first.nextCursor
+                    catalogEntries[id] = ArtworkCatalogEntry(id: id, revision: revision, artwork: approved)
+                    refreshCatalogMetadata()
+                    revealed = row
+                    return
+                }
+                guard let cursor = page.nextCursor, seenCursors.insert(cursor).inserted else {
+                    throw AuthoringFailure("ARTWORK_SCOPE_CHANGED")
+                }
+                page = try await api.artworks(cursor: cursor)
+            }
+        }
+        guard let revealed, self.api === api, viewportAccessID == access, draft == base, canSelectCatalog, !immutable else { return }
+        catalogQuery = ""
+        catalogFilter = .all
+        selectCatalog(revealed.id)
+        catalogRevealID = revealed.id
+    }
     func selectCatalog(_ id: String) {
         guard canSelectCatalog, library.contains(where: { $0.id == id }), let draft else { return }
         catalogArtworkId = id
@@ -2427,25 +2600,32 @@ final class ExhibitionModel: ObservableObject {
         catalogStatus = "배치할 작품을 골랐습니다. 위치를 확인한 뒤 배치하세요. 원본 작품은 바뀌지 않습니다."
     }
     func beginVisualArtworkPlacement() async {
-        guard canPlaceVisually, let api, let credentials = viewportCredentials, let base = draft,
-              let entry = catalogEntries[catalogArtworkId] else { return }
+        guard let entry = catalogEntries[catalogArtworkId] else { return }
+        _ = await beginVisualArtworkPlacement(entry, requiresSelection: true)
+    }
+    func beginVisualArtworkPlacement(_ entry: ArtworkCatalogEntry, requiresSelection: Bool) async -> ArtworkPlacementIntent? {
+        guard canPlaceVisually(entry), catalogEntries[entry.id]?.revision == entry.revision,
+              let api, let credentials = viewportCredentials, let base = draft else { return nil }
         let access = viewportAccessID, room = roomId, attempt = UUID()
         placementAttempt = attempt; placementApplying = true; failure = nil
         catalogStatus = "승인한 작품을 확인하고 있습니다."
         defer { if placementAttempt == attempt { placementAttempt = nil }; placementApplying = false }
         do {
             let approved = try await api.studioArtwork(entry.id)
-            guard placementAttempt == attempt, viewportAccessID == access, draft == base, roomId == room, catalogArtworkId == entry.id,
+            guard placementAttempt == attempt, viewportAccessID == access, draft == base, roomId == room, (!requiresSelection || catalogArtworkId == entry.id),
+                  catalogEntries[entry.id]?.revision == entry.revision,
                   !immutable, !pending, !formDirty, !positionDirty, !architectureDirty else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             let intent = try ArtworkPlacementIntent(artworkId: entry.id, expectedRevision: entry.revision, tenantId: credentials.tenantId, artwork: approved.artwork, roomId: room, base: base)
             artworkPlacement = intent; artworkPlacementTarget = nil
             _ = try await viewportController.placement(intent, phase: .begin)
             guard artworkPlacement?.requestId == intent.requestId else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             catalogStatus = intent.targetKind == .wall ? "3D 공간의 벽을 클릭해 미리 본 뒤 ‘여기에 배치’를 선택하세요." : "3D 공간의 바닥을 클릭해 미리 본 뒤 ‘여기에 배치’를 선택하세요."
+            return intent
         } catch {
             artworkPlacement = nil; artworkPlacementTarget = nil
             catalogStatus = "3D 배치를 시작하지 못했습니다. 기존 선택과 입력은 유지됩니다. 숫자로도 배치할 수 있습니다."
             viewportController.diagnose("PLACE", error)
+            return nil
         }
     }
     func receivePlacementTarget(_ value: DocumentValue) {
@@ -2510,6 +2690,8 @@ final class ExhibitionModel: ObservableObject {
     func refresh(more: Bool = false) async { await work { try await list(more: more) } }
     func new() async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
+            openingStage = .creating
+            defer { openingStage = nil }
             guard !ordinaryBoundedRuntime, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLight == true)
             value.etag = nil; value.savedEditVersion = nil
@@ -2628,6 +2810,8 @@ final class ExhibitionModel: ObservableObject {
     }
     func open(_ id: String) async {
         await work(allowViewingPlanInput: true, allowViewingPointInput: true) {
+            openingStage = .loadingSaved
+            defer { openingStage = nil }
             guard !pending, let api, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             if ordinaryBoundedRuntime {
                 boundedPolicyGeneration = UUID()
@@ -2648,12 +2832,13 @@ final class ExhibitionModel: ObservableObject {
             boundedReadOnly = restricted; boundedPolicyPending = ordinaryBoundedRuntime; storedImmutable = editingAccess.immutable || restricted || ordinaryBoundedRuntime; reusablePublicationId = editingAccess.publicationId; comparison = nil; syncFields()
             if ordinaryBoundedRuntime { await prepareOrdinaryBoundedPlacement() }
             if !boundedPolicyPending {
-                notice = storedImmutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시를 열었습니다."
+                notice = storedImmutable ? "이 공개용 저장본은 현재 런타임에서 읽기 전용입니다." : editingAccess.publicationId != nil ? "공개된 전시의 편집 초안을 열었습니다. 저장해도 공개본은 바뀌지 않습니다." : "저장한 전시 입력을 불러왔습니다."
             }
             // OEX import can add approved works after the last library fetch.
             // Refresh only after the saved draft is safely opened; a catalogue
             // failure must not undo or misreport that successful open.
             let access = viewportAccessID
+            openingStage = .refreshingArtwork
             let refreshFailure = "작품 목록을 새로 확인하지 못했습니다. 전시 목록의 검색으로 다시 확인하세요."
             do {
                 let artworks = try await api.artworks()

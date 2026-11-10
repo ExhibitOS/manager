@@ -310,6 +310,45 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try attachment(viewpoint: changedView).applying(furnishing, to: next))
     }
 
+    func testWorkspaceBenchAttachmentAddsOnlyTheVisualToAnExistingBackedHost() throws {
+        var descriptor = try registered()["furnishing"]
+        descriptor["kind"] = .string("bench")
+        let furnishing = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(descriptor))
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let camera = try BenchViewpoint(id: UUID().uuidString.lowercased(), name: "Existing camera", roomId: room,
+            position: [-1, 1.2, 0], target: [-1, 1.4, -2], fov: 50)
+        let host = try BenchSettings(id: UUID().uuidString.lowercased(), name: "Existing seat", roomId: room, kind: .backed,
+            position: [-1, 0, 0], yaw: 0.25, width: 1.5, depth: 0.70, height: 0.45,
+            material: .defaults(.wood), viewpointId: camera.id)
+        try draft.replaceCandidate(BenchCommand.add(host, viewpoint: camera).proposedCandidate(in: draft, selectedBenchId: host.id))
+
+        func placing(yaw: Double = host.yaw, scale: Double = 1) throws -> NativeExhibitionDraft {
+            let placement = WorkspaceFurnishingPlacement(id: placementId, roomId: room, furnishingId: furnishing.id,
+                furnishingVersion: 1, position: host.position, yaw: yaw, scale: scale)
+            return try XCTUnwrap(placement.applying(furnishing, to: draft))
+        }
+        func command(depth: Double = host.depth, viewpoint: BenchViewpoint? = nil) throws -> WorkspaceBenchSeatAttachment {
+            try .init(benchId: host.id, placementId: placementId, furnishingId: furnishing.id, furnishingVersion: 1,
+                modelSha256: modelSHA256, width: host.width, depth: depth, height: host.height,
+                viewpointId: host.viewpointId, viewpoint: viewpoint)
+        }
+        let placed = try placing()
+        let attachment = try command()
+        let linked = try XCTUnwrap(attachment.applying(furnishing, to: placed))
+        var expected = placed.candidate
+        var row = try XCTUnwrap(expected["extensions"][BenchSettings.namespace]["benches"].items?.first)
+        row["workspaceVisual"] = attachment.visual.value
+        expected["extensions"][BenchSettings.namespace]["benches"] = .array([row])
+        XCTAssertEqual(linked.candidate, expected)
+        XCTAssertEqual(linked.document["editVersion"].integer, (placed.document["editVersion"].integer ?? 0) + 1)
+        XCTAssertNil(try attachment.applying(furnishing, to: linked))
+        XCTAssertThrowsError(try attachment.applying(furnishing, to: placing(yaw: 0)))
+        XCTAssertThrowsError(try attachment.applying(furnishing, to: placing(scale: 0.8)))
+        XCTAssertThrowsError(try command(depth: 0.68).applying(furnishing, to: placed))
+        XCTAssertThrowsError(try command(viewpoint: camera).applying(furnishing, to: placed))
+    }
+
     func testOnlyExactGalleryStoolCanAttachCompactWorkspaceSeat() throws {
         let gallery = "6caca94361b540fb007c6fc605e519e436462eda43f2ec5f99da6a63108bfc60"
         let draft = try NativeExhibitionDraft.new()

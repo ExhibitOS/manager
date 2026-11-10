@@ -545,11 +545,12 @@ impl FurnishingTransitionTrial {
         };
         if self.source.format != 1 || !installations::uuid(&self.source.id)
             || !installations::uuid(&self.generation) || self.generation == prior.generation
-            || prior.phase != source_phase || prior.restore.is_some()
+            || prior.phase != source_phase
             || !prior.matches_catalog_tuple(transition.source_catalog().version(), transition.source())
         {
             return Err(err(furnishing_lifecycle::ERROR));
         }
+        prior.transition_restore(transition)?;
         Ok(prior)
     }
 
@@ -580,6 +581,9 @@ impl FurnishingTransitionTrial {
             return Err(err(furnishing_lifecycle::ERROR));
         }
         let observed = current_run(&service.root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        if prior.restore.is_some() {
+            prior.verify_restore_activation(&service.root)?;
+        }
         if observed != self.source {
             let target = observed.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
             if observed.id != self.generation || target.generation != self.generation
@@ -587,7 +591,7 @@ impl FurnishingTransitionTrial {
                 || target.owner != prior.owner || target.physical != prior.physical
                 || target.previous_generation.as_deref() != Some(prior.generation.as_str())
                 || !target.matches_catalog_tuple(transition.target_catalog().version(), transition.target())
-                || target.admission_kind != Binding::transition_admission(transition) || target.restore.is_some()
+                || target.admission_kind != Binding::transition_admission(transition) || target.restore != prior.restore
             {
                 return Err(err(furnishing_lifecycle::ERROR));
             }
@@ -1184,7 +1188,7 @@ impl Session {
         Ok(())
     }
 
-    fn workspace_furnishing_start(&self) -> Result<Option<FurnishingStart>> {
+    fn workspace_furnishing_start(&self, prior: Option<&Binding>) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
         let initialize = if self.normal_oex_selected {
@@ -1220,6 +1224,16 @@ impl Session {
         self.payload.workspace_furnishing_ledger(catalog)?;
         let (workspace, tenant, principal) = self.service.personal_identity()?;
         let root = &self.service.root;
+        if crate::native_payload::catalog45_carried_restore_payload(&self.payload) {
+            if self.normal_oex_selected || !prior.is_some_and(|binding|
+                matches!(binding.phase, Phase::ActivatedRestore | Phase::Clean)
+                    && binding.restore.as_ref().is_some_and(|restore| restore.carried_provenance.is_some()))
+                || exists(&root.join(WORKSPACE_FURNISHING_INITIALIZATION))?
+            {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+            return Ok(Some(FurnishingStart::Reopen));
+        }
         if self.payload.retained_furnishing_catalog().is_some() {
             if exists(&root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
                 return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
@@ -1690,6 +1704,7 @@ const { isDeepStrictEqual } = require('node:util');
             if matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_) | HayesBootstrap::Spent) {
                 self.hayes_bootstrap = if self.payload.ordinary_hayes_release()
                     || self.payload.ordinary_fresh_furnishing()
+                    || crate::native_payload::catalog45_carried_restore_payload(&self.payload)
                 {
                     HayesBootstrap::Disabled
                 } else {
@@ -2311,6 +2326,8 @@ const { isDeepStrictEqual } = require('node:util');
             && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
             || (self.payload.ordinary_fresh_furnishing()
                 && matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
+            || (crate::native_payload::catalog45_carried_restore_payload(&self.payload)
+                && furnishing == Some(FurnishingStart::Reopen))
         {
             self.payload.recheck()?;
             let generation_id = Uuid::parse_str(generation).map_err(|_| err("HAYES_OPERATION_UNAVAILABLE"))?;
@@ -2602,7 +2619,7 @@ const { isDeepStrictEqual } = require('node:util');
             self.check_native_observation_fence()?;
             let has_database = exists(&self.service.root.join("native-database"))?;
             if services {
-                furnishing = self.workspace_furnishing_start()?;
+                furnishing = self.workspace_furnishing_start(prior_binding.as_ref())?;
             }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             if self.oex_retained_cleanup.is_some() && furnishing != Some(FurnishingStart::Reopen) {
@@ -2666,13 +2683,10 @@ const { isDeepStrictEqual } = require('node:util');
                             active.consume(source)?;
                         }
                         if active.admission_kind == Admission::VerifiedRestore
-                            || active.restore.as_ref().is_some_and(|restore| restore.provenance.is_some())
+                            || active.restore.as_ref().is_some_and(|restore|
+                                restore.provenance.is_some() || restore.carried_provenance.is_some())
                         {
-                            let proof = active.restore.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
-                            crate::installations::native_restore::verify_ordinary_activation(
-                                &self.service.root, &proof.id, &proof.backup_id, &proof.archive_manifest_sha256,
-                                &proof.target_system_identifier, &active.payload_manifest_sha256, proof.provenance.as_ref(),
-                            )?;
+                            active.verify_restore_activation(&self.service.root)?;
                         }
                     }
                     _ => return Err(err(furnishing_lifecycle::ERROR)),
@@ -2848,6 +2862,7 @@ const { isDeepStrictEqual } = require('node:util');
     pub(crate) fn record_furnishing_activation(
         &mut self, id: &str, backup_id: &str, archive_manifest_sha256: &str, target_system_identifier: &str,
         provenance: Option<crate::installations::native_restore::RestoreProof>,
+        carried_provenance: Option<crate::installations::native_restore::CarriedObservation>,
     ) -> Result<()> {
         if !self.payload.workspace_furnishing_catalog()?.is_some_and(WorkspaceFurnishingCatalog::uses_writer_lease) {
             return Ok(());
@@ -2864,6 +2879,7 @@ const { isDeepStrictEqual } = require('node:util');
             id: id.into(), backup_id: backup_id.into(), archive_manifest_sha256: archive_manifest_sha256.into(),
             target_system_identifier: target_system_identifier.into(),
             provenance,
+            carried_provenance,
         });
         if let Some(prior) = &self.furnishing_binding {
             if prior.phase != Phase::ActivatedRestore || prior.restore != restored.restore || !restored.same_installation(prior) {

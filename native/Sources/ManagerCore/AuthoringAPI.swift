@@ -380,6 +380,12 @@ public actor AuthoringAPI {
     public nonisolated let productImageRuntimeQualified: Bool
     private let nativeRuntimeManifestSHA256: String?
     private static let placedExitDoorRuntimePin = "1245b842efb55525ebf0c307f984391431552ce19d6f59874dbcd8435b8e39d2"
+    #if DEBUG
+    private static let defaultSeatRuntimePin = "ca92c7530f594462e459bdf16ff9cd64cc1dd1ffc0d68ab4b13c31e7ea3a7630"
+    private static let backedBenchRuntimePin = "f8d5933a2c2e361154dbcc9cb4a332144ca9217e5edb363fdd5056ee70aed702"
+    private static let bottomCatalogRuntimePin = "4a0bbccc8ef04c6734407fd448f2b68e6b25a6a7d5f5b0afc33878be5aa29d4d"
+    private static let carriedRestoreBenchRuntimePin = "d0209c6ac9980a1507e53fc7a5eaa2b6b254bb60b6a8a1feb2f72d98e48d2874"
+    #endif
     public nonisolated var supportsPlacedExitDoors: Bool {
         #if DEBUG
         nativeRuntimeManifestSHA256 == Self.placedExitDoorRuntimePin
@@ -467,7 +473,8 @@ public actor AuthoringAPI {
         "bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338",
         "ebbf0aeabf013f5071151580495c9c7e5ff6812cbd995769b5e347e01ae92c0b",
         "7f76b19894fe3a9824a640cf1856ba7c828d5bd3201ede0da5d1c53a501bd1e7",
-        "d31372305fd54f8d42cec1ebc76bf0ec4d47cf36cb4ece658bca08195687748e"
+        "d31372305fd54f8d42cec1ebc76bf0ec4d47cf36cb4ece658bca08195687748e",
+        "1bfd19cd28329a63e2f81527de380e65c3417f1242cdfa243b92cf87f0315fb4"
     ]
     private static let workspaceInfoStandPreparationManifestPin =
         "cfc795c35628e15a9f91b71dcca0587023a0b249b2984a2615973b72bc6ed32f"
@@ -540,6 +547,8 @@ public actor AuthoringAPI {
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
             || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
+            || Self.supportsDefaultSeatRuntime(manifest: manifest)
+            || Self.supportsCarriedRestoreBenchRuntime(manifest: manifest)
         let configuration = URLSessionConfiguration.ephemeral
         if let protocolClasses { configuration.protocolClasses = protocolClasses }
         configuration.urlCache = nil
@@ -2312,7 +2321,7 @@ public actor AuthoringAPI {
         return next
     }
 
-    private var admitsWorkspaceDefaultSeatProposal: Bool {
+    var admitsWorkspaceDefaultSeatProposal: Bool {
         admitsWorkspaceFurnishings && session?.nativeDefaultSeatProposalProfile == "default-seat-proposal-v1"
     }
 
@@ -2389,6 +2398,10 @@ public actor AuthoringAPI {
         let furnishing = try await workspaceFurnishing(attachment.furnishingId, version: attachment.furnishingVersion)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         let next = try attachment.applying(furnishing, to: draft)
+        if try BenchSettings.list(in: draft).contains(where: { $0.id == attachment.benchId && $0.kind == .backed }) {
+            _ = try await workspaceFurnishingModel(furnishing)
+            guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        }
         try await validateNativeViewportEdit(next ?? draft, etag: policy.etag)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
@@ -2416,7 +2429,25 @@ public actor AuthoringAPI {
     nonisolated static func supportsPinnedStartupDrain(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
+            || supportsDefaultSeatRuntime(manifest: manifest)
+            || supportsCarriedRestoreBenchRuntime(manifest: manifest)
             || supportsPreReadyPreservationReadback(manifest: manifest)
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsDefaultSeatRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == defaultSeatRuntimePin || manifest == backedBenchRuntimePin || manifest == bottomCatalogRuntimePin
+        #else
+        false
+        #endif
+    }
+
+    nonisolated static func supportsCarriedRestoreBenchRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == carriedRestoreBenchRuntimePin
         #else
         false
         #endif
@@ -2456,11 +2487,15 @@ public actor AuthoringAPI {
         #endif
     }
 
-    var admitsSavedHeadAuthoring: Bool {
+    var admitsSavedHeadAuthoring: Bool { hasSavedHeadAuthoringAdmission() }
+
+    private func hasSavedHeadAuthoringAdmission(forCarriedPlaqueUpdate: Bool = false) -> Bool {
         #if DEBUG
-        nativeSession && !authenticationBusy
-            && (Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
-                || nativeRuntimeManifestSHA256 == Self.nativePublicationCapacityManifestPin)
+        let manifest = nativeRuntimeManifestSHA256 ?? ""
+        return nativeSession && !authenticationBusy
+            && (Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
+                || manifest == Self.nativePublicationCapacityManifestPin
+                || (forCarriedPlaqueUpdate && Self.supportsCarriedRestoreBenchRuntime(manifest: manifest)))
             && session?.nativeAuthoringProposalProfile == "saved-head-v1"
         #else
         false
@@ -2483,7 +2518,8 @@ public actor AuthoringAPI {
 
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
-        guard admitsSavedHeadAuthoring, let session else {
+        guard hasSavedHeadAuthoringAdmission(forCarriedPlaqueUpdate: proposal["type"] == .string("set-plaque")),
+              let session else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),

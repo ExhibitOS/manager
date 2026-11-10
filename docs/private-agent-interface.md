@@ -227,6 +227,25 @@ Operations:
   `etag` and up to 32 existing `placementIds` to stage missing defaults on a
   clean saved head. Existing valid linked seats and viewpoints are preserved.
   Use the existing `save` operation to commit a staged change.
+  The macOS debug catalog-045 default-seat payload (manifest `ca92c753…`)
+  supports fresh personal startup and clean same-payload reopen. Build the
+  static Viewer with its private editor and the native cover companion before
+  packaging, using the Platform build recipe. The payload has its own manifest
+  identity and grants no profile transition or restore admission.
+- On a runtime that supports backed workspace seats, save the registered
+  bench visual at scale 1 with the existing host's exact room, position and
+  yaw. Call `workspace-bench-seat-attach` with the clean head's `etag`, the
+  existing `benchId`, `viewpointId` and `dimensions`, and the reviewed
+  `placementId`, `furnishingId`, `furnishingVersion` and `modelSha256`. Omit
+  `viewpoint` so the command preserves the existing camera. Save the staged
+  first link and reopen to verify it. An exact replay leaves the draft intact.
+  The macOS debug catalogue 1.5 payload (manifest `f8d5933a…`) supports
+  fresh personal startup and clean same-payload reopen for this workflow.
+  The explicit saved-workspace transition from `1245b842…` uses an
+  authenticated checkpoint of the clean saved document and retained restore
+  receipt. Activation and rollback keep the original installation and restore
+  proof. The catalogue 1.5 payload still requires a separate restore admission
+  for direct EXB activation.
 - `furnishing-walking-collision-evaluate` reads the current draft revision
   through the authenticated owner session's `furnishing-walking-collision-v1`
   capability. It returns typed target IDs, their authored defaults, and any

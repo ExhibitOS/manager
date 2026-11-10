@@ -10,11 +10,17 @@ use std::{
     os::unix::fs::MetadataExt,
 };
 
+#[path = "native_restore_carried.rs"]
+mod carried;
+pub use carried::Input as CarriedInput;
+pub(crate) use carried::Observation as CarriedObservation;
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Input {
     pub source: PathBuf,
     pub key_file: PathBuf,
+    pub carried_restore: Option<CarriedInput>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -87,6 +93,8 @@ struct Intent {
     target_owner_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     furnishing_target: Option<FurnishingWriterIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    carried_restore: Option<CarriedInput>,
 }
 impl Intent {
     fn check(
@@ -124,6 +132,13 @@ struct ActivationFile {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CarriedPlan {
+    input: CarriedInput,
+    proof: CarriedObservation,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Plan {
     format: u32,
     id: String,
@@ -137,6 +152,8 @@ struct Plan {
     attempt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restore_proof: Option<RestoreProof>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    carried_restore: Option<CarriedPlan>,
 }
 struct Fields(BTreeMap<String, String>);
 impl Drop for Fields {
@@ -515,6 +532,8 @@ fn valid_plan(plan: &Plan, target: &Path) -> Result<()> {
         || !hash_valid(&plan.payload_sha256)
         || plan.files.len() < 3
         || plan.files.len() > 8
+        || plan.carried_restore.as_ref().is_some_and(|carried| plan.restore_proof.is_some() || plan.kind != "personal"
+            || !carried.proof.matches(&plan.manifest_sha256, &plan.system_identifier))
         || plan.restore_proof.as_ref().is_some_and(|proof|
             plan.kind != "personal" || !proof.matches(&plan.id, &plan.backup_id, &plan.manifest_sha256, &plan.system_identifier))
     {
@@ -676,6 +695,12 @@ impl InstallationController {
             let source_manifest_sha256 = digest(&source_manifest);
             drop(source_manifest_bytes);
             drop(source_manifest);
+            if crate::native_payload::catalog45_carried_restore_payload(&payload) != input.carried_restore.is_some() {
+                return Err(bad());
+            }
+            let carried = input.carried_restore.as_ref().map(|handoff|
+                carried::Handoff::open(handoff, &profile.root, &payload, &source_manifest_sha256)).transpose()?;
+            let archive_payload = carried.as_ref().map_or(payload.as_ref(), |handoff| &handoff.source_payload);
             let system_identifier=session.maintenance_system_identifier()?;
             let furnishing_target = session.furnishing_restore_target_identity()?;
             let pending:Option<Pending>=if exists(&service.root,MARKER)?{Some(json(&service.root,MARKER,4096)?)}else{None};
@@ -688,14 +713,16 @@ impl InstallationController {
                 private_directory(&directory)?;
                 let intent:Intent=json(&directory,"intent.json",16384)?;
                 intent.check(&id,&input.source,&source_manifest_sha256,&system_identifier,&service.root,owner)?;
+                if intent.carried_restore != input.carried_restore { return Err(bad()); }
                 if exists(&directory,"stage.json")?{
                     let plan:Plan=json(&directory,"stage.json",65536)?;valid_plan(&plan,&service.root)?;
-                    if plan.id!=id || plan.system_identifier!=system_identifier{return Err(bad());}
+                    if plan.id!=id || plan.system_identifier!=system_identifier
+                        || plan.carried_restore.as_ref().map(|plan| &plan.input) != input.carried_restore.as_ref() {return Err(bad());}
                     return Ok(Receipt{id,backup_id:plan.backup_id,state:"staged".into()});
                 }
             }else{
                 new_directory(&directory)?;
-                let intent=Intent{format:1,id:id.clone(),source:input.source.clone(),source_manifest_sha256,system_identifier:system_identifier.clone(),target_environment_sha256:file_hash(&service.root,"runtime.env")?.ok_or_else(bad)?,target_owner_sha256:file_hash(&service.root,owner)?.ok_or_else(bad)?,furnishing_target};
+                let intent=Intent{format:1,id:id.clone(),source:input.source.clone(),source_manifest_sha256,system_identifier:system_identifier.clone(),target_environment_sha256:file_hash(&service.root,"runtime.env")?.ok_or_else(bad)?,target_owner_sha256:file_hash(&service.root,owner)?.ok_or_else(bad)?,furnishing_target,carried_restore:input.carried_restore.clone()};
                 write_private_new(&directory,"intent.json",&serde_json::to_vec(&intent).map_err(|_|bad())?,16384)?;
                 File::open(&directory).and_then(|v|v.sync_all()).map_err(|_|bad())?;
                 let marker=Pending{format:1,id:id.clone()};
@@ -753,7 +780,7 @@ impl InstallationController {
                 .collect(),
             )?;
             let source: SourceMap = json(&configuration, "native-source.json", 65536)?;
-            if validate_source(&source, &prepared.kind, &payload.context().manifest_sha256, &service.root)? {
+            if validate_source(&source, &prepared.kind, &archive_payload.context().manifest_sha256, &service.root)? {
                 let (mut registry, _) = load(&profile.root)?.ok_or_else(bad)?;
                 if restore_entry(&profile.root, &service.root, &mut registry)?.kind != "recovery" {
                     return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY"));
@@ -783,7 +810,11 @@ impl InstallationController {
                 return Err(bad());
             }
             let original_fields =
-                Fields(original.native_start_environment(&payload, original_prepared.ports)?);
+                Fields(original.native_start_environment(archive_payload, original_prepared.ports)?);
+            if let Some(handoff) = &carried {
+                if !codec_authenticated { return Err(bad()); }
+                handoff.check_archive(&source, &manifest_value, &manifest_sha256, &original_fields)?;
+            }
             session.maintenance_owner(&source.owner_kind, &original_fields.0)?;
             let target_fields = Fields(service.native_start_environment(&payload, prepared.ports)?);
             let environment = rebound_environment(&original_env.0, &target_fields.0)?;
@@ -858,6 +889,7 @@ impl InstallationController {
                 files,
                 attempt,
                 restore_proof: None,
+                carried_restore: None,
             };
             File::open(&activation).and_then(|v|v.sync_all()).map_err(|_|bad())?;
             valid_plan(&plan, &service.root)?;
@@ -865,8 +897,13 @@ impl InstallationController {
             let rebound_fields =
                 Fields(rebound.native_start_environment(&payload, prepared.ports)?);
             rebound_identity(&plan.kind, &original_fields, &rebound_fields)?;
-            plan.restore_proof = observe(session, &directory, &plan, &manifest_value, budget, &scratch)?;
+            let (ordinary, proof) = observe(session, &directory, &plan, &manifest_value, budget, &scratch, carried.as_ref())?;
+            plan.restore_proof = ordinary;
             if plan.restore_proof.is_some() && !codec_authenticated { return Err(bad()); }
+            if let Some(proof) = proof {
+                plan.carried_restore = Some(CarriedPlan { input: input.carried_restore.ok_or_else(bad)?, proof });
+            }
+            valid_plan(&plan, &service.root)?;
             source_manifest_pin.check()?;
             manifest_pin.check()?;
             write_json(&directory, "stage.json", &plan)?;
@@ -942,7 +979,18 @@ impl InstallationController {
             authenticated_configuration(&restored, &plan.kind)?;
             let source: SourceMap =
                 json(&restored.join("configuration"), "native-source.json", 65536)?;
-            let imported = validate_source(&source, &plan.kind, &plan.payload_sha256, &service.root)?;
+            if crate::native_payload::catalog45_carried_restore_payload(&payload) != plan.carried_restore.is_some() {
+                return Err(bad());
+            }
+            let carried = plan.carried_restore.as_ref().map(|value| {
+                let intent: Intent = json(&directory, "intent.json", 16384)?;
+                if intent.carried_restore.as_ref() != Some(&value.input)
+                    || intent.id != plan.id || intent.system_identifier != plan.system_identifier
+                { return Err(bad()); }
+                carried::Handoff::open(&value.input, &profile.root, &payload, &intent.source_manifest_sha256)
+            }).transpose()?;
+            let archive_payload = carried.as_ref().map_or(payload.as_ref(), |handoff| &handoff.source_payload);
+            let imported = validate_source(&source, &plan.kind, &archive_payload.context().manifest_sha256, &service.root)?;
             if imported != completion.is_some() || plan.files.len() != 3 + source.journal_names.len() { return Err(bad()); }
             let (mut registry, previous) = load(&profile.root)?.ok_or_else(bad)?;
             let entry = restore_entry(&profile.root, &service.root, &mut registry)?;
@@ -961,7 +1009,10 @@ impl InstallationController {
             let validation = LifecycleService::bound_existing(validation_path)?;
             let original = validation.native_prepared()?.ok_or_else(bad)?;
             let original_fields =
-                Fields(validation.native_start_environment(&payload, original.ports)?);
+                Fields(validation.native_start_environment(archive_payload, original.ports)?);
+            if let Some(handoff) = &carried {
+                handoff.check_archive(&source, &manifest_value, &plan.manifest_sha256, &original_fields)?;
+            }
             for file in &plan.files {
                 if file.profile {
                     if !source.journal_names.contains_key(&file.staged) {
@@ -1004,7 +1055,8 @@ impl InstallationController {
                 if session.maintenance_system_identifier()? != plan.system_identifier {
                     return Err(bad());
                 }
-                if observe(&mut session, &directory, &plan, &manifest_value, budget, &scratch)? != plan.restore_proof {
+                let (ordinary, observation) = observe(&mut session, &directory, &plan, &manifest_value, budget, &scratch, carried.as_ref())?;
+                if ordinary != plan.restore_proof || observation.as_ref() != plan.carried_restore.as_ref().map(|value| &value.proof) {
                     return Err(bad());
                 }
                 session.maintenance_owner(&plan.kind, &original_fields.0)?;
@@ -1058,7 +1110,7 @@ impl InstallationController {
             }
             session.record_furnishing_activation(
                 id, &receipt.backup_id, &plan.manifest_sha256, &plan.system_identifier,
-                plan.restore_proof,
+                plan.restore_proof, plan.carried_restore.map(|value| value.proof),
             )?;
             fs::remove_file(service.root.join(MARKER)).map_err(|_| bad())?;
             File::open(&service.root)
@@ -1070,7 +1122,7 @@ impl InstallationController {
 }
 pub(crate) fn verify_ordinary_activation(
     root: &Path, id: &str, backup_id: &str, manifest_sha256: &str, system_identifier: &str, payload_sha256: &str,
-    restore_proof: Option<&RestoreProof>,
+    restore_proof: Option<&RestoreProof>, carried_proof: Option<&CarriedObservation>,
 ) -> Result<()> {
     if !uuid(id) || exists(root, MARKER)? { return Err(bad()); }
     let directory = root.join(format!("native-restore-{id}"));
@@ -1083,14 +1135,17 @@ pub(crate) fn verify_ordinary_activation(
         || plan.manifest_sha256 != manifest_sha256 || plan.system_identifier != system_identifier
         || plan.payload_sha256 != payload_sha256 || plan.kind != "personal"
         || plan.restore_proof.as_ref() != restore_proof
+        || plan.carried_restore.as_ref().map(|value| &value.proof) != carried_proof
     {
         return Err(bad());
     }
-    if let Some(proof) = restore_proof {
+    if restore_proof.is_some() || carried_proof.is_some() {
         let restored = directory.join(format!("restored-{}", plan.attempt));
         let manifest = installation_backup::source_bytes(&restored, "manifest.json", 16 * 1024 * 1024, true)?;
         if digest(&manifest) != manifest_sha256 { return Err(bad()); }
-        proof.matches_manifest(&serde_json::from_slice(&manifest).map_err(|_| bad())?)?;
+        let manifest = serde_json::from_slice(&manifest).map_err(|_| bad())?;
+        if let Some(proof) = restore_proof { proof.matches_manifest(&manifest)?; }
+        if let Some(proof) = carried_proof { proof.matches_manifest(&manifest, backup_id)?; }
     }
     Ok(())
 }
@@ -1102,10 +1157,10 @@ fn observe(
     manifest: &Value,
     budget: u64,
     scratch: &Path,
-) -> Result<Option<RestoreProof>> {
+    carried: Option<&carried::Handoff>,
+) -> Result<(Option<RestoreProof>, Option<CarriedObservation>)> {
     session.verify_furnishing_restore_target(&plan.id)?;
-    let result = session.backup_tool(
-        vec![
+    let mut args = vec![
             "check-restored-inventory".into(),
             "--manifest-file".into(),
             text(&directory.join(format!("restored-{}/manifest.json", plan.attempt)))?,
@@ -1114,14 +1169,31 @@ fn observe(
             "--snapshot-system-identifier".into(),
             plan.system_identifier.clone(),
             "--quiesced".into(),
-        ],
+        ];
+    let proof_pin = if let Some(handoff) = carried {
+        let name = format!("carried-proof-{}.json", plan.attempt);
+        let bytes = serde_json::to_vec(&handoff.request(plan)).map_err(|_| bad())?;
+        if !exists(directory, &name)? { write_private_new(directory, &name, &bytes, 4096)?; }
+        let path = directory.join(&name);
+        let (pinned, pin) = crate::hosted_runtime_file::bounded(&path, 4096)?;
+        if pinned != bytes || installation_backup::source_bytes(directory, &name, 4096, true)? != bytes { return Err(bad()); }
+        args.extend(["--carried-restore-proof-file".into(), text(&path)?]);
+        Some(pin)
+    } else { None };
+    let result = session.backup_tool(
+        args,
         "{}".into(),
         "{}".into(),
         budget,
         scratch,
     )?;
+    if let Some(pin) = proof_pin { pin.check()?; }
+    if let Some(handoff) = carried {
+        return Ok((None, Some(handoff.observation(plan, manifest, &result)?)));
+    }
+    if result.get("carriedRestoreProvenanceInventory").is_some() { return Err(bad()); }
     if plan.kind != "personal" {
-        return Ok(None);
+        return Ok((None, None));
     }
     let payload = session.maintenance_payload();
     let context = payload.context();
@@ -1129,9 +1201,9 @@ fn observe(
     if !payload.workspace_furnishing_catalog()?.is_some_and(|catalog|
         crate::native_payload::native_restore_provenance_host_matches(catalog.version(), tuple))
     {
-        return Ok(None);
+        return Ok((None, None));
     }
-    restore_proof_from_observation(plan, manifest, &result)
+    Ok((restore_proof_from_observation(plan, manifest, &result)?, None))
 }
 
 fn restore_proof_from_observation(plan: &Plan, manifest: &Value, result: &Value) -> Result<Option<RestoreProof>> {
@@ -1191,7 +1263,7 @@ mod tests {
             format: 1, id: Uuid::new_v4().to_string(), backup_id: Uuid::new_v4().to_string(),
             manifest_sha256: "a".repeat(64), payload_sha256: "b".repeat(64),
             system_identifier: "220".into(), kind: "personal".into(), ports: Ports::default(),
-            files: vec![], attempt: Uuid::new_v4().to_string(), restore_proof: None,
+            files: vec![], attempt: Uuid::new_v4().to_string(), restore_proof: None, carried_restore: None,
         };
         let manifest = serde_json::json!({
             "id": plan.backup_id, "sourceIdentity": {"systemIdentifier":"110","databaseOid":"16000"},
@@ -1380,7 +1452,7 @@ mod tests {
             format: 1, id: id.clone(), source: target.join("archive"),
             source_manifest_sha256: "a".repeat(64), system_identifier: "123".into(),
             target_environment_sha256: "b".repeat(64), target_owner_sha256: "c".repeat(64),
-            furnishing_target: None,
+            furnishing_target: None, carried_restore: None,
         };
         write_json(&directory, "intent.json", &intent).unwrap();
         assert!(pending_furnishing_target(&target, Some(&id), physical).is_err());
@@ -1408,7 +1480,7 @@ mod tests {
             system_identifier: "123".into(),
             target_environment_sha256: digest(b"synthetic target env"),
             target_owner_sha256: digest(b"synthetic owner"),
-            furnishing_target: None,
+            furnishing_target: None, carried_restore: None,
         };
         // The key path/value is deliberately not frozen: an explicitly chosen
         // corrected key still has to pass archive authentication on the retry.
@@ -1496,7 +1568,7 @@ mod tests {
             kind: "personal".into(),
             ports: Ports::default(),
             files,
-            restore_proof: None,
+            restore_proof: None, carried_restore: None,
         };
         valid_plan(&plan, &root).unwrap();
         plan.files[0].name = "../runtime.env".into();
