@@ -1185,7 +1185,7 @@ struct NativeViewportArea: View {
                         ProgressView(value: Double(processed), total: Double(total)) {
                             Text("작품 배치 확인 \(processed)/\(total)")
                         } currentValueLabel: {
-                            Text((Double(processed) / Double(total)).formatted(.percent.precision(.fractionLength(0))))
+                            Text("\(Int(100 * Double(processed) / Double(total)))%")
                         }.controlSize(.small).padding(.horizontal, 12)
                     case nil:
                         EmptyView()

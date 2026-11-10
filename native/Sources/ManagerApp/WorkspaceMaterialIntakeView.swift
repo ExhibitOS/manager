@@ -180,7 +180,7 @@ struct WorkspaceMaterialIntakeView: View {
                     Text("재질 파일 수신 확인")
                 } currentValueLabel: {
                     let fraction = Double(intake.received.count) / Double(declaration.maps.count)
-                    Text("\(intake.received.count) / \(declaration.maps.count)개 · \(fraction.formatted(.percent.precision(.fractionLength(0))))")
+                    Text("\(intake.received.count) / \(declaration.maps.count)개 · \(Int(fraction * 100))%")
                 }.controlSize(.small)
             }
             if let busyActivity {

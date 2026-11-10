@@ -81,7 +81,7 @@ struct ArtworkCatalogView: View {
                 ProgressView(value: Double(progress.processed), total: Double(progress.total)) {
                     Text("불러온 목록의 작품 정보 확인 \(progress.processed)/\(progress.total)")
                 } currentValueLabel: {
-                    Text((Double(progress.processed) / Double(progress.total)).formatted(.percent.precision(.fractionLength(0))))
+                    Text("\(Int(100 * Double(progress.processed) / Double(progress.total)))%")
                 }
             }
             if model.catalogThumbnailSaving { ProgressView("감상 시점 이미지를 준비하고 저장하고 있습니다…") }

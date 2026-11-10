@@ -216,7 +216,7 @@ struct WorkspaceFurnishingIntakeView: View {
                     Text("GLB 파일 수신 확인")
                 } currentValueLabel: {
                     let fraction = Double(received) / Double(declared)
-                    Text("\(received.formatted()) / \(declared.formatted())바이트 · \(fraction.formatted(.percent.precision(.fractionLength(0))))")
+                    Text("\(received.formatted()) / \(declared.formatted())바이트 · \(Int(fraction * 100))%")
                 }
             } else {
                 Text(status(intake.phase))
