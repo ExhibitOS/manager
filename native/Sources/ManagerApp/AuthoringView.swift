@@ -6,6 +6,12 @@ import ManagerCore
 
 @MainActor
 final class AuthoringModel: ObservableObject {
+    struct CatalogApproval: Equatable {
+        let requestID: UUID
+        let artworkID: String
+        let revision: Int
+    }
+
     @Published var subject = ""
     @Published var password = ""
     @Published var query = ""
@@ -18,6 +24,8 @@ final class AuthoringModel: ObservableObject {
     @Published private(set) var artworks: [ArtworkSummary] = []
     @Published private(set) var artists: [NativeArtist] = []
     @Published private(set) var selected: NativeArtwork?
+    @Published private(set) var catalogApproval: CatalogApproval?
+    private var catalogCreation: (requestID: UUID, artworkID: String?)?
     @Published private(set) var editing = false
     @Published private(set) var busy = false
     @Published private(set) var failure: AuthoringFailure?
@@ -192,6 +200,9 @@ final class AuthoringModel: ObservableObject {
         let requestedScope = configuration.flatMap { configuration in
             configuration.tenantId.map { "\($0):\(configuration.ports.web):\(configuration.manifestSha256)" }
         }
+        if !ready || requestedScope != scope || self.runtimeJobID != runtimeJobID {
+            catalogCreation = nil
+        }
         if modelWorkerPending, requestedScope != scope {
             // Keep the old durable intent, transport, manifest and polling
             // context until that worker drains or its owning runtime stops.
@@ -302,6 +313,7 @@ final class AuthoringModel: ObservableObject {
         await action {
             guard let api else { return }
             let value = try await api.artwork(id)
+            catalogCreation = nil
             if transfer?.intent == nil { importFile = nil }
             modelOriginalInspection = nil; provisionalHeight = nil
             approvalAcknowledged = false
@@ -313,7 +325,10 @@ final class AuthoringModel: ObservableObject {
             if !artists.contains(where: { $0.id == value.artistId }) { artists.append(try await api.artist(value.artistId)) }
         }
     }
-    func newArtwork() { assetId = ""; if transfer?.intent == nil { importFile = nil }; modelOriginalInspection = nil; provisionalHeight = nil; approvalAcknowledged = false; editingUser = session?.userId; creationYearText = ""; selected = nil; draft = ArtworkMetadata(); original = draft; artistId = artists.first(where: { !$0.archived })?.id ?? ""; editing = true; failure = nil; notice = "" }
+    func newArtwork(catalogRequestID: UUID? = nil) {
+        catalogCreation = catalogRequestID.map { (requestID: $0, artworkID: nil) }
+        assetId = ""; if transfer?.intent == nil { importFile = nil }; modelOriginalInspection = nil; provisionalHeight = nil; approvalAcknowledged = false; editingUser = session?.userId; creationYearText = ""; selected = nil; draft = ArtworkMetadata(); original = draft; artistId = artists.first(where: { !$0.archived })?.id ?? ""; editing = true; failure = nil; notice = ""
+    }
     func save() async {
         await action {
             guard let api else { return }
@@ -326,7 +341,11 @@ final class AuthoringModel: ObservableObject {
             if creationYearText.isEmpty { draft.creationYear = nil }
             else if let year = Int(creationYearText), (1...9999).contains(year) { draft.creationYear = year }
             else { throw AuthoringFailure("CREATION_YEAR_INVALID", status: 400) }
+            let creating = selected == nil
             let value = try await api.saveArtwork(id: selected?.id, revision: selected?.revision, artistId: artistId, metadata: draft)
+            if creating, let requestID = catalogCreation?.requestID {
+                catalogCreation = (requestID: requestID, artworkID: value.id)
+            }
             selected = value; draft = value.metadata ?? draft; original = draft
             notice = "작품 정보를 저장했습니다. 파일과 권리 검토·승인은 별도로 진행합니다."
             let page = try await api.artworks(query: query); artworks = page.items; cursor = page.nextCursor
@@ -1072,6 +1091,7 @@ extension AuthoringModel {
             guard !hasProductImageTransfer, let api, let selected, !metadataDirty, approvalAcknowledged,
                   hasFreshImageTransfer ? freshImageReady?.full != nil
                     : selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            let generation = importStatusGeneration
             if usesHayesOriginal {
                 guard let recoverHayes, let intent = transfer?.intent, let job = importJob,
                       job.assetId == assetId,
@@ -1120,6 +1140,14 @@ extension AuthoringModel {
             if let metadata = approved.metadata { draft = metadata; original = metadata }
             approvalAcknowledged = false
             notice = "파일과 저장한 정보·권리를 승인했습니다. 전시에서 사용할 준비가 되었습니다."
+            if let creation = catalogCreation, creation.artworkID == selected.id,
+               generation == importStatusGeneration, available, self.api === api,
+               selected.approvedRevision != selected.revision,
+               approved.id == selected.id, approved.revision == selected.revision,
+               approved.approvedRevision == approved.revision, approved.approvedAssetId != nil, !approved.archived {
+                catalogCreation = nil
+                catalogApproval = CatalogApproval(requestID: creation.requestID, artworkID: approved.id, revision: approved.revision)
+            }
         }
     }
     func prepareCompactVariant() async {
@@ -1301,10 +1329,17 @@ struct NativeAuthoringView: View {
     let runtimeJobID: String?
     let mode: Mode
     let connect: () async -> Void
+    var catalogIntake = false
+    var onCatalogArtworkApproved: ((String, Int) -> Void)? = nil
+    @State private var catalogRequestID = UUID()
+    @State private var catalogEntryRequested = false
     @State private var discardPrompt = false
     @State private var pendingId: String?
     @State private var pendingNew = false
     private var scope: String { "\(configuration?.tenantId ?? ""):\(configuration?.ports.web ?? 0):\(configuration?.manifestSha256 ?? ""):\(runtimeJobID ?? ""):\(ready)" }
+    private var canEnterCatalogIntake: Bool {
+        ready && model.session != nil && !model.busy && model.activeIntakeID == nil && !model.modelWorkerPending
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if !ready { Text("작업 환경에서 로컬 제작을 시작하세요.").foregroundStyle(.secondary) }
@@ -1327,6 +1362,7 @@ struct NativeAuthoringView: View {
                     TextField("작품 검색", text: $model.query).onSubmit { Task { await model.refresh() } }
                     Button("검색") { Task { await model.refresh() } }
                     Button("새 작품", systemImage: "plus") { select(nil) }
+                        .disabled(catalogIntake && !canEnterCatalogIntake)
                 }.disabled(model.busy || !ready)
                 if model.artworks.isEmpty { Text("등록한 작품이 없습니다. 작가 정보를 추가하고 새 작품을 만드세요.").foregroundStyle(.secondary) }
                 List(selection: Binding<String?>(get: { model.selected?.id }, set: { if let id = $0 { select(id) } })) {
@@ -1362,6 +1398,15 @@ struct NativeAuthoringView: View {
         }
         .onChange(of: model.draft) { _, _ in model.approvalAcknowledged = false }
         .onChange(of: model.creationYearText) { _, _ in model.approvalAcknowledged = false }
+        .onChange(of: canEnterCatalogIntake, initial: true) { _, allowed in
+            guard catalogIntake, allowed, !catalogEntryRequested else { return }
+            catalogEntryRequested = true
+            select(nil)
+        }
+        .onChange(of: model.catalogApproval) { _, approval in
+            guard catalogIntake, let approval, approval.requestID == catalogRequestID else { return }
+            onCatalogArtworkApproved?(approval.artworkID, approval.revision)
+        }
         .task(id: scope) {
             guard model.configure(configuration, ready: ready, runtimeJobID: runtimeJobID),
                   configuration?.kind == "personal", model.session == nil else { return }
@@ -1378,7 +1423,10 @@ struct NativeAuthoringView: View {
         if model.dirty { discardPrompt = true } else { performSelection() }
     }
     private func performSelection() {
-        if pendingNew { model.newArtwork() }
+        if pendingNew {
+            guard !catalogIntake || canEnterCatalogIntake else { return }
+            model.newArtwork(catalogRequestID: catalogIntake ? catalogRequestID : nil)
+        }
         else if let pendingId { Task { await model.open(pendingId) } }
     }
     private var editor: some View {

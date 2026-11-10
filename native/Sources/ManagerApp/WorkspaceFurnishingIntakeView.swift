@@ -7,6 +7,9 @@ import UniformTypeIdentifiers
 struct WorkspaceFurnishingIntakeView: View {
     @ObservedObject var model: ExhibitionModel
     let access: UUID
+    let initialWorkspaceFurnishingID: String?
+    let initialBundledID: String?
+    let onRegistered: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var kind = WorkspaceFurnishingKind.pedestal
     @State private var name = ""
@@ -40,6 +43,27 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var placementId = UUID().uuidString.lowercased()
     @State private var seatPolicyETag: String?
 
+    init(model: ExhibitionModel, access: UUID, initialKind: WorkspaceFurnishingKind? = nil,
+         initialWorkspaceFurnishingID: String? = nil, initialBundledID: String? = nil,
+         onRegistered: @escaping (String) -> Void = { _ in }) {
+        self.model = model
+        self.access = access
+        self.initialWorkspaceFurnishingID = initialWorkspaceFurnishingID
+        self.initialBundledID = initialBundledID
+        self.onRegistered = onRegistered
+        _kind = State(initialValue: initialKind.flatMap { Self.supports($0, model: model) ? $0 : nil } ?? .pedestal)
+    }
+
+    static func supports(_ kind: WorkspaceFurnishingKind, model: ExhibitionModel) -> Bool {
+        switch kind {
+        case .pedestal, .bench: model.workspaceFurnishingIntakeAvailable
+        case .stool: model.workspaceFurnishingStoolAvailable
+        case .partition, .infoStand, .barrier, .displayCase: model.workspaceFurnishingRoomVisualAvailable
+        case .artworkFrame: model.workspaceArtworkFrameAvailable
+        case .portalFinish: model.workspacePortalFinishAvailable
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("작업 공간 비품").font(.headline)
@@ -67,12 +91,8 @@ struct WorkspaceFurnishingIntakeView: View {
                 }
                 Section("등록한 비품") {
                     ForEach(library) { entry in
-                        Button("\(entry.name) · v\(entry.version)") {
-                            target = entry
-                            reviewedInfoStand = nil
-                            room = model.roomId
-                            placementId = UUID().uuidString.lowercased()
-                        }.disabled(!entry.rightsAvailability.display)
+                        Button("\(entry.name) · v\(entry.version)") { selectWorkspace(entry) }
+                            .disabled(!entry.rightsAvailability.display)
                     }
                     if catalogCursor != nil {
                         Button("비품 더 보기") { Task { await loadMore(intake: false) } }
@@ -111,7 +131,10 @@ struct WorkspaceFurnishingIntakeView: View {
                !Task.isCancelled, access == model.viewportAccessID {
                 bundledCatalog = catalog
             }
-            await reload()
+            if let initialBundledID, let item = bundledCatalog?.items.first(where: { $0.id == initialBundledID }) {
+                await selectBundled(item)
+            }
+            await reload(revealing: initialWorkspaceFurnishingID)
         }
     }
 
@@ -121,8 +144,7 @@ struct WorkspaceFurnishingIntakeView: View {
                 Menu("기본 비품 선택") {
                     ForEach(bundledCatalog.items) { item in
                         Button(item.name) { Task { await selectBundled(item) } }
-                            .disabled(item.kind == .stool && !model.workspaceFurnishingStoolAvailable ||
-                                      (item.kind == .infoStand || item.kind == .barrier) && !model.workspaceFurnishingRoomVisualAvailable)
+                            .disabled(item.kind.map { !Self.supports($0, model: model) } ?? true)
                     }
                 }
             }
@@ -358,10 +380,17 @@ struct WorkspaceFurnishingIntakeView: View {
 
     private func perform(_ work: () async throws -> Void) async {
         guard !busy, access == model.viewportAccessID else { return }
+        let registeredBefore = selected?.phase == .registered ? selected?.furnishing?.id : nil
         busy = true
         message = nil
         defer { busy = false }
-        do { try await work() }
+        do {
+            try await work()
+            if !Task.isCancelled, access == model.viewportAccessID, selected?.phase == .registered,
+               let id = selected?.furnishing?.id, id != registeredBefore {
+                onRegistered(id)
+            }
+        }
         catch {
             message = (error as? AuthoringFailure)?.errorDescription ?? "비품 등록 또는 배치 상태를 다시 확인하세요."
         }
@@ -369,7 +398,9 @@ struct WorkspaceFurnishingIntakeView: View {
 
     private func selectBundled(_ item: BundledWorkspaceFurnishings.Item) async {
         await perform {
-            guard let bundledCatalog, let selectedKind = item.kind else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            guard let bundledCatalog, let selectedKind = item.kind, Self.supports(selectedKind, model: model) else {
+                throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
+            }
             let file = try await BundledWorkspaceFurnishings.load(item.id, from: bundledCatalog)
             try Task.checkCancellation()
             guard access == model.viewportAccessID, selected == nil, request == nil else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
@@ -390,11 +421,19 @@ struct WorkspaceFurnishingIntakeView: View {
         }
     }
 
-    private func reload() async {
+    private func selectWorkspace(_ entry: WorkspaceFurnishingSummary) {
+        guard access == model.viewportAccessID, entry.rightsAvailability.display else { return }
+        target = entry
+        reviewedInfoStand = nil
+        room = model.roomId
+        placementId = UUID().uuidString.lowercased()
+    }
+
+    private func reload(revealing id: String? = nil) async {
         await perform {
             let pages = try await model.withWorkspaceFurnishingAccess(access) { api in
                 let intakes = try await api.workspaceFurnishingIntakes()
-                let catalog = try await api.workspaceFurnishings()
+                let catalog = try await loadWorkspaceFurnishingCatalog(using: api, revealing: id)
                 let seatPolicyETag = await model.workspaceBenchSeatPolicyETag(using: api)
                 return (intakes, catalog, seatPolicyETag)
             }
@@ -403,6 +442,13 @@ struct WorkspaceFurnishingIntakeView: View {
             library = pages.1.items
             catalogCursor = pages.1.nextCursor
             seatPolicyETag = pages.2
+            if let id {
+                if let entry = library.first(where: { $0.id == id && $0.rightsAvailability.display }) {
+                    selectWorkspace(entry)
+                } else {
+                    message = "선택한 비품을 배치할 수 없습니다. 등록 상태와 전시 권리를 확인하세요."
+                }
+            }
         }
     }
 
@@ -518,4 +564,21 @@ struct WorkspaceFurnishingIntakeView: View {
             }
         }
     }
+}
+
+func loadWorkspaceFurnishingCatalog(using api: AuthoringAPI, cursor: String? = nil, revealing id: String? = nil)
+    async throws -> (items: [WorkspaceFurnishingSummary], nextCursor: String?) {
+    var items: [WorkspaceFurnishingSummary] = []
+    var seenIDs = Set<String>()
+    var seenCursors = Set<String>()
+    var next = cursor
+    repeat {
+        if let next, !seenCursors.insert(next).inserted { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
+        let page = try await api.workspaceFurnishings(cursor: next)
+        try Task.checkCancellation()
+        items.append(contentsOf: page.items.filter { seenIDs.insert($0.id).inserted })
+        next = page.nextCursor
+        if id == nil || id.map(seenIDs.contains) == true { break }
+    } while next != nil
+    return (items, next)
 }

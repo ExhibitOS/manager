@@ -382,6 +382,7 @@ public actor AuthoringAPI {
     #if DEBUG
     private static let defaultSeatRuntimePin = "ca92c7530f594462e459bdf16ff9cd64cc1dd1ffc0d68ab4b13c31e7ea3a7630"
     private static let backedBenchRuntimePin = "f8d5933a2c2e361154dbcc9cb4a332144ca9217e5edb363fdd5056ee70aed702"
+    private static let bottomCatalogRuntimePin = "4a0bbccc8ef04c6734407fd448f2b68e6b25a6a7d5f5b0afc33878be5aa29d4d"
     #endif
     public nonisolated var supportsPlacedExitDoors: Bool {
         #if DEBUG
@@ -2416,7 +2417,7 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsDefaultSeatRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == defaultSeatRuntimePin || manifest == backedBenchRuntimePin
+        manifest == defaultSeatRuntimePin || manifest == backedBenchRuntimePin || manifest == bottomCatalogRuntimePin
         #else
         false
         #endif
