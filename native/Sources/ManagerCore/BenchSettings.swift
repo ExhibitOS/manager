@@ -6,6 +6,7 @@ import Foundation
 public struct BenchSettings: Equatable, Sendable {
     public static let namespace = "org.exhibitos.studio/benches"
     public static let presentationNamespace = "org.exhibitos.studio/presentation"
+    private static let galleryStoolModelSHA256 = "6caca94361b540fb007c6fc605e519e436462eda43f2ec5f99da6a63108bfc60"
     public enum Kind: String, CaseIterable, Sendable { case slab, backed }
     public struct WorkspaceVisual: Equatable, Sendable {
         public let placementId: String, modelSha256: String
@@ -42,7 +43,9 @@ public struct BenchSettings: Equatable, Sendable {
                 workspaceVisual: WorkspaceVisual? = nil) throws {
         guard Self.uuid(id), Self.uuid(roomId), Self.uuid(viewpointId), !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.utf16.count <= 128,
               Self.point(position), yaw.isFinite, (-Double.pi...Double.pi).contains(yaw),
-              Self.bounded(width, 0.6...3), Self.bounded(depth, 0.3...1), Self.bounded(height, 0.3...0.65) else { throw Self.invalid() }
+              Self.bounded(width, 0.6...3) || Self.isGalleryStoolSeat(kind: kind, width: width, depth: depth,
+                                                                      height: height, visual: workspaceVisual),
+              Self.bounded(depth, 0.3...1), Self.bounded(height, 0.3...0.65) else { throw Self.invalid() }
         do { try material.validate(frame: false) } catch { throw Self.invalid() }
         self.id = id; self.name = name; self.roomId = roomId; self.kind = kind; self.position = position; self.yaw = yaw
         self.width = width; self.depth = depth; self.height = height; self.material = material; self.viewpointId = viewpointId
@@ -71,6 +74,9 @@ public struct BenchSettings: Equatable, Sendable {
         return .object(fields)
     }
     static func invalid() -> AuthoringFailure { AuthoringFailure("BENCH_FIELDS_INVALID") }
+    static func isGalleryStoolSeat(kind: Kind, width: Double, depth: Double, height: Double, visual: WorkspaceVisual?) -> Bool {
+        kind == .slab && width == 0.38 && depth == 0.38 && height == 0.45 && visual?.modelSha256 == galleryStoolModelSHA256
+    }
     static func uuid(_ value: String) -> Bool { UUID(uuidString: value) != nil }
     static func bounded(_ value: Double, _ range: ClosedRange<Double>) -> Bool { value.isFinite && range.contains(value) }
     static func point(_ value: [Double]) -> Bool { value.count == 3 && value.allSatisfy { bounded($0, -10_000...10_000) } }

@@ -310,6 +310,41 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try attachment(viewpoint: changedView).applying(furnishing, to: next))
     }
 
+    func testOnlyExactGalleryStoolCanAttachCompactWorkspaceSeat() throws {
+        let gallery = "6caca94361b540fb007c6fc605e519e436462eda43f2ec5f99da6a63108bfc60"
+        let draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let bench = UUID().uuidString.lowercased()
+        let camera = UUID().uuidString.lowercased()
+        let view = try BenchViewpoint(id: camera, name: "Seat", roomId: room, position: [-1, 1.16, 0], target: [-1, 1.45, -2], fov: 50)
+
+        func attach(kind: String = "stool", sha: String = gallery, bytes: Int64 = 415_848,
+                    width: Double = 0.38, scale: Double = 1) throws -> NativeExhibitionDraft {
+            var descriptor = try registered()["furnishing"]
+            descriptor["kind"] = .string(kind)
+            descriptor["model"]["sha256"] = .string(sha)
+            descriptor["model"]["bytes"] = .integer(bytes)
+            let furnishing = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(descriptor))
+            let placement = WorkspaceFurnishingPlacement(id: placementId, roomId: room, furnishingId: furnishing.id,
+                furnishingVersion: 1, position: [-1, 0, 0], yaw: 0.125, scale: scale)
+            let placed = try XCTUnwrap(placement.applying(furnishing, to: draft, supportedExtensionVersion: 2))
+            let command = try WorkspaceBenchSeatAttachment(benchId: bench, placementId: placementId, furnishingId: furnishing.id,
+                furnishingVersion: 1, modelSha256: sha, width: width, depth: 0.38, height: 0.45, viewpointId: camera, viewpoint: view)
+            return try XCTUnwrap(command.applying(furnishing, to: placed))
+        }
+
+        let next = try attach()
+        let seat = try XCTUnwrap(BenchSettings.list(in: next).first)
+        XCTAssertEqual(seat.width, 0.38)
+        XCTAssertEqual(seat.workspaceVisual?.modelSha256, gallery)
+        XCTAssertEqual(try BenchSettings(value: seat.value), seat)
+        XCTAssertThrowsError(try attach(kind: "bench"))
+        XCTAssertThrowsError(try attach(sha: String(repeating: "b", count: 64)))
+        XCTAssertThrowsError(try attach(bytes: 415_847))
+        XCTAssertThrowsError(try attach(width: 0.39))
+        XCTAssertThrowsError(try attach(scale: 1.1))
+    }
+
     func testVisualPlacementIsRoomLocalAndReplaysExactly() throws {
         let furnishing = try XCTUnwrap(intake(registered()).furnishing)
         var draft = try NativeExhibitionDraft.new()
