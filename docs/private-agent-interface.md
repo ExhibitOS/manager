@@ -246,6 +246,21 @@ Operations:
   receipt. Activation and rollback keep the original installation and restore
   proof. The catalogue 1.5 payload still requires a separate restore admission
   for direct EXB activation.
+- `furnishing-walking-collision-evaluate` reads the current draft revision
+  through the authenticated owner session's `furnishing-walking-collision-v1`
+  capability. It returns typed target IDs, their authored defaults, and any
+  explicit overrides. An omitted override inherits the default. Evaluation
+  makes no draft changes and reports authored settings independently of
+  whether the Viewer has loaded the relevant collision geometry.
+- `furnishing-walking-collision-set` requires the current `expectedRevision`
+  and `expectedEditVersion` and an exact `command` with `target: {kind, id}`
+  from evaluation and `enabled: true`, `false` or `null`. A Boolean
+  persists an explicit override even when it matches the default. Null clears
+  that override. The authenticated proposal is validated against the draft and
+  applied through the local revision check. The reply contains `changed` and
+  `document`. A repeated setting makes no local write. Use `save` separately
+  before reopening or exporting. The Manager inspector exposes the same three
+  choices under **걷기 충돌** and uses normal undo and redo.
 - `bench-prepare`: accept the existing `add-bench` command and optional fresh
   viewpoint; write the existing frame/request packet to a new `outputPath`.
 - `bench-apply`: provide its `proposalId` and a fixed shared-renderer reply at
