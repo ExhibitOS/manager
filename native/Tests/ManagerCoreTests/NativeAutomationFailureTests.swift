@@ -198,6 +198,23 @@ final class NativeAutomationFailureTests: XCTestCase {
     }
 
     #if DEBUG
+    func testAdoptedOriginalOutputAdmitsOnlyTheExactReviewedOrdinaryRuntime() throws {
+        let manifest = "49f05729bfe39c7e2a228888c6541f5e22e08057f1e07bf04a66055a2016e861"
+        let owner = UUID().uuidString.lowercased()
+        let missing = URL(fileURLWithPath: "/missing/exhibitos-native")
+        for (pin, expected) in [(manifest, "AUTOMATION_SCOPE_CHANGED"),
+                                (String(repeating: "a", count: 64), "AUTOMATION_CONFIGURATION_INVALID")] {
+            let data = Data("""
+                {"workspaceId":"\(owner)","tenantId":"\(owner)","principalId":"\(owner)","manifestSHA256":"\(pin)"}
+                """.utf8)
+            let identity = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: data)
+            XCTAssertThrowsError(try NativeAutomationSession(helper: missing, profile: missing,
+                ports: [:], outputRoot: missing, temporaryRoot: missing, inputs: [:], existingWorkspaceV5: identity)) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, expected)
+            }
+        }
+    }
+
     func testOrdinaryExistingThumbnailOexRequiresExactReviewedRuntime() throws {
         let previous = "f21b1378b39d11fd6ea8f9c89636912f233f884af176e2deb9856dea3ae77b53"
         let corrected = "0efbf042ad20b7cd8963751e5cfe5f343ead93d6ced6164e8bbd08566e378c99"
