@@ -480,6 +480,13 @@ prepared bytes differ, the result advances the artwork revision and binds the
 reference to the prepared asset hash. Use the returned revision when
 registering the artwork or saving and exporting a placement.
 
+For a failed or cancelled, drained required-model import, generic automation
+can use `artwork-model-preparation-discard` with `{artworkId, jobId}` and the
+current document revision envelope. It cancels a failed job through the normal
+API, verifies cancellation and worker drain, then clears only the matching local
+transfer journal. Server records and artwork identities remain available. A
+replacement file uses a new import request ID; retry continues the original file.
+
 ### Private floor rendering
 
 The reviewed `cfe1` local-validation runtime also admits the existing Quiet

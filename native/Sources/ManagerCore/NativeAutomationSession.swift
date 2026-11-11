@@ -1423,6 +1423,10 @@ public actor NativeAutomationSession {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
+        if operation == "artwork-model-preparation-discard" {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         if operation == "exhibition-new" {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -2265,6 +2269,37 @@ public actor NativeAutomationSession {
             let retried = try await api.importAction(jobId, action: .retry)
             guard retried.id == jobId else { throw BridgeFailure("IMPORT_RECEIPT_INVALID") }
             result = .object(["job": try productImageJobValue(retried, intent: intent, current: current), "transfer": try value(state)])
+        case "artwork-model-preparation-discard":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId"])
+            let state = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            guard !installedImageCLI, selectedOEXFormat == nil, await api.admitsRequiredModelPreparation,
+                  let intent = state.intent, intent.modelPreparation != nil,
+                  command["artworkId"] == .string(intent.artworkId), let jobId = state.jobId,
+                  command["jobId"] == .string(jobId) else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
+            let previous = try await api.importJob(jobId)
+            guard previous.id == jobId, ["failed", "cancelled"].contains(previous.state),
+                  previous.modelPreparation?.matches(intent, job: previous) == true,
+                  previous.confirmsIntakeDrain(for: intent) else { throw BridgeFailure("IMPORT_DRAIN_PENDING") }
+            // Reuse the ordinary server cancellation and GUI clearing policy.
+            // A failed source cannot be replaced by retrying its immutable job.
+            if previous.state == "failed" { _ = try await api.importAction(jobId, action: .cancel) }
+            let cancelled = try await api.importJob(jobId)
+            guard cancelled.id == jobId, cancelled.state == "cancelled",
+                  cancelled.confirmsIntakeDrain(for: intent),
+                  cancelled.modelPreparation?.permitsClearingTransfer(artwork: nil, request: intent, job: cancelled) == true else {
+                throw BridgeFailure("IMPORT_DRAIN_PENDING")
+            }
+            let (_, _, refreshed) = try await checked(request)
+            guard try value(refreshed) == value(current),
+                  try value(await bridge.uploadState(context)) == value(state) else {
+                throw BridgeFailure("IMPORT_CONTEXT_CHANGED")
+            }
+            try Task.checkCancellation()
+            var cleared = state; cleared.intent = nil; cleared.jobId = nil; cleared.fileName = nil
+            let persisted = try await bridge.saveUploadState(context, state: cleared)
+            result = .object(["job": NativeAutomationArtworkRules.jobValue(cancelled), "transfer": try value(persisted)])
         case "artwork-model-preparation-retry":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId"])
