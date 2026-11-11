@@ -7,7 +7,9 @@ import CryptoKit
 public enum NativeGPUModelPreparation {
     public static let profile = "embedded-model-basecolor-uastc-512-mips-v1"
     public static let purpose = "approved-display-gpu-derivative"
-    public static let recipe = "6739a173b5a3af38f3fb02b250a2fa4d3315972f62ea8592f1c5695ab5848d98"
+    // Retained for identifying historical vendor receipts; never active acceptance.
+    static let historicalVendorRecipe = "6739a173b5a3af38f3fb02b250a2fa4d3315972f62ea8592f1c5695ab5848d98"
+    public static let recipe = "886e3815a386a46462e46d35ccb640498ebefcc853cefba61f76560b62cae4bc"
     public static let geometryAlgorithm = "glb-source-preservation-v1"
     static func invalid() -> AuthoringFailure { AuthoringFailure("GPU_PREPARATION_INVALID") }
     static func id(_ s: String?) -> Bool { guard let s else { return false }; return UUID(uuidString: s) != nil }

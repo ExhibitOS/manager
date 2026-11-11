@@ -50,6 +50,30 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         bad = value; bad["gpuPreparation"]["serverReceipt"]["producer"]["tool"]["version"] = .string("4.0"); XCTAssertThrowsError(try NativeGPUModelPreparationJob(bad, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt))
         XCTAssertThrowsError(try NativeGPUModelPreparationJob(value, artworkId: artwork, request: req, verifiedReceiptSHA256: fixtureDigest))
     }
+    func testHistoricalVendorRecipeIsRejected() throws {
+        let req = try request()
+        var queued = pending()
+        queued["gpuPreparation"]["recipeSHA256"] = .string(NativeGPUModelPreparation.historicalVendorRecipe)
+        XCTAssertThrowsError(try NativeGPUModelPreparationJob(queued, artworkId: artwork, request: req))
+        func refreshedReceiptDigest(_ value: DocumentValue) throws -> (DocumentValue, String) {
+            var result = value
+            guard case .object(var fields) = value["gpuPreparation"]["serverReceipt"] else { throw NativeGPUModelPreparation.invalid() }
+            fields.removeValue(forKey: "sha256")
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let digest = SHA256.hash(data: try encoder.encode(DocumentValue.object(fields))).map { String(format: "%02x", $0) }.joined()
+            result["gpuPreparation"]["serverReceipt"]["sha256"] = .string(digest)
+            return (result, digest)
+        }
+        let (value, _) = try ready()
+        var oldReceipt = value
+        oldReceipt["gpuPreparation"]["serverReceipt"]["recipeSHA256"] = .string(NativeGPUModelPreparation.historicalVendorRecipe)
+        let (oldReceiptValue, oldReceiptDigest) = try refreshedReceiptDigest(oldReceipt)
+        XCTAssertThrowsError(try NativeGPUModelPreparationJob(oldReceiptValue, artworkId: artwork, request: req, verifiedReceiptSHA256: oldReceiptDigest))
+        var oldTool = value
+        oldTool["gpuPreparation"]["serverReceipt"]["producer"]["tool"]["recipeSHA256"] = .string(NativeGPUModelPreparation.historicalVendorRecipe)
+        let (oldToolValue, oldToolDigest) = try refreshedReceiptDigest(oldTool)
+        XCTAssertThrowsError(try NativeGPUModelPreparationJob(oldToolValue, artworkId: artwork, request: req, verifiedReceiptSHA256: oldToolDigest))
+    }
     func testPriorSelectionIsNotCurrentCandidate() throws {
         let (value, receipt) = try ready(), req = try request()
         let bound = try NativeGPUModelPreparationJob(value, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt)
