@@ -1,11 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
-public struct ViewportThumbnailRequest: Encodable, Sendable {
-    public let version = 1
+public struct ViewportThumbnailRequest: Codable, Sendable {
+    public let version: Int
     public let epoch: String, tenantId: String, principalId: String, requestId: String, artworkId: String
     public let sequence: Int, expectedRevision: Int
+    private enum CodingKeys: String, CodingKey {
+        case version, epoch, tenantId, principalId, requestId, artworkId, sequence, expectedRevision
+    }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.decode(Int.self, forKey: .version)
+        epoch = try values.decode(String.self, forKey: .epoch)
+        tenantId = try values.decode(String.self, forKey: .tenantId)
+        principalId = try values.decode(String.self, forKey: .principalId)
+        requestId = try values.decode(String.self, forKey: .requestId)
+        artworkId = try values.decode(String.self, forKey: .artworkId)
+        sequence = try values.decode(Int.self, forKey: .sequence)
+        expectedRevision = try values.decode(Int.self, forKey: .expectedRevision)
+        guard version == 1, sequence > 0, (1...Int(Int32.max)).contains(expectedRevision),
+              [epoch, tenantId, principalId, requestId, artworkId].allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+        }
+    }
     public init(frame: ViewportFrame, artworkId: String, expectedRevision: Int) throws {
+        version = 1
         guard !frame.disabled, frame.sequence > 0, expectedRevision > 0, expectedRevision <= 2_147_483_647,
               let artwork = UUID(uuidString: artworkId), UUID(uuidString: frame.epoch) != nil,
               UUID(uuidString: frame.tenantId) != nil, UUID(uuidString: frame.principalId) != nil else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
@@ -25,7 +44,7 @@ public struct ViewportRenderedThumbnail: Sendable {
     public let pngData: Data, pngSha256: String
 }
 
-public struct ViewportThumbnailReply: Decodable, Sendable {
+public struct ViewportThumbnailReply: Codable, Sendable {
     public let version: Int, epoch: String, sequence: Int, tenantId: String, principalId: String, requestId: String
     public let artworkId: String, revision: Int, pngBase64: String, width: Int, height: Int
     public let sourceAssetId: String?, sourceSha256: String?, displaySha256: String?, pngSha256: String?
@@ -64,7 +83,7 @@ public struct NativeRenderedArtworkThumbnailSelectionReceipt: Codable, Sendable 
     public let thumbnailSha256: String
     public let selectionVersion: Int, selected: Bool
 }
-public struct NativeArtworkThumbnailSelection: Decodable, Sendable {
+public struct NativeArtworkThumbnailSelection: Codable, Sendable {
     public let selectionVersion: Int, bindingId: UUID?
 }
 public struct ViewportFurnishingThumbnailRequest: Codable, Equatable, Sendable {
