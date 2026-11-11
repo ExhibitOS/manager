@@ -366,7 +366,11 @@ public actor NativeAutomationSession {
         let prior = try await api.exhibition(draft.id)
         guard prior.draft == draft, prior.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
         let previous = try await bridge.nativeStatus(context)
-        guard previous.runtime?.readiness.ready == true, let previousJob = previous.runtime?.jobId else { throw BridgeFailure("NATIVE_NOT_READY") }
+        guard previous.runtime?.readiness.ready == true, let previousJob = previous.runtime?.jobId,
+              let previousConfiguration = previous.configuration else { throw BridgeFailure("NATIVE_NOT_READY") }
+        let installed = installedImageCLI || installedExportRootIdentity != nil
+        let expectedPorts = try Self.expectedReopenPorts(previousConfiguration, manifest: manifest,
+            tenantId: current.tenantId, requested: ports, installed: installed)
         let directory = try profileIdentity()
 
         runtimeStopped = true
@@ -383,7 +387,8 @@ public actor NativeAutomationSession {
         guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
         bridge = try NativeBridge(helper: helper, profile: profile, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
-                                  workspaceV7ValidationRuntime: workspaceV7ValidationRuntime)
+                                  workspaceV7ValidationRuntime: workspaceV7ValidationRuntime,
+                                  requireExistingManagedProfile: requiresReleaseImageRuntime)
         bridgeOpen = true
         let reopened = try await bridge.context()
         self.context = reopened
@@ -392,17 +397,18 @@ public actor NativeAutomationSession {
             throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED")
         }
         let persisted = try await bridge.nativeStatus(reopened)
-        guard let config = persisted.configuration, config.manifestSha256 == manifest,
-              config.ports.web == ports["web"], config.ports.api == ports["api"], config.ports.database == ports["database"],
+        guard let config = persisted.configuration,
               !persisted.busy, persisted.runtime?.hasOwnedProcesses != true else {
             throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
         }
+        try Self.checkReopenedConfiguration(config, previous: previousConfiguration, ports: expectedPorts)
         try Task.checkCancellation()
         _ = try await bridge.start(reopened)
         let pinnedStartup = existingWorkspaceV5 != nil || AuthoringAPI.supportsDefaultSeatRuntime(manifest: manifest)
         let ready = try await (pinnedStartup ? waitStartup(manifest: manifest) : waitReady())
         guard ready.runtime?.readiness.ready == true, let job = ready.runtime?.jobId, job != previousJob,
-              ready.configuration?.manifestSha256 == manifest else { throw BridgeFailure("NATIVE_NOT_READY") }
+              let readyConfiguration = ready.configuration else { throw BridgeFailure("NATIVE_NOT_READY") }
+        try Self.checkReopenedConfiguration(readyConfiguration, previous: previousConfiguration, ports: expectedPorts)
         let credentials = try await bridge.authoringSession(reopened)
         let reopenedAPI = try AuthoringAPI(port: config.ports.web, tenantId: current.tenantId, nativeRuntimeManifestSHA256: manifest)
         let session = try await reopenedAPI.connect(credentials)
@@ -1349,6 +1355,27 @@ public actor NativeAutomationSession {
         guard let session else { return false }
         return canCreate || session.nativeAuthoringProposalProfile == "saved-head-v1"
             || session.advertisesRenderedArtworkThumbnail
+    }
+
+    static func expectedReopenPorts(_ configuration: NativeConfiguration, manifest: String, tenantId: String,
+                                    requested: [String: UInt16], installed: Bool) throws -> NativePorts {
+        guard configuration.manifestSha256 == manifest, configuration.tenantId == tenantId,
+              !installed || configuration.kind == "personal" else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+        let ports = configuration.ports
+        if !installed {
+            guard ports.web == requested["web"], ports.api == requested["api"], ports.database == requested["database"] else {
+                throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+            }
+        }
+        return ports
+    }
+
+    static func checkReopenedConfiguration(_ configuration: NativeConfiguration, previous: NativeConfiguration,
+                                           ports: NativePorts) throws {
+        guard configuration.manifestSha256 == previous.manifestSha256,
+              configuration.tenantId == previous.tenantId, configuration.kind == previous.kind,
+              configuration.ports.web == ports.web, configuration.ports.api == ports.api,
+              configuration.ports.database == ports.database else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
     }
 
     static func emptyExhibitionDraft(_ request: DocumentValue, in current: NativeDocumentState) throws -> NativeExhibitionDraft {

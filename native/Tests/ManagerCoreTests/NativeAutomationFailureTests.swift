@@ -4,6 +4,27 @@ import Darwin
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testInstalledReopenUsesVerifiedConfigurationAndRefusesScopeOrPortDrift() throws {
+        let tenant = "10000000-0000-4000-8000-000000000001", manifest = String(repeating: "a", count: 64)
+        func configuration(kind: String? = "personal", owner: String? = nil, sha: String? = nil,
+                           web: UInt16 = 57961, api: UInt16 = 57962, database: UInt16 = 57963) -> NativeConfiguration {
+            .init(kind: kind, tenantId: owner ?? tenant, subject: "", ports: .init(web: web, api: api, database: database), manifestSha256: sha ?? manifest)
+        }
+        let previous = configuration()
+        let ports = try NativeAutomationSession.expectedReopenPorts(previous, manifest: manifest, tenantId: tenant, requested: [:], installed: true)
+        XCTAssertEqual(ports.web, 57961)
+        XCTAssertNoThrow(try NativeAutomationSession.checkReopenedConfiguration(previous, previous: previous, ports: ports))
+        XCTAssertThrowsError(try NativeAutomationSession.expectedReopenPorts(previous, manifest: manifest, tenantId: tenant, requested: [:], installed: false))
+        XCTAssertThrowsError(try NativeAutomationSession.expectedReopenPorts(previous, manifest: manifest, tenantId: tenant,
+            requested: ["web": 57961, "api": 57962], installed: false))
+        XCTAssertNoThrow(try NativeAutomationSession.expectedReopenPorts(previous, manifest: manifest, tenantId: tenant,
+            requested: ["web": 57961, "api": 57962, "database": 57963], installed: false))
+        XCTAssertThrowsError(try NativeAutomationSession.expectedReopenPorts(configuration(kind: "selected-import"), manifest: manifest, tenantId: tenant, requested: [:], installed: true))
+        for changed in [configuration(web: 57964), configuration(api: 57964), configuration(database: 57964), configuration(owner: UUID().uuidString.lowercased()),
+                        configuration(sha: String(repeating: "b", count: 64)), configuration(kind: "selected-import")] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkReopenedConfiguration(changed, previous: previous, ports: ports))
+        }
+    }
     func testNewExhibitionOnlyInitializesAnEmptyJournalWithClosedTypedInput() throws {
         let id = "10000000-0000-4000-8000-000000000001"
         var empty = NativeDocumentState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id,
