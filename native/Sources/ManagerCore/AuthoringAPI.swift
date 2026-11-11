@@ -440,6 +440,8 @@ public actor AuthoringAPI {
         "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203"
     private static let sceneRuntimeManifestPin =
         "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
+    private static let thumbnailFreshnessRuntimeManifestPin =
+        "bc4dc0736a07774550107f12cbab729d91d2156d6ec8828c321dcf0677555c7d"
     private static let portalHayesRuntimeManifestPin =
         "86faf157a49ffa7cd07495a064e19efd2f25e5b2bb5a1944432bae04872305e3"
     private static let renderedSculptureThumbnailOexRuntimeManifestPin =
@@ -546,6 +548,7 @@ public actor AuthoringAPI {
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
             || manifest == Self.portalHayesRuntimeManifestPin
             || manifest == Self.sceneRuntimeManifestPin
+            || manifest == Self.thumbnailFreshnessRuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -2711,6 +2714,7 @@ public actor AuthoringAPI {
             || manifest == "eac64ed106bdac283c1aa0c6c3dee5541c98919ed4a67bd9e5509b21496b5bce"
             || manifest == portalHayesRuntimeManifestPin
             || manifest == sceneRuntimeManifestPin
+            || manifest == thumbnailFreshnessRuntimeManifestPin
         #else
         false
         #endif

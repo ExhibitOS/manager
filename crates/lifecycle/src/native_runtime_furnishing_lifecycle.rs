@@ -1633,6 +1633,8 @@ mod tests {
              crate::native_payload::CATALOG45_SCENE_AUTHORING_TARGET),
             (crate::native_payload::CATALOG45_PORTAL_HAYES_CARD_TARGET,
              crate::native_payload::CATALOG45_SCENE_AUTHORING_TARGET),
+            (crate::native_payload::CATALOG45_SCENE_AUTHORING_TARGET,
+             crate::native_payload::CATALOG45_THUMBNAIL_FRESHNESS_TARGET),
         ] {
             let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
             let pin = |generation: &str, tuple: (&str, &str, &str)| {
