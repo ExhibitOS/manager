@@ -12,8 +12,8 @@ final class NativeProductImageThumbnailRepairTests: XCTestCase {
     private let requestId = "55555555-5555-4555-8555-555555555555"
     private let revisionId = "66666666-6666-4666-8666-666666666666"
     private let preview = "77777777-7777-4777-8777-777777777777"
-    private var hash: String { String(repeating: "a", count: 64) }
-    private var etag: String { "\"studio-r4-\(hash)\"" }
+    private var fixtureDigest: String { String(repeating: "a", count: 64) }
+    private var etag: String { "\"studio-r4-\(fixtureDigest)\"" }
 
     private func command(_ changes: [String: DocumentValue] = [:]) throws -> NativeAutomationReplacementCommand {
         let fields: [String: DocumentValue] = ["kind": .string(NativeProductImageThumbnailRepair.profile),
@@ -29,7 +29,7 @@ final class NativeProductImageThumbnailRepairTests: XCTestCase {
             "primaryAssetId": .string(asset), "rights": .object(["unchanged": .bool(true)]),
             "provenance": .object(["events": .array([])]),
             "assets": .array([.object(["id": .string(asset), "role": .string("image"), "mime": .string("image/png"),
-                "sha256": .string(hash), "bytes": .integer(900)])]),
+                "sha256": .string(fixtureDigest), "bytes": .integer(900)])]),
             "extensions": .object([NativeProductImageThumbnailRepair.cms: .object([
                 "tenantId": .string(tenant), "artworkId": .string(artwork), "revision": .integer(2)]),
                 "org.exhibitos.viewer/lod": .object(["preserved": .bool(true)]),
@@ -42,7 +42,7 @@ final class NativeProductImageThumbnailRepairTests: XCTestCase {
         next["revision"] = .integer(3); next["revisionId"] = .string(job); next["createdAt"] = .string("2026-11-11T00:00:00.001Z")
         next["assets"] = .array(old["assets"].items! + [.object(["id": .string(preview),
             "path": .string("assets/\(preview)/thumbnail.png"), "role": .string("preview"), "mime": .string("image/png"),
-            "bytes": .integer(120), "sha256": .string(hash)])])
+            "bytes": .integer(120), "sha256": .string(fixtureDigest)])])
         next["extensions"][NativeProductImageThumbnailRepair.cms]["revision"] = .integer(3)
         next["extensions"][NativeProductImageThumbnailRepair.thumbnail] = .object(["version": .integer(1), "assetId": .string(preview)])
         next["provenance"]["events"] = .array([.object(["id": .string(job), "type": .string("edited"),
@@ -62,10 +62,10 @@ final class NativeProductImageThumbnailRepairTests: XCTestCase {
         XCTAssertEqual(Set(fields.keys), ["kind", "requestId", "artworkId", "artworkRevision", "importJobId"])
         XCTAssertEqual(input["artworkRevision"], .integer(2))
         for extra in ["receiptSha256", "coarseSha256", "placementId", "sourceHashException"] {
-            XCTAssertThrowsError(try command([extra: .string(hash)]))
+            XCTAssertThrowsError(try command([extra: .string(fixtureDigest)]))
         }
         XCTAssertThrowsError(try command(["kind": .string("unknown-repair")]))
-        XCTAssertThrowsError(try command(["etag": .string("\"studio-r5-\(hash)\"")]))
+        XCTAssertThrowsError(try command(["etag": .string("\"studio-r5-\(fixtureDigest)\"")]))
     }
 
     func testPersistedRepairAllowsOnlyFirstPreviewAndRevisionReferences() throws {
@@ -109,7 +109,7 @@ final class NativeProductImageThumbnailRepairTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }
-        let active = root.appendingPathComponent(".automation-artwork-replacement.json")
+        let active = root.appendingPathComponent(".automation-product-image-thumbnail-repair.json")
         let completed = root.appendingPathComponent(".automation-artwork-repair-completed-" + requestId + ".json")
         let parsed = try command()
         var attempt: DocumentValue = .object(["requestId": .string(requestId), "operation": .string("artwork-replace-reviewed"),
@@ -129,7 +129,7 @@ final class NativeProductImageThumbnailRepairTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: active), original)
         var changed = attempt; changed["command"]["etag"] = .string("\"studio-r4-\(String(repeating: "b", count: 64))\"")
         var receipt: DocumentValue = .object(["attempt": changed, "localRevision": .integer(8),
-            "etag": .string("\"studio-r5-\(hash)\"")])
+            "etag": .string("\"studio-r5-\(fixtureDigest)\"")])
         try write(receipt, at: completed)
         XCTAssertFalse(try release(attempt)) // Completion for different original If-Match cannot release this intent.
         changed = attempt; changed["requestId"] = .string(job)
@@ -148,7 +148,7 @@ final class NativeProductImageThumbnailRepairTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: active)), changed)
         // Even a receipt claiming completion must never rotate an ordinary replacement.
         attempt["command"] = .object(["artworkId": .string(artwork), "artworkRevision": .integer(2),
-            "importJobId": .string(job), "studioRevision": .integer(4), "etag": .string(etag), "coarseSha256": .string(hash)])
+            "importJobId": .string(job), "studioRevision": .integer(4), "etag": .string(etag), "coarseSha256": .string(fixtureDigest)])
         try write(attempt, at: active)
         receipt["attempt"] = attempt; try write(receipt, at: completed)
         let ordinary = try Data(contentsOf: active)
@@ -156,10 +156,88 @@ final class NativeProductImageThumbnailRepairTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: active), ordinary)
     }
 
+    func testIndependentRepairJournalRoutesExactRecoveryAndPreservesOrdinaryBytes() throws {
+        let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("repair-routing-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ordinary = directory.appendingPathComponent(".automation-artwork-replacement.json")
+        let repair = directory.appendingPathComponent(".automation-product-image-thumbnail-repair.json")
+        let (before, _) = try fixture()
+        let document = NativeDocumentState(format: 1, revision: 7, workspaceId: artwork, tenantId: tenant,
+            principalId: tenant, draft: before, etag: etag, savedEditVersion: before.document["editVersion"].integer)
+        let repairCommand: DocumentValue = .object(["kind": .string(NativeProductImageThumbnailRepair.profile),
+            "artworkId": .string(artwork), "artworkRevision": .integer(2), "importJobId": .string(job),
+            "studioRevision": .integer(4), "etag": .string(etag)])
+        let attempt: DocumentValue = .object(["requestId": .string(requestId), "operation": .string("artwork-replace-reviewed"),
+            "workspaceId": .string(artwork), "tenantId": .string(tenant), "principalId": .string(tenant),
+            "exhibitionId": .string(before.id), "expectedRevision": .integer(7),
+            "expectedEditVersion": before.document["editVersion"], "command": repairCommand])
+        var ordinaryAttempt = attempt
+        ordinaryAttempt["requestId"] = .string(job)
+        ordinaryAttempt["command"] = .object(["artworkId": .string(artwork), "artworkRevision": .integer(2),
+            "importJobId": .string(job), "studioRevision": .integer(4), "etag": .string(etag),
+            "coarseSha256": .string(fixtureDigest)])
+        func write(_ value: DocumentValue, at url: URL) throws {
+            try JSONEncoder().encode(value).write(to: url)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+        func route(_ value: DocumentValue) throws -> String {
+            try NativeAutomationSession.replacementAttemptRoute(ordinaryPath: ordinary.path,
+                repairPath: repair.path, attempt: value, document: document)
+        }
+        func recover() throws -> (path: String, attempt: DocumentValue)? {
+            try NativeAutomationSession.replacementRecoveryAttempt(ordinaryPath: ordinary.path, repairPath: repair.path, document: document)
+        }
+        // Completed ordinary intent is retained on its earlier local revision.
+        var completedOrdinary = ordinaryAttempt
+        completedOrdinary["expectedRevision"] = .integer(6)
+        try write(completedOrdinary, at: ordinary)
+        let oldBytes = try Data(contentsOf: ordinary)
+        XCTAssertEqual(try route(attempt), repair.path)
+        XCTAssertNil(try recover())
+        XCTAssertEqual(try Data(contentsOf: ordinary), oldBytes)
+        try write(attempt, at: repair)
+        XCTAssertEqual(try recover()?.path, repair.path)
+        XCTAssertEqual(try recover()?.attempt, attempt)
+        XCTAssertEqual(try route(attempt), repair.path)
+        XCTAssertEqual(try Data(contentsOf: ordinary), oldBytes)
+        // Startup has no authority to choose between two original-head intents.
+        try write(ordinaryAttempt, at: ordinary)
+        let uncertainBytes = try Data(contentsOf: ordinary)
+        XCTAssertThrowsError(try recover())
+        XCTAssertThrowsError(try route(attempt))
+        XCTAssertEqual(try Data(contentsOf: ordinary), uncertainBytes)
+        try FileManager.default.removeItem(at: repair)
+        XCTAssertEqual(try recover()?.path, ordinary.path)
+        XCTAssertThrowsError(try route(attempt)) // A genuinely uncertain ordinary POST blocks a new repair.
+        XCTAssertEqual(try route(ordinaryAttempt), ordinary.path)
+        XCTAssertEqual(try Data(contentsOf: ordinary), uncertainBytes)
+        // Legacy repair on the old singleton resumes on precisely that path.
+        try write(attempt, at: ordinary)
+        let legacyBytes = try Data(contentsOf: ordinary)
+        XCTAssertEqual(try route(attempt), ordinary.path)
+        XCTAssertEqual(try recover()?.path, ordinary.path)
+        XCTAssertEqual(try Data(contentsOf: ordinary), legacyBytes)
+        // An uncertain dedicated repair also fences ordinary replacement.
+        try FileManager.default.removeItem(at: ordinary)
+        try write(attempt, at: repair)
+        XCTAssertThrowsError(try route(ordinaryAttempt))
+        for key in ["workspaceId", "tenantId", "principalId", "exhibitionId", "expectedEditVersion", "expectedRevision"] {
+            var other = attempt; other[key] = .string("different")
+            try write(other, at: repair)
+            XCTAssertNil(try recover())
+        }
+        var other = attempt; other["command"]["etag"] = .string("\"studio-r4-\(String(repeating: "b", count: 64))\"")
+        try write(other, at: repair)
+        XCTAssertNil(try recover())
+    }
+
     #if DEBUG
     func testPersistedPostReadbackAndUncertainReplayKeepOriginalWireWithoutDuplicateSave() async throws {
         let (before, after) = try fixture()
-        let nextETag = "\"studio-r5-\(hash)\""
+        let nextETag = "\"studio-r5-\(fixtureDigest)\""
         let response = try JSONEncoder().encode(DocumentValue.object(["revision": .integer(5),
             "etag": .string(nextETag), "draft": after.document]))
         let session = try JSONSerialization.data(withJSONObject: ["tenantId": tenant, "userId": tenant,
