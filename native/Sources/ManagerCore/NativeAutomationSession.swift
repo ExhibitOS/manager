@@ -7,6 +7,7 @@ import Darwin
 /// used by ManagerApp. Each installed CLI admits only its scoped commands.
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
+        "thumbnail-status",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
@@ -45,6 +46,7 @@ public actor NativeAutomationSession {
     private let workspaceV7ValidationRuntime: URL?
     private let existingWorkspaceV5: ExistingWorkspaceV5?
     private let root: URL
+    private let installedAuthoringCLI: Bool
     private let installedImageCLI: Bool
     private let installedExportRootIdentity: (dev_t, ino_t)?
     private let requiresReleaseImageRuntime: Bool
@@ -64,6 +66,17 @@ public actor NativeAutomationSession {
     private var surfaceProposals: [String: SurfaceMaterialTextureRequest] = [:]
     private var plaqueProposals: [String: (PlaquePreview, String)] = [:]
     private var wallFinishProposals: [String: (WallFinishPreview, String)] = [:]
+    private enum SceneProposal: Sendable {
+        case scene(NativeAutomationScene.ScenePreview)
+        case light(LightPreview)
+        func apply(to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
+            switch self {
+            case .scene(let preview): return try preview.apply(to: draft)
+            case .light(let preview): return try preview.apply(to: draft, selectedLightId: preview.command.lightId, command: preview.command)
+            }
+        }
+    }
+    private var sceneProposals: [String: (SceneProposal, String, String)] = [:]
     private var pendingRevisions: [String: UInt64] = [:]
     private var staticIntents: [String: NativePublicationPending] = [:]
     private var selectedOEXFormat: String?
@@ -101,6 +114,7 @@ public actor NativeAutomationSession {
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
               !profile.path.hasPrefix(outputRoot.path + "/") else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         self.root = outputRoot; self.inputs = inputs; self.installedImageCLI = false
+        self.installedAuthoringCLI = false
         self.installedExportRootIdentity = nil
         self.requiresReleaseImageRuntime = false
         self.helper = helper; self.profile = profile; self.temporaryRoot = temporaryRoot; self.ports = ports
@@ -133,7 +147,11 @@ public actor NativeAutomationSession {
         try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot)
     }
 
-    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?) throws {
+    public init(installedAuthoringCLIHelper helper: URL, profile: URL, outputRoot: URL) throws {
+        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot, authoring: true)
+    }
+
+    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?, authoring: Bool = false) throws {
         var metadata = stat()
         if lstat(profile.path, &metadata) != 0 && errno == ENOENT {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
@@ -145,6 +163,7 @@ public actor NativeAutomationSession {
         self.temporaryRoot = profile
         self.ports = [:]
         self.inputs = [:]
+        self.installedAuthoringCLI = authoring
         self.installedImageCLI = exportRoot == nil
         self.installedExportRootIdentity = try exportRoot.map { try Self.exportRootIdentity($0, profile: profile) }
         self.requiresReleaseImageRuntime = requireExistingManagedProfile
@@ -240,7 +259,7 @@ public actor NativeAutomationSession {
               stopped.restoration.map({ $0.state == "activated" }) ?? true else {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
         }
-        guard stopped.freshImageReleaseConfigured == true
+        guard installedAuthoringCLI || stopped.freshImageReleaseConfigured == true
                 || (!requiresReleaseImageRuntime
                     && AuthoringAPI.supportsFreshImageRuntime(manifest: configured.manifestSha256)) else {
             throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
@@ -258,7 +277,11 @@ public actor NativeAutomationSession {
         let api = try AuthoringAPI(port: configured.ports.web, tenantId: credentials.tenantId,
                                   nativeRuntimeManifestSHA256: configured.manifestSha256)
         authoringSession = try await api.connect(credentials)
-        guard await api.admitsFreshImagePreparation else { throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE") }
+        if installedAuthoringCLI {
+            guard authoringSession?.nativeAuthoringProposalProfile == "saved-head-v1" || authoringSession?.advertisesRenderedArtworkThumbnail == true else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+        } else {
+            guard await api.admitsFreshImagePreparation else { throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE") }
+        }
         self.api = api; runtimeManifest = configured.manifestSha256; identity = document
         return try await statusValue()
     }
@@ -347,6 +370,7 @@ public actor NativeAutomationSession {
 
         runtimeStopped = true
         proposals.removeAll(); sharedBenchProposals.removeAll(); surfaceProposals.removeAll(); plaqueProposals.removeAll(); wallFinishProposals.removeAll()
+        sceneProposals.removeAll()
         _ = try await bridge.stop(context)
         let stopped = try await waitReady()
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses,
@@ -433,6 +457,73 @@ public actor NativeAutomationSession {
         guard case .object(let fields) = request, fields["expectedRevision"] != nil, fields["expectedEditVersion"] != nil,
               request["expectedRevision"].integer == Int64(state.revision),
               request["expectedEditVersion"] == (state.draft?.document["editVersion"] ?? .null) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+    }
+    private func thumbnailCandidate(_ request: DocumentValue, id: String, context: Context,
+                                    api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
+        try checkedRevision(request, current)
+        guard let session = authoringSession, await api.hasCatalogThumbnailAuthority(session),
+              let operation = request["operation"].string else { throw BridgeFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        let authority = CatalogThumbnailAuthority()
+        defer { authority.invalidate() }
+        if operation == "thumbnail-prepare" {
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "artworkRevision"])
+            guard let artworkId = command["artworkId"].string, let revision = command["artworkRevision"].integer,
+                  (1...Int64(Int32.max)).contains(revision), !current.dirty, current.pending == nil,
+                  let draft = current.draft, let etag = current.etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+            let candidatePath = root.appendingPathComponent("thumbnail-\(id).json").path
+            let pngPath = root.appendingPathComponent("thumbnail-\(id).png").path
+            if FileManager.default.fileExists(atPath: candidatePath) {
+                let stored = try Self.sharedBenchReply(root: root, path: candidatePath)
+                let candidate = try JSONDecoder().decode(NativeThumbnailCandidate.self, from: JSONEncoder().encode(stored))
+                let rendered = try candidate.rendered(in: current)
+                guard rendered.artworkId == artworkId, rendered.revision == Int(revision) else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
+                try NativeThumbnailCandidate.materializePreview(rendered.pngData, root: root, name: URL(fileURLWithPath: pngPath).lastPathComponent)
+                return .object(["candidatePath": .string(candidatePath), "previewPath": .string(pngPath),
+                    "pngSha256": .string(rendered.pngSha256), "selectionVersion": .integer(Int64(candidate.selectionVersion)), "selected": .bool(false)])
+            }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let selection = try await api.artworkThumbnailSelection(artworkId: artworkId, revision: Int(revision), session: session, authority: authority)
+            let credentials = try await bridge.authoringSession(context)
+            let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1,
+                tenantId: current.tenantId, principalId: current.principalId, draft: draft,
+                selection: nil, mode: "translate", view: "isometric", disabled: false,
+                workspaceId: current.workspaceId, baseETag: etag)
+            let renderer = await NativeThumbnailRenderer()
+            let (renderRequest, reply) = try await withTaskCancellationHandler {
+                try await renderer.render(credentials: credentials, frame: frame, artworkId: artworkId, revision: Int(revision))
+            } onCancel: {
+                Task { @MainActor in renderer.cancel() }
+            }
+            let (_, _, refreshed) = try await checked(request)
+            guard try value(refreshed) == value(current), await api.hasCatalogThumbnailAuthority(session) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            let candidate = NativeThumbnailCandidate(workspaceId: current.workspaceId, tenantId: current.tenantId,
+                principalId: current.principalId, selectionVersion: selection.selectionVersion, request: renderRequest, reply: reply)
+            let rendered = try candidate.rendered(in: current)
+            try candidate.persist(root: root, name: URL(fileURLWithPath: candidatePath).lastPathComponent)
+            try NativeThumbnailCandidate.materializePreview(rendered.pngData, root: root, name: URL(fileURLWithPath: pngPath).lastPathComponent)
+            return .object(["candidatePath": .string(candidatePath), "previewPath": .string(pngPath),
+                "pngSha256": .string(rendered.pngSha256), "selectionVersion": .integer(Int64(selection.selectionVersion)), "selected": .bool(false)])
+        }
+        let command = try NativeAutomationArtworkRules.command(request, keys: ["candidatePath", "expectedPngSha256"])
+        guard let path = command["candidatePath"].string, let expected = command["expectedPngSha256"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        let stored = try Self.sharedBenchReply(root: root, path: path)
+        let candidate = try JSONDecoder().decode(NativeThumbnailCandidate.self, from: JSONEncoder().encode(stored))
+        let rendered = try candidate.rendered(in: current, expectedSHA256: expected)
+        let preview = URL(fileURLWithPath: path).deletingPathExtension().appendingPathExtension("png")
+        try NativeThumbnailCandidate.materializePreview(rendered.pngData, root: root, name: preview.lastPathComponent)
+        if operation == "thumbnail-status" {
+            let selection = try await api.artworkThumbnailSelection(artworkId: rendered.artworkId, revision: rendered.revision, session: session, authority: authority)
+            return .object(["candidate": stored, "selection": try value(selection)])
+        }
+        guard operation == "thumbnail-select", let selectionID = UUID(uuidString: id) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+        let receipt = try await api.saveRenderedArtworkThumbnail(rendered, requestId: selectionID,
+            expectedSelectionVersion: candidate.selectionVersion, session: session, authority: authority)
+        let selection = try await api.artworkThumbnailSelection(artworkId: rendered.artworkId, revision: rendered.revision, session: session, authority: authority)
+        guard selection.bindingId == receipt.id, selection.selectionVersion == receipt.selectionVersion else {
+            throw BridgeFailure("CATALOG_SELECTION_READBACK_UNCERTAIN")
+        }
+        return .object(["receipt": try value(receipt), "selection": try value(selection)])
     }
     private func finishedHayes(_ context: Context, api: AuthoringAPI, document: NativeDocumentState,
                                artworkId: String, jobId: String, revision: Int) async throws
@@ -1249,10 +1340,17 @@ public actor NativeAutomationSession {
               let operation = request["operation"].string, case .object(let fields) = request,
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
-        if installedExportRootIdentity != nil {
+        if installedAuthoringCLI {
+            let allowed: Set<String> = ["read", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select"]
+            guard allowed.contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+        } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
-        if ["plaque-prepare", "plaque-apply", "plaque-cancel", "wall-finish-prepare", "wall-finish-apply", "wall-finish-cancel"].contains(operation) {
+        if ["thumbnail-prepare", "thumbnail-status", "thumbnail-select"].contains(operation) {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
+        if ["plaque-prepare", "plaque-apply", "plaque-cancel", "wall-finish-prepare", "wall-finish-apply", "wall-finish-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel"].contains(operation) {
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
             let extra: Set<String> = operation.hasSuffix("-prepare") ? ["command"] : ["proposalId"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -1317,6 +1415,7 @@ public actor NativeAutomationSession {
             }
         }
         if let prior {
+            if ["pedestal-prepare", "light-prepare"].contains(operation), sceneProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "plaque-prepare", plaqueProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "wall-finish-prepare", wallFinishProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             return prior
@@ -1330,6 +1429,56 @@ public actor NativeAutomationSession {
         busy = true; defer { busy = false }
         let result: DocumentValue
         switch operation {
+        case "pedestal-prepare", "light-prepare":
+            try checkedRevision(request, current)
+            guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+            try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE")
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1, tenantId: current.tenantId,
+                principalId: current.principalId, draft: draft, selection: nil, mode: "translate", view: "isometric",
+                disabled: false, workspaceId: current.workspaceId, baseETag: etag)
+            let wire: DocumentValue
+            let check: @Sendable (DocumentValue) throws -> SceneProposal
+            if operation == "pedestal-prepare" {
+                let proposal = try NativeAutomationScene.pedestalRequest(request["command"], frame: frame)
+                wire = proposal.value; check = { .scene(try proposal.checkedReply($0)) }
+            } else if request["command"]["light"] != .null {
+                let proposal = try NativeAutomationScene.additionRequest(request["command"], frame: frame)
+                wire = proposal.value; check = { .scene(try proposal.checkedReply($0)) }
+            } else {
+                let proposal = try NativeAutomationScene.lightRequest(request["command"], frame: frame)
+                wire = proposal.value; check = { .light(try proposal.checkedReply($0, selectedLightId: proposal.command.lightId)) }
+            }
+            let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: wire)
+            let preview = try check(reply)
+            try Task.checkCancellation()
+            let now = try await api.exhibition(draft.id)
+            let (_, _, refreshed) = try await checked(request)
+            guard now.draft == draft, now.etag == etag, now.revision == saved.revision,
+                  try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            sceneProposals[id] = (preview, etag, operation)
+            result = .object(["proposalId": .string(id), "candidate": reply["candidate"]])
+        case "pedestal-apply", "light-apply", "pedestal-cancel", "light-cancel":
+            try checkedRevision(request, current)
+            guard let proposalId = request["proposalId"].string, let (preview, etag, prepared) = sceneProposals[proposalId],
+                  prepared == operation.replacingOccurrences(of: "-apply", with: "-prepare").replacingOccurrences(of: "-cancel", with: "-prepare") else { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            if operation.hasSuffix("-cancel") {
+                sceneProposals.removeValue(forKey: proposalId)
+                result = .object(["cancelled": .bool(true)])
+            } else {
+                guard !current.dirty, current.pending == nil, let draft = current.draft, current.etag == etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+                try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE")
+                let saved = try await api.exhibition(draft.id)
+                let (_, _, refreshed) = try await checked(request)
+                guard saved.draft == draft, saved.etag == etag, try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+                var next = current; next.draft = try preview.apply(to: draft)
+                try Task.checkCancellation()
+                result = try value(await bridge.saveDocumentState(context, state: next))
+                sceneProposals.removeValue(forKey: proposalId)
+            }
+        case "thumbnail-prepare", "thumbnail-status", "thumbnail-select":
+            result = try await thumbnailCandidate(request, id: id, context: context, api: api, current: current)
         case "read": result = try await statusValue()
         case "artwork-finish-reviewed":
             try checkedRevision(request, current)

@@ -28,6 +28,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeProductImagePreparationProfile: String? = nil
     public var nativeProductImageThumbnailRepairProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
+    public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
@@ -2629,16 +2630,11 @@ public actor AuthoringAPI {
     var admitsSavedHeadAuthoring: Bool { hasSavedHeadAuthoringAdmission() }
 
     private func hasSavedHeadAuthoringAdmission(forCarriedPlaqueUpdate: Bool = false) -> Bool {
-        #if DEBUG
-        let manifest = nativeRuntimeManifestSHA256 ?? ""
-        return nativeSession && !authenticationBusy
-            && (Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
-                || manifest == Self.nativePublicationCapacityManifestPin
-                || (forCarriedPlaqueUpdate && Self.supportsCarriedRestoreBenchRuntime(manifest: manifest)))
+        // The helper already binds this native session to its verified runtime.
+        // The live server advertises the operation it actually implements;
+        // dated validation-build hashes must not replace that capability.
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
             && session?.nativeAuthoringProposalProfile == "saved-head-v1"
-        #else
-        false
-        #endif
     }
 
     nonisolated static func supportsRenderedSculptureThumbnailOexRuntime(manifest: String) -> Bool {
@@ -2657,14 +2653,19 @@ public actor AuthoringAPI {
 
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
-        guard hasSavedHeadAuthoringAdmission(forCarriedPlaqueUpdate: proposal["type"] == .string("set-plaque")),
+        let operation = proposal["type"].string ?? ""
+        let scene = ["set-pedestal", "add-light", "set-light-details"].contains(operation)
+        let admitted = scene
+            ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+                && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            : hasSavedHeadAuthoringAdmission()
+        guard admitted,
               let session else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              let operation = proposal["type"].string,
-              ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation) else {
+              ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details"].contains(operation) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }

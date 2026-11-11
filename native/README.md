@@ -63,6 +63,54 @@ the edit. Use the existing `save` operation to commit it, then
 `reopen-saved` to read it back. This operation adds no fields to the draft or
 journal formats.
 
+## Authenticated scene and thumbnail CLI
+
+The installed app exposes `ExhibitOSManager --authoring-cli --profile
+ABSOLUTE_PATH --output-root ABSOLUTE_PATH`. Quit the ordinary app first. Use an
+existing managed personal profile and a separate owner-only output directory
+on the same volume. The entry uses its bundled helper and verified runtime;
+it does not accept an arbitrary helper, runtime, document or session token.
+Send one version1 JSON request per line and wait for its response. Reuse the
+workspace/tenant/principal/capability from `ready`, and the current document
+revision and edit version for every modifying request. EOF closes and drains
+the owned runtime.
+
+`pedestal-prepare` accepts `command: {placementId, pedestal}` using the existing
+closed installation pedestal fields. `light-prepare` accepts either
+`command: {light, settings?}` for creation (a full existing light row with a
+caller-stable UUID), or `{lightId, type, color, intensity, position,
+beamAngle?, areaSize?, colorIntent?}` for update. Updates preserve existing
+fixture/aim/range settings and the supported color intent. New scene proposals
+require the live `saved-head-scene-v1` capability. `plaque-prepare` retains its
+existing typed command and separate `saved-head-v1` capability.
+
+Each prepare returns a checked candidate and `proposalId`; the corresponding
+`pedestal-apply`, `light-apply` or `plaque-apply` stages it in the native journal.
+Pass `proposalId` at the envelope level. Cancel uses the corresponding `-cancel`
+operation. Ordinary `save` commits the staged edit; `reopen-saved` reads the
+durable result. A proposal expires when its session/base changes. No command
+replaces a raw draft or writes the database directly.
+
+`thumbnail-prepare` takes `command: {artworkId, artworkRevision}` on a saved
+exhibition. A temporary, app-managed WebKit host invokes the existing product
+256px model-card renderer and returns `candidatePath`, `previewPath` and
+`pngSha256`. This requires macOS with the supported WebKit/GPU host and a live
+rendered-thumbnail capability; it requires no manual GUI input or capture flag.
+Preparation does not select a thumbnail or save the exhibition. Review the PNG,
+then explicitly send `thumbnail-select` with
+`command: {candidatePath, expectedPngSha256}`. `thumbnail-status` accepts the
+same command and reads the current server selection. Candidate files bind the
+workspace, owner, source and rendered bytes and can be reopened from the same
+private output directory after restart. Partial/missing previews are recovered
+only from those verified candidate bytes; foreign files are refused.
+
+For an uncertain selection response, retry the identical request with the same
+request UUID and candidate. The server performs the existing source/revision
+and selection-version comparison and request replay checks. Selection returns
+the receipt and checked binding readback, separately from exhibition Save or
+export. Source tests and compilation alone do not qualify a packaged runtime,
+actual WebKit rendering/cancellation, durable consumption or Viewer output.
+
 ## Rectangular portal registration
 
 The native furnishing form can explicitly request `rectangular-portal-v1` for

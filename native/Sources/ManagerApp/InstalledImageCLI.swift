@@ -12,6 +12,8 @@ struct ManagerEntryPoint {
         switch arguments.first {
         case "--image-cli":
             exit(await InstalledImageCLI.run(Array(arguments.dropFirst())))
+        case "--authoring-cli":
+            exit(await InstalledImageCLI.runExport(Array(arguments.dropFirst()), authoring: true))
         case "--export-cli":
             exit(await InstalledImageCLI.runExport(Array(arguments.dropFirst())))
         default:
@@ -46,12 +48,12 @@ enum InstalledImageCLI {
         return await run(profilePath: profilePath)
     }
 
-    static func runExport(_ arguments: [String]) async -> Int32 {
-        let usage = "Usage: ExhibitOSManager --export-cli --profile ABSOLUTE_PATH --output-root ABSOLUTE_PATH"
+    static func runExport(_ arguments: [String], authoring: Bool = false) async -> Int32 {
+        let usage = "Usage: ExhibitOSManager \(authoring ? "--authoring-cli" : "--export-cli") --profile ABSOLUTE_PATH --output-root ABSOLUTE_PATH"
         if arguments == ["--help"] {
             print("""
                 \(usage)
-                Commands: read, export-oex, export-static, export-static-status.
+                Commands: \(authoring ? "read, save, reopen-saved, pedestal/light/plaque-prepare, -apply, -cancel, thumbnail-prepare, thumbnail-status, thumbnail-select." : "read, export-oex, export-static, export-static-status.")
                 Send one JSON request per line.
                 Use a saved personal workspace and a separate owner-only output directory on the same volume.
                 End stdin to close and drain the owned runtime.
@@ -68,10 +70,10 @@ enum InstalledImageCLI {
             report(BridgeFailure("AUTOMATION_OUTPUT_INVALID"))
             return 2
         }
-        return await run(profilePath: arguments[1], outputRoot: output)
+        return await run(profilePath: arguments[1], outputRoot: output, authoring: authoring)
     }
 
-    private static func run(profilePath: String?, outputRoot: URL? = nil) async -> Int32 {
+    private static func run(profilePath: String?, outputRoot: URL? = nil, authoring: Bool = false) async -> Int32 {
         // Let the CLI cancel the request and close the pipe. The helper retains
         // its own signal and EOF shutdown paths.
         signal(SIGPIPE, SIG_IGN)
@@ -79,7 +81,7 @@ enum InstalledImageCLI {
             signal(number, SIG_IGN)
             return DispatchSource.makeSignalSource(signal: number, queue: .global())
         }
-        let task = Task { await runSession(profilePath: profilePath, outputRoot: outputRoot) }
+        let task = Task { await runSession(profilePath: profilePath, outputRoot: outputRoot, authoring: authoring) }
         for source in signals {
             source.setEventHandler { task.cancel() }
             source.resume()
@@ -89,7 +91,7 @@ enum InstalledImageCLI {
         return status
     }
 
-    private static func runSession(profilePath: String?, outputRoot: URL?) async -> Int32 {
+    private static func runSession(profilePath: String?, outputRoot: URL?, authoring: Bool) async -> Int32 {
         var session: NativeAutomationSession?
         var status: Int32 = 0
         do {
@@ -109,7 +111,9 @@ enum InstalledImageCLI {
                     .appendingPathComponent("org.exhibitos.manager", isDirectory: true)
             }
             let owner: NativeAutomationSession
-            if let outputRoot {
+            if authoring, let outputRoot {
+                owner = try NativeAutomationSession(installedAuthoringCLIHelper: helper, profile: profile, outputRoot: outputRoot)
+            } else if let outputRoot {
                 owner = try NativeAutomationSession(installedExportCLIHelper: helper, profile: profile, outputRoot: outputRoot)
             } else {
                 owner = try NativeAutomationSession(installedImageCLIHelper: helper, profile: profile,
