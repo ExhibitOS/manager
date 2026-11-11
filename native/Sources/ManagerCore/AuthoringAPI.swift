@@ -2536,7 +2536,7 @@ public actor AuthoringAPI {
                                                      intakeId: String) async throws -> NativeExhibitionDraft? {
         guard admitsWorkspaceInfoStandReplacement, document.pending == nil, document.tenantId == tenant,
               session?.userId == document.principalId, let draft = document.draft,
-              document.savedEditVersion == draft.editVersion, let etag = document.etag,
+              document.savedEditVersion == draft.document["editVersion"].integer, let etag = document.etag,
               nativeImportDigest(expectedModelSHA256), workspaceFurnishingID(intakeId), UUID(uuidString: intakeId) != nil else {
             throw AuthoringFailure("WORKSPACE_INFO_STAND_REPLACEMENT_UNAVAILABLE")
         }

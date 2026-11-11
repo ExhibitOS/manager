@@ -64,7 +64,7 @@ final class WorkspaceInfoStandReplacementTests: XCTestCase {
         plaques[0]["position"] = input["plaque"]["position"]
         expected["extensions"][PlaqueSettings.namespace]["plaques"] = .array(plaques)
         XCTAssertEqual(next.candidate, expected)
-        XCTAssertEqual(next.editVersion, before.editVersion + 1)
+        XCTAssertEqual(next.document["editVersion"].integer, try XCTUnwrap(before.document["editVersion"].integer) + 1)
         XCTAssertEqual(next.candidate["extensions"][ns]["version"], .integer(3))
         XCTAssertNil(try WorkspaceInfoStandReplacement(value: input).applying(model, to: next, supportedExtensionVersion: 3))
     }
