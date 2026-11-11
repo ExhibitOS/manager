@@ -1710,6 +1710,10 @@ mod tests {
             assert_eq!(checkpoint_inventory_limit((complete, fixture), None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
             assert_eq!(checkpoint_inventory_limit((fixture, complete), None), MAX_BYTES);
             assert_eq!(checkpoint_inventory_limit((fixture, fixture), None), MAX_BYTES);
+            let default_1_7 = crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET.2;
+            assert_eq!(checkpoint_inventory_limit((fixture, default_1_7), None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
+            assert_eq!(checkpoint_inventory_limit((default_1_7, fixture), None), MAX_BYTES);
+            assert_eq!(checkpoint_inventory_limit((default_1_7, default_1_7), None), MAX_BYTES);
         }
         let current = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a";
         let previous = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d";
