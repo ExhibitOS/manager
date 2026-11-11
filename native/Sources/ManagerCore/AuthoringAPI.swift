@@ -436,6 +436,8 @@ public actor AuthoringAPI {
         "5cb2431e561c21e1463f78faf938a5cfc3807c9dd690a545f3474769c1c7f4a9"
     private static let nativePublicationCapacityManifestPin =
         "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203"
+    private static let portalHayesRuntimeManifestPin =
+        "86faf157a49ffa7cd07495a064e19efd2f25e5b2bb5a1944432bae04872305e3"
     private static let renderedSculptureThumbnailOexRuntimeManifestPin =
         "0efbf042ad20b7cd8963751e5cfe5f343ead93d6ced6164e8bbd08566e378c99"
     private static let requiredModelPreparationManifestPins: Set<String> = [
@@ -537,6 +539,7 @@ public actor AuthoringAPI {
         hayesOriginalRuntimeQualified = NativeHayesOriginalIntent.supports(manifest: manifest)
         productImageRuntimeQualified = Self.supportsProductImageRuntime(manifest: manifest)
         let portalQualified = manifest == Self.workspacePortalFinishManifestPin
+            || manifest == Self.portalHayesRuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -2617,6 +2620,7 @@ public actor AuthoringAPI {
             || manifest == "e41df146d7097fd6964564de3d2f82b4bb766dba5377ec7f938896955fea39b0"
             || manifest == "3e05e41286c517d5304299bdd987b8e5b6fe08ab8396dee3804feeb0f0c4f670"
             || manifest == "eac64ed106bdac283c1aa0c6c3dee5541c98919ed4a67bd9e5509b21496b5bce"
+            || manifest == portalHayesRuntimeManifestPin
         #else
         false
         #endif
