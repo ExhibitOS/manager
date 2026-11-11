@@ -7,6 +7,40 @@ import ImageIO
 
 @MainActor
 final class CatalogThumbnailAuthorityTests: XCTestCase {
+    func testFurnishingRendererUsesOwnLiveAuthorityWithoutArtworkProfile() async throws {
+        let id = UUID().uuidString.lowercased()
+        func body(_ csrf: String) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["tenantId": id, "userId": id, "role": "admin",
+                "csrfToken": csrf, "expiresAt": "2099-01-01T00:00:00Z",
+                "workspaceFurnishingProfile": "workspace-furnishing-intake-v1",
+                "workspaceFurnishingStoolProfile": "workspace-furnishing-stool-v1",
+                "workspaceFurnishingRoomVisualProfile": "workspace-furnishing-room-visual-v1"])
+        }
+        let firstBody = try body("first")
+        CatalogThumbnailProtocol.configure { _ in (200, firstBody) }
+        defer { CatalogThumbnailProtocol.configure(nil) }
+        let api = try AuthoringAPI(port: 18091, tenantId: id,
+            nativeRuntimeManifestSHA256: "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2",
+            protocolClasses: [CatalogThumbnailProtocol.self])
+        let credentials = LocalAuthoringSession(tenantId: id, principalId: id,
+            origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43))
+        let first = try await api.connect(credentials)
+        XCTAssertFalse(first.advertisesRenderedArtworkThumbnail)
+        let shared = try await api.furnishingThumbnailRendererCredentials(for: first)
+        XCTAssertEqual(shared.token, credentials.token)
+        XCTAssertEqual(CatalogThumbnailProtocol.observedMethods(), ["GET"])
+        let nextBody = try body("next")
+        CatalogThumbnailProtocol.configure { _ in (200, nextBody) }
+        let next = try await api.connect(LocalAuthoringSession(tenantId: id, principalId: id,
+            origin: credentials.origin, token: String(repeating: "b", count: 43)))
+        do { _ = try await api.furnishingThumbnailRendererCredentials(for: first); XCTFail("Old furnishing session reused new credentials") }
+        catch let error as AuthoringFailure { XCTAssertEqual(error.code, "AUTH_REQUIRED") }
+        _ = try await api.furnishingThumbnailRendererCredentials(for: next)
+        await api.endLocalAuthoringSession()
+        do { _ = try await api.furnishingThumbnailRendererCredentials(for: next); XCTFail("Closed furnishing session rendered") }
+        catch let error as AuthoringFailure { XCTAssertEqual(error.code, "AUTH_REQUIRED") }
+    }
+
     func testRendererSharesCurrentAPICredentialsAndCannotReuseAnOldOrClosedSession() async throws {
         let id = UUID().uuidString.lowercased()
         func body(_ csrf: String) throws -> Data {

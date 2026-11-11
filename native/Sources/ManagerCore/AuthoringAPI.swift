@@ -855,6 +855,23 @@ public actor AuthoringAPI {
         return credentials
     }
 
+    /// Furnishing cards use registered-workspace authority, independently of
+    /// the rendered-artwork-thumbnail capability and its selection workflow.
+    func furnishingThumbnailRendererCredentials(for expected: AuthoringSession) throws -> LocalAuthoringSession {
+        guard hasFurnishingThumbnailAuthority(expected), let credentials = localRendererCredentials,
+              credentials.tenantId.lowercased() == expected.tenantId.lowercased(),
+              credentials.principalId.lowercased() == expected.userId.lowercased(),
+              credentials.origin == base.absoluteString else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        return credentials
+    }
+
+    func hasFurnishingThumbnailAuthority(_ expected: AuthoringSession) -> Bool {
+        guard admitsWorkspaceFurnishings, let session,
+              session.advertisesWorkspaceFurnishingRoomVisual, expected.advertisesWorkspaceFurnishingRoomVisual else { return false }
+        return session.userId == expected.userId && session.tenantId == expected.tenantId
+            && session.role == expected.role && session.csrfToken == expected.csrfToken && session.expiresAt == expected.expiresAt
+    }
+
     func endLocalAuthoringSession() {
         generation &+= 1
         clear()
