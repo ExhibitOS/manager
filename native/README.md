@@ -99,6 +99,16 @@ operation. Ordinary `save` commits the staged edit; `reopen-saved` reads the
 durable result. A proposal expires when its session/base changes. No command
 replaces a raw draft or writes the database directly.
 
+A pedestal position is its base center; setting it does not move the artwork.
+Model placement uses the centered metric artifact, not the original GLB's base
+origin. In the identity-pose, unit-scale case, place the model center at
+`pedestalTopY - normalizedModelMinY`. For a support top of `0.2` and measured
+normalized model minimum Y of `-1.5225000381469727`, the center Y is
+`1.7225000381469726`. Use actual metric geometry bounds, not descriptive catalogue
+dimensions or a new unit assumption. The existing generic SDK's
+`artwork-placement-move` changes the placement separately, followed by explicit
+Save; pedestal configuration and artwork positioning remain separate edits.
+
 `thumbnail-prepare` takes `command: {artworkId, artworkRevision}` on a saved
 exhibition. A temporary, app-managed WebKit host invokes the existing product
 256px model-card renderer and returns `candidatePath`, `previewPath` and
