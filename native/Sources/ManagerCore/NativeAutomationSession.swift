@@ -539,6 +539,48 @@ public actor NativeAutomationSession {
         }
         return .object(["receipt": try value(receipt), "selection": try value(selection)])
     }
+    private func furnishingThumbnail(_ request: DocumentValue, context: Context,
+                                      api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
+        try checkedRevision(request, current)
+        let command = try NativeAutomationArtworkRules.command(request, keys: ["id", "version", "modelSha256"])
+        guard selectedOEXFormat == nil, !current.dirty, current.pending == nil,
+              let draft = current.draft, let etag = current.etag, let session = authoringSession,
+              await api.hasFurnishingThumbnailAuthority(session), command["version"] == .integer(1),
+              let id = command["id"].string, workspaceFurnishingID(id), UUID(uuidString: id) != nil,
+              let expectedHash = command["modelSha256"].string else { throw BridgeFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        let saved = try await api.exhibition(draft.id)
+        guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+        let item = try await api.workspaceFurnishing(id, version: 1)
+        guard item.id == id, item.version == 1, item.details.model.sha256 == expectedHash else { throw BridgeFailure("MODEL_CONFLICT") }
+        try NativeFurnishingThumbnailRules.requireDisplay(item.details.rights)
+        let credentials = try await api.furnishingThumbnailRendererCredentials(for: session)
+        let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1,
+            tenantId: current.tenantId, principalId: current.principalId, draft: draft,
+            selection: nil, mode: "translate", view: "isometric", disabled: false,
+            workspaceId: current.workspaceId, baseETag: etag)
+        let renderer = await NativeFurnishingThumbnailRenderer()
+        let capture = try await withTaskCancellationHandler {
+            try await renderer.render(credentials: credentials, frame: frame, furnishing: item)
+        } onCancel: {
+            Task { @MainActor in renderer.cancel() }
+        }
+        try Task.checkCancellation()
+        let (_, _, refreshed) = try await checked(request)
+        let currentItem = try await api.workspaceFurnishing(id, version: 1)
+        let currentSaved = try await api.exhibition(draft.id)
+        guard try value(refreshed) == value(current), currentItem == item,
+              currentSaved.draft == draft, currentSaved.etag == etag,
+              await api.hasFurnishingThumbnailAuthority(session) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+        try NativeFurnishingThumbnailRules.requireDisplay(currentItem.details.rights)
+        guard capture.pngData.count <= 512 * 1024,
+              nativeImportSHA256(capture.pngData) == capture.pngSha256 else { throw BridgeFailure("CATALOG_PREVIEW_INVALID") }
+        return .object(["workspaceId": .string(current.workspaceId), "nativeRevision": .integer(Int64(current.revision)),
+            "editVersion": draft.document["editVersion"], "baseETag": .string(etag), "request": try value(capture.request),
+            "png": .object(["mime": .string("image/png"), "width": .integer(256), "height": .integer(256),
+                "bytes": .integer(Int64(capture.pngData.count)), "sha256": .string(capture.pngSha256),
+                "base64": .string(capture.pngData.base64EncodedString())])])
+    }
+
     private func finishedHayes(_ context: Context, api: AuthoringAPI, document: NativeDocumentState,
                                artworkId: String, jobId: String, revision: Int) async throws
         -> (artwork: NativeArtwork, fullAssetId: String, receipt: NativeHayesReceipt) {
@@ -1731,6 +1773,8 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
             result = try await executeWorkspaceFurnishing(operation, request: request, api: api)
+        case "workspace-furnishing-thumbnail-render":
+            result = try await furnishingThumbnail(request, context: context, api: api, current: current)
         case "workspace-furnishing-place":
             guard selectedOEXFormat == nil, await api.admitsWorkspaceFurnishings else {
                 throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")

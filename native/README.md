@@ -1315,3 +1315,23 @@ Synthetic source tests do not qualify a new bundled runtime, actual intake,
 registration thumbnail, replacement Save, viewport rendering or physical mount.
 The existing GUI/WK furnishing registration thumbnail route remains separate;
 this operation does not generate or select a thumbnail.
+
+
+## Registered furnishing thumbnail capture (source adapter)
+
+The generic SDK `workspace-furnishing-thumbnail-render` command accepts exactly
+`{id, version: 1, modelSha256}` plus the ordinary document revision/edit-version
+scope. It uses a clean saved frame, the exact current workspace session and
+registered descriptor, and the product's furnishing-specific transient WK
+renderer. It rechecks the saved frame, session, descriptor and time-bounded
+display rights before returning a canonical 256×256 PNG as bounded base64 with
+its digest and source/request binding. It does not upload/select an artwork
+thumbnail, change the draft or save an exhibition. Furnishing authority does
+not require the unrelated rendered-artwork-thumbnail profile.
+
+The isolated renderer allows only existing bound-tenant furnishing reads under
+the viewport resource policy. Cancellation/timeout requests stop, page reset
+and teardown; they do not prove asynchronous WebKit callback or GPU-process
+drain. Synthetic tests and source compilation do not qualify an actual WK
+capture or release of a live rendering resource lease. Actual capture must use
+the qualified app/runtime identity and the ordinary resource/owner handoff.
