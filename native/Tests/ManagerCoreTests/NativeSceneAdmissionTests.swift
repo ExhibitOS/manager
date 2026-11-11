@@ -96,6 +96,25 @@ final class NativeSceneAdmissionTests: XCTestCase {
         SceneAdmissionProtocol.reset()
     }
 
+    func testLightObjectRequiresDistinctLiveProfileAndSceneAuthorityBeforeHTTP() async throws {
+        let scene = ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
+        let object = ["nativeLightObjectAuthoringProposalProfile": LightObjectAuthoring.profile]
+        let admitted = scene.merging(object) { _, value in value }
+        for operation in LightObjectAuthoring.commands.sorted() {
+            for markers in [[:], scene, object,
+                            scene.merging(["nativeLightObjectAuthoringProposalProfile": "unknown"]) { _, value in value }] {
+                let reply = try await attempt(operation: operation, markers: markers, runtime: manifest)
+                XCTAssertEqual(reply.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+                XCTAssertEqual(reply.1, ["GET"])
+            }
+            let reply = try await attempt(operation: operation, markers: admitted, runtime: manifest)
+            XCTAssertEqual(reply.0, "AUTHORING_PROPOSAL_INVALID")
+            XCTAssertEqual(reply.1, ["GET", "POST"])
+        }
+        let unknown = try await attempt(operation: "set-any-light-object", markers: admitted, runtime: manifest)
+        XCTAssertEqual(unknown.1, ["GET"])
+    }
+
     func testInstalledExportEntryUsesExportCapabilitiesWithoutImagePreparation() throws {
         let examples: [([String: String], Bool)] = [
             ([:], false),

@@ -65,10 +65,10 @@ struct SharedFurnishingCatalogView: View {
                         guard ready, model.canEditSharedFurnishing, entry.host == target,
                               let current = model.sharedFurnishingTarget, current.0 == target,
                               var form = model.sharedFurnishing, form.host == target, form.hostId == current.1 else { return }
-                        form.selected = true; model.sharedFurnishing = form
+                        form.catalogId = entry.id; form.selected = true; model.sharedFurnishing = form
                     } label: {
                         VStack(alignment: .leading, spacing: 3) {
-                            Label(entry.name, systemImage: entry.host == target && model.sharedFurnishing?.selected == true ? "checkmark.circle.fill" : "cube")
+                            Label(entry.name, systemImage: entry.host == target && model.sharedFurnishing?.selected == true && model.sharedFurnishing?.catalogId == entry.id ? "checkmark.circle.fill" : "cube")
                             Text(entry.category + " · CC0 1.0").font(.caption).foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
                     }.buttonStyle(.bordered)

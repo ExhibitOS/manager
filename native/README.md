@@ -1355,3 +1355,46 @@ registered furnishing intake/thumbnail/replacement, the corrected painting
 lighting output or public viewing. The previously failed export remains failed;
 a later observed export of its already frozen publication is a distinct scoped
 operation with preserved failure evidence and the existing safe API trace.
+
+## Coupled light-object source correspondence
+
+The source negotiates `nativeLightObjectAuthoringProposalProfile:
+saved-head-light-object-v1` alongside the existing saved-head scene profile and
+the editable viewport capability `light-object-v1`. Older receivers retain the
+existing light-list inspector. A `{kind: "light", id}` viewport selection opens
+that same inspector; generic transform controls are not used for light objects.
+
+The closed shared commands are `set-light-object` (whole light/settings and an
+optional attachment), `set-light-fixture` (a known catalogue visual or explicit
+null), `duplicate-light-object`, and `remove-light-object`. Bindings use the
+existing flattened six-field request envelope. Replies contain those exact six
+fields plus the complete candidate and the authoritative `lightId`; clone IDs
+come from the server. The consumer checks the whole graph delta, retained order,
+shared assets, no-ops and unrelated metadata before accepting a candidate.
+Changing a procedural `fixture` setting to `none` does not remove an existing
+GLB visual. Explicit `set-light-fixture` with null is the invisible-light action.
+
+The installed authoring SDK source adds `light-object-prepare`,
+`light-object-apply`, and `light-object-cancel`, using the existing proposal
+cache, expiry, saved-head comparison and revision checks. Preparation and GUI
+preview require a clean saved head. Apply stages one complete local edit with
+ordinary undo; exhibition Save remains explicit. GUI clone/delete, numerical
+mount/detach and catalogue selection use this same bounded proposal path.
+No aim/fit optimizer, automatic relocation or contextual artwork fitting is
+included in this unit.
+
+The exact five-record catalogue snapshot is generated from Platform source
+`48daa7b5033c20b2b3aaa0df09a08c45df68c985`. The washer retains original source
+`d85d9d1823c49bef412a23a59e238104f5b8ad342d8e8149efaf8d1110dc3290`,
+independently produced model
+`a4b66294c77e206a574905e12680148129f914d368add947f1c8831c64bf3f4d`,
+and the current distribution notice. Public provenance uses the existing
+`omit-unused-tangent-v1` omission recipe; the immutable producer receipt retains
+the stricter preparation policy and tool/source/output binding. Existing four
+catalogue/asset records are unchanged. Explicit catalogue IDs distinguish the
+washer from the track spot and reject an unknown or wrong-host descriptor.
+
+This source slice does not update the default 1.7 runtime admission above or
+establish a matched 1.8 runtime, actual GUI application, physical aperture/mount
+fit, Save/reopen/export or Viewer qualification. Those require their own exact
+runtime and observed consumer evidence.
