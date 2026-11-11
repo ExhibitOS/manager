@@ -7,7 +7,7 @@ import Darwin
 /// used by ManagerApp. Each installed CLI admits only its scoped commands.
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
-        "thumbnail-status",
+        "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
@@ -1422,10 +1422,14 @@ public actor NativeAutomationSession {
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
-            let allowed: Set<String> = ["read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select"]
+            let allowed: Set<String> = ["read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve"]
             guard allowed.contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
+        }
+        if ["required-model-original-discover", "required-model-original-status", "required-model-original-approve"].contains(operation) {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if ["thumbnail-prepare", "thumbnail-status", "thumbnail-select"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
@@ -1524,6 +1528,24 @@ public actor NativeAutomationSession {
             var next = current; next.draft = try Self.emptyExhibitionDraft(request, in: current)
             try Task.checkCancellation()
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "required-model-original-discover", "required-model-original-status", "required-model-original-approve":
+            try checkedRevision(request, current)
+            let discovery = operation == "required-model-original-discover"
+            let keys: Set<String> = discovery ? ["artworkId", "artworkRevision"] : ["artworkId", "artworkRevision", "importJobId", "serverReceiptSha256"]
+            let command = try NativeAutomationArtworkRules.command(request, keys: keys)
+            guard let artworkId = command["artworkId"].string, let revision = command["artworkRevision"].integer,
+                  (1...Int64(Int32.max)).contains(revision) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let custody = try await api.discoverRequiredModelOriginal(artworkId: artworkId, revision: Int(revision), in: current)
+            if discovery {
+                result = try value(custody)
+            } else {
+                guard command["importJobId"] == .string(custody.importJobId), command["serverReceiptSha256"] == .string(custody.serverReceiptSha256) else {
+                    throw BridgeFailure("REQUIRED_MODEL_ORIGINAL_UNAVAILABLE")
+                }
+                result = try value(await api.requiredModelOriginalApproval(custody, in: current, approve: operation == "required-model-original-approve"))
+            }
+            let (_, _, refreshed) = try await checked(request)
+            guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
         case "pedestal-prepare", "light-prepare":
             try checkedRevision(request, current)
             guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }

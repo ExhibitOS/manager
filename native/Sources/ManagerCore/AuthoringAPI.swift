@@ -27,6 +27,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
     public var nativeProductImageThumbnailRepairProfile: String? = nil
+    public var nativeRequiredModelOriginalProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
@@ -646,7 +647,7 @@ public actor AuthoringAPI {
         }
     }
 
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil) async throws -> T {
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil, requiresNativeReadCSRF: Bool = false) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -680,7 +681,7 @@ public actor AuthoringAPI {
         request.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if body != nil || bodyFile != nil { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
-        if method != "GET", authenticated, let session { request.setValue(session.csrfToken, forHTTPHeaderField: "x-csrf-token") }
+        if method != "GET" || requiresNativeReadCSRF, authenticated, let session { request.setValue(session.csrfToken, forHTTPHeaderField: "x-csrf-token") }
         if let catalogThumbnail {
             guard catalogThumbnail.scope.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
             catalogThumbnail.stage.record(.request)
@@ -1318,6 +1319,67 @@ public actor AuthoringAPI {
               asset["sha256"].string == display.sha256, asset["bytes"].integer == Int64(display.bytes),
               asset["mime"].string == display.mime else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
         return (approved.artwork, display)
+    }
+
+    public var admitsRequiredModelOriginalApproval: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeRequiredModelOriginalProfile == NativeRequiredModelCustody.profile
+    }
+
+    public func discoverRequiredModelOriginal(artworkId: String, revision: Int,
+                                             in document: NativeDocumentState) async throws -> NativeRequiredModelCustody {
+        guard admitsRequiredModelOriginalApproval, (1...Int(Int32.max)).contains(revision) else {
+            throw AuthoringFailure("REQUIRED_MODEL_ORIGINAL_UNAVAILABLE")
+        }
+        let held = generation
+        struct Projection: Decodable, Sendable { let requiredModelCustody: NativeRequiredModelCustody? }
+        let path = studioPrefix + "/artworks/" + (try identifier(artworkId)) + "/native-model-candidate?artworkRevision=\(revision)"
+        let projection: Projection = try await request(path)
+        guard let custody = projection.requiredModelCustody else { throw AuthoringFailure("REQUIRED_MODEL_ORIGINAL_UNAVAILABLE") }
+        let snapshot = try await studioArtwork(artworkId)
+        guard generation == held, admitsRequiredModelOriginalApproval,
+              custody.artworkId == artworkId, custody.artworkRevision == revision else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try custody.validate(in: document, artwork: snapshot.artwork)
+        return custody
+    }
+
+    public func requiredModelOriginalApproval(_ custody: NativeRequiredModelCustody,
+        in document: NativeDocumentState, approve: Bool) async throws -> NativeRequiredModelOriginalApproval {
+        guard admitsRequiredModelOriginalApproval, !document.dirty, document.pending == nil,
+              let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("REQUIRED_MODEL_ORIGINAL_UNAVAILABLE")
+        }
+        let held = generation
+        let snapshot = try await studioArtwork(custody.artworkId)
+        try custody.validate(in: document, artwork: snapshot.artwork)
+        let saved = try await exhibition(draft.id)
+        guard generation == held, saved.draft == draft, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        struct Input: Encodable {
+            let kind: String
+            let artworkId: String
+            let artworkRevision: Int
+            let importJobId: String
+            let serverReceiptSha256: String
+        }
+        let input = Input(kind: NativeRequiredModelCustody.profile, artworkId: custody.artworkId,
+            artworkRevision: custody.artworkRevision, importJobId: custody.importJobId, serverReceiptSha256: custody.serverReceiptSha256)
+        let base = studioPrefix + "/exhibitions/" + (try identifier(draft.id))
+        let query = "?artworkId=" + (try identifier(custody.artworkId)) + "&artworkRevision=\(custody.artworkRevision)&importJobId="
+            + (try identifier(custody.importJobId)) + "&serverReceiptSha256=" + custody.serverReceiptSha256
+        let readPath = base + "/native-required-model-original" + query
+        var approved: NativeRequiredModelOriginalApproval?
+        if approve {
+            let receipt: NativeRequiredModelOriginalApproval = try await request(base + "/native-original-static-approval",
+                method: "POST", body: encoded(input), ifMatch: etag, timeout: 120, expectedResponseETag: etag)
+            try receipt.validate(custody: custody, exhibitionId: draft.id, revision: saved.revision, etag: etag)
+            guard receipt.approved else { throw AuthoringFailure("REQUIRED_MODEL_ORIGINAL_APPROVAL_INVALID") }
+            approved = receipt
+        }
+        let readback: NativeRequiredModelOriginalApproval = try await request(readPath, expectedResponseETag: etag, requiresNativeReadCSRF: true)
+        try readback.validate(custody: custody, exhibitionId: draft.id, revision: saved.revision, etag: etag)
+        guard generation == held, admitsRequiredModelOriginalApproval else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        if let approved, approved != readback { throw AuthoringFailure("REQUIRED_MODEL_ORIGINAL_READBACK_UNCERTAIN") }
+        return readback // An eligibility grant never stages or saves a draft.
     }
 
     public func discoverApprovedModelCandidate(_ entry: ArtworkCatalogEntry, placementId: String) async throws
