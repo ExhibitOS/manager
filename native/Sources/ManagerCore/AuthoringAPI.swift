@@ -933,6 +933,11 @@ public actor AuthoringAPI {
     }
     /// Keep the same draft/requestId/ETag after uncertain replies; a conflict
     /// requires comparison. This client never obtains a fresh ETag then retries.
+    public var admitsPersonalExhibitionCreation: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && ["admin", "curator", "artist"].contains(session?.role ?? "")
+    }
+
     public func saveExhibition(_ draft: NativeExhibitionDraft, requestId: String, etag: String?) async throws -> NativeStudioResponse {
         struct Input: Encodable { let draft: NativeExhibitionDraft; let requestId: String }
         let body = try encoded(Input(draft: draft, requestId: identifier(requestId)))

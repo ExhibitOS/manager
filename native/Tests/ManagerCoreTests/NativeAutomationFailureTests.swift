@@ -4,6 +4,78 @@ import Darwin
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testNewExhibitionOnlyInitializesAnEmptyJournalWithClosedTypedInput() throws {
+        let id = "10000000-0000-4000-8000-000000000001"
+        var empty = NativeDocumentState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id,
+            draft: nil, etag: nil, savedEditVersion: nil, pending: nil)
+        let request: DocumentValue = .object(["command": .object(["title": .string("Synthetic CLI scene")])])
+        let draft = try NativeAutomationSession.emptyExhibitionDraft(request, in: empty)
+        XCTAssertEqual(draft.candidate["title"], .string("Synthetic CLI scene"))
+        XCTAssertTrue(draft.placements.isEmpty)
+        var raw = request; raw["command"]["draft"] = draft.candidate
+        XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(raw, in: empty))
+        empty.draft = draft
+        XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(request, in: empty))
+        empty.draft = nil; empty.etag = "existing-head"
+        XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(request, in: empty))
+        empty.etag = nil; empty.savedEditVersion = 1
+        XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(request, in: empty))
+        empty.savedEditVersion = nil; empty.pending = .init(etag: nil, draft: draft)
+        XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(request, in: empty))
+    }
+    func testPendingAuthoringSaveCanRecoverWhileOtherInstalledMutationsStayBlocked() throws {
+        XCTAssertNoThrow(try NativeAutomationSession.checkInstalledPendingOperation("read", hasPending: true, authoring: true))
+        XCTAssertNoThrow(try NativeAutomationSession.checkInstalledPendingOperation("save", hasPending: true, authoring: true))
+        for operation in ["exhibition-new", "pedestal-apply", "light-prepare", "thumbnail-select", "export-oex"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkInstalledPendingOperation(operation, hasPending: true, authoring: true))
+        }
+        XCTAssertThrowsError(try NativeAutomationSession.checkInstalledPendingOperation("save", hasPending: true, authoring: false))
+        XCTAssertNoThrow(try NativeAutomationSession.checkInstalledPendingOperation("read", hasPending: true, authoring: false))
+        XCTAssertNoThrow(try NativeAutomationSession.checkInstalledPendingOperation("save", hasPending: false, authoring: true))
+    }
+
+    func testRestartedSaveRetainsRequestDraftETagAndRequiresCurrentEnvelope() throws {
+        let draft = try NativeExhibitionDraft.new(), id = "10000000-0000-4000-8000-000000000001"
+        let pending = NativeDocumentState.Pending(requestId: id, etag: "saved-head", draft: draft)
+        var current = NativeDocumentState(format: 1, revision: 10, workspaceId: id, tenantId: id, principalId: id,
+            draft: draft, etag: "saved-head", savedEditVersion: nil, pending: pending)
+        let request: DocumentValue = .object(["requestId": .string(id), "expectedRevision": .integer(10),
+            "expectedEditVersion": draft.document["editVersion"]])
+        XCTAssertNoThrow(try NativeAutomationSession.checkPendingSaveRequest(request, current, knownRevision: nil, ordinary: true))
+        var wrong = request; wrong["requestId"] = .string(UUID().uuidString.lowercased())
+        XCTAssertThrowsError(try NativeAutomationSession.checkPendingSaveRequest(wrong, current, knownRevision: nil, ordinary: true))
+        wrong = request; wrong["expectedRevision"] = .integer(9)
+        XCTAssertThrowsError(try NativeAutomationSession.checkPendingSaveRequest(wrong, current, knownRevision: nil, ordinary: true))
+        // Only an existing same-session journal map admits the original
+        // pre-journal revision; execute still checks exact request replay bytes.
+        XCTAssertNoThrow(try NativeAutomationSession.checkPendingSaveRequest(wrong, current, knownRevision: 10, ordinary: true))
+        wrong = request; wrong["expectedEditVersion"] = .integer(999)
+        XCTAssertThrowsError(try NativeAutomationSession.checkPendingSaveRequest(wrong, current, knownRevision: nil, ordinary: true))
+        current.etag = "different-head"
+        XCTAssertThrowsError(try NativeAutomationSession.checkPendingSaveRequest(request, current, knownRevision: nil, ordinary: true))
+        current.etag = "saved-head"
+        var different = draft, candidate = draft.candidate; candidate["title"] = .string("different")
+        try different.replaceCandidate(candidate); current.draft = different
+        XCTAssertThrowsError(try NativeAutomationSession.checkPendingSaveRequest(request, current, knownRevision: nil, ordinary: true))
+    }
+
+    func testOrdinaryRecoveryCannotConsumeAnotherTypedTransaction() throws {
+        let draft = try NativeExhibitionDraft.new(), id = "10000000-0000-4000-8000-000000000001"
+        let request: DocumentValue = .object(["requestId": .string(id), "expectedRevision": .integer(10),
+            "expectedEditVersion": draft.document["editVersion"]])
+        let tagged = [
+            NativeDocumentState.Pending(requestId: id, etag: nil, draft: draft, origin: "bounded-transaction"),
+            NativeDocumentState.Pending(requestId: id, etag: nil, draft: draft,
+                modelCandidate: .init(artworkId: id, artworkRevision: 1, importJobId: id, placementId: id)),
+            NativeDocumentState.Pending(requestId: id, etag: nil, draft: draft,
+                productImage: .init(artworkId: id, artworkRevision: 1, importJobId: id, receiptSha256: String(repeating: "a", count: 64)))
+        ]
+        for pending in tagged {
+            let current = NativeDocumentState(format: 1, revision: 10, workspaceId: id, tenantId: id, principalId: id,
+                draft: draft, etag: nil, savedEditVersion: nil, pending: pending)
+            XCTAssertThrowsError(try NativeAutomationSession.checkPendingSaveRequest(request, current, knownRevision: nil, ordinary: true))
+        }
+    }
     #if DEBUG
     func testPlacedExitRuntimeUsesPinnedStartupDrain() {
         XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(
