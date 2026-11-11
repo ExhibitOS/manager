@@ -171,6 +171,7 @@ final class ExhibitionModel: ObservableObject {
                                           manifestSHA256: String?) {
         invalidateCatalogThumbnailAuthority()
         guard self.api === api, self.session?.csrfToken == session.csrfToken,
+              session.advertisesRenderedArtworkThumbnail,
               viewportCredentials?.token == credentials.token,
               state?.tenantId.lowercased() == session.tenantId.lowercased(),
               state?.principalId.lowercased() == session.userId.lowercased() else { return }
@@ -181,109 +182,140 @@ final class ExhibitionModel: ObservableObject {
     }
     private struct PendingCatalogThumbnail {
         let access: UUID, requestId: UUID, selectionVersion: Int, rendered: ViewportRenderedThumbnail
+        var commitAttempted = false
+        #if DEBUG
+        var evidence: (CatalogThumbnailValidationCapture, CatalogThumbnailValidationCapture.Reservation)?
+        #endif
     }
-    private var pendingCatalogThumbnail: PendingCatalogThumbnail?
+    @Published private var pendingCatalogThumbnail: PendingCatalogThumbnail?
+    @Published private(set) var catalogThumbnailReceipt: NativeRenderedArtworkThumbnailSelectionReceipt?
     var selectedCatalogArtworkSupportsRenderedThumbnail: Bool {
         guard let entry = catalogEntries[catalogArtworkId] else { return false }
         return entry.kind == "sculpture" && entry.primaryMime == "model/gltf-binary"
     }
-
-    var canSaveSelectedCatalogThumbnail: Bool {
-        catalogThumbnailAuthority != nil && canSelectCatalog && !immutable && !catalogThumbnailSaving && catalogThumbnailContextIsEditable
-            && selectedCatalogArtworkSupportsRenderedThumbnail
-            && (pendingCatalogThumbnail == nil || pendingCatalogThumbnail?.rendered.artworkId == catalogArtworkId)
-    }
-
     private var catalogThumbnailContextIsEditable: Bool {
-        viewportController.editingContextActive && viewportController.connected && !viewportController.boundedReadOnly
-            && viewportController.renderedThumbnailSupported
+        session?.advertisesRenderedArtworkThumbnail == true && viewportController.editingContextActive
+            && viewportController.connected && !viewportController.boundedReadOnly && viewportController.renderedThumbnailSupported
     }
-
-    func saveSelectedCatalogThumbnail() async {
+    private var catalogThumbnailAvailable: Bool {
+        catalogThumbnailAuthority != nil && canSelectCatalog && !immutable && !catalogThumbnailSaving
+            && catalogThumbnailContextIsEditable && selectedCatalogArtworkSupportsRenderedThumbnail
+    }
+    private var currentCatalogThumbnail: PendingCatalogThumbnail? {
+        guard let value = pendingCatalogThumbnail, value.access == viewportAccessID,
+              value.rendered.artworkId == catalogArtworkId,
+              catalogEntries[catalogArtworkId]?.revision == value.rendered.revision else { return nil }
+        return value
+    }
+    var hasPreparedCatalogThumbnail: Bool { pendingCatalogThumbnail != nil }
+    var preparedCatalogThumbnailPNG: Data? { currentCatalogThumbnail?.rendered.pngData }
+    var catalogThumbnailConfirmationAttempted: Bool { pendingCatalogThumbnail?.commitAttempted == true }
+    var canPrepareSelectedCatalogThumbnail: Bool { catalogThumbnailAvailable && pendingCatalogThumbnail == nil }
+    var canDiscardPreparedCatalogThumbnail: Bool {
+        pendingCatalogThumbnail != nil && !catalogThumbnailSaving && !catalogThumbnailConfirmationAttempted
+    }
+    var canSaveSelectedCatalogThumbnail: Bool {
+        guard catalogThumbnailAvailable, currentCatalogThumbnail != nil else { return false }
         #if DEBUG
-        guard !CatalogThumbnailValidationCapture.requested else { return }
+        if CatalogThumbnailValidationCapture.requested { return currentCatalogThumbnail?.evidence != nil }
         #endif
-        guard canSaveSelectedCatalogThumbnail, let entry = catalogEntries[catalogArtworkId],
+        return true
+    }
+    func discardPreparedCatalogThumbnail() {
+        guard canDiscardPreparedCatalogThumbnail else { return }
+        pendingCatalogThumbnail = nil
+    }
+    func prepareSelectedCatalogThumbnail() async {
+        guard canPrepareSelectedCatalogThumbnail, let entry = catalogEntries[catalogArtworkId],
               let api, let session, let authority = catalogThumbnailAuthority else { return }
-        let access = viewportAccessID
-        func currentAuthority() -> Bool {
-            catalogThumbnailAuthority === authority && self.api === api && viewportAccessID == access
-                && self.session?.csrfToken == session.csrfToken
-        }
-        catalogThumbnailSaving = true
-        defer { catalogThumbnailSaving = false }
-        do {
-            let attempt: PendingCatalogThumbnail
-            if let pendingCatalogThumbnail, pendingCatalogThumbnail.access == access,
-               pendingCatalogThumbnail.rendered.artworkId == entry.id, pendingCatalogThumbnail.rendered.revision == entry.revision {
-                attempt = pendingCatalogThumbnail
-            } else {
-                await catalogThumbnailTail?.value
-                guard currentAuthority(), catalogArtworkId == entry.id else { return }
-                let version = try await api.artworkThumbnailSelectionVersion(artworkId: entry.id, revision: entry.revision,
-                                                                              session: session, authority: authority)
-                guard currentAuthority(), catalogArtworkId == entry.id else { return }
-                let rendered = try await viewportController.renderedThumbnail(artworkId: entry.id, revision: entry.revision)
-                guard currentAuthority(), catalogArtworkId == entry.id else { return }
-                attempt = PendingCatalogThumbnail(access: access, requestId: UUID(), selectionVersion: version, rendered: rendered)
-                pendingCatalogThumbnail = attempt
-            }
-            guard currentAuthority(), catalogArtworkId == entry.id, canSelectCatalog, !immutable,
-                  catalogThumbnailContextIsEditable else { return }
-            try await api.saveRenderedArtworkThumbnail(attempt.rendered, requestId: attempt.requestId,
-                                                        expectedSelectionVersion: attempt.selectionVersion, session: session, authority: authority)
-            guard currentAuthority() else { return }
-            pendingCatalogThumbnail = nil
-            catalogStatus = "게시용 미리보기를 저장했습니다."
-        } catch {
-            guard currentAuthority() else { return }
-            let failure = error as? AuthoringFailure
-            if failure?.status == 401 { invalidateCatalogThumbnailAuthority() }
-            if let failure, [400, 403, 409, 412, 422].contains(failure.status) {
-                pendingCatalogThumbnail = nil
-            }
-            catalogStatus = failure?.errorDescription ?? "미리보기 저장 결과를 확인하지 못했습니다. 다시 시도하세요."
-        }
-    }
-
-    #if DEBUG
-    var canCaptureSelectedCatalogThumbnail: Bool {
-        guard canSaveSelectedCatalogThumbnail, let capture = CatalogThumbnailValidationCapture.load() else { return false }
-        return capture.canWrite && catalogThumbnailCaptureManifestSHA256 == capture.intent.manifestSHA256
-            && capture.intent.artworkId == catalogArtworkId
-            && catalogEntries[catalogArtworkId]?.revision == capture.intent.revision
-    }
-
-    func captureSelectedCatalogThumbnail() async {
-        guard canSaveSelectedCatalogThumbnail, let capture = CatalogThumbnailValidationCapture.load(), capture.canWrite,
-              catalogThumbnailCaptureManifestSHA256 == capture.intent.manifestSHA256,
-              let entry = catalogEntries[catalogArtworkId], entry.id == capture.intent.artworkId,
-              entry.revision == capture.intent.revision, let api, let session, let authority = catalogThumbnailAuthority else { return }
         let access = viewportAccessID
         func current() -> Bool {
             catalogThumbnailAuthority === authority && self.api === api && viewportAccessID == access
                 && self.session?.csrfToken == session.csrfToken && catalogArtworkId == entry.id
-                && catalogThumbnailCaptureManifestSHA256 == capture.intent.manifestSHA256
+                && self.session?.advertisesRenderedArtworkThumbnail == true
         }
         catalogThumbnailSaving = true
         defer { catalogThumbnailSaving = false }
         do {
             await catalogThumbnailTail?.value
-            guard current() else { return }
-            let selection = try await api.artworkThumbnailSelectionVersion(artworkId: entry.id, revision: entry.revision,
-                                                                           session: session, authority: authority)
-            guard selection == 0 else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
             guard current(), catalogThumbnailContextIsEditable else { return }
-            let reservation = try capture.reserve()
+            let selection = try await api.artworkThumbnailSelection(artworkId: entry.id, revision: entry.revision,
+                                                                          session: session, authority: authority)
+            guard current(), catalogThumbnailContextIsEditable else { return }
+            guard selection.bindingId == nil else {
+                catalogStatus = "이미 선택된 게시용 미리보기가 있습니다. 현재 선택을 먼저 확인하세요."
+                return
+            }
             let rendered = try await viewportController.renderedThumbnail(artworkId: entry.id, revision: entry.revision)
-            try Task.checkCancellation()
             guard current(), catalogThumbnailContextIsEditable else { return }
-            try capture.write(rendered, to: reservation)
-            catalogStatus = "검증용 미리보기 PNG를 캡처했습니다."
+            pendingCatalogThumbnail = PendingCatalogThumbnail(access: access, requestId: UUID(), selectionVersion: selection.selectionVersion, rendered: rendered)
+            catalogThumbnailReceipt = nil
+            catalogStatus = "미리보기 후보를 확인한 뒤 게시용으로 선택하세요."
         } catch {
             guard current() else { return }
-            catalogStatus = "검증용 미리보기 PNG 캡처를 확인하지 못했습니다."
+            if (error as? AuthoringFailure)?.status == 401 { invalidateCatalogThumbnailAuthority() }
+            catalogStatus = (error as? AuthoringFailure)?.errorDescription ?? "미리보기 후보를 준비하지 못했습니다."
         }
+    }
+    func saveSelectedCatalogThumbnail() async {
+        guard canSaveSelectedCatalogThumbnail, var attempt = currentCatalogThumbnail,
+              let api, let session, let authority = catalogThumbnailAuthority else { return }
+        let access = viewportAccessID
+        func current() -> Bool {
+            catalogThumbnailAuthority === authority && self.api === api && viewportAccessID == access
+                && self.session?.csrfToken == session.csrfToken
+                && self.session?.advertisesRenderedArtworkThumbnail == true
+        }
+        attempt.commitAttempted = true
+        pendingCatalogThumbnail = attempt
+        catalogThumbnailSaving = true
+        defer { catalogThumbnailSaving = false }
+        do {
+            let receipt = try await api.saveRenderedArtworkThumbnail(attempt.rendered, requestId: attempt.requestId,
+                expectedSelectionVersion: attempt.selectionVersion, session: session, authority: authority)
+            guard current() else { return }
+            catalogThumbnailReceipt = receipt
+            #if DEBUG
+            if let (capture, reservation) = attempt.evidence {
+                do { try capture.writeSelection(receipt, requestId: attempt.requestId, to: reservation) }
+                catch {
+                    pendingCatalogThumbnail = nil
+                    catalogStatus = "게시용 미리보기는 선택했으나 검증 기록을 저장하지 못했습니다."
+                    return
+                }
+            }
+            #endif
+            pendingCatalogThumbnail = nil
+            catalogStatus = "게시용 미리보기를 선택했습니다."
+        } catch {
+            guard current() else { return }
+            let failure = error as? AuthoringFailure
+            if failure?.status == 401 { invalidateCatalogThumbnailAuthority() }
+            if let failure, [400, 403, 409, 412, 422].contains(failure.status) { pendingCatalogThumbnail = nil }
+            catalogStatus = failure?.errorDescription ?? "선택 결과를 확인하지 못했습니다. 같은 후보로 다시 확인하세요."
+        }
+    }
+    #if DEBUG
+    var canCaptureSelectedCatalogThumbnail: Bool {
+        guard catalogThumbnailAvailable, let capture = CatalogThumbnailValidationCapture.load() else { return false }
+        return capture.canWrite && catalogThumbnailCaptureManifestSHA256 == capture.intent.manifestSHA256
+            && capture.intent.artworkId == catalogArtworkId
+            && catalogEntries[catalogArtworkId]?.revision == capture.intent.revision
+            && !catalogThumbnailConfirmationAttempted
+    }
+    func captureSelectedCatalogThumbnail() async {
+        guard canCaptureSelectedCatalogThumbnail, let capture = CatalogThumbnailValidationCapture.load() else { return }
+        if pendingCatalogThumbnail == nil { await prepareSelectedCatalogThumbnail() }
+        guard var attempt = currentCatalogThumbnail, attempt.selectionVersion == 0,
+              !attempt.commitAttempted, catalogThumbnailAvailable,
+              catalogThumbnailCaptureManifestSHA256 == capture.intent.manifestSHA256 else { return }
+        do {
+            let reservation = try capture.reserve()
+            try capture.write(attempt.rendered, to: reservation, requestId: attempt.requestId)
+            attempt.evidence = (capture, reservation)
+            pendingCatalogThumbnail = attempt
+            catalogStatus = "미리보기 후보와 검증 기록을 준비했습니다. 게시용 선택은 별도입니다."
+        } catch { catalogStatus = "미리보기 후보의 검증 기록을 확인하지 못했습니다." }
     }
     #endif
 

@@ -1146,3 +1146,28 @@ revisions; it rechecks the saved head and stages the retained preview. Use
 `save` and `reopen-saved` before preparing another edit. `plaque-cancel` and
 `wall-finish-cancel` discard a pending proposal without changing the draft.
 Caller-supplied producer replies are not accepted.
+
+## Rendered artwork thumbnail validation payload
+
+The debug owner-validation helper and ordinary Swift authoring entry admit the
+exact rendered artwork thumbnail payload `3e05e41286c517d5304299bdd987b8e5b6fe08ab8396dee3804feeb0f0c4f670`
+from Platform source `77bf7d1435a9ee248eeb19c164b6062db5fbaa5d`. Its only new
+saved-workspace transition starts at the qualified terminal-disposition payload
+`e41df146d7097fd6964564de3d2f82b4bb766dba5377ec7f938896955fea39b0`.
+The transition preserves the physical installation, authenticated owner and
+original carried-restore proof; it grants no new direct restore or reverse
+transition. The runtime remains local validation, not a signed release.
+
+The existing artwork thumbnail action prepares one bound rendered candidate,
+shows its PNG for explicit confirmation and retains that candidate for uncertain
+retries. Runtime admission and source checks are separate from actual official
+workspace transition, thumbnail selection, reopen and export qualification.
+
+The corrected canonical-model/optional-thumbnail composition payload
+eac64ed106bdac283c1aa0c6c3dee5541c98919ed4a67bd9e5509b21496b5bce
+from Platform b0c02301c39b85a75ca576e3dca56274ccd92c28 has one new transition
+from preceding payload 3e05e41286c517d5304299bdd987b8e5b6fe08ab8396dee3804feeb0f0c4f670
+with the same carried-restore protections. Original-export cancellation does not
+reset a consumed export claim: the existing successor path requires a distinct
+request and new destination while retaining the saved head and prior attempt.
+Exact admission is separate from actual successor-output qualification.

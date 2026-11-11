@@ -143,12 +143,19 @@ final class ArtworkCatalogTests: XCTestCase {
         fields["sourceAssetId"] = source
         fields["sourceSha256"] = sourceHash
         fields["displaySha256"] = displayHash
+        fields["recipeId"] = ViewportRenderedThumbnail.recipe
+        fields["toolId"] = ViewportRenderedThumbnail.tool
+        fields["modelBytes"] = 128
+        fields["pngSha256"] = pngHash
         let rendered = try reply(fields).renderedThumbnail(matching: request)
         XCTAssertEqual(rendered.artworkId, request.artworkId)
         XCTAssertEqual(rendered.revision, request.expectedRevision)
         XCTAssertEqual(rendered.sourceAssetId, source)
         XCTAssertEqual(rendered.sourceSha256, sourceHash)
         XCTAssertEqual(rendered.displaySha256, displayHash)
+        XCTAssertEqual(rendered.recipeId, ViewportRenderedThumbnail.recipe)
+        XCTAssertEqual(rendered.toolId, ViewportRenderedThumbnail.tool)
+        XCTAssertEqual(rendered.modelBytes, 128)
         XCTAssertEqual(rendered.pngData, Data(base64Encoded: png))
         XCTAssertEqual(rendered.pngSha256, pngHash)
         fields["pngSha256"] = pngHash
@@ -164,15 +171,18 @@ final class ArtworkCatalogTests: XCTestCase {
         XCTAssertThrowsError(try reply(fields).renderedThumbnail(matching: request))
         fields["pngBase64"] = png
 
-        for (key, value) in [("sourceAssetId", "../foreign"), ("sourceSha256", sourceHash.uppercased()),
+        let invalidClaims: [(String, Any)] = [("sourceAssetId", "../foreign"), ("sourceSha256", sourceHash.uppercased()),
                              ("displaySha256", "missing digest"), ("pngSha256", sourceHash),
-                             ("epoch", UUID().uuidString.lowercased())] {
+                             ("recipeId", "foreign-recipe"), ("toolId", "foreign-tool"), ("modelBytes", 0),
+                             ("epoch", UUID().uuidString.lowercased())]
+        for (key, value) in invalidClaims {
             var invalid = fields
             invalid[key] = value
             XCTAssertThrowsError(try reply(invalid).renderedThumbnail(matching: request), key)
         }
 
         fields.removeValue(forKey: "pngSha256")
+        XCTAssertThrowsError(try reply(fields).renderedThumbnail(matching: request), "Rendered proof requires PNG hash")
         fields["width"] = 1
         fields["height"] = 1
         fields["pngBase64"] = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="

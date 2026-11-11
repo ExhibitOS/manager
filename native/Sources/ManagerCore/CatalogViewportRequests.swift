@@ -14,10 +14,14 @@ public struct ViewportThumbnailRequest: Encodable, Sendable {
     }
 }
 public struct ViewportRenderedThumbnail: Sendable {
+    public static let profile = "rendered-display-preview-v1"
+    public static let recipe = "artwork-glb-card-256-v1"
+    public static let tool = "exhibitos-three-0.186.1-thumbnail-v1"
     public let artworkId: String, revision: Int
     public let sourceAssetId: String, sourceSha256: String
     /// The model bytes used by the renderer may come from a derivative of the approved primary asset.
     public let displaySha256: String
+    public let recipeId: String, toolId: String, modelBytes: Int
     public let pngData: Data, pngSha256: String
 }
 
@@ -25,6 +29,7 @@ public struct ViewportThumbnailReply: Decodable, Sendable {
     public let version: Int, epoch: String, sequence: Int, tenantId: String, principalId: String, requestId: String
     public let artworkId: String, revision: Int, pngBase64: String, width: Int, height: Int
     public let sourceAssetId: String?, sourceSha256: String?, displaySha256: String?, pngSha256: String?
+    public let recipeId: String?, toolId: String?, modelBytes: Int?
 
     public func pngData(matching request: ViewportThumbnailRequest) throws -> Data {
         guard version == 1, epoch == request.epoch, sequence == request.sequence, tenantId == request.tenantId,
@@ -41,14 +46,26 @@ public struct ViewportThumbnailReply: Decodable, Sendable {
         guard width == 256, height == 256,
               let sourceAssetId, UUID(uuidString: sourceAssetId) != nil,
               let sourceSha256, nativeImportDigest(sourceSha256),
-              let displaySha256, nativeImportDigest(displaySha256) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+              let displaySha256, nativeImportDigest(displaySha256),
+              recipeId == ViewportRenderedThumbnail.recipe, toolId == ViewportRenderedThumbnail.tool,
+              let modelBytes, (28...16 * 1024 * 1024).contains(modelBytes) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
         let original = try pngData(matching: request)
-        guard pngSha256 == nil || pngSha256 == nativeImportSHA256(original) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        guard pngSha256 == nativeImportSHA256(original) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
         let bytes = try GeneratedThumbnailPNG.canonical(original)
         let digest = nativeImportSHA256(bytes)
         return ViewportRenderedThumbnail(artworkId: artworkId, revision: revision, sourceAssetId: sourceAssetId,
-            sourceSha256: sourceSha256, displaySha256: displaySha256, pngData: bytes, pngSha256: digest)
+            sourceSha256: sourceSha256, displaySha256: displaySha256,
+            recipeId: ViewportRenderedThumbnail.recipe, toolId: ViewportRenderedThumbnail.tool, modelBytes: modelBytes,
+            pngData: bytes, pngSha256: digest)
     }
+}
+public struct NativeRenderedArtworkThumbnailSelectionReceipt: Codable, Sendable {
+    public let id: UUID, thumbnailAssetId: UUID
+    public let thumbnailSha256: String
+    public let selectionVersion: Int, selected: Bool
+}
+public struct NativeArtworkThumbnailSelection: Decodable, Sendable {
+    public let selectionVersion: Int, bindingId: UUID?
 }
 public struct ViewportFurnishingThumbnailRequest: Codable, Equatable, Sendable {
     public static let capability = "furnishing-registration-thumbnail-v1"

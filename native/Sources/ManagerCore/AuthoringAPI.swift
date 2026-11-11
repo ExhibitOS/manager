@@ -19,6 +19,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public let expiresAt: String
     public var nativeOexExportProfile: String? = nil
     public var nativePublicationProfile: String? = nil
+    public var nativeRenderedArtworkThumbnailProfile: String? = nil
     public var modelPreparationProfile: String? = nil
     public var modelOriginalInspectionProfile: String? = nil
     public var nativeLargeModelPreparationProfile: String? = nil
@@ -48,6 +49,9 @@ public struct AuthoringSession: Decodable, Sendable {
     }
 
     public var advertisesRoomBaseLight: Bool { roomBaseLightProfile == RoomBaseLightAction.profile }
+    public var advertisesRenderedArtworkThumbnail: Bool {
+        nativeRenderedArtworkThumbnailProfile == ViewportRenderedThumbnail.profile
+    }
 
     public var advertisesWorkspacePortalFinish: Bool {
         advertisesWorkspaceArtworkFrameModels && workspacePortalFinishProfile == "workspace-portal-finish-v1"
@@ -763,7 +767,8 @@ public actor AuthoringAPI {
         guard let held = session, held.userId == original.userId, held.tenantId == original.tenantId,
               held.role == original.role, held.csrfToken == original.csrfToken, held.expiresAt == original.expiresAt,
               current.userId == original.userId, current.tenantId == original.tenantId,
-              current.role == original.role, current.csrfToken == original.csrfToken, current.expiresAt == original.expiresAt else {
+              current.role == original.role, current.csrfToken == original.csrfToken, current.expiresAt == original.expiresAt,
+              current.nativeRenderedArtworkThumbnailProfile == original.nativeRenderedArtworkThumbnailProfile else {
             throw AuthoringFailure("ACCOUNT_BINDING_MISMATCH")
         }
         if original.nativeFreshImagePreparationProfile == nil {
@@ -806,12 +811,15 @@ public actor AuthoringAPI {
     public func artist(_ id: String) async throws -> NativeArtist { try await request(prefix + "/artists/" + identifier(id)) }
     public func artwork(_ id: String) async throws -> NativeArtwork { try await request(prefix + "/artworks/" + identifier(id)) }
     public func hasCatalogThumbnailAuthority(_ expected: AuthoringSession) -> Bool {
-        guard nativeSession, !authenticationBusy, let session else { return false }
+        guard nativeSession, !authenticationBusy, let session,
+              session.advertisesRenderedArtworkThumbnail, expected.advertisesRenderedArtworkThumbnail else { return false }
         return session.userId == expected.userId && session.tenantId == expected.tenantId
             && session.role == expected.role && session.csrfToken == expected.csrfToken && session.expiresAt == expected.expiresAt
     }
 
     private func requireCatalogThumbnailAuthority(_ expected: AuthoringSession, stage: CatalogThumbnailStage) throws {
+        guard expected.advertisesRenderedArtworkThumbnail,
+              session?.advertisesRenderedArtworkThumbnail == true else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         guard hasCatalogThumbnailAuthority(expected) else {
             stage.record(.localAuthRequired)
             throw AuthoringFailure("AUTH_REQUIRED", status: 401)
@@ -820,18 +828,23 @@ public actor AuthoringAPI {
 
     public func artworkThumbnailSelectionVersion(artworkId: String, revision: Int, session: AuthoringSession,
                                                  authority: CatalogThumbnailAuthority) async throws -> Int {
+        try await artworkThumbnailSelection(artworkId: artworkId, revision: revision, session: session, authority: authority).selectionVersion
+    }
+    public func artworkThumbnailSelection(artworkId: String, revision: Int, session: AuthoringSession,
+                                         authority: CatalogThumbnailAuthority) async throws -> NativeArtworkThumbnailSelection {
         try requireCatalogThumbnailAuthority(session, stage: .selectionRead)
         guard (1...Int(Int32.max)).contains(revision) else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
-        struct Selection: Decodable, Sendable { let selectionVersion: Int }
         let path = prefix + "/artworks/" + (try identifier(artworkId)) + "/thumbnail-selection?expectedRevision=\(revision)"
-        let selection: Selection = try await request(path, catalogThumbnail: (.selectionRead, authority))
-        guard (0..<Int(Int32.max)).contains(selection.selectionVersion) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
-        return selection.selectionVersion
+        let selection: NativeArtworkThumbnailSelection = try await request(path, catalogThumbnail: (.selectionRead, authority))
+        guard (0..<Int(Int32.max)).contains(selection.selectionVersion),
+              (selection.selectionVersion == 0) == (selection.bindingId == nil) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        return selection
     }
 
+    @discardableResult
     public func saveRenderedArtworkThumbnail(_ rendered: ViewportRenderedThumbnail, requestId: UUID,
                                              expectedSelectionVersion: Int, session: AuthoringSession,
-                                             authority: CatalogThumbnailAuthority) async throws {
+                                             authority: CatalogThumbnailAuthority) async throws -> NativeRenderedArtworkThumbnailSelectionReceipt {
         try requireCatalogThumbnailAuthority(session, stage: .artworkRead)
         guard (0..<Int(Int32.max)).contains(expectedSelectionVersion) else {
             throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE")
@@ -853,17 +866,15 @@ public actor AuthoringAPI {
             "displaySha256": .string(rendered.displaySha256), "pngSha256": .string(rendered.pngSha256),
             "pngBase64": .string(rendered.pngData.base64EncodedString()), "view": .object(["kind": .string("default")])
         ])
-        struct Receipt: Decodable, Sendable {
-            let id: UUID, thumbnailAssetId: UUID, selectionVersion: Int, thumbnailSha256: String, selected: Bool
-        }
         try requireCatalogThumbnailAuthority(session, stage: .selectionWrite)
-        let receipt: Receipt = try await request(prefix + "/artworks/" + (try identifier(rendered.artworkId)) + "/thumbnail-selection",
+        let receipt: NativeRenderedArtworkThumbnailSelectionReceipt = try await request(prefix + "/artworks/" + (try identifier(rendered.artworkId)) + "/thumbnail-selection",
                                                  method: "POST", body: encoded(payload), catalogThumbnail: (.selectionWrite, authority))
         guard receipt.selected else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
         guard receipt.selectionVersion == expectedSelectionVersion + 1, receipt.thumbnailSha256 == rendered.pngSha256,
               receipt.thumbnailAssetId.uuidString.lowercased() != rendered.sourceAssetId.lowercased() else {
             throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
         }
+        return receipt
     }
 
     public func createArtist(name: String, bio: String) async throws -> NativeArtist {
@@ -2523,6 +2534,8 @@ public actor AuthoringAPI {
             || manifest == "22d253f8928d7dee5e2d01e8ce65e20cd24f10b7bfa0251b1eb8371aca8e8fc9"
             || manifest == "49f05729bfe39c7e2a228888c6541f5e22e08057f1e07bf04a66055a2016e861"
             || manifest == "e41df146d7097fd6964564de3d2f82b4bb766dba5377ec7f938896955fea39b0"
+            || manifest == "3e05e41286c517d5304299bdd987b8e5b6fe08ab8396dee3804feeb0f0c4f670"
+            || manifest == "eac64ed106bdac283c1aa0c6c3dee5541c98919ed4a67bd9e5509b21496b5bce"
         #else
         false
         #endif
