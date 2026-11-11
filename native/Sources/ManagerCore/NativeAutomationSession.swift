@@ -1765,6 +1765,25 @@ public actor NativeAutomationSession {
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
+        case "workspace-info-stand-replace":
+            guard selectedOEXFormat == nil, await api.admitsWorkspaceInfoStandReplacement else {
+                throw BridgeFailure("WORKSPACE_INFO_STAND_REPLACEMENT_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "modelSha256", "intakeId", "placement", "plaque"])
+            guard let etag = current.etag, command["etag"].string == etag,
+                  let hash = command["modelSha256"].string, let intakeId = command["intakeId"].string else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let replacement = try WorkspaceInfoStandReplacement(value: .object(["placement": command["placement"], "plaque": command["plaque"]]))
+            if let draft = try await api.prepareWorkspaceInfoStandReplacement(replacement, in: current,
+                expectedModelSHA256: hash, intakeId: intakeId) {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "workspace-bench-seat-attach":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }
             try checkedRevision(request, current)
