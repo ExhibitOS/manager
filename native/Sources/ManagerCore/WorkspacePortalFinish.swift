@@ -12,7 +12,8 @@ public enum WorkspacePortalFinish {
     // Platform validates dimensions, host transforms, fit, rights and the saved revision.
     // The client carries the server's registered fit descriptor into the visual delta.
     static func applying(to draft: NativeExhibitionDraft, openingId: String,
-                         furnishing: WorkspaceFurnishing?, admitsModularFit: Bool = false) throws -> NativeExhibitionDraft? {
+                         furnishing: WorkspaceFurnishing?, admitsModularFit: Bool = false,
+                         admitsRectangularFit: Bool = false) throws -> NativeExhibitionDraft? {
         let openingId = openingId.lowercased()
         let hosts = draft.candidate["openings"].items?.filter { $0["id"].string?.lowercased() == openingId }
         guard workspaceFurnishingID(openingId), hosts?.count == 1, hosts?.first?["type"].string == "door" else {
@@ -30,7 +31,7 @@ public enum WorkspacePortalFinish {
         var openings: [DocumentValue] = []
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  version == 5 || version == 6 || (version == 7 && admitsModularFit),
+                  version == 5 || version == 6 || (version == 7 && (admitsModularFit || admitsRectangularFit)),
                   let listed = existing["furnishings"].items,
                   let placed = existing["placements"].items,
                   let attachedFrames = existing["frameAttachments"].items else {
@@ -54,7 +55,10 @@ public enum WorkspacePortalFinish {
         let existing = targets.firstIndex(of: openingId)
         if let furnishing {
             let model = furnishing.details.model
-            let qualifiedModel = furnishing.fit.map { admitsModularFit && $0.profile == .modularPortal }
+            let qualifiedModel = furnishing.fit.map {
+                ($0.profile == .modularPortal && admitsModularFit)
+                    || ($0.profile == .rectangularPortal && admitsRectangularFit)
+            }
                 ?? (model.sha256 == modelSHA256 && model.bytes == 164_044)
             guard furnishing.details.kind == .portalFinish, furnishing.version == 1, workspaceFurnishingID(furnishing.id),
                   qualifiedModel, model.mime == "model/gltf-binary" else {

@@ -31,6 +31,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
+    public var workspacePortalRectangularFitProfile: String? = nil
     public var workspaceFurnishingReusableFitProfile: String? = nil
     public var nativeFreshImagePreparationProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
@@ -56,6 +57,12 @@ public struct AuthoringSession: Decodable, Sendable {
 
     public var advertisesWorkspacePortalFinish: Bool {
         advertisesWorkspaceArtworkFrameModels && workspacePortalFinishProfile == "workspace-portal-finish-v1"
+    }
+
+    public var advertisesWorkspaceRectangularPortalFit: Bool {
+        advertisesWorkspacePortalFinish
+            && workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
+            && workspacePortalRectangularFitProfile == WorkspaceFurnishingFitProfile.rectangularPortal.rawValue
     }
 
     public var advertisesWorkspaceFurnishingStool: Bool {
@@ -2163,9 +2170,13 @@ public actor AuthoringAPI {
             && session?.workspacePortalModularFitProfile == WorkspaceFurnishingFitProfile.modularPortal.rawValue
     }
 
+    public var admitsWorkspaceRectangularPortalFit: Bool {
+        admitsWorkspacePortalFinish && session?.advertisesWorkspaceRectangularPortalFit == true
+    }
+
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
-        if admitsWorkspaceModularPortalFit { return 7 }
+        if admitsWorkspaceModularPortalFit || admitsWorkspaceRectangularPortalFit { return 7 }
         if admitsWorkspacePortalFinish { return 6 }
         if session.advertisesWorkspaceArtworkFrameModels { return 5 }
         if session.advertisesWorkspaceArtworkFrame { return 4 }
@@ -2191,8 +2202,9 @@ public actor AuthoringAPI {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         if let fitProfile {
-            guard admitsWorkspaceModularPortalFit, fitProfile == .modularPortal,
-                  fitProfile.matches(details.kind), preparationPolicy == nil else {
+            let admitted = fitProfile == .modularPortal ? admitsWorkspaceModularPortalFit
+                : fitProfile == .rectangularPortal && admitsWorkspaceRectangularPortalFit
+            guard admitted, fitProfile.matches(details.kind), preparationPolicy == nil else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
         }
@@ -2222,7 +2234,8 @@ public actor AuthoringAPI {
                                                          preparationPolicy: policy, fitProfile: fitProfile))
         let intake: WorkspaceFurnishingIntake = try await request(workspaceFurnishingPath("furnishing-intakes"), method: "POST", body: body)
         try intake.check(requestId: requestId, details: details, expectedPolicy: policy, expectedFit: fitProfile,
-                         supportedExtensionVersion: supportedFurnishingExtensionVersion, admitsPreparation: admitsWorkspaceArtworkFramePreparation,
+                         supportedExtensionVersion: supportedFurnishingExtensionVersion,
+                         admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation,
                          infoStandPreparationManifest: infoStandPreparationManifest)
         return intake
     }
@@ -2230,7 +2243,7 @@ public actor AuthoringAPI {
     public func workspaceFurnishingIntake(_ id: String, requireCurrentInfoStandProducer: Bool = false) async throws -> WorkspaceFurnishingIntake {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(id))
         try intake.check(id: id, supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                         admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
+                         admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
                          requireCurrentInfoStandProducer: requireCurrentInfoStandProducer)
         if requireCurrentInfoStandProducer && intake.preparationPolicy != .normalizeLegacySignTexture {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
@@ -2274,7 +2287,7 @@ public actor AuthoringAPI {
     public func uploadWorkspaceFurnishing(_ previous: WorkspaceFurnishingIntake,
                                           snapshot: ImportFileSnapshot) async throws -> WorkspaceFurnishingIntake {
         try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                           admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
         let model = try WorkspaceFurnishingModel(snapshot: snapshot)
         guard model == previous.declaration.model else { throw AuthoringFailure("MODEL_CONFLICT") }
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/model",
@@ -2282,7 +2295,7 @@ public actor AuthoringAPI {
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
                          expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                         admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                         admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
         guard intake.received != nil else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return intake
     }
@@ -2290,13 +2303,13 @@ public actor AuthoringAPI {
     public func workspaceFurnishingAction(_ previous: WorkspaceFurnishingIntake,
                                           _ action: WorkspaceFurnishingIntakeAction) async throws -> WorkspaceFurnishingIntake {
         try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                           admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/" + action.rawValue,
             method: "POST", body: Data("{}".utf8))
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
                          expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                         admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
+                         admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
                          requireCurrentInfoStandProducer: previous.phase != .registered)
         return intake
     }
@@ -2318,7 +2331,7 @@ public actor AuthoringAPI {
         let page: AuthoringPage<WorkspaceFurnishingIntake> = try await furnishingPage("furnishing-intakes", cursor: cursor)
         for intake in page.items {
             try intake.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                             admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                             admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
         }
         guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return page
@@ -2342,14 +2355,16 @@ public actor AuthoringAPI {
     public func workspaceFurnishing(_ id: String, version: Int) async throws -> WorkspaceFurnishing {
         let furnishing: WorkspaceFurnishing = try await request(workspaceFurnishingVersionPath(id, version: version))
         guard furnishing.id == id, furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion,
-              furnishing.fit == nil || supportedFurnishingExtensionVersion >= 7 else {
+              furnishing.fit == nil || supportedFurnishingExtensionVersion >= 7,
+              furnishing.fit?.profile != .rectangularPortal || admitsWorkspaceRectangularPortalFit else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
         return furnishing
     }
 
     public func workspaceFurnishingModel(_ furnishing: WorkspaceFurnishing) async throws -> Data {
-        guard furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion else {
+        guard furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion,
+              furnishing.fit?.profile != .rectangularPortal || admitsWorkspaceRectangularPortalFit else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         let path = try workspaceFurnishingVersionPath(furnishing.id, version: furnishing.version) + "/model"
@@ -2727,7 +2742,8 @@ public actor AuthoringAPI {
         }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         let next = try WorkspacePortalFinish.applying(to: draft, openingId: openingId, furnishing: furnishing,
-                                                      admitsModularFit: admitsWorkspaceModularPortalFit)
+                                                      admitsModularFit: admitsWorkspaceModularPortalFit,
+                                                      admitsRectangularFit: admitsWorkspaceRectangularPortalFit)
         if next != nil || furnishing != nil { try await validateNativeViewportEdit(next ?? draft, etag: etag) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next

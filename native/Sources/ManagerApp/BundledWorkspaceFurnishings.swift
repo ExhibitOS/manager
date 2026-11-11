@@ -19,7 +19,10 @@ enum BundledWorkspaceFurnishings {
         let catalogId: String, catalogVersion: Int, name: String, hostKind: String
         let model: Model, rights: Rights, provenance: Provenance
         var id: String { catalogId }
-        var kind: WorkspaceFurnishingKind? { WorkspaceFurnishingKind(rawValue: hostKind) }
+        var kind: WorkspaceFurnishingKind? {
+            if let portal = BundledWorkspaceFurnishings.portals[catalogId] { return hostKind == "opening" ? portal : nil }
+            return WorkspaceFurnishingKind(rawValue: hostKind)
+        }
     }
     struct Catalog: Sendable {
         let root: URL
@@ -41,19 +44,23 @@ enum BundledWorkspaceFurnishings {
         "closed-exit-door": .barrier, "exit-pictogram-sign": .infoStand
     ]
     private static let sculptureBench = "sculpture-gallery-bench"
+    private static let portals: [String: WorkspaceFurnishingKind] = [
+        "portal-pale-mineral": .portalFinish, "portal-warm-oak": .portalFinish
+    ]
     private static let manifests = [
         7079: (version: "1.2.0", digest: "db9427c19ecaaceb3029c49bd4700955fa9a0b2cb568b422d5238f589e44f4e1"),
         9246: (version: "1.4.0", digest: "7073f8f6dfd7a1c44e8e2b7206b503a35fa1a59eb992d08191dde5f6c6e86e6e"),
         10119: (version: "1.5.0", digest: "c62c8e910e7f2920e989b2d1d76d37ab959d04c2c443dc5631d4478ed5056b0f"),
+        11855: (version: "1.6.0", digest: "3c9dc8c1a32d9f2a59d7e62ed8da62a700cfcd6c87ab473987a1980ab1e75864"),
     ]
     private static func supportedItems(version: String) -> [String: WorkspaceFurnishingKind] {
         switch version {
         case "1.2.0": return allowed
         case "1.4.0": return allowed.merging(generated) { first, _ in first }
-        case "1.5.0":
+        case "1.5.0", "1.6.0":
             var items = allowed.merging(generated) { first, _ in first }
             items[sculptureBench] = .bench
-            return items
+            return version == "1.6.0" ? items.merging(portals) { first, _ in first } : items
         default: return [:]
         }
     }
@@ -65,7 +72,7 @@ enum BundledWorkspaceFurnishings {
         defer { try? handle.close() }
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              let size = Int(exactly: before.st_size), sizes.contains(size), (1...10_119).contains(size),
+              let size = Int(exactly: before.st_size), sizes.contains(size), (1...11_855).contains(size),
               let data = try handle.read(upToCount: size + 1), data.count == size,
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,
@@ -82,7 +89,8 @@ enum BundledWorkspaceFurnishings {
     }
     private static func directory(for id: String) -> String {
         let source: String
-        if id == sculptureBench { source = "generated-20261110" }
+        if portals[id] != nil { source = "exhibitos-authored-20261109" }
+        else if id == sculptureBench { source = "generated-20261110" }
         else { source = generated[id] == nil ? "user-authored-20261027" : "generated-20261109" }
         return "assets/furnishings/\(source)/\(id)/"
     }

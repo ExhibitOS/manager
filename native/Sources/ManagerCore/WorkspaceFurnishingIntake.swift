@@ -169,6 +169,7 @@ public enum WorkspaceFurnishingFitProfile: String, Codable, Sendable {
     case straightRing = "straight-ring-v1"
     case continuousPortal = "continuous-portal-v1"
     case modularPortal = "modular-portal-v1"
+    case rectangularPortal = "rectangular-portal-v1"
 
     func matches(_ kind: WorkspaceFurnishingKind) -> Bool {
         kind == (self == .straightRing ? .artworkFrame : .portalFinish)
@@ -186,8 +187,16 @@ public struct WorkspaceFurnishingFit: Codable, Equatable, Sendable {
     }
 
     func matches(_ details: WorkspaceFurnishingDetails) -> Bool {
-        version == 1 && sourceBytes == details.model.bytes && sourceSha256 == details.model.sha256
-            && profile?.matches(details.kind) == true
+        guard version == 1, sourceBytes == details.model.bytes, sourceSha256 == details.model.sha256,
+              profile?.matches(details.kind) == true else { return false }
+        guard profile == .rectangularPortal else { return true }
+        guard case .object(let fields) = geometry,
+              Set(fields.keys) == ["profile", "openingWidth", "openingHeight", "minZ", "maxZ"],
+              let width = geometry["openingWidth"].double, width.isFinite, (0.9...3).contains(width),
+              let height = geometry["openingHeight"].double, height.isFinite, (2...3.2).contains(height),
+              let minZ = geometry["minZ"].double, minZ.isFinite, (-0.15 ... -0.015).contains(minZ),
+              let maxZ = geometry["maxZ"].double, maxZ.isFinite, (0.015...0.15).contains(maxZ) else { return false }
+        return true
     }
 }
 
@@ -326,6 +335,7 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
     func check(id: String? = nil, requestId: String? = nil, details: WorkspaceFurnishingDetails? = nil,
                expectedPolicy: WorkspaceFurnishingPreparationPolicy? = nil, expectedFit: WorkspaceFurnishingFitProfile? = nil,
                supportedExtensionVersion: Int64 = 1,
+               admitsRectangularFit: Bool = false,
                admitsPreparation: Bool = false, infoStandPreparationManifest: String? = nil,
                requireCurrentInfoStandProducer: Bool = false) throws {
         guard workspaceFurnishingID(intakeId), workspaceFurnishingID(self.requestId),
@@ -333,6 +343,7 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
               declaration.isValid, declaration.kind.minimumExtensionVersion <= supportedExtensionVersion,
               details.map({ $0 == declaration && expectedPolicy == preparationPolicy && expectedFit == fitProfile }) ?? true,
               fitProfile.map({ supportedExtensionVersion >= 7 && preparationPolicy == nil && $0.matches(declaration.kind) }) ?? true,
+              fitProfile != .rectangularPortal || admitsRectangularFit,
               furnishing.map({ $0.fit?.profile == fitProfile }) ?? true,
               received.map({ $0.bytes == declaration.model.bytes && $0.sha256 == declaration.model.sha256 }) ?? true,
               !retryable || (phase == .failed && received != nil),

@@ -71,6 +71,108 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try intake(wire))
     }
 
+    private func rectangularPortal() throws -> DocumentValue {
+        var wire = try registered()
+        wire["declaration"]["kind"] = .string("portal-finish")
+        wire["furnishing"]["kind"] = .string("portal-finish")
+        wire["fitProfile"] = .string("rectangular-portal-v1")
+        wire["furnishing"]["fit"] = .object([
+            "version": .integer(1), "sourceBytes": .integer(23), "sourceSha256": .string(modelSHA256),
+            "geometry": .object(["profile": .string("rectangular-portal-v1"),
+                "openingWidth": .number(2.4), "openingHeight": .number(3),
+                "minZ": .number(-0.0225), "maxZ": .number(0.0225)])
+        ])
+        return wire
+    }
+
+    func testRectangularPortalIntakeRequiresDistinctAdmissionAndBoundContinuation() throws {
+        let wire = try rectangularPortal(), value = try intake(wire)
+        XCTAssertThrowsError(try value.check(supportedExtensionVersion: 7))
+        try value.check(requestId: requestId, details: value.declaration, expectedFit: .rectangularPortal,
+                        supportedExtensionVersion: 7, admitsRectangularFit: true)
+        XCTAssertThrowsError(try value.check(requestId: intakeId, supportedExtensionVersion: 7, admitsRectangularFit: true))
+        XCTAssertThrowsError(try value.check(details: value.declaration, expectedFit: .modularPortal,
+                                             supportedExtensionVersion: 7, admitsRectangularFit: true))
+        let request = WorkspaceFurnishingRequest(requestId: requestId, details: value.declaration, fitProfile: .rectangularPortal)
+        let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(request))
+        XCTAssertEqual(encoded["fitProfile"], .string("rectangular-portal-v1"))
+        XCTAssertEqual(encoded["model"], wire["declaration"]["model"])
+        var resumed = wire
+        resumed["phase"] = .string("failed"); resumed["furnishing"] = .null; resumed["retryable"] = .bool(true)
+        try intake(resumed).check(id: value.intakeId, requestId: value.requestId, details: value.declaration,
+                                  expectedFit: .rectangularPortal, supportedExtensionVersion: 7, admitsRectangularFit: true)
+        for key in ["sourceSha256", "sourceBytes"] {
+            var changed = wire; changed["furnishing"]["fit"][key] = key == "sourceBytes" ? .integer(24) : .string(String(repeating: "b", count: 64))
+            XCTAssertThrowsError(try intake(changed))
+        }
+        var changed = wire; changed["furnishing"]["fit"]["geometry"]["extra"] = .bool(true)
+        XCTAssertThrowsError(try intake(changed))
+        changed = wire; changed["furnishing"]["fit"]["geometry"]["maxZ"] = .number(-0.0225)
+        XCTAssertThrowsError(try intake(changed))
+    }
+
+    func testRectangularPortalSourceBoundsMatchSpec29Exactly() throws {
+        let ranges: [(String, Double, Double)] = [("openingWidth", 0.9, 3), ("openingHeight", 2, 3.2),
+            ("minZ", -0.15, -0.015), ("maxZ", 0.015, 0.15)]
+        for (field, minimum, maximum) in ranges {
+            for boundary in [minimum, maximum] {
+                var wire = try rectangularPortal(); wire["furnishing"]["fit"]["geometry"][field] = .number(boundary)
+                XCTAssertNoThrow(try intake(wire))
+            }
+            for outside in [minimum - 0.00001, maximum + 0.00001] {
+                var wire = try rectangularPortal(); wire["furnishing"]["fit"]["geometry"][field] = .number(outside)
+                XCTAssertThrowsError(try intake(wire))
+            }
+        }
+    }
+
+    func testRectangularPortalAttachNeedsOwnCapabilityAndPreservesOnePairedHost() throws {
+        let portal = try XCTUnwrap(intake(rectangularPortal()).furnishing)
+        var draft = try NativeExhibitionDraft.new()
+        var candidate = draft.candidate
+        let host = "10000000-0000-4000-8000-00000000000a"
+        let mate = "10000000-0000-4000-8000-00000000000b"
+        let doors: DocumentValue = .array([.object(["id": .string(host), "type": .string("door")]),
+                                          .object(["id": .string(mate), "type": .string("door")])])
+        candidate["extensions"] = .object(["example": .bool(true)])
+        candidate["openings"] = doors; try draft.replaceCandidate(candidate)
+        XCTAssertThrowsError(try WorkspacePortalFinish.applying(to: draft, openingId: host, furnishing: portal))
+        XCTAssertThrowsError(try WorkspacePortalFinish.applying(to: draft, openingId: host, furnishing: portal, admitsModularFit: true))
+        let attached = try XCTUnwrap(WorkspacePortalFinish.applying(to: draft, openingId: host,
+            furnishing: portal, admitsRectangularFit: true))
+        let namespace = WorkspaceFurnishingPlacement.namespace
+        XCTAssertEqual(attached.candidate["openings"], doors)
+        XCTAssertEqual(attached.candidate["extensions"][namespace]["version"], .integer(7))
+        XCTAssertEqual(attached.candidate["extensions"][namespace]["openingAttachments"].items?.count, 1)
+        XCTAssertEqual(attached.candidate["extensions"][namespace]["openingAttachments"].items?.first?["openingId"], .string(host))
+        XCTAssertNil(try WorkspacePortalFinish.applying(to: attached, openingId: host, furnishing: portal, admitsRectangularFit: true))
+        let detached = try XCTUnwrap(WorkspacePortalFinish.applying(to: attached, openingId: host,
+            furnishing: nil, admitsRectangularFit: true))
+        XCTAssertEqual(detached.candidate, draft.candidate)
+    }
+
+    func testRectangularPortalAdvertisementCannotBorrowModularOrMissingParents() throws {
+        var session = AuthoringSession(userId: intakeId, tenantId: requestId, role: "owner", csrfToken: "fixture", expiresAt: "fixture")
+        session.workspacePortalRectangularFitProfile = "rectangular-portal-v1"
+        session.workspaceFurnishingReusableFitProfile = "source-bound-fit-v1"
+        XCTAssertFalse(session.advertisesWorkspaceRectangularPortalFit)
+        session.workspaceFurnishingProfile = "workspace-furnishing-intake-v1"
+        session.workspaceFurnishingStoolProfile = "workspace-furnishing-stool-v1"
+        session.workspaceFurnishingRoomVisualProfile = "workspace-furnishing-room-visual-v1"
+        session.workspaceArtworkFrameProfile = "workspace-artwork-frame-v1"
+        session.workspaceArtworkFrameModelsProfile = "workspace-artwork-frame-models-v1"
+        session.workspacePortalFinishProfile = "workspace-portal-finish-v1"
+        XCTAssertTrue(session.advertisesWorkspaceRectangularPortalFit)
+        session.workspacePortalRectangularFitProfile = nil
+        session.workspacePortalModularFitProfile = "modular-portal-v1"
+        XCTAssertFalse(session.advertisesWorkspaceRectangularPortalFit)
+        session.workspacePortalRectangularFitProfile = "rectangular-portal-v2"
+        XCTAssertFalse(session.advertisesWorkspaceRectangularPortalFit)
+        session.workspacePortalRectangularFitProfile = "rectangular-portal-v1"
+        session.workspaceFurnishingReusableFitProfile = nil
+        XCTAssertFalse(session.advertisesWorkspaceRectangularPortalFit)
+    }
+
     func testResumeAndTerminalReceiptsBindOriginalBytesAndRequest() throws {
         var wire = try registered()
         let issued = try intake(wire)

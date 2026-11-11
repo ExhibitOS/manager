@@ -14,6 +14,7 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var kind = WorkspaceFurnishingKind.pedestal
     @State private var name = ""
     @State private var provenance = ""
+    @State private var reusablePortal = false
     @State private var rights = {
         var value = ArtworkMetadata().rights
         value.licenseText = nil
@@ -30,6 +31,7 @@ struct WorkspaceFurnishingIntakeView: View {
         let id: String
         let details: WorkspaceFurnishingDetails
         let policy: WorkspaceArtworkFramePreparationPolicy?
+        let fitProfile: WorkspaceFurnishingFitProfile?
     }
     @Binding private var pendingRequest: PendingRequest?
     private var request: PendingRequest? {
@@ -192,7 +194,8 @@ struct WorkspaceFurnishingIntakeView: View {
                 Menu("기본 비품 선택") {
                     ForEach(bundledCatalog.items) { item in
                         Button(item.name) { Task { await selectBundled(item) } }
-                            .disabled(item.kind.map { !Self.supports($0, model: model) } ?? true)
+                            .disabled(item.kind.map { !Self.supports($0, model: model)
+                                || ($0 == .portalFinish && !model.workspacePortalRectangularFitAvailable) } ?? true)
                     }
                 }
             }
@@ -216,6 +219,11 @@ struct WorkspaceFurnishingIntakeView: View {
                 if model.workspacePortalFinishAvailable {
                     Text("출입구 마감").tag(WorkspaceFurnishingKind.portalFinish)
                 }
+            }
+            if kind == .portalFinish && model.workspacePortalRectangularFitAvailable {
+                Toggle("다른 크기의 출입구에도 맞추기", isOn: $reusablePortal)
+                Text("텍스처 없는 사각 프레임을 지원합니다. 원본은 유지되며, 등록할 때 재사용 가능 여부를 확인합니다.")
+                    .foregroundStyle(.secondary)
             }
             TextField("이름", text: $name)
             TextField("출처", text: $provenance, axis: .vertical)
@@ -323,6 +331,9 @@ struct WorkspaceFurnishingIntakeView: View {
                     }
                     Button("현재 등록을 보관하고 새로 시작") { selected = nil; snapshot = nil }
                 }
+            }
+            if intake.fitProfile == .rectangularPortal {
+                Text("다른 크기의 출입구에도 맞추는 프레임으로 등록합니다.").foregroundStyle(.secondary)
             }
             DisclosureGroup("출처와 모델 세부 정보") {
                 Text(intake.declaration.provenance).foregroundStyle(.secondary)
@@ -507,12 +518,14 @@ struct WorkspaceFurnishingIntakeView: View {
 
     private func selectBundled(_ item: BundledWorkspaceFurnishings.Item) async {
         await perform {
-            guard let bundledCatalog, let selectedKind = item.kind, Self.supports(selectedKind, model: model) else {
+            guard let bundledCatalog, let selectedKind = item.kind, Self.supports(selectedKind, model: model),
+                  selectedKind != .portalFinish || model.workspacePortalRectangularFitAvailable else {
                 throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
             }
             let file = try await BundledWorkspaceFurnishings.load(item.id, from: bundledCatalog)
             try Task.checkCancellation()
-            guard access == model.viewportAccessID, selected == nil, request == nil else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            guard access == model.viewportAccessID, selected == nil, request == nil,
+                  selectedKind != .portalFinish || model.workspacePortalRectangularFitAvailable else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
             _ = try WorkspaceFurnishingModel(snapshot: file)
             var bundledRights = ArtworkMetadata().rights
             bundledRights.holder = "ExhibitOS"
@@ -524,7 +537,8 @@ struct WorkspaceFurnishingIntakeView: View {
             bundledRights.permissions.download = true
             bundledRights.permissions.export = true
             bundledRights.permissions.commercial = true
-            kind = selectedKind; name = item.name
+            kind = selectedKind
+            reusablePortal = selectedKind == .portalFinish; name = item.name
             provenance = bundledCatalog.provenance(for: item)
             rights = bundledRights; snapshot = file
         }
@@ -588,7 +602,8 @@ struct WorkspaceFurnishingIntakeView: View {
                 request = .init(access: access, id: UUID().uuidString.lowercased(),
                     details: .init(kind: kind, name: name.trimmingCharacters(in: .whitespacesAndNewlines), rights: rights,
                                    provenance: provenance.trimmingCharacters(in: .whitespacesAndNewlines), model: descriptor),
-                    policy: preparationPolicy(for: descriptor))
+                    policy: preparationPolicy(for: descriptor),
+                    fitProfile: kind == .portalFinish && reusablePortal ? .rectangularPortal : nil)
             }
             try await model.withWorkspaceFurnishingAccess(access) { api in
                 var intake: WorkspaceFurnishingIntake
@@ -598,7 +613,8 @@ struct WorkspaceFurnishingIntakeView: View {
                 } else if let request {
                     do {
                         intake = try await api.createWorkspaceFurnishing(requestId: request.id, details: request.details,
-                                                                        preparationPolicy: request.policy)
+                                                                        preparationPolicy: request.policy,
+                                                                        fitProfile: request.fitProfile)
                     } catch let failure as AuthoringFailure {
                         if ["FURNISHING_DECLARATION", "FURNISHING_INTAKE_LIMIT", "FRAME_PREPARATION_SOURCE_UNSUPPORTED",
                             "FRAME_PREPARATION_RIGHTS_DENIED"].contains(failure.code) { self.request = nil }
@@ -638,6 +654,7 @@ struct WorkspaceFurnishingIntakeView: View {
         guard access == model.viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         if let selected, selected.id != intake.id || selected.requestId != intake.requestId
             || selected.declaration != intake.declaration || selected.preparationPolicy != intake.preparationPolicy
+            || selected.fitProfile != intake.fitProfile
             || (selected.phase == .registered && (intake.preparation != selected.preparation || intake.furnishing != selected.furnishing)) {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
