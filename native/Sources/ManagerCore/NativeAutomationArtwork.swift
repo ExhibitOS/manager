@@ -6,6 +6,7 @@ struct NativeAutomationReplacementCommand {
         case image(coarseSHA256: String)
         case productImage(receiptSHA256: String)
         case approvedModel(placementID: String)
+        case productImageThumbnailRepair
     }
 
     static let modelProfile = NativeApprovedModelCandidateReplacement.profile
@@ -19,7 +20,10 @@ struct NativeAutomationReplacementCommand {
     init(_ request: DocumentValue) throws {
         let common: Set<String> = ["artworkId", "artworkRevision", "importJobId", "studioRevision", "etag"]
         let command: DocumentValue
-        if request["command"]["kind"] == .string(Self.modelProfile) {
+        if request["command"]["kind"] == .string(NativeProductImageThumbnailRepair.profile) {
+            command = try NativeAutomationArtworkRules.command(request, keys: common.union(["kind"]))
+            target = .productImageThumbnailRepair
+        } else if request["command"]["kind"] == .string(Self.modelProfile) {
             command = try NativeAutomationArtworkRules.command(request, keys: common.union(["kind", "placementId"]))
             guard let placement = command["placementId"].string,
                   UUID(uuidString: placement)?.uuidString.lowercased() == placement else {

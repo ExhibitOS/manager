@@ -590,6 +590,10 @@ public actor NativeAutomationSession {
     }
 
     private func artworkAttempt(at path: String, errorCode: String = "ARTWORK_REPLACEMENT_UNCERTAIN") throws -> DocumentValue? {
+        try Self.readArtworkAttempt(at: path, errorCode: errorCode)
+    }
+
+    private static func readArtworkAttempt(at path: String, errorCode: String = "ARTWORK_REPLACEMENT_UNCERTAIN") throws -> DocumentValue? {
         let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else {
             if errno == ENOENT { return nil }
@@ -614,6 +618,10 @@ public actor NativeAutomationSession {
     }
 
     private func syncArtworkAttempt(at attemptPath: String, errorCode: String = "ARTWORK_REPLACEMENT_UNCERTAIN") throws {
+        try Self.syncArtworkAttemptFiles(at: attemptPath, errorCode: errorCode)
+    }
+
+    private static func syncArtworkAttemptFiles(at attemptPath: String, errorCode: String = "ARTWORK_REPLACEMENT_UNCERTAIN") throws {
         for path in [attemptPath, URL(fileURLWithPath: attemptPath).deletingLastPathComponent().path] {
             let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { throw BridgeFailure(errorCode) }
@@ -875,6 +883,7 @@ public actor NativeAutomationSession {
         case .image: api.admitsSameOwnerArtworkReplacement
         case .productImage: await api.admitsProductImagePreparation
         case .approvedModel: await api.admitsApprovedModelCandidateReplacement
+        case .productImageThumbnailRepair: await api.admitsProductImageThumbnailRepair
         }
     }
 
@@ -900,6 +909,9 @@ public actor NativeAutomationSession {
                   intent.productImagePreparation?.artworkRevision == command.artworkRevision else {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
             }
+        case .productImageThumbnailRepair:
+            // The retained transfer may belong to a different artwork/job. Never clear or rewrite it.
+            guard current.pending == nil else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
         case .approvedModel:
             let empty = state.intent == nil && state.jobId == nil && state.compactVariant == nil
             let same = state.intent?.artworkId == command.artworkId && state.jobId == command.importJobId
@@ -911,6 +923,25 @@ public actor NativeAutomationSession {
         let attempt = DocumentValue.object(durableFields)
         let onOriginal = currentETag == command.etag
         if onOriginal { try checkedRevision(request, current) }
+        let repair: Bool
+        if case .productImageThumbnailRepair = command.target { repair = true } else { repair = false }
+        let completionPath = root.appendingPathComponent(".automation-artwork-repair-completed-" + id + ".json").path
+        if repair, let completed = try artworkAttempt(at: completionPath) {
+            guard completed["attempt"] == attempt, completed["etag"].string == currentETag,
+                  completed["localRevision"].integer == Int64(current.revision) else {
+                throw BridgeFailure("AUTOMATION_REQUEST_CHANGED")
+            }
+            let observed = try await api.exhibition(draft.id)
+            guard observed.draft == draft, observed.etag == currentETag,
+                  observed.revision == command.studioRevision + 1 else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            return try value(current)
+        }
+        if repair, let pending = try artworkAttempt(at: replacementAttemptPath), pending != attempt,
+           let previousId = pending["requestId"].string,
+           UUID(uuidString: previousId)?.uuidString.lowercased() == previousId {
+            let previousPath = root.appendingPathComponent(".automation-artwork-repair-completed-" + previousId + ".json").path
+            _ = try Self.releaseCompletedRepairAttempt(at: replacementAttemptPath, expected: pending, completedAt: previousPath)
+        }
         if let pending = try artworkAttempt(at: replacementAttemptPath) {
             guard pending == attempt, onOriginal || current.revision == UInt64(oldLocalRevision + 1) else {
                 throw BridgeFailure("AUTOMATION_REQUEST_CHANGED")
@@ -924,6 +955,10 @@ public actor NativeAutomationSession {
             if case .productImage(let receiptSHA256) = command.target, let intent = state.intent {
                 _ = try await api.reviewProductImage(importJobId: command.importJobId, intent: intent,
                     workspaceId: current.workspaceId, principalId: current.principalId, expectedReceiptSHA256: receiptSHA256)
+            }
+            if case .productImageThumbnailRepair = command.target {
+                try await api.reviewProductImageThumbnailRepair(draft: draft, command: command,
+                    workspaceId: current.workspaceId, principalId: current.principalId)
             }
             try saveReplacementAttempt(attempt)
         }
@@ -941,6 +976,9 @@ public actor NativeAutomationSession {
             stored = try await api.replaceProductImage(exhibitionId: draft.id, studioRevision: command.studioRevision,
                 etag: command.etag, requestId: id, importJobId: command.importJobId, intent: intent,
                 workspaceId: current.workspaceId, principalId: current.principalId, expectedReceiptSHA256: receiptSHA256)
+        case .productImageThumbnailRepair:
+            stored = try await api.repairProductImageThumbnail(draft: draft, command: command,
+                requestId: id, onOriginal: onOriginal)
         case .approvedModel(let placementID):
             stored = try await api.replaceApprovedModelCandidate(
                 draft: draft, studioRevision: command.studioRevision, etag: command.etag, requestId: id,
@@ -953,6 +991,8 @@ public actor NativeAutomationSession {
             guard stored.draft == draft, stored.etag == currentETag else {
                 throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
             }
+            if repair { try completeRepairAttempt(attempt, state: current, path: completionPath) }
+            artworkReplacementRecoveryOnly = false
             return try value(current)
         }
         var next = current
@@ -961,7 +1001,37 @@ public actor NativeAutomationSession {
         next.savedEditVersion = stored.draft.document["editVersion"].integer
         let persisted = try await bridge.saveDocumentState(context, state: next)
         artworkReplacementRecoveryOnly = false
+        if repair { try completeRepairAttempt(attempt, state: persisted, path: completionPath) }
         return try value(persisted)
+    }
+
+    /// A completed repair can release the singleton slot only after its retained
+    /// completion receipt is durable. An uncertain or ordinary replacement never rotates.
+    static func releaseCompletedRepairAttempt(at path: String, expected: DocumentValue, completedAt completionPath: String) throws -> Bool {
+        guard let command = try? NativeAutomationReplacementCommand(expected),
+              case .productImageThumbnailRepair = command.target,
+              try readArtworkAttempt(at: path) == expected,
+              let completed = try readArtworkAttempt(at: completionPath), completed["attempt"] == expected,
+              let localRevision = completed["localRevision"].integer, localRevision > 0,
+              let etag = completed["etag"].string,
+              etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil,
+              etag.hasPrefix("\"studio-r\(command.studioRevision + 1)-") else { return false }
+        try syncArtworkAttemptFiles(at: completionPath)
+        guard Darwin.unlink(path) == 0 else { throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN") }
+        try syncArtworkAttemptFiles(at: completionPath) // Includes parent fsync after unlink.
+        return true
+    }
+
+    private func completeRepairAttempt(_ attempt: DocumentValue, state: NativeDocumentState, path: String) throws {
+        let completed: DocumentValue = .object(["attempt": attempt, "etag": state.etag.map(DocumentValue.string) ?? .null,
+            "localRevision": .integer(Int64(state.revision))])
+        if let previous = try artworkAttempt(at: path) {
+            guard previous == completed else { throw BridgeFailure("ARTWORK_REPLACEMENT_UNCERTAIN") }
+        } else {
+            guard try JSONEncoder().encode(completed).count <= 8192 else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            _ = try write(completed, to: path)
+        }
+        try syncArtworkAttempt(at: path)
     }
 
     private func executeWorkspaceMaterial(_ operation: String, request: DocumentValue, api: AuthoringAPI) async throws -> DocumentValue {
