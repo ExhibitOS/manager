@@ -29,12 +29,14 @@ final class NativeSceneAdmissionTests: XCTestCase {
     }
 
     func testSceneRequiresItsDistinctLiveMarkerBeforeHTTP() async throws {
-        let denied = try await attempt(operation: "add-light", markers: ["nativeAuthoringProposalProfile": "saved-head-v1"], runtime: manifest)
+        for runtime in [manifest, "bc4dc0736a07774550107f12cbab729d91d2156d6ec8828c321dcf0677555c7d"] {
+        let denied = try await attempt(operation: "add-light", markers: ["nativeAuthoringProposalProfile": "saved-head-v1"], runtime: runtime)
         XCTAssertEqual(denied.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         XCTAssertEqual(denied.1, ["GET"])
-        let admitted = try await attempt(operation: "add-light", markers: ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"], runtime: manifest)
+        let admitted = try await attempt(operation: "add-light", markers: ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"], runtime: runtime)
         XCTAssertEqual(admitted.0, "AUTHORING_PROPOSAL_INVALID")
         XCTAssertEqual(admitted.1, ["GET", "POST"])
+        }
     }
 
     func testCarriedPlaqueUsesItsActualMarkerAndRetainsServerValidation() async throws {
