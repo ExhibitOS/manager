@@ -56,4 +56,35 @@ final class NativeAutomationSceneTests: XCTestCase {
         XCTAssertThrowsError(try NativeAutomationScene.additionRequest(.object(["light": row]), frame: frame(result)))
         var changed = reply(req); changed["lightId"] = .string(light); XCTAssertThrowsError(try req.checkedReply(changed))
     }
+    func testRoomBaseCreationAndExistingEditedLightNoOp() throws {
+        let base = try fixture(), room = try XCTUnwrap(base.rooms.first?["id"].string)
+        let id = UUID().uuidString.lowercased()
+        let input: DocumentValue = .object(["type": .string("ensure-room-base-light"), "roomId": .string(room), "lightId": .string(id)])
+        guard case .addition(let request) = try NativeAutomationScene.roomBaseRequest(input, frame: frame(base)) else { return XCTFail("Expected addition") }
+        XCTAssertEqual(request.value["type"], .string("add-light"))
+        XCTAssertEqual(request.value["light"]["id"], .string(id))
+        XCTAssertEqual(request.value["settings"]["purpose"], .string("room-base"))
+        let preview = try request.checkedReply(reply(request))
+        var applied = try preview.apply(to: base)
+        XCTAssertThrowsError(try preview.apply(to: applied))
+        var edited = applied.candidate, lights = try XCTUnwrap(edited["lights"].items)
+        lights[lights.count - 1]["intensity"] = .number(37); edited["lights"] = .array(lights)
+        try applied.replaceCandidate(edited)
+        guard case .existing(let existing) = try NativeAutomationScene.roomBaseRequest(input, frame: frame(applied)) else { return XCTFail("Expected existing light") }
+        let unchanged = try existing.apply(to: applied)
+        XCTAssertEqual(unchanged, applied)
+        XCTAssertEqual(unchanged.candidate["lights"].items?.count, 2)
+    }
+    func testRoomBaseRejectsWrongRoomDuplicateIdAndAlteredReply() throws {
+        let base = try fixture(), room = try XCTUnwrap(base.rooms.first?["id"].string)
+        let input: DocumentValue = .object(["type": .string("ensure-room-base-light"), "roomId": .string(room), "lightId": .string(light)])
+        XCTAssertThrowsError(try NativeAutomationScene.roomBaseRequest(input, frame: frame(base)))
+        var bad = input; bad["roomId"] = .string(UUID().uuidString.lowercased()); XCTAssertThrowsError(try NativeAutomationScene.roomBaseRequest(bad, frame: frame(base)))
+        bad = input; bad["extra"] = .bool(true); XCTAssertThrowsError(try NativeAutomationScene.roomBaseRequest(bad, frame: frame(base)))
+        bad = input; bad["lightId"] = .string(UUID().uuidString.lowercased())
+        guard case .addition(let request) = try NativeAutomationScene.roomBaseRequest(bad, frame: frame(base)) else { return XCTFail("Expected addition") }
+        var changed = reply(request); changed["candidate"]["title"] = .string("changed")
+        XCTAssertThrowsError(try request.checkedReply(changed))
+    }
+
 }
