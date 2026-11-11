@@ -140,4 +140,51 @@ enum NativeAutomationScene {
         return try Proposal(frame: frame, command: .object(fields), targetKey: "lightId", targetId: id, expected: expected)
     }
 
+    enum RoomBasePreparation: Sendable {
+        case existing(ScenePreview)
+        case addition(Proposal)
+    }
+
+    /// The existing typed room-base action defines the canonical fixture and
+    /// validates the complete candidate. Caller ID is used only if absent.
+    static func roomBaseRequest(_ input: DocumentValue, frame: ViewportFrame) throws -> RoomBasePreparation {
+        guard case .object(let fields) = input, Set(fields.keys) == ["type", "roomId", "lightId"],
+              input["type"] == .string("ensure-room-base-light"),
+              let roomId = input["roomId"].string, let lightId = input["lightId"].string,
+              UUID(uuidString: roomId) != nil, UUID(uuidString: lightId) != nil,
+              frame.draft.rooms.filter({ $0["id"].string == roomId }).count == 1,
+              !frame.disabled, frame.sequence > 0,
+              [frame.epoch, frame.tenantId, frame.principalId].allSatisfy({ UUID(uuidString: $0) != nil }),
+              let rows = frame.draft.candidate["lights"].items else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        let selected = ViewportSelection(kind: "room", id: roomId)
+        let action = RoomBaseLightAction.ensure(roomId: roomId)
+        _ = try action.encodedValue(in: frame.draft, selected: selected)
+        let markers = try NativeLightFixture.bindings(in: frame.draft.candidate).filter { $0["purpose"] == .string("room-base") }
+        let matches = rows.filter { light in
+            light["roomId"].string?.lowercased() == roomId.lowercased() && markers.contains { $0["lightId"].string?.lowercased() == light["id"].string?.lowercased() }
+        }
+        if !matches.isEmpty {
+            var checked = frame.draft
+            guard matches.count == 1, try !action.apply(frame.draft.candidate, to: &checked, selected: selected) else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+            return .existing(ScenePreview(base: frame.draft, candidate: frame.draft.candidate))
+        }
+        guard !rows.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }),
+              !frame.draft.rooms.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }),
+              let room = frame.draft.rooms.first(where: { $0["id"].string == roomId }) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        var expected = try RoomBaseLightAction.appendingLight(to: frame.draft.candidate, room: room, lightId: lightId)
+        let template = "org.exhibitos.studio/template"
+        if expected["extensions"][template] != .null {
+            guard case .object = expected["extensions"][template], case .bool = expected["extensions"][template]["modified"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+            expected["extensions"][template]["modified"] = .bool(true)
+        }
+        var checked = frame.draft
+        guard try action.apply(expected, to: &checked, selected: selected), checked.candidate == expected,
+              let light = expected["lights"].items?.last,
+              let binding = try NativeLightFixture.bindings(in: expected).first(where: { $0["lightId"].string == lightId }),
+              case .object(var settings) = binding else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+        settings.removeValue(forKey: "lightId")
+        let command: DocumentValue = .object(["type": .string("add-light"), "light": light, "settings": .object(settings)])
+        return .addition(try Proposal(frame: frame, command: command, targetKey: "lightId", targetId: lightId, expected: expected))
+    }
+
 }

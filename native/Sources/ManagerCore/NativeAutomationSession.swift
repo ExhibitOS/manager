@@ -1555,27 +1555,44 @@ public actor NativeAutomationSession {
             let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1, tenantId: current.tenantId,
                 principalId: current.principalId, draft: draft, selection: nil, mode: "translate", view: "isometric",
                 disabled: false, workspaceId: current.workspaceId, baseETag: etag)
-            let wire: DocumentValue
-            let check: @Sendable (DocumentValue) throws -> SceneProposal
-            if operation == "pedestal-prepare" {
-                let proposal = try NativeAutomationScene.pedestalRequest(request["command"], frame: frame)
-                wire = proposal.value; check = { .scene(try proposal.checkedReply($0)) }
-            } else if request["command"]["light"] != .null {
-                let proposal = try NativeAutomationScene.additionRequest(request["command"], frame: frame)
-                wire = proposal.value; check = { .scene(try proposal.checkedReply($0)) }
+            let preview: SceneProposal
+            let candidate: DocumentValue
+            if operation == "light-prepare", request["command"]["type"] == .string("ensure-room-base-light") {
+                guard authoringSession?.advertisesRoomBaseLight == true,
+                      authoringSession?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1" else {
+                    throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+                }
+                switch try NativeAutomationScene.roomBaseRequest(request["command"], frame: frame) {
+                case .existing(let checked):
+                    preview = .scene(checked); candidate = checked.candidate
+                case .addition(let proposal):
+                    let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
+                    let checked = try proposal.checkedReply(reply)
+                    preview = .scene(checked); candidate = checked.candidate
+                }
             } else {
-                let proposal = try NativeAutomationScene.lightRequest(request["command"], frame: frame)
-                wire = proposal.value; check = { .light(try proposal.checkedReply($0, selectedLightId: proposal.command.lightId)) }
+                let wire: DocumentValue
+                let check: @Sendable (DocumentValue) throws -> SceneProposal
+                if operation == "pedestal-prepare" {
+                    let proposal = try NativeAutomationScene.pedestalRequest(request["command"], frame: frame)
+                    wire = proposal.value; check = { .scene(try proposal.checkedReply($0)) }
+                } else if request["command"]["light"] != .null {
+                    let proposal = try NativeAutomationScene.additionRequest(request["command"], frame: frame)
+                    wire = proposal.value; check = { .scene(try proposal.checkedReply($0)) }
+                } else {
+                    let proposal = try NativeAutomationScene.lightRequest(request["command"], frame: frame)
+                    wire = proposal.value; check = { .light(try proposal.checkedReply($0, selectedLightId: proposal.command.lightId)) }
+                }
+                let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: wire)
+                preview = try check(reply); candidate = reply["candidate"]
             }
-            let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: wire)
-            let preview = try check(reply)
             try Task.checkCancellation()
             let now = try await api.exhibition(draft.id)
             let (_, _, refreshed) = try await checked(request)
             guard now.draft == draft, now.etag == etag, now.revision == saved.revision,
                   try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             sceneProposals[id] = (preview, etag, operation)
-            result = .object(["proposalId": .string(id), "candidate": reply["candidate"]])
+            result = .object(["proposalId": .string(id), "candidate": candidate])
         case "pedestal-apply", "light-apply", "pedestal-cancel", "light-cancel":
             try checkedRevision(request, current)
             guard let proposalId = request["proposalId"].string, let (preview, etag, prepared) = sceneProposals[proposalId],
@@ -1591,7 +1608,8 @@ public actor NativeAutomationSession {
                 guard saved.draft == draft, saved.etag == etag, try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
                 var next = current; next.draft = try preview.apply(to: draft)
                 try Task.checkCancellation()
-                result = try value(await bridge.saveDocumentState(context, state: next))
+                if next.draft == draft { result = try value(current) }
+                else { result = try value(await bridge.saveDocumentState(context, state: next)) }
                 sceneProposals.removeValue(forKey: proposalId)
             }
         case "thumbnail-prepare", "thumbnail-status", "thumbnail-select":
