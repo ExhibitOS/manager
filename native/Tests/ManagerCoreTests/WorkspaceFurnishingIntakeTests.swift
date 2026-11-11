@@ -111,6 +111,21 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try intake(changed))
     }
 
+    func testRectangularPortalSourceBoundsMatchSpec29Exactly() throws {
+        let ranges: [(String, Double, Double)] = [("openingWidth", 0.9, 3), ("openingHeight", 2, 3.2),
+            ("minZ", -0.15, -0.015), ("maxZ", 0.015, 0.15)]
+        for (field, minimum, maximum) in ranges {
+            for boundary in [minimum, maximum] {
+                var wire = try rectangularPortal(); wire["furnishing"]["fit"]["geometry"][field] = .number(boundary)
+                XCTAssertNoThrow(try intake(wire))
+            }
+            for outside in [minimum - 0.00001, maximum + 0.00001] {
+                var wire = try rectangularPortal(); wire["furnishing"]["fit"]["geometry"][field] = .number(outside)
+                XCTAssertThrowsError(try intake(wire))
+            }
+        }
+    }
+
     func testRectangularPortalAttachNeedsOwnCapabilityAndPreservesOnePairedHost() throws {
         let portal = try XCTUnwrap(intake(rectangularPortal()).furnishing)
         var draft = try NativeExhibitionDraft.new()
@@ -119,6 +134,7 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         let mate = "10000000-0000-4000-8000-00000000000b"
         let doors: DocumentValue = .array([.object(["id": .string(host), "type": .string("door")]),
                                           .object(["id": .string(mate), "type": .string("door")])])
+        candidate["extensions"] = .object(["example": .bool(true)])
         candidate["openings"] = doors; try draft.replaceCandidate(candidate)
         XCTAssertThrowsError(try WorkspacePortalFinish.applying(to: draft, openingId: host, furnishing: portal))
         XCTAssertThrowsError(try WorkspacePortalFinish.applying(to: draft, openingId: host, furnishing: portal, admitsModularFit: true))

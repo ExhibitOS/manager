@@ -61,6 +61,47 @@ final class BundledWorkspaceFurnishingsTests: XCTestCase {
         XCTAssertTrue(catalog.provenance(for: sign).contains(sign.provenance.sourceSha256))
     }
 
+    func testRectangularPortalsFromExactCatalog16PreserveEarlierLibrary() async throws {
+        guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_RECTANGULAR_PORTAL_CATALOG_FIXTURE"] else {
+            throw XCTSkip("Set EXHIBITOS_RECTANGULAR_PORTAL_CATALOG_FIXTURE to the pinned 1.6.0 source checkout")
+        }
+        let source = URL(fileURLWithPath: input, isDirectory: true), files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try files.createDirectory(at: root.appendingPathComponent("assets/furnishings"), withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: root) }
+        try files.copyItem(at: source.appendingPathComponent("manifest.json"),
+                           to: root.appendingPathComponent("assets/furnishings/default-manifest.json"))
+        let portals = ["portal-pale-mineral", "portal-warm-oak"]
+        for id in portals {
+            let directory = "assets/furnishings/exhibitos-authored-20261109/" + id
+            try files.createDirectory(at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
+            for name in ["model.glb", "LICENSE-NOTICE.txt"] {
+                let relative = directory + "/" + name
+                try files.copyItem(at: source.appendingPathComponent(relative), to: root.appendingPathComponent(relative))
+            }
+        }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: root)
+        XCTAssertEqual(catalog.version, "1.6.0")
+        XCTAssertEqual(Set(catalog.items.map(\.id)), Set(portals + ["freestanding-info-stand", "gallery-stool",
+            "upholstered-gallery-bench", "closed-exit-door", "exit-pictogram-sign", "sculpture-gallery-bench"]))
+        XCTAssertEqual(catalog.items.first { $0.id == "exit-pictogram-sign" }?.catalogVersion, 2)
+        for id in portals {
+            let item = try XCTUnwrap(catalog.items.first { $0.id == id })
+            XCTAssertEqual(item.hostKind, "opening"); XCTAssertEqual(item.kind, .portalFinish)
+            let original = try await BundledWorkspaceFurnishings.load(id, from: catalog)
+            XCTAssertEqual(original.sha256, item.provenance.sourceSha256)
+            XCTAssertEqual(original.data.count, item.model.bytes)
+        }
+        let item = try XCTUnwrap(catalog.items.first { $0.id == portals[0] })
+        try Data(count: item.rights.notice.bytes).write(to: root.appendingPathComponent(item.rights.notice.path))
+        do { _ = try await BundledWorkspaceFurnishings.load(item.id, from: catalog); XCTFail("Changed portal notice accepted") }
+        catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "FURNISHING_CATALOG_INVALID") }
+        var altered = try Data(contentsOf: root.appendingPathComponent("assets/furnishings/default-manifest.json"))
+        altered[altered.startIndex] = 32
+        try altered.write(to: root.appendingPathComponent("assets/furnishings/default-manifest.json"))
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: root))
+    }
+
     func testSculptureBenchCanBeSelectedFromExactCatalog15() async throws {
         guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_SCULPTURE_BENCH_CATALOG_FIXTURE"] else {
             throw XCTSkip("Set EXHIBITOS_SCULPTURE_BENCH_CATALOG_FIXTURE to the pinned 1.5.0 source checkout")

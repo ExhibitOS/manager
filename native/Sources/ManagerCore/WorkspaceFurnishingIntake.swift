@@ -192,10 +192,10 @@ public struct WorkspaceFurnishingFit: Codable, Equatable, Sendable {
         guard profile == .rectangularPortal else { return true }
         guard case .object(let fields) = geometry,
               Set(fields.keys) == ["profile", "openingWidth", "openingHeight", "minZ", "maxZ"],
-              let width = geometry["openingWidth"].double, width.isFinite, width > 0,
-              let height = geometry["openingHeight"].double, height.isFinite, height > 0,
-              let minZ = geometry["minZ"].double, minZ.isFinite,
-              let maxZ = geometry["maxZ"].double, maxZ.isFinite, minZ < maxZ else { return false }
+              let width = geometry["openingWidth"].double, width.isFinite, (0.9...3).contains(width),
+              let height = geometry["openingHeight"].double, height.isFinite, (2...3.2).contains(height),
+              let minZ = geometry["minZ"].double, minZ.isFinite, (-0.15 ... -0.015).contains(minZ),
+              let maxZ = geometry["maxZ"].double, maxZ.isFinite, (0.015...0.15).contains(maxZ) else { return false }
         return true
     }
 }

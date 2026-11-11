@@ -194,7 +194,8 @@ struct WorkspaceFurnishingIntakeView: View {
                 Menu("기본 비품 선택") {
                     ForEach(bundledCatalog.items) { item in
                         Button(item.name) { Task { await selectBundled(item) } }
-                            .disabled(item.kind.map { !Self.supports($0, model: model) } ?? true)
+                            .disabled(item.kind.map { !Self.supports($0, model: model)
+                                || ($0 == .portalFinish && !model.workspacePortalRectangularFitAvailable) } ?? true)
                     }
                 }
             }
@@ -517,12 +518,14 @@ struct WorkspaceFurnishingIntakeView: View {
 
     private func selectBundled(_ item: BundledWorkspaceFurnishings.Item) async {
         await perform {
-            guard let bundledCatalog, let selectedKind = item.kind, Self.supports(selectedKind, model: model) else {
+            guard let bundledCatalog, let selectedKind = item.kind, Self.supports(selectedKind, model: model),
+                  selectedKind != .portalFinish || model.workspacePortalRectangularFitAvailable else {
                 throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
             }
             let file = try await BundledWorkspaceFurnishings.load(item.id, from: bundledCatalog)
             try Task.checkCancellation()
-            guard access == model.viewportAccessID, selected == nil, request == nil else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            guard access == model.viewportAccessID, selected == nil, request == nil,
+                  selectedKind != .portalFinish || model.workspacePortalRectangularFitAvailable else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
             _ = try WorkspaceFurnishingModel(snapshot: file)
             var bundledRights = ArtworkMetadata().rights
             bundledRights.holder = "ExhibitOS"
@@ -534,7 +537,8 @@ struct WorkspaceFurnishingIntakeView: View {
             bundledRights.permissions.download = true
             bundledRights.permissions.export = true
             bundledRights.permissions.commercial = true
-            kind = selectedKind; name = item.name
+            kind = selectedKind
+            reusablePortal = selectedKind == .portalFinish; name = item.name
             provenance = bundledCatalog.provenance(for: item)
             rights = bundledRights; snapshot = file
         }
