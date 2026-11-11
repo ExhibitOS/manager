@@ -1622,6 +1622,73 @@ mod tests {
     }
 
     #[test]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn canonical_thumbnail_adoption_transition_preserves_none_or_exact_carried_restore() {
+        let source = crate::native_payload::CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET;
+        let target = crate::native_payload::CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET;
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        let pin = |generation: &str, tuple: (&str, &str, &str)| {
+            let mut value = binding(generation);
+            value.catalog = 45;
+            value.source_commit = tuple.0.into();
+            value.producer_sha256 = tuple.1.into();
+            value.payload_manifest_sha256 = tuple.2.into();
+            value
+        };
+        let mut prior = pin(GENERATION, source);
+        prior.phase = Phase::Clean;
+        prior.admission_kind = Admission::CleanReopen;
+        prior.previous_generation = Some("10000000-0000-4000-8000-000000000004".into());
+        let mut unrestored = pin(NEXT, target);
+        unrestored.consume_furnishing_transition(&prior, transition).unwrap();
+        assert!(unrestored.restore.is_none());
+        assert_eq!(unrestored.owner, prior.owner);
+        assert_eq!(unrestored.physical, prior.physical);
+        let observation = serde_json::json!({
+            "version":1,"sourceHandoffSha256":"60ed3615a4072856a1cb1449fa532acd307d8c237a09095b356566db4ed90b88",
+            "priorRestoreProof":{
+                "restoreId":"10000000-0000-4000-8000-000000000007",
+                "backupId":"10000000-0000-4000-8000-000000000008",
+                "authenticatedManifestSha256":"c".repeat(64),
+                "sourceDatabaseSystemId":"110","sourceDatabaseOid":"16000",
+                "targetDatabaseSystemId":"220","targetDatabaseOid":"16002",
+                "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)
+            },
+            "archiveSourceDatabaseSystemId":"220","archiveSourceDatabaseOid":"16002",
+            "targetDatabaseSystemId":"330","targetDatabaseOid":"16004",
+            "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)
+        });
+        prior.restore = Some(Restore {
+            id:"10000000-0000-4000-8000-000000000009".into(),
+            backup_id:"10000000-0000-4000-8000-000000000010".into(),
+            archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
+            target_system_identifier:"330".into(),provenance:None,
+            carried_provenance:Some(serde_json::from_value(observation.clone()).unwrap()),
+        });
+        let mut restored = pin(NEXT, target);
+        restored.consume_furnishing_transition(&prior, transition).unwrap();
+        assert_eq!(restored.restore, prior.restore);
+        assert_eq!(restored.owner, prior.owner);
+        assert_eq!(restored.physical, prior.physical);
+        restored.phase = Phase::Clean;
+        let mut reopened = pin(LATER, target);
+        reopened.consume(&restored).unwrap();
+        assert_eq!(reopened.restore, prior.restore);
+        let mut other_root = pin(NEXT, target);
+        other_root.physical.root_inode += 1;
+        assert!(other_root.consume_furnishing_transition(&prior, transition).is_err());
+        let mut other_owner = pin(NEXT, target);
+        other_owner.owner.principal_id = "10000000-0000-4000-8000-000000000011".into();
+        assert!(other_owner.consume_furnishing_transition(&prior, transition).is_err());
+        let mut forged = observation;
+        forged["sourceHandoffSha256"] = "f".repeat(64).into();
+        prior.restore.as_mut().unwrap().carried_provenance = Some(serde_json::from_value(forged).unwrap());
+        assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
+        prior.restore.as_mut().unwrap().carried_provenance = None;
+        assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
+    }
+
+    #[test]
     fn ordinary_furnishing_consumption_survives_db_only_pointer_rotation_and_refuses_replay() {
         use std::os::unix::fs::DirBuilderExt;
         let root = std::env::temp_dir().join(format!("furnishing-binding-{}", Uuid::new_v4()));

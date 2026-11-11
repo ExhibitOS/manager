@@ -1162,3 +1162,12 @@ The existing artwork thumbnail action prepares one bound rendered candidate,
 shows its PNG for explicit confirmation and retains that candidate for uncertain
 retries. Runtime admission and source checks are separate from actual official
 workspace transition, thumbnail selection, reopen and export qualification.
+
+The corrected canonical-model/optional-thumbnail composition payload
+eac64ed106bdac283c1aa0c6c3dee5541c98919ed4a67bd9e5509b21496b5bce
+from Platform b0c02301c39b85a75ca576e3dca56274ccd92c28 has one new transition
+from preceding payload 3e05e41286c517d5304299bdd987b8e5b6fe08ab8396dee3804feeb0f0c4f670
+with the same carried-restore protections. Original-export cancellation does not
+reset a consumed export claim: the existing successor path requires a distinct
+request and new destination while retaining the saved head and prior attempt.
+Exact admission is separate from actual successor-output qualification.
