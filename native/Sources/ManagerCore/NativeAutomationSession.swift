@@ -259,7 +259,7 @@ public actor NativeAutomationSession {
               stopped.restoration.map({ $0.state == "activated" }) ?? true else {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
         }
-        guard installedAuthoringCLI || stopped.freshImageReleaseConfigured == true
+        guard installedAuthoringCLI || installedExportRootIdentity != nil || stopped.freshImageReleaseConfigured == true
                 || (!requiresReleaseImageRuntime
                     && AuthoringAPI.supportsFreshImageRuntime(manifest: configured.manifestSha256)) else {
             throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
@@ -280,6 +280,8 @@ public actor NativeAutomationSession {
         if installedAuthoringCLI {
             let canCreate = await api.admitsPersonalExhibitionCreation
             guard Self.installedAuthoringEntryAllowed(canCreate: canCreate, session: authoringSession) else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+        } else if installedExportRootIdentity != nil {
+            guard Self.installedExportEntryAllowed(session: authoringSession) else { throw AuthoringFailure("NATIVE_EXPORT_UNAVAILABLE") }
         } else {
             guard await api.admitsFreshImagePreparation else { throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE") }
         }
@@ -1355,6 +1357,12 @@ public actor NativeAutomationSession {
         guard let session else { return false }
         return canCreate || session.nativeAuthoringProposalProfile == "saved-head-v1"
             || session.advertisesRenderedArtworkThumbnail
+    }
+
+    static func installedExportEntryAllowed(session: AuthoringSession?) -> Bool {
+        guard let session else { return false }
+        return session.nativeOexExportProfile == "bounded-file-v1"
+            || session.nativePublicationProfile == "bounded-local-v1"
     }
 
     static func expectedReopenPorts(_ configuration: NativeConfiguration, manifest: String, tenantId: String,

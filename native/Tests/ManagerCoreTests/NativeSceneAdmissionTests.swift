@@ -47,6 +47,24 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertEqual(denied.1, ["GET"])
     }
 
+    func testInstalledExportEntryUsesExportCapabilitiesWithoutImagePreparation() throws {
+        let examples: [([String: String], Bool)] = [
+            ([:], false),
+            (["nativeFreshImagePreparationProfile": "ordinary-image-preparation-v1"], false),
+            (["nativeAuthoringProposalProfile": "saved-head-v1"], false),
+            (["nativeOexExportProfile": "bounded-file-v1"], true),
+            (["nativePublicationProfile": "bounded-local-v1"], true),
+            (["nativeOexExportProfile": "unknown", "nativePublicationProfile": "unknown"], false)
+        ]
+        for (markers, expected) in examples {
+            let fields: [String: String] = ["tenantId": owner, "userId": owner, "role": "curator",
+                "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z"].merging(markers) { _, new in new }
+            let session = try JSONDecoder().decode(AuthoringSession.self, from: JSONSerialization.data(withJSONObject: fields))
+            XCTAssertEqual(NativeAutomationSession.installedExportEntryAllowed(session: session), expected)
+        }
+        XCTAssertFalse(NativeAutomationSession.installedExportEntryAllowed(session: nil))
+    }
+
     func testInitialOrdinaryCreationUsesAuthenticatedRoleWithoutBorrowingProposalMarkers() async throws {
         for role in ["admin", "curator", "artist", "viewer"] {
             let session = try JSONSerialization.data(withJSONObject: ["tenantId": owner, "userId": owner,
