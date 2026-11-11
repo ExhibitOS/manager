@@ -66,6 +66,17 @@ final class ExhibitionModel: ObservableObject {
 
     @Published private var furnishingThumbnails: [FurnishingThumbnailKey: FurnishingThumbnail] = [:]
     private var furnishingThumbnailOrder: [FurnishingThumbnailKey] = []
+    private struct FurnishingThumbnailLookupKey: Hashable {
+        let access: UUID, tenant: String, principal: String, furnishingID: String
+        let version: Int
+    }
+    @Published private var furnishingThumbnailLookupFailures: Set<FurnishingThumbnailLookupKey> = []
+    private var furnishingThumbnailTail: Task<Void, Never>?
+    private var furnishingThumbnailTailID: UUID?
+    private func furnishingThumbnailLookupKey(_ item: WorkspaceFurnishingSummary) -> FurnishingThumbnailLookupKey? {
+        guard workspaceFurnishingIntakeAvailable, item.rightsAvailability.display, let state else { return nil }
+        return .init(access: viewportAccessID, tenant: state.tenantId, principal: state.principalId, furnishingID: item.id, version: item.version)
+    }
 
     private func furnishingThumbnailKey(_ registration: RegisteredFurnishing) -> FurnishingThumbnailKey? {
         guard registration.access == viewportAccessID, let state else { return nil }
@@ -76,12 +87,56 @@ final class ExhibitionModel: ObservableObject {
     }
 
     func furnishingThumbnail(for item: WorkspaceFurnishingSummary) -> FurnishingThumbnail? {
-        guard workspaceFurnishingIntakeAvailable, item.rightsAvailability.display, let state,
-              let key = furnishingThumbnailOrder.last(where: {
-                  $0.access == viewportAccessID && $0.tenant == state.tenantId && $0.principal == state.principalId
+        guard let lookup = furnishingThumbnailLookupKey(item) else { return nil }
+        guard let key = furnishingThumbnailOrder.last(where: {
+                  $0.access == lookup.access && $0.tenant == lookup.tenant && $0.principal == lookup.principal
                       && $0.furnishingID == item.id && $0.version == item.version
-              }) else { return nil }
+              }) else { return furnishingThumbnailLookupFailures.contains(lookup) ? .failed : nil }
         return furnishingThumbnails[key]
+    }
+
+    /// Existing registry cards need the same current descriptor/rights binding
+    /// as a live intake return. Read it without creating or saving an intake.
+    func loadFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary, retry: Bool) async {
+        let previous = furnishingThumbnailTail, id = UUID(), access = viewportAccessID
+        let job = Task { [weak self] in
+            await previous?.value
+            guard !Task.isCancelled, let self, self.viewportAccessID == access else { return }
+            await self.loadExistingFurnishingThumbnail(summary, retry: retry)
+        }
+        furnishingThumbnailTail = job; furnishingThumbnailTailID = id
+        await withTaskCancellationHandler { await job.value } onCancel: { job.cancel() }
+        if furnishingThumbnailTailID == id { furnishingThumbnailTail = nil; furnishingThumbnailTailID = nil }
+    }
+
+    private func loadExistingFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary, retry: Bool) async {
+        guard furnishingThumbnailFrameReady, viewportController.furnishingThumbnailSupported,
+              let lookup = furnishingThumbnailLookupKey(summary), let api else { return }
+        switch furnishingThumbnail(for: summary) {
+        case .ready, .rendering: return
+        case .failed where !retry: return
+        default: break
+        }
+        let sequence = viewportController.acceptedSequence, context = viewportController.editingContextGeneration
+        func current() -> Bool {
+            self.api === api && furnishingThumbnailLookupKey(summary) == lookup && furnishingThumbnailFrameReady
+                && viewportController.acceptedSequence == sequence && viewportController.editingContextGeneration == context
+        }
+        furnishingThumbnailLookupFailures.remove(lookup)
+        do {
+            let item = try await api.workspaceFurnishing(summary.id, version: summary.version)
+            try Task.checkCancellation()
+            guard current() else { return }
+            guard item.id == summary.id, item.version == summary.version, item.details.kind == summary.kind,
+                  item.details.name == summary.name, item.details.rights.permissions.display else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            await loadFurnishingThumbnail(RegisteredFurnishing(access: lookup.access, item: item), retry: retry)
+        } catch {
+            guard !Task.isCancelled, current() else { return }
+            if furnishingThumbnailLookupFailures.count >= 16, let old = furnishingThumbnailLookupFailures.first {
+                furnishingThumbnailLookupFailures.remove(old)
+            }
+            furnishingThumbnailLookupFailures.insert(lookup)
+        }
     }
 
     var furnishingThumbnailFrameReady: Bool {
@@ -1091,6 +1146,8 @@ final class ExhibitionModel: ObservableObject {
         didSet {
             furnishingThumbnails.removeAll()
             furnishingThumbnailOrder.removeAll()
+            furnishingThumbnailLookupFailures.removeAll()
+            furnishingThumbnailTail?.cancel()
         }
     }
     private(set) var viewportCredentials: LocalAuthoringSession?
