@@ -496,7 +496,7 @@ public actor NativeAutomationSession {
             let saved = try await api.exhibition(draft.id)
             guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             let selection = try await api.artworkThumbnailSelection(artworkId: artworkId, revision: Int(revision), session: session, authority: authority)
-            let credentials = try await bridge.authoringSession(context)
+            let credentials = try await api.thumbnailRendererCredentials(for: session)
             let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1,
                 tenantId: current.tenantId, principalId: current.principalId, draft: draft,
                 selection: nil, mode: "translate", view: "isometric", disabled: false,
@@ -2867,6 +2867,8 @@ public actor NativeAutomationSession {
         closing = true
         defer { closing = false }
         try await closeBridge()
+        await api?.endLocalAuthoringSession()
+        authoringSession = nil
         closed = true
     }
     private func closeBridge() async throws {

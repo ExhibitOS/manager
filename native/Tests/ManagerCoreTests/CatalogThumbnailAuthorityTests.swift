@@ -7,6 +7,40 @@ import ImageIO
 
 @MainActor
 final class CatalogThumbnailAuthorityTests: XCTestCase {
+    func testRendererSharesCurrentAPICredentialsAndCannotReuseAnOldOrClosedSession() async throws {
+        let id = UUID().uuidString.lowercased()
+        func body(_ csrf: String) throws -> Data {
+            try JSONSerialization.data(withJSONObject: ["tenantId": id, "userId": id, "role": "owner",
+                "csrfToken": csrf, "expiresAt": "2099-01-01T00:00:00Z",
+                "nativeRenderedArtworkThumbnailProfile": ViewportRenderedThumbnail.profile])
+        }
+        let firstBody = try body("first")
+        CatalogThumbnailProtocol.configure { _ in (200, firstBody) }
+        defer { CatalogThumbnailProtocol.configure(nil) }
+        let api = try AuthoringAPI(port: 18091, tenantId: id, protocolClasses: [CatalogThumbnailProtocol.self])
+        let firstCredentials = LocalAuthoringSession(tenantId: id, principalId: id,
+            origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43))
+        let first = try await api.connect(firstCredentials)
+        let shared = try await api.thumbnailRendererCredentials(for: first)
+        XCTAssertEqual(shared.token, firstCredentials.token)
+        XCTAssertEqual(shared.origin, firstCredentials.origin)
+        XCTAssertEqual(shared.tenantId, id); XCTAssertEqual(shared.principalId, id)
+        XCTAssertEqual(CatalogThumbnailProtocol.observedMethods(), ["GET"])
+        let nextBody = try body("next")
+        CatalogThumbnailProtocol.configure { _ in (200, nextBody) }
+        let nextCredentials = LocalAuthoringSession(tenantId: id, principalId: id,
+            origin: "http://127.0.0.1:18091", token: String(repeating: "b", count: 43))
+        let next = try await api.connect(nextCredentials)
+        do { _ = try await api.thumbnailRendererCredentials(for: first); XCTFail("An old session cannot reuse renewed credentials") }
+        catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "AUTH_REQUIRED") }
+        let current = try await api.thumbnailRendererCredentials(for: next)
+        XCTAssertEqual(current.token, nextCredentials.token)
+        await api.endLocalAuthoringSession()
+        do { _ = try await api.thumbnailRendererCredentials(for: next); XCTFail("A closed session cannot render") }
+        catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "AUTH_REQUIRED") }
+        XCTAssertEqual(CatalogThumbnailProtocol.observedMethods(), ["GET"])
+    }
+
     func testRevokingAuthorityDuringArtworkReadPreventsSelectionPost() async throws {
         let tenant = UUID().uuidString.lowercased()
         let user = UUID().uuidString.lowercased()
