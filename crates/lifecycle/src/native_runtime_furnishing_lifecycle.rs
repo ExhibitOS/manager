@@ -1637,6 +1637,8 @@ mod tests {
              crate::native_payload::CATALOG45_THUMBNAIL_FRESHNESS_TARGET),
             (crate::native_payload::CATALOG45_THUMBNAIL_FRESHNESS_TARGET,
              crate::native_payload::CATALOG45_COMPLETE_STATIC_TARGET),
+            (crate::native_payload::CATALOG45_COMPLETE_STATIC_TARGET,
+             crate::native_payload::CATALOG45_FIXTURE_AUTHORING_TARGET),
         ] {
             let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
             let pin = |generation: &str, tuple: (&str, &str, &str)| {

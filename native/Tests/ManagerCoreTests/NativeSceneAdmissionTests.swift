@@ -29,7 +29,7 @@ final class NativeSceneAdmissionTests: XCTestCase {
     }
 
     func testSceneRequiresItsDistinctLiveMarkerBeforeHTTP() async throws {
-        for runtime in [manifest, "bc4dc0736a07774550107f12cbab729d91d2156d6ec8828c321dcf0677555c7d", "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088"] {
+        for runtime in [manifest, "bc4dc0736a07774550107f12cbab729d91d2156d6ec8828c321dcf0677555c7d", "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088", "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"] {
         let denied = try await attempt(operation: "add-light", markers: ["nativeAuthoringProposalProfile": "saved-head-v1"], runtime: runtime)
         XCTAssertEqual(denied.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         XCTAssertEqual(denied.1, ["GET"])
@@ -50,7 +50,7 @@ final class NativeSceneAdmissionTests: XCTestCase {
     }
 
     func testFixtureRequiresBothDistinctLiveProfilesBeforeHTTP() async throws {
-        let runtime = "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088"
+        for runtime in ["21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088", "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"] {
         let scene = ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
         let fixture = ["nativeFixtureAuthoringProposalProfile": "saved-head-fixture-v1"]
         let admitted = scene.merging(fixture) { _, value in value }
@@ -69,6 +69,7 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertEqual(unknown.1, ["GET"])
         let sceneOnly = try await attempt(operation: "add-light", markers: fixture, runtime: runtime)
         XCTAssertEqual(sceneOnly.1, ["GET"])
+        }
     }
 
     func testInstalledExportEntryUsesExportCapabilitiesWithoutImagePreparation() throws {
