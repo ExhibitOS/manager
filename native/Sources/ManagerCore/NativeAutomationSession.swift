@@ -69,10 +69,12 @@ public actor NativeAutomationSession {
     private enum SceneProposal: Sendable {
         case scene(NativeAutomationScene.ScenePreview)
         case light(LightPreview)
+        case fixture(NativeAutomationFixture.FixturePreview)
         func apply(to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
             switch self {
             case .scene(let preview): return try preview.apply(to: draft)
             case .light(let preview): return try preview.apply(to: draft, selectedLightId: preview.command.lightId, command: preview.command)
+            case .fixture(let preview): return try preview.apply(to: draft)
             }
         }
     }
@@ -1422,7 +1424,7 @@ public actor NativeAutomationSession {
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
-            let allowed: Set<String> = ["read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve"]
+            let allowed: Set<String> = ["read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve"]
             guard allowed.contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
@@ -1443,7 +1445,7 @@ public actor NativeAutomationSession {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
-        if ["plaque-prepare", "plaque-apply", "plaque-cancel", "wall-finish-prepare", "wall-finish-apply", "wall-finish-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel"].contains(operation) {
+        if ["plaque-prepare", "plaque-apply", "plaque-cancel", "wall-finish-prepare", "wall-finish-apply", "wall-finish-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel"].contains(operation) {
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
             let extra: Set<String> = operation.hasSuffix("-prepare") ? ["command"] : ["proposalId"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -1508,7 +1510,7 @@ public actor NativeAutomationSession {
             }
         }
         if let prior {
-            if ["pedestal-prepare", "light-prepare"].contains(operation), sceneProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            if ["pedestal-prepare", "light-prepare", "fixture-prepare", "light-attachment-prepare"].contains(operation), sceneProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "plaque-prepare", plaqueProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "wall-finish-prepare", wallFinishProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             return prior
@@ -1546,7 +1548,7 @@ public actor NativeAutomationSession {
             }
             let (_, _, refreshed) = try await checked(request)
             guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
-        case "pedestal-prepare", "light-prepare":
+        case "pedestal-prepare", "light-prepare", "fixture-prepare", "light-attachment-prepare":
             try checkedRevision(request, current)
             guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
             try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE")
@@ -1557,7 +1559,19 @@ public actor NativeAutomationSession {
                 disabled: false, workspaceId: current.workspaceId, baseETag: etag)
             let preview: SceneProposal
             let candidate: DocumentValue
-            if operation == "light-prepare", request["command"]["type"] == .string("ensure-room-base-light") {
+            if operation == "fixture-prepare" || operation == "light-attachment-prepare" {
+                guard await api.admitsNativeFixtureAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                if operation == "fixture-prepare" {
+                    let proposal = try NativeAutomationFixture.fixtureRequest(request["command"], frame: frame)
+                    let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
+                    preview = .fixture(try NativeAutomationFixture.fixtureReply(reply, request: proposal)); candidate = reply["candidate"]
+                } else {
+                    let proposal = try NativeAutomationFixture.AttachmentRequest(request["command"], frame: frame)
+                    let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
+                    let checked = try proposal.checkedReply(reply)
+                    preview = .scene(checked); candidate = checked.candidate
+                }
+            } else if operation == "light-prepare", request["command"]["type"] == .string("ensure-room-base-light") {
                 guard authoringSession?.advertisesRoomBaseLight == true,
                       authoringSession?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1" else {
                     throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
@@ -1593,7 +1607,7 @@ public actor NativeAutomationSession {
                   try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             sceneProposals[id] = (preview, etag, operation)
             result = .object(["proposalId": .string(id), "candidate": candidate])
-        case "pedestal-apply", "light-apply", "pedestal-cancel", "light-cancel":
+        case "pedestal-apply", "light-apply", "pedestal-cancel", "light-cancel", "fixture-apply", "fixture-cancel", "light-attachment-apply", "light-attachment-cancel":
             try checkedRevision(request, current)
             guard let proposalId = request["proposalId"].string, let (preview, etag, prepared) = sceneProposals[proposalId],
                   prepared == operation.replacingOccurrences(of: "-apply", with: "-prepare").replacingOccurrences(of: "-cancel", with: "-prepare") else { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
