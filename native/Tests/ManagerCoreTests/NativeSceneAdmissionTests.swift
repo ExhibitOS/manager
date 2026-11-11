@@ -29,7 +29,7 @@ final class NativeSceneAdmissionTests: XCTestCase {
     }
 
     func testSceneRequiresItsDistinctLiveMarkerBeforeHTTP() async throws {
-        for runtime in [manifest, "bc4dc0736a07774550107f12cbab729d91d2156d6ec8828c321dcf0677555c7d"] {
+        for runtime in [manifest, "bc4dc0736a07774550107f12cbab729d91d2156d6ec8828c321dcf0677555c7d", "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088"] {
         let denied = try await attempt(operation: "add-light", markers: ["nativeAuthoringProposalProfile": "saved-head-v1"], runtime: runtime)
         XCTAssertEqual(denied.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         XCTAssertEqual(denied.1, ["GET"])
