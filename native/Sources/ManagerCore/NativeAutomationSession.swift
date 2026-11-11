@@ -9,7 +9,7 @@ public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
-        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status",
+        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
         "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement"
     ]
@@ -1809,19 +1809,25 @@ public actor NativeAutomationSession {
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
-        case "workspace-info-stand-replace":
+        case "workspace-info-stand-check", "workspace-info-stand-replace":
             guard selectedOEXFormat == nil, await api.admitsWorkspaceInfoStandReplacement else {
                 throw BridgeFailure("WORKSPACE_INFO_STAND_REPLACEMENT_UNAVAILABLE")
             }
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "modelSha256", "intakeId", "placement", "plaque"])
-            guard let etag = current.etag, command["etag"].string == etag,
+            guard let etag = current.etag, let base = current.draft, command["etag"].string == etag,
                   let hash = command["modelSha256"].string, let intakeId = command["intakeId"].string else {
                 throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
             }
             let replacement = try WorkspaceInfoStandReplacement(value: .object(["placement": command["placement"], "plaque": command["plaque"]]))
-            if let draft = try await api.prepareWorkspaceInfoStandReplacement(replacement, in: current,
-                expectedModelSHA256: hash, intakeId: intakeId) {
+            let prospective = try await api.prepareWorkspaceInfoStandReplacement(replacement, in: current,
+                expectedModelSHA256: hash, intakeId: intakeId)
+            if operation == "workspace-info-stand-check" {
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+                result = .object(["changed": .bool(prospective != nil), "document": try value(current),
+                                  "prospectiveDraft": try value(prospective ?? base)])
+            } else if let draft = prospective {
                 var next = current
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
