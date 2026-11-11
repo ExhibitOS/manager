@@ -30,6 +30,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeRequiredModelOriginalProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
+    public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
@@ -2748,11 +2749,18 @@ public actor AuthoringAPI {
             && session?.nativeOexExportProfile == "bounded-file-v1"
     }
 
+    var admitsNativeFixtureAuthoringProposal: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && session?.nativeFixtureAuthoringProposalProfile == "saved-head-fixture-v1"
+    }
+
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
+        let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let scene = ["set-pedestal", "add-light", "set-light-details"].contains(operation)
-        let admitted = scene
+        let admitted = fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
@@ -2762,7 +2770,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details"].contains(operation) else {
+              ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }

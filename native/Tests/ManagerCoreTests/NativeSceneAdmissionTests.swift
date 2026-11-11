@@ -49,6 +49,28 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertEqual(denied.1, ["GET"])
     }
 
+    func testFixtureRequiresBothDistinctLiveProfilesBeforeHTTP() async throws {
+        let runtime = "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088"
+        let scene = ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
+        let fixture = ["nativeFixtureAuthoringProposalProfile": "saved-head-fixture-v1"]
+        let admitted = scene.merging(fixture) { _, value in value }
+        for operation in ["set-furnishing-visual", "set-light-attachment"] {
+            for markers in [[:], scene, fixture,
+                            scene.merging(["nativeFixtureAuthoringProposalProfile": "unknown"]) { _, value in value }] {
+                let denied = try await attempt(operation: operation, markers: markers, runtime: runtime)
+                XCTAssertEqual(denied.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+                XCTAssertEqual(denied.1, ["GET"])
+            }
+            let reply = try await attempt(operation: operation, markers: admitted, runtime: runtime)
+            XCTAssertEqual(reply.0, "AUTHORING_PROPOSAL_INVALID")
+            XCTAssertEqual(reply.1, ["GET", "POST"])
+        }
+        let unknown = try await attempt(operation: "set-any-fixture", markers: admitted, runtime: runtime)
+        XCTAssertEqual(unknown.1, ["GET"])
+        let sceneOnly = try await attempt(operation: "add-light", markers: fixture, runtime: runtime)
+        XCTAssertEqual(sceneOnly.1, ["GET"])
+    }
+
     func testInstalledExportEntryUsesExportCapabilitiesWithoutImagePreparation() throws {
         let examples: [([String: String], Bool)] = [
             ([:], false),
