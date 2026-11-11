@@ -29,7 +29,7 @@ final class NativeSceneAdmissionTests: XCTestCase {
     }
 
     func testSceneRequiresItsDistinctLiveMarkerBeforeHTTP() async throws {
-        for runtime in [manifest, "bc4dc0736a07774550107f12cbab729d91d2156d6ec8828c321dcf0677555c7d", "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088", "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"] {
+        for runtime in [manifest, "bc4dc0736a07774550107f12cbab729d91d2156d6ec8828c321dcf0677555c7d", "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088", "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2", "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"] {
         let denied = try await attempt(operation: "add-light", markers: ["nativeAuthoringProposalProfile": "saved-head-v1"], runtime: runtime)
         XCTAssertEqual(denied.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         XCTAssertEqual(denied.1, ["GET"])
@@ -50,7 +50,7 @@ final class NativeSceneAdmissionTests: XCTestCase {
     }
 
     func testFixtureRequiresBothDistinctLiveProfilesBeforeHTTP() async throws {
-        for runtime in ["21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088", "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"] {
+        for runtime in ["21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088", "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2", "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"] {
         let scene = ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
         let fixture = ["nativeFixtureAuthoringProposalProfile": "saved-head-fixture-v1"]
         let admitted = scene.merging(fixture) { _, value in value }
@@ -70,6 +70,30 @@ final class NativeSceneAdmissionTests: XCTestCase {
         let sceneOnly = try await attempt(operation: "add-light", markers: fixture, runtime: runtime)
         XCTAssertEqual(sceneOnly.1, ["GET"])
         }
+    }
+
+    func testDefault17ReplacementStillRequiresItsLiveProfileAndRoomVisualAdmission() async throws {
+        let base = ["workspaceFurnishingProfile": "workspace-furnishing-intake-v1",
+                    "workspaceFurnishingStoolProfile": "workspace-furnishing-stool-v1",
+                    "workspaceFurnishingRoomVisualProfile": "workspace-furnishing-room-visual-v1"]
+        let active = base.merging(["workspaceInfoStandReplacementProfile": WorkspaceInfoStandReplacement.profile]) { _, value in value }
+        var missingRoom = active; missingRoom.removeValue(forKey: "workspaceFurnishingRoomVisualProfile")
+        var unknown = active; unknown["workspaceInfoStandReplacementProfile"] = "unknown"
+        for (markers, expected) in [(base, false), (active, true), (missingRoom, false), (unknown, false)] {
+            let fields = ["tenantId": owner, "userId": owner, "role": "admin", "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z"]
+                .merging(markers) { _, value in value }
+            SceneAdmissionProtocol.configure(try JSONSerialization.data(withJSONObject: fields))
+            let api = try AuthoringAPI(port: 18091, tenantId: owner,
+                nativeRuntimeManifestSHA256: "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738",
+                protocolClasses: [SceneAdmissionProtocol.self])
+            _ = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner,
+                origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+            let admitted = await api.admitsWorkspaceInfoStandReplacement
+            XCTAssertEqual(admitted, expected)
+            XCTAssertEqual(SceneAdmissionProtocol.methods(), ["GET"])
+            await api.endLocalAuthoringSession()
+        }
+        SceneAdmissionProtocol.reset()
     }
 
     func testInstalledExportEntryUsesExportCapabilitiesWithoutImagePreparation() throws {

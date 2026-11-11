@@ -5,6 +5,57 @@ import XCTest
 @testable import ManagerApp
 
 final class BundledWorkspaceFurnishingsTests: XCTestCase {
+    private func catalog17Root() throws -> URL {
+        guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_17_PLATFORM_FIXTURE"] else {
+            throw XCTSkip("Set EXHIBITOS_DEFAULT_17_PLATFORM_FIXTURE to the exact default1.7 assembly platform root")
+        }
+        return URL(fileURLWithPath: input, isDirectory: true)
+    }
+
+    func testCompactCaptionStandFromExactCatalog17() async throws {
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: catalog17Root())
+        XCTAssertEqual(catalog.version, "1.7.0")
+        XCTAssertEqual(Set(catalog.items.map(\.id)), Set(["freestanding-info-stand", "gallery-stool", "upholstered-gallery-bench",
+            "closed-exit-door", "exit-pictogram-sign", "sculpture-gallery-bench", "portal-pale-mineral", "portal-warm-oak", "compact-caption-stand"]))
+        XCTAssertEqual(catalog.items.first { $0.id == "exit-pictogram-sign" }?.catalogVersion, 2)
+        let item = try XCTUnwrap(catalog.items.first { $0.id == "compact-caption-stand" })
+        XCTAssertEqual(item.kind, .infoStand)
+        XCTAssertEqual(item.provenance.recipe, "original-v1")
+        XCTAssertNil(item.provenance.source)
+        XCTAssertEqual(item.rights.notice.bytes, 580)
+        XCTAssertEqual(item.rights.notice.sha256, "5d90fcaaec647de18cf2be4b7bf46927b8136080c3cd7f37c3ee1efe3336b87f")
+        let model = try await BundledWorkspaceFurnishings.load(item.id, from: catalog)
+        XCTAssertEqual(model.data.count, 13_864)
+        XCTAssertEqual(model.sha256, "ec9e424fe07eceeb4b422c0ed3dfa6981ac9f5dc335bd6ed32954d2c1a190752")
+    }
+
+    func testCatalog17ModelAndNoticeStayBoundToSnapshot() async throws {
+        let source = try catalog17Root(), files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directory = "assets/furnishings/exhibitos-authored-20261111/compact-caption-stand"
+        try files.createDirectory(at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: root) }
+        let manifest = "assets/furnishings/default-manifest.json"
+        try files.copyItem(at: source.appendingPathComponent(manifest), to: root.appendingPathComponent(manifest))
+        for name in ["model.glb", "LICENSE-NOTICE.txt"] {
+            let relative = directory + "/" + name
+            try files.copyItem(at: source.appendingPathComponent(relative), to: root.appendingPathComponent(relative))
+        }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: root)
+        _ = try await BundledWorkspaceFurnishings.load("compact-caption-stand", from: catalog)
+        let model = root.appendingPathComponent(directory + "/model.glb")
+        var bytes = try Data(contentsOf: model); bytes[bytes.count - 1] ^= 1
+        try bytes.write(to: model)
+        do { _ = try await BundledWorkspaceFurnishings.load("compact-caption-stand", from: catalog); XCTFail("Changed model accepted") } catch { }
+        try files.removeItem(at: model)
+        try files.copyItem(at: source.appendingPathComponent(directory + "/model.glb"), to: model)
+        try Data(count: 580).write(to: root.appendingPathComponent(directory + "/LICENSE-NOTICE.txt"))
+        do { _ = try await BundledWorkspaceFurnishings.load("compact-caption-stand", from: catalog); XCTFail("Changed notice accepted") } catch { }
+        var changed = try Data(contentsOf: root.appendingPathComponent(manifest)); changed[changed.startIndex] = 32
+        try changed.write(to: root.appendingPathComponent(manifest))
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: root))
+    }
+
     func testPinnedCatalogAndOriginalsRejectChanges() async throws {
         guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_FURNISHINGS_FIXTURE"] else {
             throw XCTSkip("Set EXHIBITOS_DEFAULT_FURNISHINGS_FIXTURE to the pinned 1.2.0 source checkout")

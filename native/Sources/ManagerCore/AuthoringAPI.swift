@@ -449,6 +449,8 @@ public actor AuthoringAPI {
         "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
     private static let fixtureAuthoringRuntimeManifestPin =
         "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"
+    private static let default17RuntimeManifestPin =
+        "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
     private static let completeStaticRuntimeManifestPin =
         "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088"
     private static let thumbnailFreshnessRuntimeManifestPin =
@@ -562,6 +564,7 @@ public actor AuthoringAPI {
             || manifest == Self.thumbnailFreshnessRuntimeManifestPin
             || manifest == Self.completeStaticRuntimeManifestPin
             || manifest == Self.fixtureAuthoringRuntimeManifestPin
+            || manifest == Self.default17RuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -2787,6 +2790,7 @@ public actor AuthoringAPI {
             || manifest == thumbnailFreshnessRuntimeManifestPin
             || manifest == completeStaticRuntimeManifestPin
             || manifest == fixtureAuthoringRuntimeManifestPin
+            || manifest == default17RuntimeManifestPin
         #else
         false
         #endif

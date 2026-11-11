@@ -1335,3 +1335,23 @@ and teardown; they do not prove asynchronous WebKit callback or GPU-process
 drain. Synthetic tests and source compilation do not qualify an actual WK
 capture or release of a live rendering resource lease. Actual capture must use
 the qualified app/runtime identity and the ordinary resource/owner handoff.
+
+
+## Default furnishing 1.7 runtime recipient (source admission)
+
+The debug owner-validation helper and Native client recognize only the exact
+Server source `0de658cd2ce28e766ad4d9a05a912eb43c082691`, producer
+`7b6890fae09bc3d40963a16d8bab2a040cc431023a7952ff2bb4f429da83543c`
+and manifest `1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738`
+tuple. The new sealed transition admits only the existing fixture runtime
+`5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2`
+as predecessor, preserving the current saved document and exact carried restore
+provenance under the existing 6 GiB checkpoint scope. Reverse, skipped and
+same-manifest transitions are not added.
+
+The runtime pin does not replace live scene, fixture or info-stand replacement
+profiles. Source admission and offline opening do not qualify a live transition,
+registered furnishing intake/thumbnail/replacement, the corrected painting
+lighting output or public viewing. The previously failed export remains failed;
+a later observed export of its already frozen publication is a distinct scoped
+operation with preserved failure evidence and the existing safe API trace.
