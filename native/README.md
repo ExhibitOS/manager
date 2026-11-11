@@ -1300,6 +1300,14 @@ room-placement fields (`id`, `roomId`, `furnishingId`, `furnishingVersion`,
 fixed; plaque source, caption and visibility are preserved. No stand/plaque
 relationship is inferred from proximity.
 
+`workspace-info-stand-check` accepts the same closed command and revision/CAS
+envelope. It runs the same current authorization, descriptor, model and viewport
+validation, rechecks that the local document stayed exact, and returns
+`{changed, document, prospectiveDraft}` without staging or saving. Replaying a
+check repeats current validation; its result is not a durable admission receipt.
+This generic SDK operation is not added to the installed authoring CLI allowlist.
+It does not establish camera visibility, legibility or physical fit.
+
 The operation requires a clean saved head and the live
 `workspaceInfoStandReplacementProfile: workspace-info-stand-replacement-v1`
 marker alongside existing workspace room-visual admission. It rechecks the

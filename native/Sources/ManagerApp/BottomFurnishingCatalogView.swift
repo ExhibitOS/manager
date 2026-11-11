@@ -137,15 +137,24 @@ struct BottomFurnishingCatalogView: View {
     }
 
     private struct ThumbnailWork: Equatable {
-        let registration: ExhibitionModel.RegisteredFurnishing
+        let access: UUID
+        let furnishingIDs: [String]
         let sequence: Int
     }
 
     private var thumbnailWork: ThumbnailWork? {
-        guard workspaceVisible, let registration = currentRegistration,
-              workspace.contains(where: { $0.id == registration.item.id && $0.rightsAvailability.display }),
+        guard workspaceVisible,
               model.furnishingThumbnailFrameReady, controller.furnishingThumbnailSupported else { return nil }
-        return .init(registration: registration, sequence: controller.acceptedSequence)
+        var ids = visibleRows.compactMap { row -> String? in
+            guard case .workspace(let item) = row, item.rightsAvailability.display else { return nil }; return item.id
+        }
+        if let recent = currentRegistration?.item.id, let index = ids.firstIndex(of: recent) {
+            ids.remove(at: index); ids.insert(recent, at: 0)
+        }
+        guard !ids.isEmpty else { return nil }
+        // One existing renderer at a time, with the same sixteen-entry cache
+        // bound; search/category changes cancel this work and choose new cards.
+        return .init(access: model.viewportAccessID, furnishingIDs: Array(ids.prefix(16)), sequence: controller.acceptedSequence)
     }
 
     private var workspaceVisible: Bool { loadScope.available && loadedScope?.access == loadScope.access }
@@ -203,11 +212,11 @@ struct BottomFurnishingCatalogView: View {
                             ForEach(visibleRows) { row in
                                 HStack(spacing: 2) {
                                     draggableCard(row)
-                                    if case .workspace(let item) = row, item.id == currentRegistration?.item.id,
+                                    if case .workspace(let item) = row,
                                        case .failed = model.furnishingThumbnail(for: item) {
                                         Button("미리보기 다시 만들기", systemImage: "arrow.clockwise") {
-                                            guard let work = thumbnailWork else { return }
-                                            Task { await model.loadFurnishingThumbnail(work.registration, retry: true) }
+                                            guard thumbnailWork != nil else { return }
+                                            Task { await model.loadFurnishingThumbnail(item, retry: true) }
                                         }
                                             .labelStyle(.iconOnly)
                                             .disabled(thumbnailWork == nil)
@@ -244,7 +253,11 @@ struct BottomFurnishingCatalogView: View {
         .task(id: loadScope) { await loadIfNeeded() }
         .task(id: thumbnailWork) {
             guard let work = thumbnailWork else { return }
-            await model.loadFurnishingThumbnail(work.registration, retry: false)
+            for id in work.furnishingIDs {
+                guard !Task.isCancelled, work == thumbnailWork,
+                      let item = workspace.first(where: { $0.id == id }) else { return }
+                await model.loadFurnishingThumbnail(item, retry: false)
+            }
         }
         .onChange(of: model.busy || loading) { _, blocked in if !blocked { Task { await loadIfNeeded() } } }
     }
@@ -306,8 +319,7 @@ struct BottomFurnishingCatalogView: View {
     }
 
     private func previewStatus(_ row: BottomFurnishingCatalogRow) -> String? {
-        guard case .workspace(let item) = row, item.rightsAvailability.display,
-              currentRegistration?.item.id == item.id else { return nil }
+        guard case .workspace(let item) = row, item.rightsAvailability.display else { return nil }
         switch model.furnishingThumbnail(for: item) {
         case .ready: return nil
         case .failed: return "미리보기 실패"

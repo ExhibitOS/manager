@@ -218,6 +218,7 @@ final class NativeAutomationFailureTests: XCTestCase {
         let status = try NativeAutomationSession.replayResponse(for: "artwork-status", prior: prior, matching: request)
         XCTAssertEqual(status ?? current, current)
         XCTAssertNil(try NativeAutomationSession.replayResponse(for: "export-static-saved-head", prior: prior, matching: request))
+        XCTAssertNil(try NativeAutomationSession.replayResponse(for: "workspace-info-stand-check", prior: prior, matching: request))
         XCTAssertEqual(try NativeAutomationSession.replayResponse(for: "artwork-approve", prior: prior, matching: request), stale)
         XCTAssertThrowsError(try NativeAutomationSession.replayResponse(
             for: "artwork-approve", prior: prior, matching: Data("changed request".utf8))) {
