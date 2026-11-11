@@ -1576,6 +1576,9 @@ final class ExhibitionModel: ObservableObject {
         workspaceFurnishingIntakeAvailable && api?.workspacePortalFinishRuntimeQualified == true
             && session?.advertisesWorkspacePortalFinish == true
     }
+    var workspacePortalRectangularFitAvailable: Bool {
+        workspacePortalFinishAvailable && session?.advertisesWorkspaceRectangularPortalFit == true
+    }
     var canEditWorkspacePortalFinish: Bool {
         workspacePortalFinishAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
             && !architectureDirty && !formDirty && !positionDirty && state?.etag != nil && viewportController.editingContextActive

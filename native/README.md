@@ -63,6 +63,21 @@ the edit. Use the existing `save` operation to commit it, then
 `reopen-saved` to read it back. This operation adds no fields to the draft or
 journal formats.
 
+## Rectangular portal registration
+
+The native furnishing form can explicitly request `rectangular-portal-v1` for
+an untextured rectangular portal. The control requires the qualified ordinary
+portal runtime, the existing source-bound fit capability and the distinct live
+`workspacePortalRectangularFitProfile` advertisement. A modular advertisement
+alone does not authorize this profile. Older sessions keep the existing path.
+
+The request, resumed intake and registered source-fit receipt retain the same
+profile, request identity and original model hash/bytes. Connecting the registered
+model stages one opening attachment; ordinary exhibition Save remains separate.
+The version7 descriptor reuses the existing geometry fields and source receipt.
+Source tests and compilation do not qualify a new runtime, GUI execution,
+clean installation or exported Viewer geometry.
+
 ## Ordinary furnishing workspace lifecycle
 
 The 037 ordinary path requires one qualified local runtime manifest shared by
