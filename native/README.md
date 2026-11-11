@@ -92,6 +92,27 @@ fixture/aim/range settings and the supported color intent. New scene proposals
 require the live `saved-head-scene-v1` capability. `plaque-prepare` retains its
 existing typed command and separate `saved-head-v1` capability.
 
+`fixture-prepare` takes `command: {lightId, pose}` for an existing spot light
+and the built-in `museum-track-spot` catalogue version 1. Pose contains
+`position`, `yaw` and `scale`; optical alignment requires yaw zero and position
+equal to the negative catalogue aperture centre multiplied by scale (at unit
+scale, `[0, 0.15, 0.0755]`). `light-attachment-prepare` takes
+`command: {lightId, attachment: {surfaceId, anchor: [x, y], gap}}` for an explicit
+ceiling in the same room and an existing point, spot or area light. Anchor uses
+surface coordinates; gap is 0.01–1 metre along surface +Z. Attachment recomputes
+the light pose from the surface transform while preserving its aim/settings.
+Both operations require the distinct live `saved-head-fixture-v1` profile and
+the existing `saved-head-scene-v1` profile. Their matching `-apply` and `-cancel`
+operations take the envelope `proposalId`.
+
+Prepare validates the complete saved head and returned candidate. Apply stages
+the local draft; explicitly Save each change before preparing the next one.
+Attach to the ceiling before adding the visual when possible. Reversing that
+order is supported only when the complete result, including fixture bounds,
+remains valid. An exact existing binding returns the unchanged candidate and
+apply preserves the original native document; skip Save for that no-op. This
+slice accepts no wall attachment, removal, passive rail or arbitrary catalogue.
+
 Each prepare returns a checked candidate and `proposalId`; the corresponding
 `pedestal-apply`, `light-apply` or `plaque-apply` stages it in the native journal.
 Pass `proposalId` at the envelope level. Cancel uses the corresponding `-cancel`
