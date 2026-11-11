@@ -441,6 +441,8 @@ public actor AuthoringAPI {
         "1209d5d95417d1e29f637d8ce327e78cf38ed1b32eabcb5ab6fd3e2a62a10203"
     private static let sceneRuntimeManifestPin =
         "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
+    private static let fixtureAuthoringRuntimeManifestPin =
+        "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"
     private static let completeStaticRuntimeManifestPin =
         "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088"
     private static let thumbnailFreshnessRuntimeManifestPin =
@@ -553,6 +555,7 @@ public actor AuthoringAPI {
             || manifest == Self.sceneRuntimeManifestPin
             || manifest == Self.thumbnailFreshnessRuntimeManifestPin
             || manifest == Self.completeStaticRuntimeManifestPin
+            || manifest == Self.fixtureAuthoringRuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -2720,6 +2723,7 @@ public actor AuthoringAPI {
             || manifest == sceneRuntimeManifestPin
             || manifest == thumbnailFreshnessRuntimeManifestPin
             || manifest == completeStaticRuntimeManifestPin
+            || manifest == fixtureAuthoringRuntimeManifestPin
         #else
         false
         #endif
