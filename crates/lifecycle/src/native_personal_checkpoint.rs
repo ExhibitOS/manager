@@ -1702,6 +1702,10 @@ mod tests {
             assert_eq!(checkpoint_inventory_limit((scene, freshness), None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
             assert_eq!(checkpoint_inventory_limit((freshness, scene), None), MAX_BYTES);
             assert_eq!(checkpoint_inventory_limit((freshness, freshness), None), MAX_BYTES);
+            let complete = crate::native_payload::CATALOG45_COMPLETE_STATIC_TARGET.2;
+            assert_eq!(checkpoint_inventory_limit((freshness, complete), None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
+            assert_eq!(checkpoint_inventory_limit((complete, freshness), None), MAX_BYTES);
+            assert_eq!(checkpoint_inventory_limit((complete, complete), None), MAX_BYTES);
         }
         let current = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a";
         let previous = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d";
