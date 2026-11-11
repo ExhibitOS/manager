@@ -757,6 +757,19 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertFalse(withoutSession)
     }
 
+    func testProducedSceneRuntimeRequiresLiveRectangularCapability() async throws {
+        let exact = try AuthoringAPI(port: 49151, tenantId: intakeId,
+            nativeRuntimeManifestSHA256: "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f")
+        let other = try AuthoringAPI(port: 49151, tenantId: intakeId,
+            nativeRuntimeManifestSHA256: "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985e")
+        XCTAssertTrue(exact.workspacePortalFinishRuntimeQualified)
+        XCTAssertTrue(exact.workspaceFurnishingRuntimeQualified)
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"))
+        XCTAssertFalse(other.workspacePortalFinishRuntimeQualified)
+        let withoutSession = await exact.admitsWorkspaceRectangularPortalFit
+        XCTAssertFalse(withoutSession)
+    }
+
     func testRequiredModelRuntimeRetainsWorkspaceReadCapabilities() throws {
         let selected = try AuthoringAPI(port: 49151, tenantId: intakeId,
             nativeRuntimeManifestSHA256: "af4e787a5fa5c714d60bf24cba23a1b2e7015946d1f4bea9a5777a3af3c8b2d0")

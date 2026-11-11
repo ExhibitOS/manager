@@ -104,8 +104,10 @@ workspace, owner, source and rendered bytes and can be reopened from the same
 private output directory after restart. Partial/missing previews are recovered
 only from those verified candidate bytes; foreign files are refused.
 
-For an uncertain selection response, retry the identical request with the same
-request UUID and candidate. The server performs the existing source/revision
+For an uncertain selection response, retain the same operation request UUID,
+candidate and selection payload. After restarting the CLI, refresh the outer
+ready capability and current document revision/edit version; do not reuse an
+expired session envelope. The server performs the existing source/revision
 and selection-version comparison and request replay checks. Selection returns
 the receipt and checked binding readback, separately from exhibition Save or
 export. Source tests and compilation alone do not qualify a packaged runtime,
