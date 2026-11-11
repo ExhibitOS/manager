@@ -278,7 +278,8 @@ public actor NativeAutomationSession {
                                   nativeRuntimeManifestSHA256: configured.manifestSha256)
         authoringSession = try await api.connect(credentials)
         if installedAuthoringCLI {
-            guard authoringSession?.nativeAuthoringProposalProfile == "saved-head-v1" || authoringSession?.advertisesRenderedArtworkThumbnail == true else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+            let canCreate = await api.admitsPersonalExhibitionCreation
+            guard Self.installedAuthoringEntryAllowed(canCreate: canCreate, session: authoringSession) else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
         } else {
             guard await api.admitsFreshImagePreparation else { throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE") }
         }
@@ -454,6 +455,9 @@ public actor NativeAutomationSession {
         return (context, api, current)
     }
     private func checkedRevision(_ request: DocumentValue, _ state: NativeDocumentState) throws {
+        try Self.checkDocumentRevision(request, state)
+    }
+    private static func checkDocumentRevision(_ request: DocumentValue, _ state: NativeDocumentState) throws {
         guard case .object(let fields) = request, fields["expectedRevision"] != nil, fields["expectedEditVersion"] != nil,
               request["expectedRevision"].integer == Int64(state.revision),
               request["expectedEditVersion"] == (state.draft?.document["editVersion"] ?? .null) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
@@ -1335,18 +1339,64 @@ public actor NativeAutomationSession {
         }
     }
 
+    static func checkInstalledPendingOperation(_ operation: String, hasPending: Bool, authoring: Bool) throws {
+        guard !hasPending || operation == "read" || (authoring && operation == "save") else {
+            throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+        }
+    }
+
+    static func installedAuthoringEntryAllowed(canCreate: Bool, session: AuthoringSession?) -> Bool {
+        guard let session else { return false }
+        return canCreate || session.nativeAuthoringProposalProfile == "saved-head-v1"
+            || session.advertisesRenderedArtworkThumbnail
+    }
+
+    static func emptyExhibitionDraft(_ request: DocumentValue, in current: NativeDocumentState) throws -> NativeExhibitionDraft {
+        guard current.draft == nil, current.etag == nil, current.pending == nil, current.savedEditVersion == nil else {
+            throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE")
+        }
+        let command = try NativeAutomationArtworkRules.command(request, keys: ["title"])
+        guard let title = command["title"].string,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 200 else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        return try NativeExhibitionDraft.new(title: title)
+    }
+
+    static func checkPendingSaveRequest(_ request: DocumentValue, _ current: NativeDocumentState,
+                                        knownRevision: UInt64?, ordinary: Bool) throws {
+        guard let draft = current.draft, let pending = current.pending,
+              pending.requestId == request["requestId"].string, pending.draft == draft,
+              pending.etag == current.etag,
+              request["expectedEditVersion"] == draft.document["editVersion"] else {
+            throw BridgeFailure("EXHIBITION_PENDING")
+        }
+        if ordinary {
+            guard pending.origin == nil, pending.modelCandidate == nil, pending.productImage == nil else {
+                throw BridgeFailure("EXHIBITION_PENDING")
+            }
+            if knownRevision != current.revision { try checkDocumentRevision(request, current) }
+        } else {
+            guard knownRevision == current.revision else { throw BridgeFailure("EXHIBITION_PENDING") }
+        }
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
-            let allowed: Set<String> = ["read", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select"]
+            let allowed: Set<String> = ["read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select"]
             guard allowed.contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
         if ["thumbnail-prepare", "thumbnail-status", "thumbnail-select"].contains(operation) {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
+        if operation == "exhibition-new" {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
@@ -1403,8 +1453,8 @@ public actor NativeAutomationSession {
         let bytes = try encoder.encode(request)
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
-        if installedExportRootIdentity != nil && operation != "read" && current.pending != nil {
-            throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+        if installedExportRootIdentity != nil {
+            try Self.checkInstalledPendingOperation(operation, hasPending: current.pending != nil, authoring: installedAuthoringCLI)
         }
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
         let prior = try Self.replayResponse(for: operation, prior: replay[id], matching: bytes)
@@ -1429,6 +1479,12 @@ public actor NativeAutomationSession {
         busy = true; defer { busy = false }
         let result: DocumentValue
         switch operation {
+        case "exhibition-new":
+            try checkedRevision(request, current)
+            guard installedAuthoringCLI, await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
+            var next = current; next.draft = try Self.emptyExhibitionDraft(request, in: current)
+            try Task.checkCancellation()
+            result = try value(await bridge.saveDocumentState(context, state: next))
         case "pedestal-prepare", "light-prepare":
             try checkedRevision(request, current)
             guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
@@ -2519,20 +2575,11 @@ public actor NativeAutomationSession {
         case "save":
             guard let draft = current.draft else { throw BridgeFailure("EXHIBITION_REQUIRED") }
             var next = current
-            if let pending = next.pending {
-                // An exact explicitly repeated request may recover only the
-                // journal revision this session wrote before the uncertain API
-                // call. It never rewrites expectedRevision or issues a new ID.
-                guard pending.requestId == id, pending.draft == draft, pending.etag == next.etag,
-                      request["expectedEditVersion"] == draft.document["editVersion"] else { throw BridgeFailure("EXHIBITION_PENDING") }
-                if installedImageCLI {
-                    guard pending.origin == nil, pending.modelCandidate == nil, pending.productImage == nil else {
-                        throw BridgeFailure("EXHIBITION_PENDING")
-                    }
-                    if pendingRevisions[id] != current.revision { try checkedRevision(request, current) }
-                } else {
-                    guard pendingRevisions[id] == current.revision else { throw BridgeFailure("EXHIBITION_PENDING") }
-                }
+            if next.pending != nil {
+                // A restarted ordinary operator must retain the original
+                // request/draft/ETag and supply its refreshed current envelope.
+                try Self.checkPendingSaveRequest(request, current, knownRevision: pendingRevisions[id],
+                                                 ordinary: installedImageCLI || installedAuthoringCLI)
             } else {
                 try checkedRevision(request, current)
                 next.pending = .init(requestId: id, etag: next.etag, draft: draft)

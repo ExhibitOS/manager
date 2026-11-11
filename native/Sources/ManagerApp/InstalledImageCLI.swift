@@ -53,7 +53,7 @@ enum InstalledImageCLI {
         if arguments == ["--help"] {
             print("""
                 \(usage)
-                Commands: \(authoring ? "read, save, reopen-saved, pedestal/light/plaque-prepare, -apply, -cancel, thumbnail-prepare, thumbnail-status, thumbnail-select." : "read, export-oex, export-static, export-static-status.")
+                Commands: \(authoring ? "read, exhibition-new, save, reopen-saved, pedestal/light/plaque-prepare, -apply, -cancel, thumbnail-prepare, thumbnail-status, thumbnail-select." : "read, export-oex, export-static, export-static-status.")
                 Send one JSON request per line.
                 Use a saved personal workspace and a separate owner-only output directory on the same volume.
                 End stdin to close and drain the owned runtime.

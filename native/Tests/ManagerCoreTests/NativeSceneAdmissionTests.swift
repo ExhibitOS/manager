@@ -46,6 +46,24 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertEqual(denied.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         XCTAssertEqual(denied.1, ["GET"])
     }
+
+    func testInitialOrdinaryCreationUsesAuthenticatedRoleWithoutBorrowingProposalMarkers() async throws {
+        for role in ["admin", "curator", "artist", "viewer"] {
+            let session = try JSONSerialization.data(withJSONObject: ["tenantId": owner, "userId": owner,
+                "role": role, "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z"])
+            SceneAdmissionProtocol.configure(session)
+            let api = try AuthoringAPI(port: 18091, tenantId: owner, nativeRuntimeManifestSHA256: manifest,
+                protocolClasses: [SceneAdmissionProtocol.self])
+            let connected = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner,
+                origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+            let allowed = await api.admitsPersonalExhibitionCreation
+            XCTAssertEqual(allowed, role != "viewer")
+            XCTAssertEqual(NativeAutomationSession.installedAuthoringEntryAllowed(canCreate: allowed, session: connected), role != "viewer")
+            XCTAssertEqual(SceneAdmissionProtocol.methods(), ["GET"])
+        }
+        XCTAssertFalse(NativeAutomationSession.installedAuthoringEntryAllowed(canCreate: true, session: nil))
+        SceneAdmissionProtocol.reset()
+    }
 }
 
 private final class SceneAdmissionProtocol: URLProtocol, @unchecked Sendable {

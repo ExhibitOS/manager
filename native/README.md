@@ -75,6 +75,14 @@ workspace/tenant/principal/capability from `ready`, and the current document
 revision and edit version for every modifying request. EOF closes and drains
 the owned runtime.
 
+On an empty personal workspace, `exhibition-new` with `command: {title}` stages
+the existing typed blank exhibition. It requires a current authenticated native
+create role and refuses any existing draft, saved head, pending save or saved
+edit marker. It accepts no raw draft or imported selection. Use a distinct
+stable `save` request UUID to create the server exhibition; creation and Save
+remain separate. This does not replace an existing exhibition or waive the
+selected/bounded GUI's new-document guard.
+
 `pedestal-prepare` accepts `command: {placementId, pedestal}` using the existing
 closed installation pedestal fields. `light-prepare` accepts either
 `command: {light, settings?}` for creation (a full existing light row with a
