@@ -26,6 +26,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var compactModelVariantProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
+    public var nativeProductImageThumbnailRepairProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
@@ -1120,6 +1121,71 @@ public actor AuthoringAPI {
               let bytes = preview["bytes"].integer, (1...512 * 1024).contains(bytes),
               let sha256 = preview["sha256"].string, nativeImportDigest(sha256) else { return false }
         return true
+    }
+
+    public var admitsProductImageThumbnailRepair: Bool {
+        nativeSession && !authenticationBusy && admitsRequiredModelPreparation
+            && session?.nativeProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
+            && session?.nativeProductImageThumbnailRepairProfile == NativeProductImageThumbnailRepair.profile
+    }
+
+    /// Read-only preflight is used only before recording a new durable attempt.
+    /// An uncertain replay must retain the original revision, payload and ETag.
+    func reviewProductImageThumbnailRepair(draft: NativeExhibitionDraft, command: NativeAutomationReplacementCommand,
+                                           workspaceId: String, principalId: String) async throws {
+        guard admitsProductImageThumbnailRepair, session?.userId == principalId else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+        }
+        let held = generation
+        try await requireLiveProductImageThumbnailRepair()
+        let job = try await importJob(command.importJobId)
+        let artwork = try await self.artwork(command.artworkId)
+        let approved = try await studioArtwork(command.artworkId)
+        guard let session else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let selection: NativeArtworkThumbnailSelection = try await request(prefix + "/artworks/"
+            + identifier(command.artworkId) + "/thumbnail-selection?expectedRevision=\(command.artworkRevision)")
+        guard selection.selectionVersion == 0, selection.bindingId == nil,
+              generation == held, admitsProductImageThumbnailRepair, session.userId == principalId else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_INVALID")
+        }
+        try NativeProductImageThumbnailRepair.review(draft: draft, artwork: artwork, approved: approved.artwork,
+            job: job, command: command, workspaceId: workspaceId, principalId: principalId)
+    }
+
+    private func requireLiveProductImageThumbnailRepair() async throws {
+        guard let session, admitsProductImageThumbnailRepair else { throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
+        let live = try await verifyRetainedSession(session)
+        guard live.nativeProductImageThumbnailRepairProfile == NativeProductImageThumbnailRepair.profile,
+              live.nativeProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID,
+              live.modelPreparationProfile == NativeModelPreparationIntent.profile else {
+            throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
+        }
+    }
+
+    func repairProductImageThumbnail(draft: NativeExhibitionDraft, command: NativeAutomationReplacementCommand,
+                                     requestId: String, onOriginal: Bool) async throws -> NativeStudioResponse {
+        guard admitsProductImageThumbnailRepair else { throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE") }
+        let held = generation
+        try await requireLiveProductImageThumbnailRepair()
+        let body = try NativeProductImageThumbnailRepair.input(command: command, requestId: identifier(requestId))
+        let path = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/native-artwork-replacement"
+        try Task.checkCancellation()
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let saved: NativeStudioResponse = try await request(path, method: "POST", body: encoder.encode(body),
+                                                            ifMatch: command.etag, timeout: 120)
+        guard generation == held, saved.revision == command.studioRevision + 1,
+              saved.etag.hasPrefix("\"studio-r\(saved.revision)-"), saved.draft.id == draft.id else {
+            throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
+        }
+        if onOriginal {
+            try NativeProductImageThumbnailRepair.validateChange(before: draft, after: saved.draft, command: command)
+        } else {
+            guard saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        }
+        let reopened = try await exhibition(draft.id)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try saved.requireSameComparison(reopened)
+        return reopened // Already persisted: never issue a second Studio save.
     }
 
     private func commitImageReplacement(exhibitionId: String, studioRevision: Int, etag: String, requestId: String,
