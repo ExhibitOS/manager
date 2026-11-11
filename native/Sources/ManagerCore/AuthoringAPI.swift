@@ -45,6 +45,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceArtworkFrameModelsProfile: String? = nil
     public var workspaceArtworkFramePreparationProfile: String? = nil
     public var workspaceInfoStandPreparationProfile: String? = nil
+    public var workspaceInfoStandReplacementProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
@@ -94,6 +95,11 @@ public struct AuthoringSession: Decodable, Sendable {
     public var advertisesWorkspaceInfoStandPreparation: Bool {
         advertisesWorkspaceFurnishingRoomVisual
             && workspaceInfoStandPreparationProfile == WorkspaceFurnishingPreparationPolicy.infoStandProfile
+    }
+
+    public var advertisesWorkspaceInfoStandReplacement: Bool {
+        advertisesWorkspaceFurnishingRoomVisual
+            && workspaceInfoStandReplacementProfile == WorkspaceInfoStandReplacement.profile
     }
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
@@ -2517,6 +2523,46 @@ public actor AuthoringAPI {
             }
             return seated
         }
+        return next
+    }
+
+    public var admitsWorkspaceInfoStandReplacement: Bool {
+        admitsWorkspaceFurnishings && session?.advertisesWorkspaceInfoStandReplacement == true
+    }
+
+    public func prepareWorkspaceInfoStandReplacement(_ replacement: WorkspaceInfoStandReplacement,
+                                                     in document: NativeDocumentState,
+                                                     expectedModelSHA256: String,
+                                                     intakeId: String) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspaceInfoStandReplacement, document.pending == nil, document.tenantId == tenant,
+              session?.userId == document.principalId, let draft = document.draft,
+              document.savedEditVersion == draft.editVersion, let etag = document.etag,
+              nativeImportDigest(expectedModelSHA256), workspaceFurnishingID(intakeId), UUID(uuidString: intakeId) != nil else {
+            throw AuthoringFailure("WORKSPACE_INFO_STAND_REPLACEMENT_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let policy = try await nativeViewportPolicy(draft.id)
+        try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: document)
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let furnishing = try await workspaceFurnishing(replacement.placement.furnishingId, version: replacement.placement.furnishingVersion)
+        guard furnishing.details.kind == .infoStand, furnishing.details.model.sha256 == expectedModelSHA256 else {
+            throw AuthoringFailure("MODEL_CONFLICT")
+        }
+        // Keep the existing producer/approval rules; the replacement profile is
+        // not a substitute for approval of a prepared registration.
+        let intake = try await workspaceFurnishingIntake(intakeId)
+        guard intake.phase == .registered, intake.declaration.kind == .infoStand, intake.furnishing == furnishing else {
+            throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED")
+        }
+        if intake.preparation != nil {
+            guard let manifest = infoStandPreparationManifest else { throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED") }
+            try intake.checkInfoStandApproval(furnishing, currentProducer: manifest)
+        }
+        let next = try replacement.applying(furnishing, to: draft, supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        _ = try await workspaceFurnishingModel(furnishing)
+        try await validateNativeViewportEdit(next ?? draft, etag: etag)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
     }
 

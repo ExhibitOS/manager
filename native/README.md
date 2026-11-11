@@ -1287,3 +1287,31 @@ with the same carried-restore protections. Original-export cancellation does not
 reset a consumed export claim: the existing successor path requires a distinct
 request and new destination while retaining the saved head and prior attempt.
 Exact admission is separate from actual successor-output qualification.
+
+
+## Atomic workspace info-stand replacement (source slice)
+
+The generic automation SDK adds `workspace-info-stand-replace` for an explicitly
+selected existing stand and artwork plaque in the same room. Its closed command
+is `{etag, modelSha256, intakeId, placement, plaque}`. `placement` has the existing
+room-placement fields (`id`, `roomId`, `furnishingId`, `furnishingVersion`,
+`position`, `yaw`, `scale`); `plaque` has only `id`, `position`, `rotation` and
+`dimensions: {width, height}`. The existing placement/plaque IDs and room stay
+fixed; plaque source, caption and visibility are preserved. No stand/plaque
+relationship is inferred from proximity.
+
+The operation requires a clean saved head and the live
+`workspaceInfoStandReplacementProfile: workspace-info-stand-replacement-v1`
+marker alongside existing workspace room-visual admission. It rechecks the
+registered descriptor, intake, applicable preparation approval, actual model
+bytes and current server viewport validation before staging one local edit.
+Use ordinary explicit `save` with current revision/CAS afterward. Exact no-ops
+stage nothing. Old server sessions without the marker refuse this operation.
+Only a now-unused old descriptor is removed from the scene snapshot; registered
+versions in the workspace remain untouched. Shared descriptors and unrelated
+scene rows retain their order and values.
+
+Synthetic source tests do not qualify a new bundled runtime, actual intake,
+registration thumbnail, replacement Save, viewport rendering or physical mount.
+The existing GUI/WK furnishing registration thumbnail route remains separate;
+this operation does not generate or select a thumbnail.
