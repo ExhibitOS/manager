@@ -510,6 +510,7 @@ public actor AuthoringAPI {
     public nonisolated let workspacePortalFinishRuntimeQualified: Bool
     private var nativeSession = false
     private var session: AuthoringSession?
+    private var localRendererCredentials: LocalAuthoringSession?
     private var generation: UInt64 = 0
     private var authenticationBusy = false
     private var activeRequests = 0
@@ -584,6 +585,7 @@ public actor AuthoringAPI {
     }
     deinit { transport.invalidateAndCancel() }
     private func clear() {
+        localRendererCredentials = nil
         session = nil
         nativeSession = false
         for cookie in transport.configuration.httpCookieStorage?.cookies ?? [] { transport.configuration.httpCookieStorage?.deleteCookie(cookie) }
@@ -769,6 +771,7 @@ public actor AuthoringAPI {
         }
         session = value
         nativeSession = true
+        localRendererCredentials = credentials
         return value
     }
     /// Recheck the existing cookie-bound session without minting credentials
@@ -825,6 +828,21 @@ public actor AuthoringAPI {
     public func artists() async throws -> AuthoringPage<NativeArtist> { try await request(prefix + "/artists?limit=50&archived=false") }
     public func artist(_ id: String) async throws -> NativeArtist { try await request(prefix + "/artists/" + identifier(id)) }
     public func artwork(_ id: String) async throws -> NativeArtwork { try await request(prefix + "/artworks/" + identifier(id)) }
+    /// The operation-owned WK host shares this exact current API session.
+    /// Calling the helper again would renew it and revoke the API cookie.
+    func thumbnailRendererCredentials(for expected: AuthoringSession) throws -> LocalAuthoringSession {
+        guard hasCatalogThumbnailAuthority(expected), let credentials = localRendererCredentials,
+              credentials.tenantId.lowercased() == expected.tenantId.lowercased(),
+              credentials.principalId.lowercased() == expected.userId.lowercased(),
+              credentials.origin == base.absoluteString else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        return credentials
+    }
+
+    func endLocalAuthoringSession() {
+        generation &+= 1
+        clear()
+    }
+
     public func hasCatalogThumbnailAuthority(_ expected: AuthoringSession) -> Bool {
         guard nativeSession, !authenticationBusy, let session,
               session.advertisesRenderedArtworkThumbnail, expected.advertisesRenderedArtworkThumbnail else { return false }
