@@ -68,7 +68,9 @@ const CATALOG45_STARTUP_RECOVERY_CHECKPOINT_MAX_BYTES: u64 = MAX_BYTES + 256 * 1
 #[cfg(feature = "workspace-v5-owner-validation")]
 const CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 #[cfg(feature = "workspace-v5-owner-validation")]
-const CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+// Current saved demo data exceeds 5 GiB; inventory and copies remain streamed.
+// Only already admitted catalog45 handoffs use this bound and space checks remain.
+const CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024 * 1024;
 const DATA_DIRECTORIES: &[&str] = &["native-database", "blobs", "config"];
 const MEMBERS: &[&str] = &["native-database", "blobs", "config", "runtime.env", RECORD];
@@ -1682,6 +1684,21 @@ mod tests {
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[test]
     fn catalog45_checkpoint_capacity_is_exactly_scoped() {
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        {
+            // The current cold saved workspace is larger than the former 5 GiB
+            // handoff bound. These admitted successors need the streamed 6 GiB
+            // family limit; reverse and self pairs must not inherit it.
+            let scene = crate::native_payload::CATALOG45_SCENE_AUTHORING_TARGET.2;
+            for source in [crate::native_payload::CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET.2,
+                           crate::native_payload::CATALOG45_PORTAL_HAYES_CARD_TARGET.2] {
+                let limit = checkpoint_inventory_limit((source, scene), None);
+                assert_eq!(limit, CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
+                assert!(5_594_726_660 <= limit);
+                assert_eq!(checkpoint_inventory_limit((scene, source), None), MAX_BYTES);
+            }
+            assert_eq!(checkpoint_inventory_limit((scene, scene), None), MAX_BYTES);
+        }
         let current = "f738f33c777de39629b6a0ab2dd3a477b45d078b738189e173d00d2cd7ab652a";
         let previous = "f15d2530a298c3e9507e4719fa3ba65f26aff8cb9b40d9f646f1043976d0a75d";
         let proof = StartupCancellation045 {
