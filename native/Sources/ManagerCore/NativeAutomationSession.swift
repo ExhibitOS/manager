@@ -10,7 +10,7 @@ public actor NativeAutomationSession {
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
-        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
+        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check", "workspace-bench-visual-check",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
         "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
         "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
@@ -1672,7 +1672,8 @@ public actor NativeAutomationSession {
             let extra: Set<String> = operation == "shared-bench-prepare" ? ["command", "outputPath"] : ["proposalId", "inputPath"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
-        if ["workspace-bench-seat-attach", "workspace-default-seat-reconcile"].contains(operation) {
+        if ["workspace-bench-seat-attach", "workspace-default-seat-reconcile",
+            "workspace-bench-visual-check", "workspace-bench-visual-replace"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -2024,6 +2025,30 @@ public actor NativeAutomationSession {
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
+            }
+        case "workspace-bench-visual-check", "workspace-bench-visual-replace":
+            guard selectedOEXFormat == nil, await api.admitsWorkspaceBenchVisualReplacement else {
+                throw BridgeFailure("WORKSPACE_BENCH_VISUAL_REPLACEMENT_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            var command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "benchId", "placementId",
+                "expectedFurnishingId", "expectedFurnishingVersion", "expectedModelSha256", "furnishingId",
+                "furnishingVersion", "modelSha256", "intakeId"])
+            guard let etag = current.etag, command["etag"].string == etag,
+                  let intakeId = command["intakeId"].string, case .object(var fields) = command else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            fields.removeValue(forKey: "etag"); fields.removeValue(forKey: "intakeId")
+            command = .object(fields)
+            let replacement = try WorkspaceBenchVisualReplacement(value: command)
+            let prospective = try await api.prepareWorkspaceBenchVisualReplacement(replacement, in: current, intakeId: intakeId)
+            if operation == "workspace-bench-visual-check" {
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+                result = .object(["changed": .bool(true), "document": try value(current), "prospectiveDraft": try value(prospective)])
+            } else {
+                var next = current; next.draft = prospective
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             }
         case "workspace-bench-seat-attach":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }

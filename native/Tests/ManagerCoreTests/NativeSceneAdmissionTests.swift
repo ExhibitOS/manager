@@ -96,6 +96,32 @@ final class NativeSceneAdmissionTests: XCTestCase {
         SceneAdmissionProtocol.reset()
     }
 
+    func testDefault110BenchReplacementRequiresExactRuntimeAndLiveProfile() async throws {
+        let manifest = "43c873e85349b1bf48d8a3f466ab31f41f885b7cbde96ec1ea1fc91474fc684a"
+        let base = ["workspaceFurnishingProfile": "workspace-furnishing-intake-v1",
+                    "workspaceFurnishingStoolProfile": "workspace-furnishing-stool-v1",
+                    "workspaceFurnishingRoomVisualProfile": "workspace-furnishing-room-visual-v1"]
+        let active = base.merging(["workspaceBenchVisualReplacementProfile": WorkspaceBenchVisualReplacement.profile]) { _, value in value }
+        var wrong = active; wrong["workspaceBenchVisualReplacementProfile"] = "unknown"
+        var missingRoom = active; missingRoom.removeValue(forKey: "workspaceFurnishingRoomVisualProfile")
+        for (runtime, markers, expected) in [(manifest, active, true), (manifest, base, false),
+                                             (manifest, wrong, false), (manifest, missingRoom, false),
+                                             (String(repeating: "f", count: 64), active, false)] {
+            let fields = ["tenantId": owner, "userId": owner, "role": "admin", "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z"]
+                .merging(markers) { _, value in value }
+            SceneAdmissionProtocol.configure(try JSONSerialization.data(withJSONObject: fields))
+            let api = try AuthoringAPI(port: 18091, tenantId: owner, nativeRuntimeManifestSHA256: runtime,
+                                       protocolClasses: [SceneAdmissionProtocol.self])
+            _ = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner,
+                origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+            let admitted = await api.admitsWorkspaceBenchVisualReplacement
+            XCTAssertEqual(admitted, expected)
+            XCTAssertEqual(SceneAdmissionProtocol.methods(), ["GET"])
+            await api.endLocalAuthoringSession()
+        }
+        SceneAdmissionProtocol.reset()
+    }
+
     func testLightObjectRequiresDistinctLiveProfileAndSceneAuthorityBeforeHTTP() async throws {
         let scene = ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
         let object = ["nativeLightObjectAuthoringProposalProfile": LightObjectAuthoring.profile]

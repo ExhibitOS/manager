@@ -49,6 +49,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceArtworkFramePreparationProfile: String? = nil
     public var workspaceInfoStandPreparationProfile: String? = nil
     public var workspaceInfoStandReplacementProfile: String? = nil
+    public var workspaceBenchVisualReplacementProfile: String? = nil
     public var workspaceFurnishingThumbnailProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
@@ -108,6 +109,11 @@ public struct AuthoringSession: Decodable, Sendable {
     public var advertisesWorkspaceInfoStandReplacement: Bool {
         advertisesWorkspaceFurnishingRoomVisual
             && workspaceInfoStandReplacementProfile == WorkspaceInfoStandReplacement.profile
+    }
+
+    public var advertisesWorkspaceBenchVisualReplacement: Bool {
+        advertisesWorkspaceFurnishingRoomVisual
+            && workspaceBenchVisualReplacementProfile == WorkspaceBenchVisualReplacement.profile
     }
 }
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
@@ -486,6 +492,8 @@ public actor AuthoringAPI {
         "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"
     private static let default17RuntimeManifestPin =
         "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
+    private static let default110RuntimeManifestPin =
+        "43c873e85349b1bf48d8a3f466ab31f41f885b7cbde96ec1ea1fc91474fc684a"
     // Exact assembled parent045 +050 candidate. Dedicated adoption/preparation
     // families remain closed and no default runtime selection changes here.
     private static let furnishingThumbnail050RuntimeManifestPin =
@@ -604,6 +612,7 @@ public actor AuthoringAPI {
             || manifest == Self.completeStaticRuntimeManifestPin
             || manifest == Self.fixtureAuthoringRuntimeManifestPin
             || manifest == Self.default17RuntimeManifestPin
+            || manifest == Self.default110RuntimeManifestPin
             || manifest == Self.furnishingThumbnail050RuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
@@ -3001,6 +3010,38 @@ public actor AuthoringAPI {
         admitsWorkspaceFurnishings && session?.advertisesWorkspaceInfoStandReplacement == true
     }
 
+    public var admitsWorkspaceBenchVisualReplacement: Bool {
+        admitsWorkspaceFurnishings && session?.advertisesWorkspaceBenchVisualReplacement == true
+    }
+
+    public func prepareWorkspaceBenchVisualReplacement(_ replacement: WorkspaceBenchVisualReplacement,
+                                                      in document: NativeDocumentState,
+                                                      intakeId: String) async throws -> NativeExhibitionDraft {
+        guard admitsWorkspaceBenchVisualReplacement, document.pending == nil, !document.dirty,
+              document.tenantId == tenant, session?.userId == document.principalId,
+              let draft = document.draft, let etag = document.etag,
+              workspaceFurnishingID(intakeId), UUID(uuidString: intakeId) != nil else {
+            throw AuthoringFailure("WORKSPACE_BENCH_VISUAL_REPLACEMENT_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let policy = try await nativeViewportPolicy(draft.id)
+        try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: document)
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let furnishing = try await workspaceFurnishing(replacement.furnishingId, version: replacement.furnishingVersion)
+        let intake = try await workspaceFurnishingIntake(intakeId)
+        guard furnishing.details.kind == .bench, furnishing.details.model.sha256 == replacement.modelSha256,
+              intake.phase == .registered, intake.declaration.kind == .bench,
+              intake.furnishing == furnishing, intake.preparation == nil else {
+            throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED")
+        }
+        let next = try replacement.applying(furnishing, to: draft, supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        _ = try await workspaceFurnishingModel(furnishing)
+        try await validateNativeViewportEdit(next, etag: etag)
+        guard generation == heldGeneration, admitsWorkspaceBenchVisualReplacement else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
+    }
+
     public func prepareWorkspaceInfoStandReplacement(_ replacement: WorkspaceInfoStandReplacement,
                                                      in document: NativeDocumentState,
                                                      expectedModelSHA256: String,
@@ -3250,6 +3291,7 @@ public actor AuthoringAPI {
             || manifest == completeStaticRuntimeManifestPin
             || manifest == fixtureAuthoringRuntimeManifestPin
             || manifest == default17RuntimeManifestPin
+            || manifest == default110RuntimeManifestPin
             || manifest == furnishingThumbnail050RuntimeManifestPin
         #else
         false
