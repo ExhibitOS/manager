@@ -4,6 +4,45 @@ import Darwin
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testRoomBaseFloorWrapperPreservesSoundAndRejectsUnscopedInput() throws {
+        let base = try NativeExhibitionDraft.new(), room = try XCTUnwrap(base.rooms.first?["id"].string)
+        var command: DocumentValue = .object(["roomId": .string(room), "preset": .string("wood")])
+        var wood = try XCTUnwrap(NativeAutomationSession.roomBaseFloorDraft(command, in: base))
+        XCTAssertNil(try NativeAutomationSession.roomBaseFloorDraft(command, in: wood))
+        let target = FloorSettings.Target(kind: .roomBase, id: room)
+        let original = try XCTUnwrap(FloorSettings.read(from: wood, target: target))
+        let authored = try original.replacing(.sound, with: .object(["mode": .string("none"), "gain": .number(0.4)]), candidate: wood.candidate)
+        try wood.setFloor(authored, target: target)
+        let prior = try XCTUnwrap(FloorSettings.read(from: wood, target: target))
+        command["preset"] = .string("marble")
+        let changed = try XCTUnwrap(NativeAutomationSession.roomBaseFloorDraft(command, in: wood))
+        let after = try XCTUnwrap(FloorSettings.read(from: changed, target: target))
+        XCTAssertEqual(prior.value["sound"], after.value["sound"])
+        XCTAssertEqual(changed.candidate["rooms"], wood.candidate["rooms"])
+        command["roomId"] = .string(UUID().uuidString.lowercased())
+        XCTAssertThrowsError(try NativeAutomationSession.roomBaseFloorDraft(command, in: wood))
+        command["roomId"] = .string(room); command["preset"] = .string("unknown")
+        XCTAssertThrowsError(try NativeAutomationSession.roomBaseFloorDraft(command, in: wood))
+        command["preset"] = .string("wood"); command["draft"] = .null
+        XCTAssertThrowsError(try NativeAutomationSession.roomBaseFloorDraft(command, in: wood))
+    }
+    func testStandingViewpointWrapperAppendsWithoutMutatingExistingViews() throws {
+        let base = try NativeExhibitionDraft.new(), room = try XCTUnwrap(base.rooms.first?["id"].string)
+        var command: DocumentValue = .object(["roomId": .string(room), "name": .string("Standing"),
+            "position": .vector([0, 1.65, 1]), "target": .vector([0, 1.65, -1]), "fov": .integer(50)])
+        let (id, first) = try NativeAutomationSession.appendStandingViewpoint(command, in: base)
+        let firstViews = try BenchViewpoint.list(in: first)
+        XCTAssertEqual(firstViews.last?.id, id)
+        let (_, second) = try NativeAutomationSession.appendStandingViewpoint(command, in: first)
+        XCTAssertEqual(Array(try BenchViewpoint.list(in: second).prefix(firstViews.count)), firstViews)
+        XCTAssertEqual(second.candidate["extensions"][BenchSettings.namespace], base.candidate["extensions"][BenchSettings.namespace])
+        command["position"] = .vector([10000, 1, 0])
+        XCTAssertThrowsError(try NativeAutomationSession.appendStandingViewpoint(command, in: base))
+        command["position"] = .vector([0, 1, 0]); command["fov"] = .integer(121)
+        XCTAssertThrowsError(try NativeAutomationSession.appendStandingViewpoint(command, in: base))
+        command["fov"] = .integer(50); command["id"] = .string(UUID().uuidString)
+        XCTAssertThrowsError(try NativeAutomationSession.appendStandingViewpoint(command, in: base))
+    }
     func testOrdinaryFreshCreationExcludesSelectedAndExistingModes() {
         XCTAssertTrue(NativeAutomationSession.ordinaryFreshCreationEligible(selectedOEX: false, existingWorkspace: false, v5: false, v6: false, v7: false))
         XCTAssertFalse(NativeAutomationSession.ordinaryFreshCreationEligible(selectedOEX: true, existingWorkspace: false, v5: false, v6: false, v7: false))

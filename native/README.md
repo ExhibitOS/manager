@@ -1291,6 +1291,14 @@ Exact admission is separate from actual successor-output qualification.
 
 ## Atomic existing bench visual replacement (source slice)
 
+For a positively confirmed ordinary saved draft, the generic SDK also offers
+`room-base-floor-preset-apply` with `{etag, roomId, preset}` and
+`presentation-viewpoint-add` with `{etag, roomId, name, position, target, fov}`.
+The floor command changes appearance without changing authored sound. The
+viewpoint command appends one generated identity without changing existing
+views. Both stage a revision-checked local edit; explicit Save remains required.
+Unknown or bounded edit policies are rejected rather than treated as ordinary.
+
 The separate `workspace-bench-model-forward-check` and
 `workspace-bench-model-forward-set` commands accept exactly `{etag, benchId,
 placementId, furnishingId, furnishingVersion, modelSha256,

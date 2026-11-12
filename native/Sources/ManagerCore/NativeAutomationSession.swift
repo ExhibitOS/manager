@@ -486,6 +486,33 @@ public actor NativeAutomationSession {
         return try SharedFurnishingCommand(host: .bench, hostId: hostId, pose: FurnishingPose(value["pose"]),
                                            catalogId: value["catalogId"].string)
     }
+    static func roomBaseFloorDraft(_ command: DocumentValue, in draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft? {
+        guard case .object(let fields) = command, Set(fields.keys) == ["roomId", "preset"],
+              let room = command["roomId"].string, let preset = command["preset"].string.flatMap(FloorSettings.Preset.init(rawValue:)) else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        let target = FloorSettings.Target(kind: .roomBase, id: room)
+        let prior = try FloorSettings.read(from: draft, target: target)
+        let fieldsToApply = Set(FloorSettings.Field.allCases).subtracting([.sound])
+        let settings = try FloorSettings.applying(preset: preset, defaults: FloorSettings.defaults(preset), fields: fieldsToApply,
+                                                  target: target, prior: prior, candidate: draft.candidate)
+        var next = draft; try next.setFloor(settings, target: target)
+        return next == draft ? nil : next
+    }
+    static func appendStandingViewpoint(_ command: DocumentValue, in draft: NativeExhibitionDraft) throws -> (String, NativeExhibitionDraft) {
+        guard case .object(let fields) = command, Set(fields.keys) == ["roomId", "name", "position", "target", "fov"],
+              let room = command["roomId"].string, let name = command["name"].string,
+              let position = command["position"].items, position.count == 3,
+              let target = command["target"].items, target.count == 3,
+              let fov = command["fov"].double else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        let p = position.compactMap(\.double), t = target.compactMap(\.double)
+        guard p.count == 3, t.count == 3 else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        var form = try ViewingPointFormBuffer(draft: draft, roomId: room)
+        form.name = name; form.x = String(p[0]); form.y = String(p[1]); form.z = String(p[2])
+        form.targetX = String(t[0]); form.targetY = String(t[1]); form.targetZ = String(t[2]); form.fov = String(fov)
+        var next = draft; try next.replaceCandidate(form.candidate(in: draft))
+        return (form.id, next)
+    }
     private static func checkDocumentRevision(_ request: DocumentValue, _ state: NativeDocumentState) throws {
         guard case .object(let fields) = request, fields["expectedRevision"] != nil, fields["expectedEditVersion"] != nil,
               request["expectedRevision"].integer == Int64(state.revision),
@@ -1695,6 +1722,10 @@ public actor NativeAutomationSession {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
+        if ["room-base-floor-preset-apply", "presentation-viewpoint-add"].contains(operation) {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         if ["workspace-bench-seat-attach", "workspace-default-seat-reconcile",
             "workspace-bench-visual-check", "workspace-bench-visual-replace", "workspace-bench-model-forward-check", "workspace-bench-model-forward-set"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
@@ -2332,6 +2363,51 @@ public actor NativeAutomationSession {
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
+        case "room-base-floor-preset-apply", "presentation-viewpoint-add":
+            try checkedRevision(request, current)
+            guard selectedOEXFormat == nil, await api.admitsPersonalExhibitionCreation,
+                  let draft = current.draft, let etag = current.etag else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            guard let heldSession = authoringSession else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            _ = try await api.verifyRetainedSession(heldSession)
+            let policy = try await checkSavedSurfacePolicy(current, api: api)
+            guard try !Self.operatorRequiresViewportValidation(policy, etag: etag) else {
+                throw BridgeFailure("NATIVE_SURFACE_CAPABILITY_UNAVAILABLE")
+            }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.etag == etag, saved.draft == draft else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let keys: Set<String> = operation == "room-base-floor-preset-apply"
+                ? ["etag", "roomId", "preset"] : ["etag", "roomId", "name", "position", "target", "fov"]
+            let raw = try NativeAutomationArtworkRules.command(request, keys: keys)
+            guard raw["etag"].string == etag, case .object(var fields) = raw else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            fields.removeValue(forKey: "etag")
+            let command = DocumentValue.object(fields)
+            let nextDraft: NativeExhibitionDraft?, pointId: String?
+            if operation == "room-base-floor-preset-apply" {
+                guard let preset = command["preset"].string.flatMap(FloorSettings.Preset.init(rawValue:)) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                nextDraft = try Self.roomBaseFloorDraft(command, in: draft); pointId = nil
+                _ = try await api.floorPreview(preset)
+            } else {
+                let (id, proposed) = try Self.appendStandingViewpoint(command, in: draft)
+                pointId = id; nextDraft = proposed
+            }
+            let latestPolicy = try await checkSavedSurfacePolicy(current, api: api)
+            guard try !Self.operatorRequiresViewportValidation(latestPolicy, etag: etag) else {
+                throw BridgeFailure("NATIVE_SURFACE_CAPABILITY_UNAVAILABLE")
+            }
+            let latest = try await api.exhibition(draft.id)
+            guard latest.etag == etag, latest.draft == draft else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            _ = try await api.verifyRetainedSession(heldSession)
+            guard await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            if let nextDraft {
+                var next = current; next.draft = nextDraft
+                var output: [String: DocumentValue] = ["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))]
+                if let pointId { output["viewpointId"] = .string(pointId) }
+                result = .object(output)
+            } else {
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
         case "floor-appearance-apply":
