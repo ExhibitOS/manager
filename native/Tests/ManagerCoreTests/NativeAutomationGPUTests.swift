@@ -36,6 +36,8 @@ final class NativeAutomationGPUTests: XCTestCase {
         let manifest = "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e"
         let credentials = LocalAuthoringSession(tenantId: tenant, principalId: user, origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43))
         for (pin, profile, expected) in [(manifest, NativeGPUModelPreparation.profile, true),
+                                         ("291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309", NativeGPUModelPreparation.profile, true),
+                                         ("291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309", nil, false),
                                          (manifest, "wrong-profile", false),
                                          (manifest, nil, false),
                                          (String(repeating: "a", count: 64), NativeGPUModelPreparation.profile, false),

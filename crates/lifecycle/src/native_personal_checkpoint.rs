@@ -1866,6 +1866,39 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn gpu_child_diagnostic_retains_exact_ready_journal_proof() {
+        let document = gpu_library_empty_document();
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        let source = crate::native_payload::GPU_MODEL_WRAPPING_TARGET.2;
+        let target = crate::native_payload::GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2;
+        let pair = (source, target);
+        let digest = saved_document_digest(&document).unwrap();
+        let proof = RetainedGpuVariant { job_id: Uuid::new_v4().to_string(), transfer_sha256: "a".repeat(64) };
+        assert!(gpu_empty_document(pair, &document, owner));
+        assert!(gpu_retention_matches(pair, owner, Some(&digest), Some(&proof)));
+        let checkpoint: Checkpoint = serde_json::from_value(serde_json::json!({
+            "source":"/synthetic/source", "staged":"/synthetic/staged", "sourceIdentity":[1,2], "stagedIdentity":[1,3],
+            "workspaceId":owner.0, "tenantId":owner.1, "principalId":owner.2, "ownerUid":501,
+            "oldManifest":source, "newManifest":target, "files":{}, "savedDocumentSha256":digest,
+            "retainedGpuVariant":proof, "trial":false, "drainedFailure":null, "restore":null
+        })).unwrap();
+        assert!(checkpoint.check_gpu_retention(true));
+        checkpoint.check_retained(TransitionRetention::GpuVariant(&proof)).unwrap();
+        let mut different = proof.clone(); different.transfer_sha256 = "b".repeat(64);
+        assert!(checkpoint.check_retained(TransitionRetention::GpuVariant(&different)).is_err());
+        checkpoint.check_retained_gpu_document(Some(&document)).unwrap();
+        let mut changed = proof.clone(); changed.transfer_sha256 = "not-a-sha256".into();
+        assert!(!gpu_retention_matches(pair, owner, Some(&digest), Some(&changed)));
+        assert!(!gpu_retention_matches(pair, (owner.1, owner.0, owner.2), Some(&digest), Some(&proof)));
+        assert!(!gpu_retention_matches(pair, owner, Some(&"b".repeat(64)), Some(&proof)));
+        for other in [(target, source), (source, source), (crate::native_payload::GPU_MODEL_LEGACY_TARGET.2, target),
+                      (crate::native_payload::CATALOG45_REFINED_BENCH_TARGET.2, target)] {
+            assert!(!gpu_retention_matches(other, owner, Some(&digest), Some(&proof)));
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn gpu_retention_checkpoint_seals_exact_proof_empty_document_and_forward_pair() {
         let document = gpu_library_empty_document();
         let old = crate::native_payload::GPU_MODEL_LEGACY_TARGET.2;

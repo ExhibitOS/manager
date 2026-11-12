@@ -384,7 +384,13 @@ pub(crate) const GPU_MODEL_WRAPPING_TARGET: RuntimeTuple = (
     "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const GPU_MODEL_TARGETS: &[RuntimeTuple] = &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET];
+pub(crate) const GPU_MODEL_CHILD_DIAGNOSTIC_TARGET: RuntimeTuple = (
+    "6784659cf5fe3b1f4c925a6ac0a0f5554cb8a4fe",
+    "09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634",
+    "291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const GPU_MODEL_TARGETS: &[RuntimeTuple] = &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const GPU_MODEL_HELPER_FILES: Option<&[(&str, u64, &str)]> = Some(&[
     ("platform/scripts/native-gpu-model-preparation-bootstrap.mjs", 5119, "fc1d1444b7578ff55486b3b32edc111f45eb174eaef11efbf7c5ffd2860337e3"),
@@ -1366,16 +1372,23 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
-        if gpu_model_wrapping_transition(pair) {
+        if pair == (GPU_MODEL_LEGACY_TARGET.2, GPU_MODEL_WRAPPING_TARGET.2) && gpu_model_wrapping_transition(pair) {
             return Some(Self::SameCatalog {
                 source: GPU_MODEL_LEGACY_TARGET,
                 target: GPU_MODEL_WRAPPING_TARGET,
                 catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049,
             });
         }
+        if pair == (GPU_MODEL_WRAPPING_TARGET.2, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2) && gpu_model_wrapping_transition(pair) {
+            return Some(Self::SameCatalog {
+                source: GPU_MODEL_WRAPPING_TARGET,
+                target: GPU_MODEL_CHILD_DIAGNOSTIC_TARGET,
+                catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049,
+            });
+        }
         if pair.0 == CATALOG45_DEFAULT_1_7_TARGET.2
             && let Some(&target) = GPU_MODEL_TARGETS.iter().find(|target|
-                target.2 == pair.1 && gpu_model_host_matches(**target))
+                **target != GPU_MODEL_CHILD_DIAGNOSTIC_TARGET && target.2 == pair.1 && gpu_model_host_matches(**target))
         {
             return Some(Self::Upgrade49 { source: CATALOG45_DEFAULT_1_7_TARGET, target });
         }
@@ -1620,9 +1633,9 @@ impl FurnishingTransition {
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn gpu_model_wrapping_transition(pair: (&str, &str)) -> bool {
-    pair == (GPU_MODEL_LEGACY_TARGET.2, GPU_MODEL_WRAPPING_TARGET.2)
-        && gpu_model_host_matches(GPU_MODEL_LEGACY_TARGET)
-        && gpu_model_host_matches(GPU_MODEL_WRAPPING_TARGET)
+    [(GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET), (GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET)]
+        .into_iter().any(|(source, target)| pair == (source.2, target.2)
+            && gpu_model_host_matches(source) && gpu_model_host_matches(target))
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG40_DRAFT2_OEX_SELECTED: RuntimeTuple = (
@@ -2150,7 +2163,7 @@ mod normal_oex_release_declaration_tests {
     #[test]
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn gpu_model_runtime_admission_requires_the_exact_assembled_tuple() {
-        assert_eq!(GPU_MODEL_TARGETS, &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET]);
+        assert_eq!(GPU_MODEL_TARGETS, &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET]);
         let source = CATALOG45_DEFAULT_1_7_TARGET;
         for &actual in GPU_MODEL_TARGETS {
             assert!(gpu_model_host_matches(actual));
@@ -2169,6 +2182,26 @@ mod normal_oex_release_declaration_tests {
         assert!(payload.workspace_furnishing_catalog().is_err());
         assert!(payload.gpu_model_upgrade_script().is_err());
         assert!(payload.native_gpu_preview_resources().is_err());
+    }
+
+    #[test]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn gpu_child_diagnostic_only_accepts_exact_same_catalog_predecessor() {
+        let source = GPU_MODEL_WRAPPING_TARGET;
+        let target = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET;
+        assert!(gpu_model_host_matches(target));
+        assert_eq!(FurnishingTransition::from_manifests((source.2, target.2)),
+            Some(FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049 }));
+        assert!(gpu_model_wrapping_transition((GPU_MODEL_LEGACY_TARGET.2, source.2)));
+        for pair in [(target.2, source.2), (target.2, target.2), (GPU_MODEL_LEGACY_TARGET.2, target.2),
+                     (CATALOG45_DEFAULT_1_7_TARGET.2, target.2), (CATALOG45_REFINED_BENCH_TARGET.2, target.2),
+                     (target.2, CATALOG45_REFINED_BENCH_TARGET.2)] {
+            assert!(!gpu_model_wrapping_transition(pair));
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        assert!(!gpu_model_host_matches((source.0, target.1, target.2)));
+        assert!(!gpu_model_host_matches((target.0, target.1, source.2)));
+        assert!(!gpu_model_host_matches((target.0, "unknown", target.2)));
     }
 
     #[test]
@@ -3751,6 +3784,28 @@ mod normal_oex_release_declaration_tests {
         payload.manifest_sha256 = "e".repeat(64);
         assert!(payload.workspace_furnishing_catalog().is_err());
         assert!(payload.gpu_model_upgrade_script().is_err());
+        assert!(payload.native_gpu_preview_resources().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact assembled GPU049 child diagnostic runtime; read-only opener only"]
+    fn opens_actual_gpu_child_diagnostic_payload_without_starting_a_workspace() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_GPU_CHILD_DIAGNOSTIC_RUNTIME").expect("explicit runtime path required"));
+        let mut payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let tuple = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET;
+        assert_eq!(payload.context().source_commit, tuple.0);
+        assert_eq!(payload.producer_sha256(), tuple.1);
+        assert_eq!(payload.context().manifest_sha256, tuple.2);
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::GpuModelPreparation049));
+        assert_eq!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::GpuModelPreparation049).unwrap().lines().count(), 46);
+        assert_eq!(payload.catalog49_upgrade_source_ledger().unwrap().lines().count(), 45);
+        assert!(payload.native_model_adoption_root().unwrap().is_none());
+        assert!(Payload::open_saved_workspace_transition(&root).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
+        assert_eq!(payload.native_gpu_preview_resources().unwrap()["payloadManifestSha256"], tuple.2);
+        payload.manifest_sha256 = "e".repeat(64);
+        assert!(payload.workspace_furnishing_catalog().is_err());
         assert!(payload.native_gpu_preview_resources().is_err());
     }
 
