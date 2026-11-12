@@ -425,7 +425,7 @@ impl InstallationController {
     pub(crate) fn with_personal_transition<T>(
         &self,
         token: &str,
-        retained: Option<&native_maintenance::RetainedProductImage>,
+        retained: native_maintenance::TransitionRetention<'_>,
         task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<T>,
     ) -> Result<T> {
         self.with_current_mutation(token, |service| {
@@ -449,7 +449,7 @@ impl InstallationController {
             }
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let (file, transfer) = self.upload_unlocked(service)?;
-            if let Some(proof) = retained {
+            if let Some(proof) = retained.image() {
                 if !transfer.matches_retained_product_image(proof)
                     || document.etag.as_deref() != Some(proof.saved_etag.as_str())
                     || digest(&installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?)
@@ -458,6 +458,12 @@ impl InstallationController {
                     return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
                 }
                 proof.check_replacement_attempt(&document)?;
+            } else if let Some(proof) = retained.gpu() {
+                if !transfer.matches_retained_gpu_variant(proof,
+                    &installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?)
+                {
+                    return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+                }
             } else if transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some()
                 || transfer.compact_variant.is_some() || transfer.gpu_variant.is_some() {
                 return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));

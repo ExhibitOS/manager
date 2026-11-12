@@ -592,7 +592,7 @@ impl Host {
                         }
                         #[cfg(debug_assertions)]
                         Work::PersonalTransition(transition) => {
-                            use super::installations::native_maintenance::LocalPersonalTransition;
+                            use super::installations::native_maintenance::{LocalPersonalTransition, TransitionRetention};
                             match transition {
                                 LocalPersonalTransition::Protect { source_payload, archive, key_file, recovered, upload_job_id } => {
                                     let source = Payload::open(&source_payload)?;
@@ -608,17 +608,21 @@ impl Host {
                                     )?;
                                 }
                                 #[cfg(feature = "workspace-v5-owner-validation")]
-                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_product_image, startup_cancellation_045 } => {
+                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_product_image, retained_gpu_variant, startup_cancellation_045 } => {
                                     let source = Payload::open_saved_workspace_transition(&source_payload)?;
                                     let target = Payload::open_saved_workspace_transition(&resources)?;
                                     controller.prepare_saved_workspace_v5_transition(
-                                        &token, &source, &target, &staging, &key_file, retained_product_image.as_ref(), startup_cancellation_045.as_ref(),
+                                        &token, &source, &target, &staging, &key_file,
+                                        TransitionRetention::from_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref())?,
+                                        startup_cancellation_045.as_ref(),
                                     )?;
                                 }
-                                LocalPersonalTransition::Activate { staging, key_file, retained_product_image, startup_cancellation_045 } => {
+                                LocalPersonalTransition::Activate { staging, key_file, retained_product_image, retained_gpu_variant, startup_cancellation_045 } => {
                                     let target = Arc::new(Payload::open(&resources)?);
                                     controller.activate_local_personal_runtime_transition(
-                                        &token, target, &staging, &key_file, saved_workspace_host, retained_product_image.as_ref(), startup_cancellation_045.as_ref(),
+                                        &token, target, &staging, &key_file, saved_workspace_host,
+                                        TransitionRetention::from_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref())?,
+                                        startup_cancellation_045.as_ref(),
                                     )?;
                                 }
                                 #[cfg(feature = "workspace-v5-owner-validation")]
@@ -626,9 +630,10 @@ impl Host {
                                     let target = Arc::new(Payload::open_saved_workspace_transition(&resources)?);
                                     controller.activate_selected_recovery_045(&token, target, &staging, &key_file, selection)?;
                                 }
-                                LocalPersonalTransition::Recover { staging, key_file, retained_product_image } => {
+                                LocalPersonalTransition::Recover { staging, key_file, retained_product_image, retained_gpu_variant } => {
                                     controller.recover_local_personal_runtime_transition(
-                                        &token, &staging, &key_file, saved_workspace_host, retained_product_image.as_ref(),
+                                        &token, &staging, &key_file, saved_workspace_host,
+                                        TransitionRetention::from_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref())?,
                                     )?;
                                 }
                                 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
