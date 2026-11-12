@@ -8,6 +8,21 @@ use std::io::{BufRead, Read};
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(all(target_os="macos",feature="workspace-v5-owner-validation",debug_assertions))]
+    if args.len()==4 && args[1]=="--inspect-pre-node-owner-v1" {
+        unsafe {
+            libc::signal(libc::SIGTERM,shutdown_signal as *const () as libc::sighandler_t);
+            libc::signal(libc::SIGINT,shutdown_signal as *const () as libc::sighandler_t);
+        }
+        let result=exhibitos_lifecycle::native_static_refresh::read_request(libc::STDIN_FILENO,&STOP)
+            .and_then(|bytes|exhibitos_lifecycle::native_runtime::inspect_pre_node_owner(
+                std::path::Path::new(&args[2]),std::path::Path::new(&args[3]),&bytes,&STOP));
+        match result {
+            Ok(receipt)=>{let _=writeln!(io::stdout().lock(),"{}",receipt);},
+            Err(error)=>{let _=writeln!(io::stdout().lock(),"{}",json!({"identityMode":"cluster-owner-observation","diagnosticComplete":false,"recoveryEligible":false,"admissionEligible":false,"logicalDatabaseIdentityQualified":false,"expectedDatabaseOid":null,"generationsState":"not-inspected","generations":null,"failureCode":error.code}));std::process::exit(1);}
+        }
+        return;
+    }
     #[cfg(target_os = "macos")]
     if args.len() == 2 && (args[1] == "--model-adoption-stage-read-v1" || args[1] == "--model-adoption-stage-write-v1") {
         use exhibitos_lifecycle::native_model_adoption_stage::{read_inherited_stage, write_inherited_stage};
