@@ -39,6 +39,17 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: true))
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: String(repeating: "f", count: 64)))
     }
+    func testBenchModelForwardRuntimeInheritsOnlyOrdinary45Family() throws {
+        let manifest = "ac2248e1184ad4514f386ab6ee11b6ddd8bf2ca71792f4ec9eb9242e189724d7"
+        let api = try AuthoringAPI(port: 18091, tenantId: UUID().uuidString.lowercased(), nativeRuntimeManifestSHA256: manifest)
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: manifest))
+        XCTAssertTrue(api.workspaceFurnishingRuntimeQualified)
+        XCTAssertTrue(api.workspacePortalFinishRuntimeQualified)
+        XCTAssertFalse(api.workspaceInfoStandPreparationRuntimeQualified)
+        XCTAssertFalse(api.workspaceFramePreparationRuntimeQualified)
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: true))
+    }
     private let owner = "10000000-0000-4000-8000-000000000001"
     private let manifest = "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
 
