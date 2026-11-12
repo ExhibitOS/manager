@@ -365,13 +365,26 @@ pub(crate) const GPU_MODEL_SCHEMA: (&str, u64, &str) = (
     "d525cb7f8d5040330aa7ccc3afd5d8a7878fd8612eae80a6613517510e546790",
 );
 const GPU_MODEL_CAPABILITY_PATH: &str = "platform/scripts/native-gpu-model-preparation-capability-v1.json";
-// Server has agreed the closed marker/helper contract. Exact bytes are not yet
-// frozen; no catalog or executable path is admitted until the real pins arrive.
-const GPU_MODEL_CAPABILITY: Option<(&str, u64, &str)> = None;
+// Checked source1e07a50 pins do not admit a payload or runtime. The actual
+// target allowlist stays empty until one assembled inventory is qualified.
+const GPU_MODEL_CAPABILITY: Option<(&str, u64, &str)> = Some((
+    GPU_MODEL_CAPABILITY_PATH, 264,
+    "58e3bae5525b063f6a992ca3784701647ab2bef8d6d7ed0489131288ab7670a7",
+));
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const GPU_MODEL_TARGETS: &[RuntimeTuple] = &[];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const GPU_MODEL_HELPER_FILES: Option<&[(&str, u64, &str)]> = None;
+const GPU_MODEL_HELPER_FILES: Option<&[(&str, u64, &str)]> = Some(&[
+    ("platform/scripts/native-gpu-model-preparation-bootstrap.mjs", 5119, "fc1d1444b7578ff55486b3b32edc111f45eb174eaef11efbf7c5ffd2860337e3"),
+    ("platform/scripts/local-runtime.mjs", 97862, "f9f68391893a04ad2a6ce92dedcf222df1b0ab4c12514cda04779e60f627216a"),
+    ("platform/scripts/native-gpu-model-runtime.mjs", 2892, "e6e361faa28b35c4d9ed40fcf3053726ff6160cd236ce084c538aa2d14040a02"),
+    ("platform/scripts/native-oex-normal-catalog.mjs", 51484, "6e7424891a1e13cc4094e2eb034412d93d7d3ba2b8e022a3556b3279f6f6a52a"),
+    ("platform/scripts/native-owner-channel.mjs", 8667, "f677be4f02be73b411e7107bcc30396ef58fe869d4353ce072d4b877d0134e80"),
+    ("platform/scripts/native-workspace-furnishing-admission.mjs", 8457, "35e3ee1e27fbd3cb647b993b9e3a0bb4d0ec1e907091e6a7051d513f728bad76"),
+    ("platform/scripts/native-workspace-furnishing-bootstrap.mjs", 30545, "8e66e0cdd2e88158769dab749d13c3314fcf3b2f1886bb7c84cdd8f5ac070f08"),
+    ("platform/scripts/native-workspace-furnishing-lease.mjs", 4792, "9d6ad474b604156c278e459a4955813541957222bf0e1dd928faf0e8d24c72b4"),
+    ("platform/scripts/native-workspace-furnishing-ordinary-assertion.mjs", 7989, "06c0784148d2e75204d9b7ed7d05cd72ddbc8d0510d9668ffb50400f7d67e29e"),
+]);
 
 pub(crate) fn gpu_model_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2091,8 +2104,8 @@ mod normal_oex_release_declaration_tests {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn gpu_model_source_contract_does_not_admit_any_target_before_real_assembly() {
         assert!(GPU_MODEL_TARGETS.is_empty());
-        assert!(GPU_MODEL_CAPABILITY.is_none());
-        assert!(GPU_MODEL_HELPER_FILES.is_none());
+        assert_eq!(GPU_MODEL_CAPABILITY.unwrap().0, GPU_MODEL_CAPABILITY_PATH);
+        assert!(!GPU_MODEL_HELPER_FILES.unwrap().is_empty());
         let source = CATALOG45_DEFAULT_1_7_TARGET;
         assert!(!gpu_model_host_matches(source));
         assert!(gpu_model_carried_receipt_payload(source).is_none());
