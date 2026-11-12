@@ -43,7 +43,7 @@ public struct WorkspaceBenchVisualReplacement: Sendable {
         var candidate = draft.candidate
         var ext = candidate["extensions"][namespace]
         guard case .object(let fields) = ext, let version = ext["version"].integer,
-              (3...7).contains(version), version <= supportedExtensionVersion,
+              (1...7).contains(version), version <= supportedExtensionVersion,
               let assets = ext["furnishings"].items, (1...64).contains(assets.count),
               var rows = ext["placements"].items, (1...128).contains(rows.count) else { throw Self.invalid() }
         var expected: Set<String> = ["version", "furnishings", "placements"]

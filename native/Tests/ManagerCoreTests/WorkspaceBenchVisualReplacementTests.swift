@@ -59,6 +59,7 @@ final class WorkspaceBenchVisualReplacementTests: XCTestCase {
     }
     func testAtomicReplacementPreservesEntireSeatCameraAndUnrelatedCandidate() throws {
         let before = try fixture(), target = try descriptor(newId)
+        XCTAssertEqual(before.candidate["extensions"][ns]["version"], .integer(1))
         let next = try WorkspaceBenchVisualReplacement(value: command()).applying(target, to: before, supportedExtensionVersion: 7)
         var expected = before.candidate
         var placements = try XCTUnwrap(expected["extensions"][ns]["placements"].items)
@@ -71,6 +72,26 @@ final class WorkspaceBenchVisualReplacementTests: XCTestCase {
         XCTAssertEqual(next.candidate, expected)
         XCTAssertEqual(next.document["editVersion"].integer, try XCTUnwrap(before.document["editVersion"].integer) + 1)
         XCTAssertEqual(try BenchViewpoint.list(in: next), try BenchViewpoint.list(in: before))
+    }
+    func testSupportedLegacyWorkspaceVersionsArePreserved() throws {
+        let input = try WorkspaceBenchVisualReplacement(value: command()), target = try descriptor(newId)
+        for version in [Int64(1), 2, 3] {
+            var before = try fixture(), candidate = before.candidate
+            candidate["extensions"][ns]["version"] = .integer(version)
+            try before.replaceCandidate(candidate)
+            let next = try input.applying(target, to: before, supportedExtensionVersion: 7)
+            XCTAssertEqual(next.candidate["extensions"][ns]["version"], .integer(version))
+        }
+        for version in [Int64(0), 8] {
+            var before = try fixture(), candidate = before.candidate
+            candidate["extensions"][ns]["version"] = .integer(version)
+            try before.replaceCandidate(candidate)
+            XCTAssertThrowsError(try input.applying(target, to: before, supportedExtensionVersion: 7))
+        }
+        var before = try fixture(), candidate = before.candidate
+        candidate["extensions"][ns]["version"] = .integer(2)
+        try before.replaceCandidate(candidate)
+        XCTAssertThrowsError(try input.applying(target, to: before, supportedExtensionVersion: 1))
     }
     func testSharedOldDescriptorRetainsOrderAndOnlySelectedPlacementChanges() throws {
         let before = try fixture(shared: true), target = try descriptor(newId)
