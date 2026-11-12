@@ -124,6 +124,12 @@ def verify_signature(path, identifier):
         ) from None
 
 
+def verify_executable_helper(helper):
+    require(helper.is_file() and not helper.is_symlink()
+            and helper.resolve(strict=True) == helper and os.access(helper, os.X_OK),
+            "The validation helper is missing, redirected or not executable. Supply the reviewed executable helper.")
+
+
 def verify_bundle(bundle, profile, pins):
     require(bundle.is_dir() and bundle.resolve() == bundle,
             f"Missing or redirected validation bundle: {bundle}. Prepare the approved fixed bundle first.")
@@ -134,6 +140,7 @@ def verify_bundle(bundle, profile, pins):
     require(set((bundle / HELPER.parent).iterdir()) == {bundle / HELPER}
             and (bundle / HELPER).is_file() and not (bundle / HELPER).is_symlink(),
             "Unexpected validation helper inventory. Prepare the fixed bundle with the reviewed native helper.")
+    verify_executable_helper(bundle / HELPER)
     require(all((bundle / path).is_file() and (bundle / path).resolve() == bundle / path
                 for path in (GUI, MANIFEST)),
             "The validation executable or runtime manifest is missing or redirected. Re-prepare the fixed bundle.")
@@ -186,6 +193,7 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None):
             return
     require(all(path.is_absolute() and path.resolve(strict=True) == path for path in (gui, helper, runtime)),
             "Supply the canonical paths of the reviewed GUI executable, helper and runtime.")
+    verify_executable_helper(helper)
     require(sha(gui) == pins["unsignedGUI"] and sha(helper) == pins["unsignedHelper"]
             and sha(runtime / "manifest.json") == pins["runtimeManifest"],
             "Input hashes differ from the reviewed build or sealed runtime. Supply the matching artifacts.")

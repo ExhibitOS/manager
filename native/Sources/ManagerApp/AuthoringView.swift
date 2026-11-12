@@ -6,6 +6,19 @@ import ManagerCore
 
 @MainActor
 final class AuthoringModel: ObservableObject {
+    enum ConnectionStage: Equatable {
+        case authenticating, restoringImport, loadingArtists, loadingArtworks
+
+        var message: String {
+            switch self {
+            case .authenticating: "작업 공간의 편집 권한을 확인하고 있습니다…"
+            case .restoringImport: "이전 가져오기 작업의 상태를 확인하고 있습니다…"
+            case .loadingArtists: "작가 목록을 불러오고 있습니다…"
+            case .loadingArtworks: "작품 목록을 불러오고 있습니다…"
+            }
+        }
+    }
+
     struct CatalogApproval: Equatable {
         let requestID: UUID
         let artworkID: String
@@ -273,17 +286,22 @@ final class AuthoringModel: ObservableObject {
             if failure?.status == 401 { gpuPreview?.requestClose(); session = nil }
         }
     }
-    func connect(_ credentials: LocalAuthoringSession) async {
+    func connect(_ credentials: LocalAuthoringSession,
+                 progress: (@MainActor (ConnectionStage) -> Void)? = nil) async {
         gpuPreview?.requestClose()
         await action {
             guard let api else { return }
             let jobID = runtimeJobID
+            progress?(.authenticating)
             let authenticated = try await api.connect(credentials)
             guard available, self.api === api, runtimeJobID == jobID else { throw AuthoringFailure("LOCAL_SCOPE_CHANGED") }
             if let editingUser, dirty && editingUser != authenticated.userId { throw AuthoringFailure("DRAFT_ACCOUNT_MISMATCH", status: 403) }
             session = authenticated
+            if readTransfer != nil { progress?(.restoringImport) }
             try await restoreImport()
+            if available, self.api === api, runtimeJobID == jobID { progress?(.loadingArtists) }
             artists = try await api.artists().items
+            if available, self.api === api, runtimeJobID == jobID { progress?(.loadingArtworks) }
             let page = try await api.artworks(query: query); artworks = page.items; cursor = page.nextCursor
             notice = "이 Mac의 작업 공간에 연결했습니다. 작품은 이 Mac에 저장됩니다."
         }

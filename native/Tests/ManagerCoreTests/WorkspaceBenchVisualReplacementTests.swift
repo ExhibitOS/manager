@@ -3,6 +3,56 @@ import XCTest
 @testable import ManagerCore
 
 final class WorkspaceBenchVisualReplacementTests: XCTestCase {
+    func forwardCommand(old: String = "negative-z", next: String = "positive-z") -> DocumentValue {
+        .object(["benchId": .string(benchId), "placementId": .string(placementId), "furnishingId": .string(oldId),
+                 "furnishingVersion": .integer(1), "modelSha256": .string(String(repeating: "a", count: 64)),
+                 "expectedModelForward": .string(old), "modelForward": .string(next)])
+    }
+    func testModelForwardPreservesOmissionAndChangesOnlyBoundField() throws {
+        let before = try fixture(), command = try WorkspaceBenchModelForward(value: forwardCommand())
+        let host = try XCTUnwrap(BenchSettings.list(in: before).first)
+        XCTAssertNil(host.workspaceVisual?.modelForward)
+        XCTAssertEqual(try BenchSettings(value: host.value).value, host.value)
+        XCTAssertNil(try WorkspaceBenchModelForward(value: forwardCommand(next: "negative-z")).applying(to: before))
+        let changed = try XCTUnwrap(command.applying(to: before))
+        XCTAssertNil(try WorkspaceBenchModelForward(value: forwardCommand(old: "positive-z", next: "positive-z")).applying(to: changed))
+        var expected = before.candidate, rows = try XCTUnwrap(expected["extensions"][BenchSettings.namespace]["benches"].items)
+        rows[0]["workspaceVisual"]["modelForward"] = .string("positive-z")
+        expected["extensions"][BenchSettings.namespace]["benches"] = .array(rows)
+        XCTAssertEqual(changed.candidate, expected)
+        XCTAssertEqual(try BenchViewpoint.list(in: changed), try BenchViewpoint.list(in: before))
+        XCTAssertThrowsError(try command.applying(to: changed))
+        let reversed = try XCTUnwrap(WorkspaceBenchModelForward(value: forwardCommand(old: "positive-z", next: "negative-z")).applying(to: changed))
+        XCTAssertEqual(reversed.candidate["extensions"][BenchSettings.namespace]["benches"].items?.first?["workspaceVisual"]["modelForward"], .string("negative-z"))
+        XCTAssertNil(try WorkspaceBenchModelForward(value: forwardCommand(next: "negative-z")).applying(to: reversed))
+    }
+    func testModelForwardRejectsInvalidBindingsFieldsAndSlab() throws {
+        let before = try fixture()
+        for key in ["benchId", "placementId", "furnishingId", "modelSha256"] {
+            var bad = forwardCommand(); bad[key] = .string(key == "modelSha256" ? String(repeating: "b", count: 64) : UUID().uuidString.lowercased())
+            XCTAssertThrowsError(try WorkspaceBenchModelForward(value: bad).applying(to: before))
+        }
+        for key in ["modelForward", "expectedModelForward"] {
+            var bad = forwardCommand(); bad[key] = .null
+            XCTAssertThrowsError(try WorkspaceBenchModelForward(value: bad))
+            bad[key] = .string("sideways"); XCTAssertThrowsError(try WorkspaceBenchModelForward(value: bad))
+        }
+        var extra = forwardCommand(); extra["draft"] = .null
+        XCTAssertThrowsError(try WorkspaceBenchModelForward(value: extra))
+        var wrongVersion = forwardCommand(); wrongVersion["furnishingVersion"] = .integer(2)
+        XCTAssertThrowsError(try WorkspaceBenchModelForward(value: wrongVersion))
+        var row = try XCTUnwrap(before.candidate["extensions"][BenchSettings.namespace]["benches"].items?.first)
+        row["workspaceVisual"]["modelForward"] = .null
+        XCTAssertThrowsError(try BenchSettings(value: row))
+        row["workspaceVisual"]["modelForward"] = .string("sideways")
+        XCTAssertThrowsError(try BenchSettings(value: row))
+        row["workspaceVisual"]["modelForward"] = .string("positive-z"); row["kind"] = .string("slab")
+        XCTAssertThrowsError(try BenchSettings(value: row))
+        let request = Data("forward-check".utf8)
+        XCTAssertNil(try NativeAutomationSession.replayResponse(for: "workspace-bench-model-forward-check", prior: (request, .null), matching: request))
+        var unchangedReplacement = self.command(); unchangedReplacement["furnishingId"] = .string(oldId)
+        XCTAssertThrowsError(try WorkspaceBenchVisualReplacement(value: unchangedReplacement))
+    }
     let oldId = "10000000-0000-4000-8000-000000000001"
     let newId = "10000000-0000-4000-8000-000000000002"
     let placementId = "10000000-0000-4000-8000-000000000003"

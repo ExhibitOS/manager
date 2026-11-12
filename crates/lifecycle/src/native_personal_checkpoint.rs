@@ -72,6 +72,8 @@ const CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES: u64 = 4 * 1024 * 1024 *
 // Current saved demo data exceeds 5 GiB; inventory and copies remain streamed.
 // Only already admitted catalog45 handoffs use this bound and space checks remain.
 const CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG45_BENCH_MODEL_FORWARD_CHECKPOINT_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024 * 1024;
 const DATA_DIRECTORIES: &[&str] = &["native-database", "blobs", "config"];
 const MEMBERS: &[&str] = &["native-database", "blobs", "config", "runtime.env", RECORD];
@@ -329,6 +331,11 @@ fn startup_cancellation_proof_matches(
 }
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if pair == (crate::native_payload::CATALOG45_DEFAULT_1_10_TARGET.2,
+                crate::native_payload::CATALOG45_BENCH_MODEL_FORWARD_TARGET.2) {
+        return CATALOG45_BENCH_MODEL_FORWARD_CHECKPOINT_MAX_BYTES;
+    }
     #[cfg(feature = "workspace-v5-owner-validation")]
     if crate::native_payload::catalog45_adoption_handoff(pair)
         || FurnishingTransition::from_manifests(pair).is_some_and(|transition| matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. })) {
@@ -419,6 +426,10 @@ fn inventory_with_limit(
     inventory_with_sync(root, staged, max_bytes, File::sync_all)
 }
 
+fn inventory_total_with_limit(total: u64, bytes: u64, max_bytes: u64) -> Result<u64> {
+    total.checked_add(bytes).filter(|v| *v <= max_bytes).ok_or_else(invalid)
+}
+
 fn inventory_with_sync(
     root: &Path,
     staged: bool,
@@ -484,10 +495,7 @@ fn inventory_members_with_sync(
         if !named.is_file() || named.nlink() != 1 {
             return Err(invalid());
         }
-        total = total
-            .checked_add(named.len())
-            .filter(|v| *v <= max_bytes)
-            .ok_or_else(invalid)?;
+        total = inventory_total_with_limit(total, named.len(), max_bytes)?;
         let mut file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
@@ -1866,6 +1874,39 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn gpu_child_diagnostic_retains_exact_ready_journal_proof() {
+        let document = gpu_library_empty_document();
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        let source = crate::native_payload::GPU_MODEL_WRAPPING_TARGET.2;
+        let target = crate::native_payload::GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2;
+        let pair = (source, target);
+        let digest = saved_document_digest(&document).unwrap();
+        let proof = RetainedGpuVariant { job_id: Uuid::new_v4().to_string(), transfer_sha256: "a".repeat(64) };
+        assert!(gpu_empty_document(pair, &document, owner));
+        assert!(gpu_retention_matches(pair, owner, Some(&digest), Some(&proof)));
+        let checkpoint: Checkpoint = serde_json::from_value(serde_json::json!({
+            "source":"/synthetic/source", "staged":"/synthetic/staged", "sourceIdentity":[1,2], "stagedIdentity":[1,3],
+            "workspaceId":owner.0, "tenantId":owner.1, "principalId":owner.2, "ownerUid":501,
+            "oldManifest":source, "newManifest":target, "files":{}, "savedDocumentSha256":digest,
+            "retainedGpuVariant":proof, "trial":false, "drainedFailure":null, "restore":null
+        })).unwrap();
+        assert!(checkpoint.check_gpu_retention(true));
+        checkpoint.check_retained(TransitionRetention::GpuVariant(&proof)).unwrap();
+        let mut different = proof.clone(); different.transfer_sha256 = "b".repeat(64);
+        assert!(checkpoint.check_retained(TransitionRetention::GpuVariant(&different)).is_err());
+        checkpoint.check_retained_gpu_document(Some(&document)).unwrap();
+        let mut changed = proof.clone(); changed.transfer_sha256 = "not-a-sha256".into();
+        assert!(!gpu_retention_matches(pair, owner, Some(&digest), Some(&changed)));
+        assert!(!gpu_retention_matches(pair, (owner.1, owner.0, owner.2), Some(&digest), Some(&proof)));
+        assert!(!gpu_retention_matches(pair, owner, Some(&"b".repeat(64)), Some(&proof)));
+        for other in [(target, source), (source, source), (crate::native_payload::GPU_MODEL_LEGACY_TARGET.2, target),
+                      (crate::native_payload::CATALOG45_REFINED_BENCH_TARGET.2, target)] {
+            assert!(!gpu_retention_matches(other, owner, Some(&digest), Some(&proof)));
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn gpu_retention_checkpoint_seals_exact_proof_empty_document_and_forward_pair() {
         let document = gpu_library_empty_document();
         let old = crate::native_payload::GPU_MODEL_LEGACY_TARGET.2;
@@ -2085,6 +2126,42 @@ mod tests {
         file.set_len(publication_limit + 1).unwrap();
         assert_eq!(inventory_with_limit(&root, false, publication_limit).unwrap_err().code, invalid().code);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn bench_model_forward_capacity_survives_checkpoint_seal() {
+        use crate::native_payload::{CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET,
+            CATALOG45_REFINED_BENCH_TARGET, CATALOG45_BENCH_MODEL_FORWARD_TARGET, GPU_MODEL_LEGACY_TARGET};
+        let source = CATALOG45_DEFAULT_1_10_TARGET.2;
+        let target = CATALOG45_BENCH_MODEL_FORWARD_TARGET.2;
+        let limit = checkpoint_inventory_limit((source, target), None);
+        assert_eq!(limit, 8 * 1024 * 1024 * 1024);
+        assert_eq!(checkpoint_inventory_limit((source, CATALOG45_REFINED_BENCH_TARGET.2), None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
+        assert_eq!(checkpoint_inventory_limit((CATALOG45_DEFAULT_1_7_TARGET.2, GPU_MODEL_LEGACY_TARGET.2), None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
+        assert_eq!(checkpoint_inventory_limit((CATALOG45_DEFAULT_1_7_TARGET.2, "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626"), None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
+        assert_eq!(checkpoint_inventory_limit((target, source), None), MAX_BYTES);
+        assert_eq!(checkpoint_inventory_limit((source, source), None), MAX_BYTES);
+        let checkpoint = Checkpoint {
+            source: "/synthetic/source".into(), staged: "/synthetic/staged".into(),
+            source_identity: (1, 2), staged_identity: (1, 3), workspace_id: "workspace".into(),
+            tenant_id: "tenant".into(), principal_id: "principal".into(), owner_uid: 1,
+            old_manifest: source.into(), new_manifest: target.into(), files: BTreeMap::new(),
+            saved_document_sha256: None, retained_product_image: None, retained_gpu_variant: None,
+            startup_cancellation_045: None, furnishing: None, trial: false,
+            drained_failure: None, restore: None,
+        };
+        let key = [7; 32];
+        let sealed = seal(&checkpoint, &key).unwrap();
+        let recovered = open(&sealed, &key).unwrap();
+        assert_eq!(recovered.inventory_limit(), limit);
+        for bytes in [CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES + 1, 6_472_536_445, limit] {
+            assert_eq!(inventory_total_with_limit(0, bytes, limit).unwrap(), bytes);
+            assert_eq!(inventory_total_with_limit(0, bytes, recovered.inventory_limit()).unwrap(), bytes);
+        }
+        assert!(inventory_total_with_limit(0, limit + 1, limit).is_err());
+        assert!(inventory_total_with_limit(limit, 1, recovered.inventory_limit()).is_err());
+        assert!(inventory_total_with_limit(u64::MAX, 1, recovered.inventory_limit()).is_err());
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]

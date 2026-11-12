@@ -50,6 +50,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceInfoStandPreparationProfile: String? = nil
     public var workspaceInfoStandReplacementProfile: String? = nil
     public var workspaceBenchVisualReplacementProfile: String? = nil
+    public var workspaceBenchModelForwardProfile: String? = nil
     public var workspaceFurnishingThumbnailProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
@@ -494,6 +495,10 @@ public actor AuthoringAPI {
         "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
     private static let default110RuntimeManifestPin =
         "43c873e85349b1bf48d8a3f466ab31f41f885b7cbde96ec1ea1fc91474fc684a"
+    private static let refinedBenchRuntimeManifestPin =
+        "ad6cd9b1ae8941ce99eadb9673c7e4a6c72689aaedd628bcbe33e623eb524c13"
+    private static let benchModelForwardRuntimeManifestPin =
+        "ac2248e1184ad4514f386ab6ee11b6ddd8bf2ca71792f4ec9eb9242e189724d7"
     // Exact assembled parent045 +050 candidate. Dedicated adoption/preparation
     // families remain closed and no default runtime selection changes here.
     private static let furnishingThumbnail050RuntimeManifestPin =
@@ -613,6 +618,8 @@ public actor AuthoringAPI {
             || manifest == Self.fixtureAuthoringRuntimeManifestPin
             || manifest == Self.default17RuntimeManifestPin
             || manifest == Self.default110RuntimeManifestPin
+            || manifest == Self.refinedBenchRuntimeManifestPin
+            || manifest == Self.benchModelForwardRuntimeManifestPin
             || manifest == Self.furnishingThumbnail050RuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
@@ -812,6 +819,40 @@ public actor AuthoringAPI {
     public func sharedFurnishings() async throws -> [DocumentValue] {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/furnishings")
         return try SharedFurnishingCatalog.checkedCatalog(value)
+    }
+    public struct SharedFurnishingResourceCheck: Encodable, Sendable {
+        public let role: String, mime: String, bytes: Int, sha256: String
+    }
+    /// Checks only the fixed, catalog-bound refined bench pair; no bytes leave this API.
+    public func sharedFurnishingsWithRefinedBenchChecks() async throws -> (items: [DocumentValue], checks: [SharedFurnishingResourceCheck]) {
+        guard nativeSession, !authenticationBusy, let original = session else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let heldGeneration = generation
+        func requireHeldSession() throws {
+            guard generation == heldGeneration, nativeSession, !authenticationBusy, let held = session,
+                  held.userId == original.userId, held.tenantId == original.tenantId,
+                  held.role == original.role, held.csrfToken == original.csrfToken, held.expiresAt == original.expiresAt else {
+                throw AuthoringFailure("ACCOUNT_CHANGED")
+            }
+        }
+        let items = try await sharedFurnishings()
+        try requireHeldSession()
+        let catalogId = "sculpture-bench-refined"
+        guard items.contains(where: { $0["catalogId"] == .string(catalogId) && $0["catalogVersion"] == .integer(1) }) else {
+            throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
+        }
+        let asset = try SharedFurnishingCatalog.asset(catalogId: catalogId, id: "11111111-1111-4111-8111-111111111111")
+        let specs: [(String, String, DocumentValue)] = [("model", "model/gltf-binary", asset), ("notice", "text/plain", asset["rights"]["notice"])]
+        var checks: [SharedFurnishingResourceCheck] = []
+        for (role, mime, spec) in specs {
+            guard let size = spec["bytes"].integer, let count = Int(exactly: size), count > 0,
+                  let hash = spec["sha256"].string, nativeImportDigest(hash) else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            let path = "/api/v1/tenants/\(tenant)/studio/furnishings/\(catalogId)/1/\(role)"
+            _ = try await readPreviewBytes(path: path, expectedBytes: count, sha256: hash, mime: mime,
+                                           invalidCode: "FURNISHING_RESPONSE_INVALID", requireDigestHeader: false)
+            try requireHeldSession()
+            checks.append(.init(role: role, mime: mime, bytes: count, sha256: hash))
+        }
+        return (items, checks)
     }
     public func surfaceMaterials() async throws -> NativeSurfaceMaterialCatalog {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/materials")
@@ -1930,7 +1971,10 @@ public actor AuthoringAPI {
     }
     /// The independently verified B049 payload; discovery is not admission.
     public nonisolated static func supportsGPUModelPreparationRuntime(manifestSHA256: String?, ready: Bool) -> Bool {
-        ready && manifestSHA256 == "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e"
+        guard ready, let manifestSHA256 else { return false }
+        return ["0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e",
+                "291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309",
+                "5cfa7f1c713920ceb7a834585f59470bf8e5998b29dc45654f533d2095001196"].contains(manifestSHA256)
     }
 
     public var admitsGPUModelPreparation: Bool {
@@ -3014,6 +3058,43 @@ public actor AuthoringAPI {
         admitsWorkspaceFurnishings && session?.advertisesWorkspaceBenchVisualReplacement == true
     }
 
+    public var admitsWorkspaceBenchModelForward: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && ["admin", "artist", "curator"].contains(session?.role ?? "")
+            && session?.advertisesWorkspaceFurnishingRoomVisual == true
+            && session?.workspaceBenchModelForwardProfile == WorkspaceBenchModelForward.profile
+    }
+
+    public func prepareWorkspaceBenchModelForward(_ command: WorkspaceBenchModelForward,
+                                                  in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspaceBenchModelForward, document.pending == nil, !document.dirty,
+              document.tenantId == tenant, session?.userId == document.principalId,
+              let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("BENCH_MODEL_FORWARD_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let policy = try await nativeViewportPolicy(draft.id)
+        try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: document)
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let next = try command.applying(to: draft)
+        let path = "/api/v1/tenants/\(tenant)/workspace/furnishings/\(try identifier(command.furnishingId))/versions/1"
+        let furnishing: WorkspaceFurnishing = try await request(path)
+        let descriptor = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(furnishing))
+        guard furnishing.id.lowercased() == command.furnishingId.lowercased(), furnishing.version == 1,
+              furnishing.details.isValid, furnishing.details.kind == .bench, furnishing.details.model.sha256 == command.modelSha256,
+              draft.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["furnishings"].items?
+                .filter({ $0["id"].string?.lowercased() == command.furnishingId.lowercased() }) == [descriptor] else {
+            throw AuthoringFailure("BENCH_MODEL_FORWARD_REFERENCE")
+        }
+        _ = try await readPreviewBytes(path: path + "/model", expectedBytes: furnishing.details.model.bytes,
+                                       sha256: command.modelSha256, mime: furnishing.details.model.mime,
+                                       invalidCode: "FURNISHING_RESPONSE_INVALID", requireDigestHeader: true)
+        try await validateNativeViewportEdit(next ?? draft, etag: etag)
+        guard generation == heldGeneration, admitsWorkspaceBenchModelForward else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
+    }
+
     public func prepareWorkspaceBenchVisualReplacement(_ replacement: WorkspaceBenchVisualReplacement,
                                                       in document: NativeDocumentState,
                                                       intakeId: String) async throws -> NativeExhibitionDraft {
@@ -3292,6 +3373,8 @@ public actor AuthoringAPI {
             || manifest == fixtureAuthoringRuntimeManifestPin
             || manifest == default17RuntimeManifestPin
             || manifest == default110RuntimeManifestPin
+            || manifest == refinedBenchRuntimeManifestPin
+            || manifest == benchModelForwardRuntimeManifestPin
             || manifest == furnishingThumbnail050RuntimeManifestPin
         #else
         false

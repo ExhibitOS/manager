@@ -24,9 +24,66 @@ struct Manifest {
     producer_sha256: String,
     entry: Entries,
     files: Vec<Item>,
+    #[serde(default, deserialize_with = "deserialize_composition")]
+    composition: Option<LocalWebComposition>,
     redistribution_qualified: bool,
     official_signed: bool,
     remaining: String,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalWebComposition {
+    format: String,
+    #[serde(rename = "recipeSHA256")]
+    recipe_sha256: String,
+    base: CompositionBase,
+    web: CompositionWeb,
+    cover: CompositionCover,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompositionBase {
+    source_commit: String,
+    source_tree: String,
+    #[serde(rename = "producerSHA256")]
+    producer_sha256: String,
+    #[serde(rename = "manifestSHA256")]
+    manifest_sha256: String,
+    files: u64,
+    entry_digest: String,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompositionWeb {
+    source_commit: String,
+    source_tree: String,
+    #[serde(rename = "handoffSHA256")]
+    handoff_sha256: String,
+    ordinary: CompositionGroup,
+    #[serde(rename = "static")]
+    static_web: CompositionGroup,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompositionCover {
+    source_commit: String,
+    source_tree: String,
+    #[serde(rename = "inventorySHA256")]
+    inventory_sha256: String,
+    files: u64,
+    entry_digest: String,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompositionGroup {
+    #[serde(rename = "inventorySHA256")]
+    inventory_sha256: String,
+    files: u64,
+    entry_digest: String,
+}
+fn deserialize_composition<'de, D: serde::Deserializer<'de>>(deserializer: D)
+    -> std::result::Result<Option<LocalWebComposition>, D::Error> {
+    LocalWebComposition::deserialize(deserializer).map(Some)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -384,7 +441,19 @@ pub(crate) const GPU_MODEL_WRAPPING_TARGET: RuntimeTuple = (
     "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const GPU_MODEL_TARGETS: &[RuntimeTuple] = &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET];
+pub(crate) const GPU_MODEL_CHILD_DIAGNOSTIC_TARGET: RuntimeTuple = (
+    "6784659cf5fe3b1f4c925a6ac0a0f5554cb8a4fe",
+    "09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634",
+    "291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const GPU_MODEL_PNG_OBSERVATION_TARGET: RuntimeTuple = (
+    "0dfd2aebcb842802867a78bd63e0ed7a0e1ea1b7",
+    "25c54300f528e9d53e338e7f9cd3093ebffef0cda69775a2ce703cc28103732e",
+    "5cfa7f1c713920ceb7a834585f59470bf8e5998b29dc45654f533d2095001196",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const GPU_MODEL_TARGETS: &[RuntimeTuple] = &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET, GPU_MODEL_PNG_OBSERVATION_TARGET];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const GPU_MODEL_HELPER_FILES: Option<&[(&str, u64, &str)]> = Some(&[
     ("platform/scripts/native-gpu-model-preparation-bootstrap.mjs", 5119, "fc1d1444b7578ff55486b3b32edc111f45eb174eaef11efbf7c5ffd2860337e3"),
@@ -964,6 +1033,20 @@ pub(crate) const CATALOG45_DEFAULT_1_10_TARGET: RuntimeTuple = (
     "43c873e85349b1bf48d8a3f466ab31f41f885b7cbde96ec1ea1fc91474fc684a",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_REFINED_BENCH_TARGET: RuntimeTuple = (
+    "3ea221c2ea0d4f419c6625ff63e7405a721de095",
+    "6b133c8f1372b8d886d08c894b43a17d8300fc7577db4b430874d8568557bbec",
+    "ad6cd9b1ae8941ce99eadb9673c7e4a6c72689aaedd628bcbe33e623eb524c13",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_BENCH_MODEL_FORWARD_TARGET: RuntimeTuple = (
+    "5ed3aa9166d5f3858a86f8d97f1cf1ca9e3cc2ca",
+    "6b133c8f1372b8d886d08c894b43a17d8300fc7577db4b430874d8568557bbec",
+    "ac2248e1184ad4514f386ab6ee11b6ddd8bf2ca71792f4ec9eb9242e189724d7",
+);
+
 fn catalog45_model_adoption_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return [CATALOG45_MODEL_ADOPTION_VALIDATION, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
@@ -983,6 +1066,8 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
         || CATALOG45_BACKED_BENCH == tuple
         || CATALOG45_BOTTOM_CATALOG == tuple
         || CATALOG45_DEFAULT_1_10_TARGET == tuple
+        || CATALOG45_REFINED_BENCH_TARGET == tuple
+        || CATALOG45_BENCH_MODEL_FORWARD_TARGET == tuple
         || catalog45_native_publication_host_matches(tuple) || catalog45_model_adoption_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -1033,7 +1118,7 @@ pub(crate) fn catalog45_carried_restore_payload(payload: &Payload) -> bool {
 /// after the separately authorized clean adoption handoff.
 pub(crate) fn catalog45_adoption_carried_receipt_payload(tuple: (&str, &str, &str)) -> Option<&'static str> {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET]
+    return [CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_REFINED_BENCH_TARGET, CATALOG45_BENCH_MODEL_FORWARD_TARGET]
         .contains(&tuple).then_some(CATALOG45_CARRIED_RESTORE_BASE.2);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; None }
@@ -1058,6 +1143,8 @@ fn catalog45_adoption_transition(pair: (&str, &str)) -> Option<(RuntimeTuple, Ru
         (CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET),
         (CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET),
         (CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET),
+        (CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_REFINED_BENCH_TARGET),
+        (CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_BENCH_MODEL_FORWARD_TARGET),
     ].into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -1291,6 +1378,8 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_FIXTURE_AUTHORING_TARGET.2 == manifest
         || CATALOG45_DEFAULT_1_7_TARGET.2 == manifest
         || CATALOG45_DEFAULT_1_10_TARGET.2 == manifest
+        || CATALOG45_REFINED_BENCH_TARGET.2 == manifest
+        || CATALOG45_BENCH_MODEL_FORWARD_TARGET.2 == manifest
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2 == manifest
         || CATALOG45_RECOVERY_TARGET.2 == manifest
         || CATALOG45_SELECTED_RECOVERY_TARGET.2 == manifest
@@ -1336,7 +1425,7 @@ impl FurnishingTransition {
 
     pub(crate) fn retains_catalog45_adoption_carried_restore(self) -> bool {
         matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045 }
-            if [CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET].contains(&source)
+            if [CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET].contains(&source)
                 && catalog45_adoption_transition((source.2, target.2)) == Some((source, target)))
     }
 
@@ -1351,20 +1440,37 @@ impl FurnishingTransition {
                 || (source == CATALOG45_THUMBNAIL_FRESHNESS_TARGET && target == CATALOG45_COMPLETE_STATIC_TARGET)
                 || (source == CATALOG45_COMPLETE_STATIC_TARGET && target == CATALOG45_FIXTURE_AUTHORING_TARGET)
                 || (source == CATALOG45_FIXTURE_AUTHORING_TARGET && target == CATALOG45_DEFAULT_1_7_TARGET)
-                || (source == CATALOG45_DEFAULT_1_7_TARGET && target == CATALOG45_DEFAULT_1_10_TARGET))
+                || (source == CATALOG45_DEFAULT_1_7_TARGET && target == CATALOG45_DEFAULT_1_10_TARGET)
+                || (source == CATALOG45_DEFAULT_1_10_TARGET && target == CATALOG45_REFINED_BENCH_TARGET)
+                || (source == CATALOG45_DEFAULT_1_10_TARGET && target == CATALOG45_BENCH_MODEL_FORWARD_TARGET))
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
-        if gpu_model_wrapping_transition(pair) {
+        if pair == (GPU_MODEL_LEGACY_TARGET.2, GPU_MODEL_WRAPPING_TARGET.2) && gpu_model_wrapping_transition(pair) {
             return Some(Self::SameCatalog {
                 source: GPU_MODEL_LEGACY_TARGET,
                 target: GPU_MODEL_WRAPPING_TARGET,
                 catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049,
             });
         }
+        if pair == (GPU_MODEL_WRAPPING_TARGET.2, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2) && gpu_model_wrapping_transition(pair) {
+            return Some(Self::SameCatalog {
+                source: GPU_MODEL_WRAPPING_TARGET,
+                target: GPU_MODEL_CHILD_DIAGNOSTIC_TARGET,
+                catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049,
+            });
+        }
+        if pair == (GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2, GPU_MODEL_PNG_OBSERVATION_TARGET.2) && gpu_model_wrapping_transition(pair) {
+            return Some(Self::SameCatalog {
+                source: GPU_MODEL_CHILD_DIAGNOSTIC_TARGET,
+                target: GPU_MODEL_PNG_OBSERVATION_TARGET,
+                catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049,
+            });
+        }
         if pair.0 == CATALOG45_DEFAULT_1_7_TARGET.2
             && let Some(&target) = GPU_MODEL_TARGETS.iter().find(|target|
-                target.2 == pair.1 && gpu_model_host_matches(**target))
+                **target != GPU_MODEL_CHILD_DIAGNOSTIC_TARGET && **target != GPU_MODEL_PNG_OBSERVATION_TARGET
+                    && target.2 == pair.1 && gpu_model_host_matches(**target))
         {
             return Some(Self::Upgrade49 { source: CATALOG45_DEFAULT_1_7_TARGET, target });
         }
@@ -1609,9 +1715,10 @@ impl FurnishingTransition {
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn gpu_model_wrapping_transition(pair: (&str, &str)) -> bool {
-    pair == (GPU_MODEL_LEGACY_TARGET.2, GPU_MODEL_WRAPPING_TARGET.2)
-        && gpu_model_host_matches(GPU_MODEL_LEGACY_TARGET)
-        && gpu_model_host_matches(GPU_MODEL_WRAPPING_TARGET)
+    [(GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET), (GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET),
+     (GPU_MODEL_CHILD_DIAGNOSTIC_TARGET, GPU_MODEL_PNG_OBSERVATION_TARGET)]
+        .into_iter().any(|(source, target)| pair == (source.2, target.2)
+            && gpu_model_host_matches(source) && gpu_model_host_matches(target))
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG40_DRAFT2_OEX_SELECTED: RuntimeTuple = (
@@ -2139,7 +2246,7 @@ mod normal_oex_release_declaration_tests {
     #[test]
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn gpu_model_runtime_admission_requires_the_exact_assembled_tuple() {
-        assert_eq!(GPU_MODEL_TARGETS, &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET]);
+        assert_eq!(GPU_MODEL_TARGETS, &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET, GPU_MODEL_PNG_OBSERVATION_TARGET]);
         let source = CATALOG45_DEFAULT_1_7_TARGET;
         for &actual in GPU_MODEL_TARGETS {
             assert!(gpu_model_host_matches(actual));
@@ -2158,6 +2265,83 @@ mod normal_oex_release_declaration_tests {
         assert!(payload.workspace_furnishing_catalog().is_err());
         assert!(payload.gpu_model_upgrade_script().is_err());
         assert!(payload.native_gpu_preview_resources().is_err());
+    }
+
+    #[test]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn gpu_child_diagnostic_only_accepts_exact_same_catalog_predecessor() {
+        let source = GPU_MODEL_WRAPPING_TARGET;
+        let target = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET;
+        assert!(gpu_model_host_matches(target));
+        assert_eq!(FurnishingTransition::from_manifests((source.2, target.2)),
+            Some(FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049 }));
+        assert!(gpu_model_wrapping_transition((GPU_MODEL_LEGACY_TARGET.2, source.2)));
+        for pair in [(target.2, source.2), (target.2, target.2), (GPU_MODEL_LEGACY_TARGET.2, target.2),
+                     (CATALOG45_DEFAULT_1_7_TARGET.2, target.2), (CATALOG45_REFINED_BENCH_TARGET.2, target.2),
+                     (target.2, CATALOG45_REFINED_BENCH_TARGET.2)] {
+            assert!(!gpu_model_wrapping_transition(pair));
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        assert!(!gpu_model_host_matches((source.0, target.1, target.2)));
+        assert!(!gpu_model_host_matches((target.0, target.1, source.2)));
+        assert!(!gpu_model_host_matches((target.0, "unknown", target.2)));
+    }
+
+    #[test]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn gpu_png_observation_accepts_only_exact_291_predecessor() {
+        let source = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET;
+        let target = GPU_MODEL_PNG_OBSERVATION_TARGET;
+        assert!(gpu_model_host_matches(target));
+        assert_eq!(FurnishingTransition::from_manifests((source.2, target.2)),
+            Some(FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049 }));
+        for pair in [(target.2, source.2), (target.2, target.2), (GPU_MODEL_WRAPPING_TARGET.2, target.2),
+            (CATALOG45_DEFAULT_1_7_TARGET.2, target.2), (CATALOG45_REFINED_BENCH_TARGET.2, target.2),
+            (CATALOG45_BENCH_MODEL_FORWARD_TARGET.2, target.2)] {
+            assert!(!gpu_model_wrapping_transition(pair));
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        assert!(!gpu_model_host_matches((source.0, target.1, target.2)));
+        assert!(!gpu_model_host_matches((target.0, source.1, target.2)));
+        assert!(!gpu_model_host_matches((target.0, target.1, source.2)));
+    }
+
+    #[test]
+    #[ignore = "Requires explicitly supplied exact isolated B049 composed runtime"]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn opens_exact_gpu_png_observation_composed_runtime() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_GPU_PNG_OBSERVATION_RUNTIME").unwrap());
+        let bytes = fs::read(root.join("manifest.json")).unwrap();
+        assert_eq!(digest(&bytes), GPU_MODEL_PNG_OBSERVATION_TARGET.2);
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        assert!(composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        assert!(!composition_admitted(&manifest, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2));
+        manifest.source_commit = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.0.into();
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        manifest.source_commit = GPU_MODEL_PNG_OBSERVATION_TARGET.0.into();
+        manifest.producer_sha256 = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.1.into();
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        manifest.producer_sha256 = GPU_MODEL_PNG_OBSERVATION_TARGET.1.into();
+        manifest.mode = "release".into();
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        manifest.mode = "local-validation".into();
+        let original_sha = manifest.files.iter().position(|f| f.sha256.is_some()).unwrap();
+        manifest.files[original_sha].sha256 = Some("0".repeat(64));
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        manifest.files.pop();
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        manifest.composition.as_mut().unwrap().web.ordinary.files += 1;
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        manifest.composition = None;
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        let payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        assert_eq!(payload.context().manifest_sha256, GPU_MODEL_PNG_OBSERVATION_TARGET.2);
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::GpuModelPreparation049));
+        assert!(payload.native_gpu_preview_resources().is_ok());
+        assert!(Payload::static_refresh_inventory(&bytes, GPU_MODEL_PNG_OBSERVATION_TARGET).is_ok());
     }
 
     #[test]
@@ -3169,6 +3353,109 @@ mod normal_oex_release_declaration_tests {
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn refined_bench_admits_only_exact_default_1_10_successor() {
+        let source = CATALOG45_DEFAULT_1_10_TARGET;
+        let target = CATALOG45_REFINED_BENCH_TARGET;
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        assert_eq!(transition, FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045 });
+        assert!(transition.retains_catalog45_adoption_carried_restore());
+        assert!(transition.allows_catalog45_adoption_without_restore());
+        assert!(ordinary_fresh_catalog45_host_matches(source));
+        assert!(ordinary_fresh_catalog45_host_matches(target));
+        assert!(!catalog45_model_adoption_host_matches(target));
+        assert_eq!(catalog45_adoption_carried_receipt_payload(target), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+        assert!(saved_workspace_transition_target(target.2));
+        for pair in [(target.2, source.2), (target.2, target.2),
+                     (CATALOG45_DEFAULT_1_7_TARGET.2, target.2),
+                     (GPU_MODEL_WRAPPING_TARGET.2, target.2), (target.2, GPU_MODEL_WRAPPING_TARGET.2)] {
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        assert!(!ordinary_fresh_catalog45_host_matches((source.0, target.1, target.2)));
+        assert!(!ordinary_fresh_catalog45_host_matches((target.0, source.1, target.2)));
+        assert!(!ordinary_fresh_catalog45_host_matches((target.0, target.1, source.2)));
+        assert!(!catalog45_same_version_restore_host_matches(target));
+        assert!(!catalog45_carried_restore_host_matches(target));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact assembled refined bench ordinary45 runtime"]
+    fn opens_exact_refined_bench_target_payload() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_REFINED_BENCH_RUNTIME").unwrap());
+        let mut payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let tuple = CATALOG45_REFINED_BENCH_TARGET;
+        assert_eq!(payload.context().source_commit, tuple.0);
+        assert_eq!(payload.producer_sha256(), tuple.1);
+        assert_eq!(payload.context().manifest_sha256, tuple.2);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert!(!payload.native_model_adoption_original_target());
+        assert!(!payload.native_model_adoption_carried_target());
+        assert!(payload.native_model_adoption_root().unwrap().is_none());
+        assert_eq!(catalog45_adoption_carried_receipt_payload(tuple), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+        for path in ["platform/scripts/native-model-adoption-capability-v1.json",
+                     "platform/scripts/native-model-adoption-carried-target-capability-v1.json"] {
+            payload.manifest.files.push(furnishing_ledger_file(path.into()));
+            assert!(payload.native_model_adoption_root().is_err());
+            payload.manifest.files.pop();
+        }
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
+        assert_eq!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045).unwrap().lines().count(), 45);
+        assert!(Payload::open_saved_workspace_transition(&root).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn bench_model_forward_accepts_only_exact_43c_successor() {
+        let source = CATALOG45_DEFAULT_1_10_TARGET;
+        let target = CATALOG45_BENCH_MODEL_FORWARD_TARGET;
+        let step = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        assert_eq!(step, FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045 });
+        assert!(step.retains_catalog45_adoption_carried_restore());
+        assert!(step.allows_catalog45_adoption_without_restore());
+        assert!(ordinary_fresh_catalog45_host_matches(target));
+        assert!(!catalog45_model_adoption_host_matches(target));
+        assert_eq!(catalog45_adoption_carried_receipt_payload(target), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+        assert!(saved_workspace_transition_target(target.2));
+        for pair in [(target.2, source.2), (target.2, target.2),
+                     (CATALOG45_DEFAULT_1_7_TARGET.2, target.2), (CATALOG45_REFINED_BENCH_TARGET.2, target.2),
+                     (GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2, target.2), (target.2, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2)] {
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        assert!(!ordinary_fresh_catalog45_host_matches((source.0, target.1, target.2)));
+        assert!(!ordinary_fresh_catalog45_host_matches((target.0, "unknown", target.2)));
+        assert!(!ordinary_fresh_catalog45_host_matches((target.0, target.1, source.2)));
+        assert!(!catalog45_carried_restore_host_matches(target));
+        assert!(!catalog45_same_version_restore_host_matches(target));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact assembled ordinary45 bench model forward runtime"]
+    fn opens_exact_bench_model_forward_target_payload() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BENCH_MODEL_FORWARD_RUNTIME").unwrap());
+        let mut payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let tuple = CATALOG45_BENCH_MODEL_FORWARD_TARGET;
+        assert_eq!(payload.context().source_commit, tuple.0);
+        assert_eq!(payload.producer_sha256(), tuple.1);
+        assert_eq!(payload.context().manifest_sha256, tuple.2);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert!(!payload.native_model_adoption_original_target());
+        assert!(!payload.native_model_adoption_carried_target());
+        assert!(payload.native_model_adoption_root().unwrap().is_none());
+        assert_eq!(catalog45_adoption_carried_receipt_payload(tuple), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+        for path in ["platform/scripts/native-model-adoption-capability-v1.json",
+                     "platform/scripts/native-model-adoption-carried-target-capability-v1.json"] {
+            payload.manifest.files.push(furnishing_ledger_file(path.into()));
+            assert!(payload.native_model_adoption_root().is_err());
+            payload.manifest.files.pop();
+        }
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
+        assert_eq!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045).unwrap().lines().count(), 45);
+        assert!(Payload::open_saved_workspace_transition(&root).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn fixture_authoring_handoff_only_admits_current_exact_predecessor() {
         let source = CATALOG45_COMPLETE_STATIC_TARGET;
         let target = CATALOG45_FIXTURE_AUTHORING_TARGET;
@@ -3693,6 +3980,28 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    #[ignore = "requires the exact assembled GPU049 child diagnostic runtime; read-only opener only"]
+    fn opens_actual_gpu_child_diagnostic_payload_without_starting_a_workspace() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_GPU_CHILD_DIAGNOSTIC_RUNTIME").expect("explicit runtime path required"));
+        let mut payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let tuple = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET;
+        assert_eq!(payload.context().source_commit, tuple.0);
+        assert_eq!(payload.producer_sha256(), tuple.1);
+        assert_eq!(payload.context().manifest_sha256, tuple.2);
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::GpuModelPreparation049));
+        assert_eq!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::GpuModelPreparation049).unwrap().lines().count(), 46);
+        assert_eq!(payload.catalog49_upgrade_source_ledger().unwrap().lines().count(), 45);
+        assert!(payload.native_model_adoption_root().unwrap().is_none());
+        assert!(Payload::open_saved_workspace_transition(&root).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
+        assert_eq!(payload.native_gpu_preview_resources().unwrap()["payloadManifestSha256"], tuple.2);
+        payload.manifest_sha256 = "e".repeat(64);
+        assert!(payload.workspace_furnishing_catalog().is_err());
+        assert!(payload.native_gpu_preview_resources().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the exact assembled furnishing-thumbnail050 runtime; read-only opener only"]
     fn opens_actual_furnishing_thumbnail050_payload_without_starting_a_workspace() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FURNISHING_THUMBNAIL050_RUNTIME")
@@ -4104,6 +4413,130 @@ fn relative_name(name: &str) -> bool {
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
 }
+
+// Fixed reviewed local-validation recipe. It does not itself authorize any
+// assembled runtime tuple; the future tuple requires a separately reviewed pin.
+const LOCAL_WEB_COMPOSITION_RECIPE: &str = r#"{
+ "format":"exhibitos-local-web-composition-v1",
+ "recipeSHA256":"2b8e6c705d4de669782f6bfbe0269432da58c74358206ce95a00bc414c88a24a",
+ "base":{"sourceCommit":"6784659cf5fe3b1f4c925a6ac0a0f5554cb8a4fe","sourceTree":"72e198f82b8916828a463dcf8dc8cc34232ce7f0","producerSHA256":"09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634","manifestSHA256":"291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309","files":16579,"entryDigest":"43417729c25ff7a9f74f9d6ff0c0d6031f85c929ea9d1565235d1aeaca38b752"},
+ "web":{"sourceCommit":"dc310e80c27026c21b9a42eec128f523b8afef4b","sourceTree":"a76c58c6c38c77383193511db03b83ab016f2bfc","handoffSHA256":"39b40c6728e2883887b7569f64f9fc4533c67cc57c0ee617fb3f00e98994c928",
+ "ordinary":{"inventorySHA256":"3d3adba0a8f010e4523a89c7d54611233d957ff9fd5f413890a04dbbd73d5923","files":74,"entryDigest":"8c8ada43fa773f3d75481c74010724b050a3695fc0bbe06f0655815c87ee8df2"},
+ "static":{"inventorySHA256":"632311218c7f966d6bb8aa429331ec5ab6bc77b8dcd5329408f06e6940a9072d","files":79,"entryDigest":"1ea837282414c2010520910ce6dff539164b72c0e4e758bb8ad98f4d3fb9d7fe"}},
+ "cover":{"sourceCommit":"c392991de152188e4e2d47c09a7e115bde1fc36b","sourceTree":"60442385712799511b25cabe428193e18c15ee1a","inventorySHA256":"36c59ccc8ffcfc4de8bce4569695429a4df70337ff3cd7f9b2cea939be340790","files":1,"entryDigest":"e5e0c87082b591b86eb78bb09b10148977dfc2bf9394460069884c069cb9f68c"}}
+"#;
+
+fn composition_group(path: &str) -> usize {
+    if path.starts_with("platform/apps/web/dist/") { 1 }
+    else if path.starts_with("platform/apps/web/dist-static/") { 2 }
+    else if path.starts_with("platform/apps/web/dist-cover-shell/") { 3 }
+    else { 0 }
+}
+
+fn composition_group_digests(files: &[Item]) -> Result<[(u64, String); 4]> {
+    let mut ordered: Vec<&Item> = files.iter().collect();
+    ordered.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    let mut names = BTreeSet::new();
+    let mut hashers = [Sha256::new(), Sha256::new(), Sha256::new(), Sha256::new()];
+    let mut counts = [0u64; 4];
+    for item in ordered {
+        if !relative_name(&item.path) || item.path == "manifest.json" || !names.insert(&item.path) {
+            return Err(invalid());
+        }
+        let group = composition_group(&item.path);
+        let record = match (&item.link, item.bytes, &item.sha256, item.executable) {
+            (None, Some(bytes), Some(hash), Some(executable)) if hash_valid(hash) =>
+                format!("file\0{}\0{}\0{}\0{}\n", item.path, bytes, hash, executable),
+            (Some(link), None, None, None) if !link.is_empty() && link.len() <= 2048
+                && !link.contains(['\\', '\0', '\r', '\n']) && !Path::new(link).is_absolute() =>
+                format!("link\0{}\0{}\n", item.path, link),
+            _ => return Err(invalid()),
+        };
+        hashers[group].update(record.as_bytes());
+        counts[group] += 1;
+    }
+    Ok(std::array::from_fn(|i| (counts[i], format!("{:x}", hashers[i].clone().finalize()))))
+}
+
+#[allow(dead_code)] // Composed payloads are unavailable outside the local owner-validation build.
+fn composition_matches_recipe(manifest: &Manifest) -> bool {
+    let Some(composition) = &manifest.composition else { return false; };
+    let Ok(expected) = serde_json::from_str::<LocalWebComposition>(LOCAL_WEB_COMPOSITION_RECIPE) else { return false; };
+    if manifest.mode != "local-validation" || manifest.redistribution_qualified || manifest.official_signed
+        || *composition != expected { return false; }
+    composition_groups_match(&manifest.files, &[
+        (composition.base.files, composition.base.entry_digest.clone()),
+        (composition.web.ordinary.files, composition.web.ordinary.entry_digest.clone()),
+        (composition.web.static_web.files, composition.web.static_web.entry_digest.clone()),
+        (composition.cover.files, composition.cover.entry_digest.clone()),
+    ])
+}
+
+fn composition_admitted(manifest: &Manifest, manifest_sha256: &str) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    {
+        let tuple = (manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_sha256);
+        if manifest.composition.is_none() { return tuple != GPU_MODEL_PNG_OBSERVATION_TARGET; }
+        tuple == GPU_MODEL_PNG_OBSERVATION_TARGET && composition_matches_recipe(manifest)
+    }
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = manifest_sha256; manifest.composition.is_none() }
+}
+
+fn composition_groups_match(files: &[Item], expected: &[(u64, String); 4]) -> bool {
+    composition_group_digests(files).is_ok_and(|groups| &groups == expected)
+}
+
+#[cfg(test)]
+mod local_web_composition_tests {
+    use super::*;
+
+    fn item(value: serde_json::Value) -> Item { serde_json::from_value(value).unwrap() }
+
+    #[test]
+    fn strict_recipe_shape_rejects_unknown_null_and_bad_fields() {
+        let original: serde_json::Value = serde_json::from_str(LOCAL_WEB_COMPOSITION_RECIPE).unwrap();
+        for (path, value) in [
+            ("format", serde_json::json!(1)), ("recipeSHA256", serde_json::Value::Null),
+            ("unexpected", serde_json::json!(true)),
+        ] {
+            let mut changed = original.clone(); changed[path] = value;
+            assert!(serde_json::from_value::<LocalWebComposition>(changed).is_err());
+        }
+        let mut changed = original.clone(); changed["base"]["extra"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<LocalWebComposition>(changed).is_err());
+        let mut changed = original; changed["web"]["ordinary"]["files"] = serde_json::json!(-1);
+        assert!(serde_json::from_value::<LocalWebComposition>(changed).is_err());
+    }
+
+    #[test]
+    fn group_digest_is_sorted_exhaustive_and_uses_manifest_link() {
+        let hash = "a".repeat(64);
+        let files = vec![
+            item(serde_json::json!({"path":"platform/apps/web/dist/a","bytes":2,"sha256":hash,"executable":false})),
+            item(serde_json::json!({"path":"bin/alias","link":"../lib/actual"})),
+            item(serde_json::json!({"path":"platform/apps/web/dist-static/b","bytes":0,"sha256":"b".repeat(64),"executable":true})),
+            item(serde_json::json!({"path":"platform/apps/web/dist-cover-shell/c","bytes":1,"sha256":"c".repeat(64),"executable":false})),
+            item(serde_json::json!({"path":"bin/node","bytes":1,"sha256":"d".repeat(64),"executable":true})),
+        ];
+        let groups = composition_group_digests(&files).unwrap();
+        assert!(composition_groups_match(&files, &groups));
+        assert_eq!(groups[0], (2, digest(format!("link\0bin/alias\0../lib/actual\nfile\0bin/node\0{}\0{}\0true\n", 1, "d".repeat(64)).as_bytes())));
+        assert_eq!(groups[1], (1, digest(format!("file\0platform/apps/web/dist/a\0{}\0{}\0false\n", 2, "a".repeat(64)).as_bytes())));
+        assert_eq!(groups[2].0, 1); assert_eq!(groups[3].0, 1);
+        let mut changed = files;
+        changed[0].bytes = Some(3);
+        assert!(!composition_groups_match(&changed, &groups));
+        assert_ne!(composition_group_digests(&changed).unwrap()[1].1, groups[1].1);
+        changed.remove(0);
+        assert!(!composition_groups_match(&changed, &groups));
+        assert_eq!(composition_group_digests(&changed).unwrap()[1].0, 0);
+        let mut duplicate = changed; duplicate.push(item(serde_json::json!({"path":"bin/node","bytes":1,"sha256":"d".repeat(64),"executable":true})));
+        assert!(composition_group_digests(&duplicate).is_err());
+        assert_eq!(composition_group("platform/apps/web/dist-other/a"), 0);
+    }
+
+}
 const GPU_PREVIEW_WEB_PREFIX: &str = "platform/apps/web/dist/";
 const GPU_PREVIEW_FIXED: [&str; 4] = [
     "native-viewport.html", "basis/basis_transcoder.js", "basis/basis_transcoder.wasm",
@@ -4241,6 +4674,75 @@ fn actual_files(
     }
     Ok(())
 }
+// Each admission still reads and hashes every declared regular file. Two
+// independent readers overlap filesystem latency without an unbounded task
+// queue, retained byte cache, or relaxing the final complete inventory check.
+fn verify_manifest_files<const READERS: usize>(root: &Path, items: &[Item]) -> Result<()> {
+    if !(1..=2).contains(&READERS) { return Err(invalid()); }
+    std::thread::scope(|scope| {
+        let mut readers = Vec::with_capacity(READERS);
+        for lane in 0..READERS {
+            readers.push(std::thread::Builder::new()
+                .name("runtime-admission".into())
+                .spawn_scoped(scope, move || -> Result<()> {
+                    for item in items.iter().skip(lane).step_by(READERS) {
+                        let path = contained(root, &item.path)?;
+                        let raw = fs::symlink_metadata(root.join(&item.path)).map_err(|_| invalid())?;
+                        match (&item.link, item.bytes, &item.sha256, item.executable) {
+                            (Some(link), None, None, None) => {
+                                if !raw.is_symlink() || link.len() > 2048 {
+                                    return Err(invalid());
+                                }
+                                let expected = fs::canonicalize(
+                                    root.join(&item.path)
+                                        .parent()
+                                        .ok_or_else(invalid)?
+                                        .join(link),
+                                )
+                                .map_err(|_| invalid())?;
+                                if expected != path || !expected.starts_with(root) {
+                                    return Err(invalid());
+                                }
+                            }
+                            (None, Some(size), Some(hash), Some(executable)) => {
+                                if raw.is_symlink() || !raw.is_file() || raw.len() != size || !hash_valid(hash)
+                                {
+                                    return Err(invalid());
+                                }
+                                use std::os::unix::fs::PermissionsExt;
+                                if (raw.permissions().mode() & 0o111 != 0) != executable {
+                                    return Err(invalid());
+                                }
+                                let mut file = File::open(path).map_err(|_| invalid())?;
+                                let mut digest = Sha256::new();
+                                let mut block = [0u8; 64 * 1024];
+                                loop {
+                                    let length = file.read(&mut block).map_err(|_| invalid())?;
+                                    if length == 0 {
+                                        break;
+                                    }
+                                    digest.update(&block[..length]);
+                                }
+                                if format!("{:x}", digest.finalize()) != *hash {
+                                    return Err(invalid());
+                                }
+                            }
+                            _ => return Err(invalid()),
+                        }
+                    }
+                    Ok(())
+                }).map_err(|_| invalid())?);
+        }
+        // Join both readers even if one refuses. No worker or open file may
+        // outlive admission, and a refusal from either lane refuses the payload.
+        let mut accepted = true;
+        for reader in readers {
+            if !matches!(reader.join(), Ok(Ok(()))) { accepted = false; }
+        }
+        if accepted { Ok(()) } else { Err(invalid()) }
+    })
+}
+
 impl Payload {
     pub fn open(root: &Path) -> Result<Self> {
         if !root.is_absolute()
@@ -4290,6 +4792,7 @@ impl Payload {
         {
             return Err(invalid());
         }
+        if !composition_admitted(&manifest, &digest(&bytes)) { return Err(invalid()); }
         // A local validation copy is not accepted by a production build.
         if manifest.mode == "local-validation" {
             if !cfg!(debug_assertions)
@@ -4324,50 +4827,8 @@ impl Payload {
             {
                 return Err(invalid());
             }
-            let path = contained(&root, &item.path)?;
-            let raw = fs::symlink_metadata(root.join(&item.path)).map_err(|_| invalid())?;
-            match (&item.link, item.bytes, &item.sha256, item.executable) {
-                (Some(link), None, None, None) => {
-                    if !raw.is_symlink() || link.len() > 2048 {
-                        return Err(invalid());
-                    }
-                    let expected = fs::canonicalize(
-                        root.join(&item.path)
-                            .parent()
-                            .ok_or_else(invalid)?
-                            .join(link),
-                    )
-                    .map_err(|_| invalid())?;
-                    if expected != path || !expected.starts_with(&root) {
-                        return Err(invalid());
-                    }
-                }
-                (None, Some(size), Some(hash), Some(executable)) => {
-                    if raw.is_symlink() || !raw.is_file() || raw.len() != size || !hash_valid(hash)
-                    {
-                        return Err(invalid());
-                    }
-                    use std::os::unix::fs::PermissionsExt;
-                    if (raw.permissions().mode() & 0o111 != 0) != executable {
-                        return Err(invalid());
-                    }
-                    let mut file = File::open(path).map_err(|_| invalid())?;
-                    let mut digest = Sha256::new();
-                    let mut block = [0u8; 64 * 1024];
-                    loop {
-                        let length = file.read(&mut block).map_err(|_| invalid())?;
-                        if length == 0 {
-                            break;
-                        }
-                        digest.update(&block[..length]);
-                    }
-                    if format!("{:x}", digest.finalize()) != *hash {
-                        return Err(invalid());
-                    }
-                }
-                _ => return Err(invalid()),
-            }
         }
+        verify_manifest_files::<2>(&root, &manifest.files)?;
         let mut actual = BTreeSet::new();
         actual_files(&root, &root, 0, &mut actual)?;
         if actual != names {
@@ -4412,8 +4873,9 @@ impl Payload {
             let publication = catalog45_native_publication_host_matches((
                 &payload.manifest.source_commit, &payload.manifest.producer_sha256, &payload.manifest_sha256,
             ));
-            let ordinary_default_1_10 = (&payload.manifest.source_commit[..], payload.producer_sha256(), &payload.manifest_sha256[..]) == CATALOG45_DEFAULT_1_10_TARGET;
-            if selected || (!gpu && !thumbnail && !publication && !ordinary_default_1_10 && !payload.native_model_adoption_original_target()
+            let ordinary_default = [CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_REFINED_BENCH_TARGET, CATALOG45_BENCH_MODEL_FORWARD_TARGET]
+                .contains(&(&payload.manifest.source_commit[..], payload.producer_sha256(), &payload.manifest_sha256[..]));
+            if selected || (!gpu && !thumbnail && !publication && !ordinary_default && !payload.native_model_adoption_original_target()
                 && payload.retained_furnishing_catalog() != expected)
                 || payload.workspace_furnishing_catalog()? != expected
             {
@@ -4441,7 +4903,7 @@ impl Payload {
             CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
             CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH,
             CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
-            CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET,
+            CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_REFINED_BENCH_TARGET, CATALOG45_BENCH_MODEL_FORWARD_TARGET,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = furnishing_thumbnail_host_matches((&context.source_commit,
             payload.producer_sha256(), &context.manifest_sha256))
@@ -5292,7 +5754,7 @@ impl Payload {
             return Err(reject());
         }
         let manifest: Manifest = serde_json::from_slice(bytes).map_err(|_| reject())?;
-        if manifest.source_commit != expected.0 || manifest.producer_sha256 != expected.1
+        if !composition_admitted(&manifest, &digest(bytes)) || manifest.source_commit != expected.0 || manifest.producer_sha256 != expected.1
             || manifest.files.is_empty() || manifest.files.len() > 50_000 {
             return Err(reject());
         }
@@ -5569,6 +6031,8 @@ impl Payload {
                 && ([CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH].contains(&provenance)
                     || CATALOG45_CARRIED_RESTORE_BASE == provenance
                     || CATALOG45_DEFAULT_1_10_TARGET == provenance
+                    || CATALOG45_REFINED_BENCH_TARGET == provenance
+                    || CATALOG45_BENCH_MODEL_FORWARD_TARGET == provenance
                     || self.native_model_adoption_original_target()
                     || furnishing_thumbnail_host_matches(provenance)
                     || gpu_model_host_matches(provenance)))
@@ -5971,5 +6435,29 @@ mod gpu_preview_resource_tests {
         }
         assert!(!gpu_preview_asset_path(&format!("assets/{}.js","a".repeat(200))));
         assert!(gpu_preview_asset_path("assets/native-viewport-Ab_12.js"));
+    }
+}
+
+#[cfg(test)]
+mod admission_io_measurement {
+    use super::*;
+    #[test]
+    #[ignore = "Explicit immutable runtime; compares fresh declared-file admission IO only, not GUI"]
+    fn actual_one_and_two_reader_admission_io() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_ADMISSION_IO_RUNTIME").expect("explicit runtime"));
+        let expected = std::env::var("EXHIBITOS_ADMISSION_IO_MANIFEST_SHA256").expect("explicit manifest SHA256");
+        let bytes = fs::read(root.join("manifest.json")).unwrap();
+        assert_eq!(digest(&bytes), expected);
+        let payload = Payload::open(&root).unwrap();
+        let mut observations = Vec::new();
+        // ABBA order; data and OS caches retained. Every observation reads all
+        // declared bytes. Final inventory and GUI/runtime startup are excluded.
+        for readers in [1, 2, 2, 1] {
+            let start = std::time::Instant::now();
+            if readers == 1 { verify_manifest_files::<1>(&root, &payload.manifest.files).unwrap(); }
+            else { verify_manifest_files::<2>(&root, &payload.manifest.files).unwrap(); }
+            observations.push(serde_json::json!({"readers":readers,"ms":start.elapsed().as_secs_f64()*1000.0}));
+        }
+        println!("ADMISSION_IO_MEASUREMENT={}", serde_json::json!({"manifestSHA256":expected,"observations":observations,"scope":"declared-file byte/path/type/mode/link verification only; not complete admission, startup or GUI","cacheCold":false}));
     }
 }

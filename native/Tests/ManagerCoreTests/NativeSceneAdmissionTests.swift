@@ -5,6 +5,51 @@ import XCTest
 
 @MainActor
 final class NativeSceneAdmissionTests: XCTestCase {
+    func testModelForwardRequiresLiveNativeSessionRoleAndExactProfile() async throws {
+        let owner = UUID().uuidString.lowercased()
+        let base = ["tenantId": owner, "userId": owner, "role": "admin", "csrfToken": "synthetic-csrf",
+                    "expiresAt": "2099-01-01T00:00:00Z", "workspaceFurnishingProfile": "workspace-furnishing-intake-v1",
+                    "workspaceFurnishingStoolProfile": "workspace-furnishing-stool-v1", "workspaceFurnishingRoomVisualProfile": "workspace-furnishing-room-visual-v1"]
+        var active = base; active["workspaceBenchModelForwardProfile"] = WorkspaceBenchModelForward.profile
+        var unknown = active; unknown["workspaceBenchModelForwardProfile"] = "unknown"
+        var noRoom = active; noRoom.removeValue(forKey: "workspaceFurnishingRoomVisualProfile")
+        var viewer = active; viewer["role"] = "viewer"
+        for (fields, expected) in [(active, true), (base, false), (unknown, false), (noRoom, false), (viewer, false)] {
+            SceneAdmissionProtocol.configure(try JSONSerialization.data(withJSONObject: fields))
+            let api = try AuthoringAPI(port: 18091, tenantId: owner, nativeRuntimeManifestSHA256: String(repeating: "f", count: 64), protocolClasses: [SceneAdmissionProtocol.self])
+            let before = await api.admitsWorkspaceBenchModelForward
+            XCTAssertFalse(before)
+            _ = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner,
+                origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+            let admitted = await api.admitsWorkspaceBenchModelForward
+            XCTAssertEqual(admitted, expected)
+            await api.endLocalAuthoringSession()
+        }
+        SceneAdmissionProtocol.reset()
+    }
+    func testRefinedBenchRuntimeInheritsOnlyOrdinary45Family() throws {
+        let manifest = "ad6cd9b1ae8941ce99eadb9673c7e4a6c72689aaedd628bcbe33e623eb524c13"
+        let api = try AuthoringAPI(port: 18091, tenantId: UUID().uuidString.lowercased(), nativeRuntimeManifestSHA256: manifest)
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: manifest))
+        XCTAssertTrue(api.workspaceFurnishingRuntimeQualified)
+        XCTAssertTrue(api.workspacePortalFinishRuntimeQualified)
+        XCTAssertFalse(api.workspaceInfoStandPreparationRuntimeQualified)
+        XCTAssertFalse(api.workspaceFramePreparationRuntimeQualified)
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: String(repeating: "f", count: 64)))
+    }
+    func testBenchModelForwardRuntimeInheritsOnlyOrdinary45Family() throws {
+        let manifest = "ac2248e1184ad4514f386ab6ee11b6ddd8bf2ca71792f4ec9eb9242e189724d7"
+        let api = try AuthoringAPI(port: 18091, tenantId: UUID().uuidString.lowercased(), nativeRuntimeManifestSHA256: manifest)
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: manifest))
+        XCTAssertTrue(api.workspaceFurnishingRuntimeQualified)
+        XCTAssertTrue(api.workspacePortalFinishRuntimeQualified)
+        XCTAssertFalse(api.workspaceInfoStandPreparationRuntimeQualified)
+        XCTAssertFalse(api.workspaceFramePreparationRuntimeQualified)
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: true))
+    }
     private let owner = "10000000-0000-4000-8000-000000000001"
     private let manifest = "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
 

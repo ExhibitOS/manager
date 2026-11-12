@@ -10,7 +10,7 @@ public actor NativeAutomationSession {
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
-        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check", "workspace-bench-visual-check",
+        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check", "workspace-bench-visual-check", "workspace-bench-model-forward-check", "shared-furnishing-catalog-read",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
         "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
         "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
@@ -50,6 +50,7 @@ public actor NativeAutomationSession {
     private let root: URL
     private let installedAuthoringCLI: Bool
     private let installedImageCLI: Bool
+    private var ordinaryFreshCreation = false
     private let installedExportRootIdentity: (dev_t, ino_t)?
     private let requiresReleaseImageRuntime: Bool
     private let inputs: [String: String]
@@ -141,6 +142,10 @@ public actor NativeAutomationSession {
                                   freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
                                   workspaceV7ValidationRuntime: workspaceV7ValidationRuntime)
+        // NativeBridge has already required a nonexistent profile for this fresh entry.
+        ordinaryFreshCreation = Self.ordinaryFreshCreationEligible(selectedOEX: selectedOEXFormat != nil,
+            existingWorkspace: existingWorkspaceV5 != nil, v5: workspaceV5ValidationRuntime != nil,
+            v6: workspaceV6ValidationRuntime != nil, v7: workspaceV7ValidationRuntime != nil)
     }
     /// The installed entry supplies its bundled helper and the default or
     /// explicitly selected managed profile.
@@ -470,6 +475,43 @@ public actor NativeAutomationSession {
     }
     private func checkedRevision(_ request: DocumentValue, _ state: NativeDocumentState) throws {
         try Self.checkDocumentRevision(request, state)
+    }
+    static func sharedBenchCommand(_ value: DocumentValue) throws -> SharedFurnishingCommand {
+        guard case .object(let fields) = value,
+              Set(fields.keys) == ["hostId", "pose"] || Set(fields.keys) == ["hostId", "pose", "catalogId"],
+              let hostId = value["hostId"].string,
+              fields["catalogId"] == nil || fields["catalogId"]?.string != nil else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        return try SharedFurnishingCommand(host: .bench, hostId: hostId, pose: FurnishingPose(value["pose"]),
+                                           catalogId: value["catalogId"].string)
+    }
+    static func roomBaseFloorDraft(_ command: DocumentValue, in draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft? {
+        guard case .object(let fields) = command, Set(fields.keys) == ["roomId", "preset"],
+              let room = command["roomId"].string, let preset = command["preset"].string.flatMap(FloorSettings.Preset.init(rawValue:)) else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        let target = FloorSettings.Target(kind: .roomBase, id: room)
+        let prior = try FloorSettings.read(from: draft, target: target)
+        let fieldsToApply = Set(FloorSettings.Field.allCases).subtracting([.sound])
+        let settings = try FloorSettings.applying(preset: preset, defaults: FloorSettings.defaults(preset), fields: fieldsToApply,
+                                                  target: target, prior: prior, candidate: draft.candidate)
+        var next = draft; try next.setFloor(settings, target: target)
+        return next == draft ? nil : next
+    }
+    static func appendStandingViewpoint(_ command: DocumentValue, in draft: NativeExhibitionDraft) throws -> (String, NativeExhibitionDraft) {
+        guard case .object(let fields) = command, Set(fields.keys) == ["roomId", "name", "position", "target", "fov"],
+              let room = command["roomId"].string, let name = command["name"].string,
+              let position = command["position"].items, position.count == 3,
+              let target = command["target"].items, target.count == 3,
+              let fov = command["fov"].double else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        let p = position.compactMap(\.double), t = target.compactMap(\.double)
+        guard p.count == 3, t.count == 3 else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        var form = try ViewingPointFormBuffer(draft: draft, roomId: room)
+        form.name = name; form.x = String(p[0]); form.y = String(p[1]); form.z = String(p[2])
+        form.targetX = String(t[0]); form.targetY = String(t[1]); form.targetZ = String(t[2]); form.fov = String(fov)
+        var next = draft; try next.replaceCandidate(form.candidate(in: draft))
+        return (form.id, next)
     }
     private static func checkDocumentRevision(_ request: DocumentValue, _ state: NativeDocumentState) throws {
         guard case .object(let fields) = request, fields["expectedRevision"] != nil, fields["expectedEditVersion"] != nil,
@@ -1574,6 +1616,10 @@ public actor NativeAutomationSession {
             || session.advertisesRenderedArtworkThumbnail
     }
 
+    static func ordinaryFreshCreationEligible(selectedOEX: Bool, existingWorkspace: Bool, v5: Bool, v6: Bool, v7: Bool) -> Bool {
+        !selectedOEX && !existingWorkspace && !v5 && !v6 && !v7
+    }
+
     static func installedExportEntryAllowed(session: AuthoringSession?) -> Bool {
         guard let session else { return false }
         return session.nativeOexExportProfile == "bounded-file-v1"
@@ -1672,8 +1718,16 @@ public actor NativeAutomationSession {
             let extra: Set<String> = operation == "shared-bench-prepare" ? ["command", "outputPath"] : ["proposalId", "inputPath"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
+        if operation == "shared-furnishing-catalog-read" {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
+        if ["room-base-floor-preset-apply", "presentation-viewpoint-add"].contains(operation) {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         if ["workspace-bench-seat-attach", "workspace-default-seat-reconcile",
-            "workspace-bench-visual-check", "workspace-bench-visual-replace"].contains(operation) {
+            "workspace-bench-visual-check", "workspace-bench-visual-replace", "workspace-bench-model-forward-check", "workspace-bench-model-forward-set"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -1744,7 +1798,8 @@ public actor NativeAutomationSession {
         switch operation {
         case "exhibition-new":
             try checkedRevision(request, current)
-            guard installedAuthoringCLI, await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
+            guard installedAuthoringCLI || ordinaryFreshCreation,
+                  await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
             var next = current; next.draft = try Self.emptyExhibitionDraft(request, in: current, roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
             try Task.checkCancellation()
             result = try value(await bridge.saveDocumentState(context, state: next))
@@ -1861,6 +1916,9 @@ public actor NativeAutomationSession {
         case "thumbnail-prepare", "thumbnail-status", "thumbnail-select":
             result = try await thumbnailCandidate(request, id: id, context: context, api: api, current: current)
         case "read": result = try await statusValue()
+        case "shared-furnishing-catalog-read":
+            let verified = try await api.sharedFurnishingsWithRefinedBenchChecks()
+            result = .object(["version": .integer(1), "items": .array(verified.items), "resourceChecks": try value(verified.checks)])
         case "artwork-finish-reviewed":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId", "artworkRevision"])
@@ -2049,6 +2107,30 @@ public actor NativeAutomationSession {
             } else {
                 var next = current; next.draft = prospective
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            }
+        case "workspace-bench-model-forward-check", "workspace-bench-model-forward-set":
+            guard selectedOEXFormat == nil, await api.admitsWorkspaceBenchModelForward else {
+                throw BridgeFailure("BENCH_MODEL_FORWARD_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "benchId", "placementId", "furnishingId", "furnishingVersion", "modelSha256", "expectedModelForward", "modelForward"])
+            guard let etag = current.etag, command["etag"].string == etag, case .object(var fields) = command else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            fields.removeValue(forKey: "etag")
+            let input = try WorkspaceBenchModelForward(value: .object(fields))
+            let prospective = try await api.prepareWorkspaceBenchModelForward(input, in: current)
+            if operation == "workspace-bench-model-forward-check" {
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+                result = .object(["valid": .bool(true), "changed": .bool(prospective != nil)])
+            } else if let prospective {
+                var next = current; next.draft = prospective
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+                result = .object(["changed": .bool(false), "document": try value(current)])
             }
         case "workspace-bench-seat-attach":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }
@@ -2281,6 +2363,51 @@ public actor NativeAutomationSession {
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
+        case "room-base-floor-preset-apply", "presentation-viewpoint-add":
+            try checkedRevision(request, current)
+            guard selectedOEXFormat == nil, await api.admitsPersonalExhibitionCreation,
+                  let draft = current.draft, let etag = current.etag else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            guard let heldSession = authoringSession else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            _ = try await api.verifyRetainedSession(heldSession)
+            let policy = try await checkSavedSurfacePolicy(current, api: api)
+            guard try !Self.operatorRequiresViewportValidation(policy, etag: etag) else {
+                throw BridgeFailure("NATIVE_SURFACE_CAPABILITY_UNAVAILABLE")
+            }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.etag == etag, saved.draft == draft else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let keys: Set<String> = operation == "room-base-floor-preset-apply"
+                ? ["etag", "roomId", "preset"] : ["etag", "roomId", "name", "position", "target", "fov"]
+            let raw = try NativeAutomationArtworkRules.command(request, keys: keys)
+            guard raw["etag"].string == etag, case .object(var fields) = raw else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            fields.removeValue(forKey: "etag")
+            let command = DocumentValue.object(fields)
+            let nextDraft: NativeExhibitionDraft?, pointId: String?
+            if operation == "room-base-floor-preset-apply" {
+                guard let preset = command["preset"].string.flatMap(FloorSettings.Preset.init(rawValue:)) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                nextDraft = try Self.roomBaseFloorDraft(command, in: draft); pointId = nil
+                _ = try await api.floorPreview(preset)
+            } else {
+                let (id, proposed) = try Self.appendStandingViewpoint(command, in: draft)
+                pointId = id; nextDraft = proposed
+            }
+            let latestPolicy = try await checkSavedSurfacePolicy(current, api: api)
+            guard try !Self.operatorRequiresViewportValidation(latestPolicy, etag: etag) else {
+                throw BridgeFailure("NATIVE_SURFACE_CAPABILITY_UNAVAILABLE")
+            }
+            let latest = try await api.exhibition(draft.id)
+            guard latest.etag == etag, latest.draft == draft else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            _ = try await api.verifyRetainedSession(heldSession)
+            guard await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            if let nextDraft {
+                var next = current; next.draft = nextDraft
+                var output: [String: DocumentValue] = ["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))]
+                if let pointId { output["viewpointId"] = .string(pointId) }
+                result = .object(output)
+            } else {
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
         case "floor-appearance-apply":
@@ -2874,20 +3001,18 @@ public actor NativeAutomationSession {
         case "shared-bench-prepare":
             try checkedRevision(request, current)
             try await checkSavedEditPolicy(current, api: api)
-            let fields = try NativeAutomationArtworkRules.command(request, keys: ["hostId", "pose"])
             guard current.pending == nil, let draft = current.draft, let etag = current.etag,
-                  let hostId = fields["hostId"].string, let path = request["outputPath"].string,
+                  let path = request["outputPath"].string,
                   request["inputPath"] == .null else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let pose = try FurnishingPose(fields["pose"])
-            let command = try SharedFurnishingCommand(host: .bench, hostId: hostId, pose: pose)
+            let command = try Self.sharedBenchCommand(request["command"])
             let catalog = try await api.sharedFurnishings()
-            guard catalog.contains(where: { $0["catalogId"] == .string("backless-oak-bench") && $0["catalogVersion"] == .integer(1) }) else {
+            guard catalog.contains(where: { $0["catalogId"] == .string(command.catalogId) && $0["catalogVersion"] == .integer(1) }) else {
                 throw BridgeFailure("FURNISHING_CATALOG_INVALID")
             }
             let frame = ViewportFrame(epoch: capability, sequence: 1, tenantId: current.tenantId, principalId: current.principalId,
                 draft: draft, selection: nil, mode: "translate", view: "isometric", disabled: false,
                 workspaceId: current.workspaceId, baseETag: etag)
-            let proposal = try SharedFurnishingViewportRequest(frame: frame, command: command, selectedInspectorId: hostId)
+            let proposal = try SharedFurnishingViewportRequest(frame: frame, command: command, selectedInspectorId: command.hostId)
             result = try write(.object(["version": .integer(1), "operation": .string("shared-furnishing-proposal"),
                 "frame": try value(frame), "request": proposal.value]), to: path)
             sharedBenchProposals[id] = proposal

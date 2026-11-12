@@ -152,6 +152,33 @@ fn release_flags_cannot_substitute_for_actual_signed_distribution_admission() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn composed_payloads_remain_closed_without_a_qualified_tuple() {
+    let root = fixture();
+    let path = root.join("manifest.json");
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let group = json!({"inventorySHA256":"a".repeat(64),"files":1,"entryDigest":"b".repeat(64)});
+    let composition = json!({
+        "format":"exhibitos-local-web-composition-v1","recipeSHA256":"a".repeat(64),
+        "base":{"sourceCommit":"a".repeat(40),"sourceTree":"b".repeat(40),"producerSHA256":"a".repeat(64),"manifestSHA256":"b".repeat(64),"files":1,"entryDigest":"c".repeat(64)},
+        "web":{"sourceCommit":"a".repeat(40),"sourceTree":"b".repeat(40),"handoffSHA256":"a".repeat(64),"ordinary":group,"static":group},
+        "cover":{"sourceCommit":"a".repeat(40),"sourceTree":"b".repeat(40),"inventorySHA256":"a".repeat(64),"files":1,"entryDigest":"b".repeat(64)}
+    });
+    for value in [composition.clone(), serde_json::Value::Null, json!({"unexpected":true})] {
+        let mut manifest = original.clone(); manifest["composition"] = value;
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(Payload::open(&root).is_err());
+    }
+    let mut release = original.clone(); release["composition"] = composition;
+    release["mode"] = json!("release"); release["officialSigned"] = json!(true);
+    release["redistributionQualified"] = json!(true);
+    fs::write(&path, serde_json::to_vec(&release).unwrap()).unwrap();
+    assert!(Payload::open(&root).is_err());
+    fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+    assert!(Payload::open(&root).is_ok());
+    fs::remove_dir_all(root).unwrap();
+}
 #[test]
 #[ignore = "Requires the exact operator-owned packaged runtime via EXHIBITOS_NATIVE_TEST_PAYLOAD"]
 fn actual_packaged_runtime_bytes_are_admitted() {
@@ -161,4 +188,21 @@ fn actual_packaged_runtime_bytes_are_admitted() {
     assert_eq!(payload.context().state, "bytes_verified");
     assert!(payload.node().is_file());
     assert!(payload.postgres().is_file());
+}
+
+#[test]
+fn admission_refuses_corruption_in_every_reader_lane_and_rechecks_each_open() {
+    let root = fixture();
+    for path in ["bin/node", "platform/scripts/local-runtime.mjs",
+                 "postgres/bin/postgres", "postgres/bin/initdb"] {
+        let full = root.join(path);
+        let original = fs::read(&full).unwrap();
+        let mut changed = original.clone();
+        changed[0] ^= 1; // Same length and mode; only fresh byte verification finds it.
+        fs::write(&full, changed).unwrap();
+        assert!(Payload::open(&root).is_err(), "accepted corrupted {path}");
+        fs::write(&full, &original).unwrap();
+        assert!(Payload::open(&root).is_ok(), "refused restored {path}");
+    }
+    fs::remove_dir_all(root).unwrap();
 }

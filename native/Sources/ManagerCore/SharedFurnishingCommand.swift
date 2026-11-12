@@ -116,10 +116,12 @@ public struct SharedFurnishingPreview: Equatable, Sendable {
                 else { rows.append(.object(["placementId": .string(command.hostId), "pedestal": pedestal])) }
                 extensions[InstallationSettings.namespace] = .object(["version": .integer(1), "placements": .array(rows)])
             case .bench:
+                let benchKind = descriptor["functional"]["benchKind"].string ?? "slab"
                 guard var rows = extensions[BenchSettings.namespace]?["benches"].items,
                       let i = rows.firstIndex(where: { Self.same($0["id"].string, command.hostId) }),
+                      descriptor["functional"]["kind"] == .string("bench"), ["slab", "backed"].contains(benchKind),
                       let seatHeight = descriptor["functional"]["seatEnvelopeY"].double else { throw AuthoringFailure("FURNISHING_INVALID") }
-                rows[i]["position"] = .vector(pose.position); rows[i]["yaw"] = .number(pose.yaw); rows[i]["kind"] = .string("slab")
+                rows[i]["position"] = .vector(pose.position); rows[i]["yaw"] = .number(pose.yaw); rows[i]["kind"] = .string(benchKind)
                 rows[i]["dimensions"] = .object(["width": .number(width), "height": .number(seatHeight*pose.scale), "depth": .number(depth)])
                 extensions[BenchSettings.namespace]?["benches"] = .array(rows)
             case .opening:

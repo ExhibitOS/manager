@@ -3,6 +3,28 @@ import XCTest
 @testable import ManagerCore
 
 final class SharedFurnishingCatalogTests: XCTestCase {
+    func testAutomationBenchCommandUsesClosedOptionalCatalogSelection() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let pose = try FurnishingPose(position: [0, 0, 0], yaw: 0, scale: 1)
+        let legacy: DocumentValue = .object(["hostId": .string(id), "pose": pose.value])
+        let omitted = try NativeAutomationSession.sharedBenchCommand(legacy)
+        XCTAssertEqual(omitted.catalogId, "backless-oak-bench")
+        var explicit = legacy; explicit["catalogId"] = .string("backless-oak-bench")
+        XCTAssertEqual(try NativeAutomationSession.sharedBenchCommand(explicit), omitted)
+        explicit["catalogId"] = .string("sculpture-bench-refined")
+        XCTAssertEqual(try NativeAutomationSession.sharedBenchCommand(explicit).catalogId, "sculpture-bench-refined")
+        for invalid in [DocumentValue.string("museum-wallwasher"), .string("unknown"), .null, .integer(1)] {
+            var command = legacy; command["catalogId"] = invalid
+            XCTAssertThrowsError(try NativeAutomationSession.sharedBenchCommand(command))
+        }
+        var extra = legacy; extra["draft"] = .null
+        XCTAssertThrowsError(try NativeAutomationSession.sharedBenchCommand(extra))
+        var missing = legacy
+        if case .object(var fields) = missing { fields.removeValue(forKey: "pose"); missing = .object(fields) }
+        XCTAssertThrowsError(try NativeAutomationSession.sharedBenchCommand(missing))
+        let request = Data("catalog-read".utf8)
+        XCTAssertNil(try NativeAutomationSession.replayResponse(for: "shared-furnishing-catalog-read", prior: (request, .null), matching: request))
+    }
     func testExplicitLightCatalogSelectionBindsPreparedSourceAndCurrentNotice() throws {
         let light = "11111111-1111-4111-8111-111111111111"
         var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
@@ -43,11 +65,12 @@ final class SharedFurnishingCatalogTests: XCTestCase {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/shared-furnishing-catalog-fixture.json")
         var value = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: fixture))
         let rows = try SharedFurnishingCatalog.checkedCatalog(value)
-        XCTAssertEqual(Set(rows.compactMap { $0["catalogId"].string }), ["backless-oak-bench", "museum-track-spot", "museum-wallwasher", "gallery-open-portal", "rectangular-plinth"])
-        value["items"] = .array(Array(rows.reversed())); XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(value).count, 5)
+        XCTAssertEqual(Set(rows.compactMap { $0["catalogId"].string }), ["backless-oak-bench", "sculpture-bench-refined", "museum-track-spot", "museum-wallwasher", "museum-wallwasher-rear-relief", "gallery-open-portal", "rectangular-plinth"])
+        value["items"] = .array(Array(rows.reversed())); XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(value).count, 7)
         var changed = rows; changed[0]["rights"]["licenseId"] = .string("unknown")
         value["items"] = .array(changed); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
-        value["items"] = .array([rows[0], rows[0], rows[2], rows[3], rows[4]]); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
+        var duplicate = rows; duplicate[1] = rows[0]
+        value["items"] = .array(duplicate); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
         value["items"] = .array(rows); value["extra"] = .bool(true); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
         let id = "33333333-3333-4333-8333-333333333333"
         let asset = try SharedFurnishingCatalog.asset(catalogId: "backless-oak-bench", id: id)
@@ -56,6 +79,20 @@ final class SharedFurnishingCatalogTests: XCTestCase {
         XCTAssertEqual(asset["rights"]["notice"]["sha256"], .string("aea7aac82234e5f4158a901e84a753b79c75da20b72e859493801dffeaae3de5"))
         XCTAssertThrowsError(try SharedFurnishingCatalog.asset(catalogId: "chair", id: id))
         XCTAssertThrowsError(try SharedFurnishingCatalog.asset(catalogId: "backless-oak-bench", id: "bad"))
+        let rear = try SharedFurnishingCatalog.asset(catalogId: "museum-wallwasher-rear-relief", id: id)
+        XCTAssertEqual(rear["rights"]["notice"]["sha256"], .string("02f6e4b864a64ca10a4b9b52c4da1749eeca402f7b3d225db784051c95c0aaf8"))
+        XCTAssertEqual(rear["provenance"]["recipe"], .string("omit-unused-tangent-v1"))
+        let target = try XCTUnwrap(rows.first { $0["catalogId"] == .string("sculpture-bench-refined") })
+        XCTAssertEqual(target["functional"]["benchKind"], .string("backed"))
+        XCTAssertEqual(target["functional"]["front"], .vector([0, 0, 1]))
+        XCTAssertNil(target["functional"]["seats"].items?.first?["measuredVerticalContactY"].double)
+        XCTAssertEqual(target["functional"]["collision"]["qualification"], .string("proxy-only"))
+        XCTAssertEqual(target["functional"]["collision"]["boxes"].items?.count, 13)
+        var altered = rows
+        let targetIndex = try XCTUnwrap(altered.firstIndex { $0["catalogId"] == .string("sculpture-bench-refined") })
+        altered[targetIndex]["functional"]["benchKind"] = .string("slab")
+        value["items"] = .array(altered); if case .object(var fields) = value { fields.removeValue(forKey: "extra"); value = .object(fields) }
+        XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
     }
     func testPedestalCorrespondenceRejectsUnrelatedMutationAndPreservesHostOnRemoval() throws {
         let host = "11111111-1111-4111-8111-111111111111", assetId = "33333333-3333-4333-8333-333333333333"
@@ -80,6 +117,43 @@ final class SharedFurnishingCatalogTests: XCTestCase {
         XCTAssertNoThrow(try SharedFurnishingPreview(candidate: removed, base: applied, command: remove))
         XCTAssertEqual(removed["placements"], after["placements"])
         XCTAssertEqual(removed["extensions"][InstallationSettings.namespace], after["extensions"][InstallationSettings.namespace])
+    }
+    func testBenchPreviewUsesPinnedFunctionalKindAndPreservesViewpoint() throws {
+        let host = "10000000-0000-4000-8000-000000000011", camera = "10000000-0000-4000-8000-000000000012"
+        let assetId = "10000000-0000-4000-8000-000000000013"
+        var base = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(base.rooms.first?["id"].string)
+        let bench = try BenchSettings(id: host, name: "Fixture", roomId: room, kind: .backed,
+            position: [0, 0, 0], yaw: 0, width: 1.5, depth: 0.7, height: 0.45,
+            material: .defaults(.wood), viewpointId: camera)
+        let view = try BenchViewpoint(id: camera, name: "Fixture", roomId: room,
+            position: [0, 1.2, 0], target: [0, 1.4, -2], fov: 50)
+        try base.replaceCandidate(BenchCommand.add(bench, viewpoint: view).proposedCandidate(in: base, selectedBenchId: host))
+        let pose = try FurnishingPose(position: [0, 0, 0], yaw: 0, scale: 1)
+        for (catalogId, expectedKind) in [("sculpture-bench-refined", "backed"), ("backless-oak-bench", "slab")] {
+            let command = try SharedFurnishingCommand(host: .bench, hostId: host, pose: pose, catalogId: catalogId)
+            let descriptor = try SharedFurnishingCatalog.descriptor(catalogId)
+            let min = try XCTUnwrap(descriptor["bounds"]["min"].items).compactMap(\.double)
+            let max = try XCTUnwrap(descriptor["bounds"]["max"].items).compactMap(\.double)
+            var candidate = base.candidate
+            var benches = try XCTUnwrap(candidate["extensions"][BenchSettings.namespace]["benches"].items)
+            benches[0]["position"] = .vector(pose.position); benches[0]["yaw"] = .number(pose.yaw)
+            benches[0]["kind"] = .string(expectedKind)
+            benches[0]["dimensions"] = .object(["width": .number(max[0] - min[0]), "height": .number(0.45), "depth": .number(max[2] - min[2])])
+            candidate["extensions"][BenchSettings.namespace]["benches"] = .array(benches)
+            candidate["extensions"][FurnishingCatalog.namespace] = .object(["version": .integer(1),
+                "assets": .array([try SharedFurnishingCatalog.asset(catalogId: catalogId, id: assetId)]),
+                "bindings": .array([.object(["hostKind": .string("bench"), "hostId": .string(host), "assetId": .string(assetId), "pose": pose.value])])])
+            let preview = try SharedFurnishingPreview(candidate: candidate, base: base, command: command)
+            let applied = try preview.apply(to: base, command: command)
+            XCTAssertEqual(try BenchViewpoint.list(in: applied), try BenchViewpoint.list(in: base))
+            XCTAssertEqual(try BenchSettings.list(in: applied).first?.value["kind"], .string(expectedKind))
+            var wrong = candidate
+            var wrongRows = try XCTUnwrap(wrong["extensions"][BenchSettings.namespace]["benches"].items)
+            wrongRows[0]["kind"] = .string(expectedKind == "backed" ? "slab" : "backed")
+            wrong["extensions"][BenchSettings.namespace]["benches"] = .array(wrongRows)
+            XCTAssertThrowsError(try SharedFurnishingPreview(candidate: wrong, base: base, command: command))
+        }
     }
     func testSharedFourHostVectorsWhenProvided() throws {
         guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_FURNISHING_VECTORS"] else { throw XCTSkip("Requires retained shared-domain vectors") }

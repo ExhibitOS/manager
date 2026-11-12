@@ -1,4 +1,4 @@
-# 独立 Runtime 사본의 전체 인벤토리 관측
+# 독립 Runtime 사본의 전체 인벤토리 관측
 
 `inspect-target-inventory.py`는 완료된 `target-runtime-probe`의 정지된 synthetic DB/작품 사본만 사용합니다. 고유 project·volume label과 정지 상태를 확인하고, 유지보수 이미지의 PostgreSQL을 외부 네트워크 없이 실행합니다. 사본 DB의 repeatable-read/read-only transaction 및 maintenance advisory lock에서 공개 Platform inventory API를 호출합니다. 원본 볼륨은 마운트하지 않습니다. 사본의 PostgreSQL 정상 종료와 기존 container 상태 보존을 확인합니다.
 
