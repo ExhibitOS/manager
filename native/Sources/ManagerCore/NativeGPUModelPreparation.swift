@@ -10,6 +10,8 @@ public enum NativeGPUModelPreparation {
     // Retained for identifying historical vendor receipts; never active acceptance.
     static let historicalVendorRecipe = "6739a173b5a3af38f3fb02b250a2fa4d3315972f62ea8592f1c5695ab5848d98"
     public static let recipe = "886e3815a386a46462e46d35ccb640498ebefcc853cefba61f76560b62cae4bc"
+    public static let encoderSHA256 = "4ec0c7fa5f123e91f8e2adb21c1b94e7119a0f396f11cc8fd747459b2a51620c"
+    public static let encoderLibrarySHA256 = "e2f8115a77cf2c1e375210d3687f487a4e54f0cde803060cb1c4085427f3d393"
     public static let geometryAlgorithm = "glb-source-preservation-v1"
     static func invalid() -> AuthoringFailure { AuthoringFailure("GPU_PREPARATION_INVALID") }
     static func id(_ s: String?) -> Bool { guard let s else { return false }; return UUID(uuidString: s) != nil }
@@ -40,30 +42,35 @@ public enum NativeGPUModelPreparation {
     static func candidate(_ v: DocumentValue) -> Bool {
         exact(v, ["assetId", "mime", "sha256", "bytes"]) && id(v["assetId"].string)
             && v["mime"] == .string("model/gltf-binary") && digest(v["sha256"].string)
-            && integer(v["bytes"], 28...Int64.max)
+            && integer(v["bytes"], 28...33_554_432)
     }
     static func producer(_ p: DocumentValue) -> Bool {
         guard exact(p, ["version", "tool", "geometry", "samplers", "roles", "ktx"]), p["version"] == .integer(1) else { return false }
         let t = p["tool"], g = p["geometry"], s = p["samplers"], k = p["ktx"]
         guard exact(t, ["name", "version", "executableSHA256", "librarySHA256", "recipeSHA256"]),
               t["name"] == .string("toktx"), t["version"] == .string("4.4.2"), t["recipeSHA256"] == .string(recipe),
-              digest(t["executableSHA256"].string), digest(t["librarySHA256"].string),
+              t["executableSHA256"] == .string(encoderSHA256), t["librarySHA256"] == .string(encoderLibrarySHA256),
               exact(g, ["algorithm", "sourceSHA256", "outputSHA256", "triangles", "vertices"]),
               g["algorithm"] == .string(geometryAlgorithm), digest(g["sourceSHA256"].string),
-              g["sourceSHA256"] == g["outputSHA256"], integer(g["triangles"], 0...Int64.max), integer(g["vertices"], 0...Int64.max),
+              g["sourceSHA256"] == g["outputSHA256"], integer(g["triangles"], 1...9_007_199_254_740_991), integer(g["vertices"], 3...9_007_199_254_740_991),
               exact(s, ["sourceSHA256", "outputSHA256", "semantics"]), digest(s["sourceSHA256"].string), s["sourceSHA256"] == s["outputSHA256"],
               s["semantics"] == .string("source-preserved-implicit-repeat-mipmapped"),
               let roles = p["roles"].items, roles.count == 3 else { return false }
+        var textureIndices = Set<Int64>(), imageIndices = Set<Int64>()
         for (index, name) in ["baseColor", "normal", "occlusion"].enumerated() {
             let r = roles[index]
             guard exact(r, ["role", "textureIndex", "sourceImageIndex", "sourceSHA256", "sourceBytes", "outputPngImageIndex", "outputPngSHA256", "outputPngBytes", "width", "height", "colorSpace"]),
                   r["role"] == .string(name), integer(r["textureIndex"], 0...Int64.max), integer(r["sourceImageIndex"], 0...Int64.max),
                   r["sourceImageIndex"] == r["outputPngImageIndex"], digest(r["sourceSHA256"].string), r["sourceSHA256"] == r["outputPngSHA256"],
-                  integer(r["sourceBytes"], 1...Int64.max), r["sourceBytes"] == r["outputPngBytes"],
+                  integer(r["sourceBytes"], 24...8_388_608), r["sourceBytes"] == r["outputPngBytes"],
                   r["width"] == .integer(512), r["height"] == .integer(512), r["colorSpace"] == .string(index == 0 ? "srgb" : "linear") else { return false }
+            guard let texture = r["textureIndex"].integer, let image = r["sourceImageIndex"].integer,
+                  texture <= 9_007_199_254_740_991, image <= 9_007_199_254_740_991,
+                  textureIndices.insert(texture).inserted, imageIndices.insert(image).inserted else { return false }
         }
         return exact(k, ["imageIndex", "sha256", "bytes", "width", "height", "levels", "format", "transfer", "opaque", "levelDimensions"])
-            && integer(k["imageIndex"], 0...Int64.max) && digest(k["sha256"].string) && integer(k["bytes"], 1...Int64.max)
+            && integer(k["imageIndex"], 0...9_007_199_254_740_991) && !imageIndices.contains(k["imageIndex"].integer ?? -1)
+            && digest(k["sha256"].string) && integer(k["bytes"], 1...8_388_608)
             && k["width"] == .integer(512) && k["height"] == .integer(512) && k["levels"] == .integer(10)
             && k["format"] == .string("uastc") && k["transfer"] == .string("srgb") && k["opaque"] == .bool(true)
             && k["levelDimensions"] == .array([512,256,128,64,32,16,8,4,2,1].map { .integer(Int64($0)) })

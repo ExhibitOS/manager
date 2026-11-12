@@ -12,7 +12,8 @@ public actor NativeAutomationSession {
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
-        "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement"
+        "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
+        "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
     ]
 
     static func replayResponse(for operation: String, prior: (Data, DocumentValue)?, matching request: Data) throws -> DocumentValue? {
@@ -962,6 +963,104 @@ public actor NativeAutomationSession {
         return receipt
     }
 
+    private func executeGPUModel(_ operation: String, request: DocumentValue,
+                                 context: Context, current: NativeDocumentState, api: AuthoringAPI) async throws -> DocumentValue {
+        guard selectedOEXFormat == nil, request["inputPath"] == .null, request["outputPath"] == .null else { throw BridgeFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+        if ["gpu-model-prepare", "gpu-model-retry", "gpu-model-review"].contains(operation) {
+            guard !current.dirty, current.pending == nil else { throw BridgeFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+        }
+        try checkedRevision(request, current)
+        let creates = operation == "gpu-model-prepare"
+        let command = try NativeAutomationGPUCommand(request["command"], creates: creates)
+        let code = "GPU_MODEL_PREPARATION_CONTEXT_CHANGED"
+        var state = try await bridge.uploadState(context)
+        guard state.workspaceId == current.workspaceId, state.tenantId == current.tenantId,
+              state.principalId == current.principalId, state.intent == nil, state.jobId == nil,
+              state.fileName == nil, state.compactVariant == nil else { throw BridgeFailure(code) }
+        let newAttempt = state.gpuVariant == nil
+        if newAttempt {
+            guard creates, await api.admitsGPUModelPreparation else { throw BridgeFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+            state.gpuVariant = try NativeGPUModelPreparationTransfer(workspaceId: current.workspaceId, tenantId: current.tenantId,
+                principalId: current.principalId, artworkId: command.artworkId, request: command.input)
+            state = try await bridge.saveUploadState(context, state: state)
+        }
+        guard let retained = state.gpuVariant,
+              retained.matches(workspaceId: current.workspaceId, tenantId: current.tenantId, principalId: current.principalId,
+                               artworkId: command.artworkId, request: command.input, jobId: retained.jobId) else { throw BridgeFailure(code) }
+        if creates {
+            let jobId: String
+            if let existing = retained.jobId {
+                jobId = existing
+            } else {
+                let observation: NativeGPUModelJobIdentity?
+                if newAttempt {
+                    observation = try await api.createGPUModelPreparationIdentity(artworkId: command.artworkId, input: command.input)
+                } else {
+                    observation = try await api.recoverGPUModelPreparationIdentity(artworkId: command.artworkId, input: command.input)
+                }
+                guard let observation else {
+                    let (_, _, refreshed) = try await checked(request)
+                    let held = try await bridge.uploadState(context)
+                    guard refreshed.workspaceId == current.workspaceId, refreshed.tenantId == current.tenantId,
+                          refreshed.principalId == current.principalId, held.revision == state.revision,
+                          held.gpuVariant == retained else { throw BridgeFailure(code) }
+                    return .object(["jobId": .null, "verification": .string("unknown")])
+                }
+                jobId = observation.jobId
+            }
+            if retained.jobId == nil {
+                state.gpuVariant = try NativeGPUModelPreparationTransfer(workspaceId: current.workspaceId, tenantId: current.tenantId,
+                    principalId: current.principalId, artworkId: command.artworkId, request: command.input, jobId: jobId)
+                state = try await bridge.saveUploadState(context, state: state)
+                guard state.gpuVariant?.jobId == jobId else { throw BridgeFailure(code) }
+            }
+            do {
+                return try await api.gpuModelPreparationJob(jobId, artworkId: command.artworkId, input: command.input).value
+            } catch {
+                try Task.checkCancellation()
+                let (_, _, refreshed) = try await checked(request)
+                guard refreshed.workspaceId == current.workspaceId, refreshed.tenantId == current.tenantId,
+                      refreshed.principalId == current.principalId else { throw BridgeFailure(code) }
+                return .object(["jobId": .string(jobId), "verification": .string("unavailable")])
+            }
+        }
+        guard let jobId = command.jobId, NativeGPUModelPreparation.sameID(retained.jobId, jobId) else { throw BridgeFailure(code) }
+        switch operation {
+        case "gpu-model-status":
+            return try await api.gpuModelPreparationJob(jobId, artworkId: command.artworkId, input: command.input).value
+        case "gpu-model-cancel":
+            return try await api.cancelGPUModelPreparation(jobId, artworkId: command.artworkId, input: command.input).value
+        case "gpu-model-retry":
+            return try await api.retryGPUModelPreparation(jobId, artworkId: command.artworkId, input: command.input).value
+        case "gpu-model-review":
+            return try await api.reviewGPUModelPreparation(jobId, artworkId: command.artworkId, input: command.input).value
+        case "gpu-model-selection":
+            let readback = try await api.gpuModelSelection(artworkId: command.artworkId)
+            return .object(["artworkId": .string(readback.artworkId), "revision": .integer(Int64(readback.revision)),
+                            "selection": readback.selection?.value ?? .null])
+        case "gpu-model-clear-cancelled":
+            let job = try await api.cancelGPUModelPreparation(jobId, artworkId: command.artworkId, input: command.input)
+            guard retained.permitsClearingCancelled(job) else { throw BridgeFailure("IMPORT_DRAIN_PENDING") }
+            let fresh = try await bridge.uploadState(context)
+            guard fresh.revision == state.revision, fresh.gpuVariant == retained else { throw BridgeFailure(code) }
+            state = fresh; state.gpuVariant = nil
+            let cleared = try await bridge.saveUploadState(context, state: state)
+            guard cleared.gpuVariant == nil else { throw BridgeFailure(code) }
+            return .object(["cleared": .bool(true), "jobId": .string(jobId)])
+        case "gpu-model-clear-selected":
+            let job = try await api.gpuModelPreparationJob(jobId, artworkId: command.artworkId, input: command.input)
+            let selected = try await api.gpuModelSelection(artworkId: command.artworkId)
+            guard retained.permitsClearingSelected(job, selection: selected.selection) else { throw BridgeFailure(code) }
+            let fresh = try await bridge.uploadState(context)
+            guard fresh.revision == state.revision, fresh.gpuVariant == retained else { throw BridgeFailure(code) }
+            state = fresh; state.gpuVariant = nil
+            let cleared = try await bridge.saveUploadState(context, state: state)
+            guard cleared.gpuVariant == nil else { throw BridgeFailure(code) }
+            return .object(["cleared": .bool(true), "jobId": .string(jobId)])
+        default: throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+    }
+
     private func executeCompactModel(_ operation: String, request: DocumentValue, id: String,
                                      context: Context, current: NativeDocumentState, api: AuthoringAPI) async throws -> DocumentValue {
         guard selectedOEXFormat == nil, !current.dirty, current.pending == nil,
@@ -1174,7 +1273,7 @@ public actor NativeAutomationSession {
             // The retained transfer may belong to a different artwork/job. Never clear or rewrite it.
             guard current.pending == nil else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
         case .approvedModel:
-            let empty = state.intent == nil && state.jobId == nil && state.compactVariant == nil
+            let empty = state.intent == nil && state.jobId == nil && state.compactVariant == nil && state.gpuVariant == nil
             let same = state.intent?.artworkId == command.artworkId && state.jobId == command.importJobId
                 && state.intent?.modelPreparation?.artworkRevision == command.artworkRevision
             guard current.pending == nil, empty || same else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
@@ -1462,7 +1561,7 @@ public actor NativeAutomationSession {
     }
 
     static func checkInstalledPendingOperation(_ operation: String, hasPending: Bool, authoring: Bool) throws {
-        guard !hasPending || operation == "read" || (authoring && operation == "save") else {
+        guard !hasPending || operation == "read" || (authoring && ["save", "gpu-model-status", "gpu-model-cancel", "gpu-model-selection"].contains(operation)) else {
             throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
         }
     }
@@ -1537,7 +1636,7 @@ public actor NativeAutomationSession {
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve"]
-            guard allowed.contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+            guard allowed.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
@@ -1546,6 +1645,10 @@ public actor NativeAutomationSession {
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if ["thumbnail-prepare", "thumbnail-status", "thumbnail-select"].contains(operation) {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
+        if ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
@@ -2373,6 +2476,8 @@ public actor NativeAutomationSession {
             } else {
                 result = try value(finished.receipt)
             }
+        case "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected":
+            result = try await executeGPUModel(operation, request: request, context: context, current: current, api: api)
         case "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement":
             result = try await executeCompactModel(operation, request: request, id: id, context: context, current: current, api: api)
         case "import-glb", "import-image":
@@ -2397,7 +2502,7 @@ public actor NativeAutomationSession {
             guard Int64(artwork.revision) == revision, !artwork.archived, let metadata = artwork.metadata else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
             let state = try await bridge.uploadState(context)
             try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
-            guard state.compactVariant == nil else { throw BridgeFailure("IMPORT_ACTIVE") }
+            guard state.compactVariant == nil, state.gpuVariant == nil else { throw BridgeFailure("IMPORT_ACTIVE") }
             if image {
                 guard await api.admitsFreshImagePreparation else { throw BridgeFailure("IMAGE_PREPARATION_UNAVAILABLE") }
                 let preparation = NativeProductImagePreparationIntent(artworkRevision: artwork.revision, fresh: true)

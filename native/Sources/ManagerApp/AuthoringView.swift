@@ -63,7 +63,7 @@ final class AuthoringModel: ObservableObject {
     private var modelIntakeEnabled: Bool { modelDerivationEnabled || requiredModelPreparationEnabled }
     var canSelectIntake: Bool {
         intakeWritesAvailable && (modelIntakeEnabled || iccImportAdmitted) && available && session != nil && !busy
-            && compactTransfer == nil
+            && compactTransfer == nil && gpuTransfer == nil
     }
     var canOpenIntakeRow: Bool {
         canSelectIntake && !hasUnknownSourceUnits && activeIntakeID == nil && selected?.archived == false
@@ -84,6 +84,15 @@ final class AuthoringModel: ObservableObject {
             || (intent.mime == "image/png" && (iccImportAdmitted || (job.workerDrainVersion ?? 0) > 0))
     }
     @Published private(set) var compactJob: NativeCompactModelVariantJob?
+    @Published private(set) var gpuJob: NativeGPUModelPreparationJob?
+    var gpuTransfer: NativeGPUModelPreparationTransfer? { transfer?.gpuVariant }
+    // Closed until the parent admits the exact matching runtime family.
+    private var gpuRuntimeQualified: Bool { false }
+    var canPrepareGPUModel: Bool {
+        gpuRuntimeQualified && session?.nativeGpuModelPreparationProfile == NativeGPUModelPreparation.profile
+            && transfer != nil && transfer?.intent == nil && transfer?.jobId == nil && compactTransfer == nil
+            && gpuTransfer == nil && importFile == nil && activeIntakeID == nil && !metadataDirty && approvedFullModel != nil
+    }
     var compactTransfer: NativeCompactModelVariantTransfer? { transfer?.compactVariant }
     var compactAvailable: Bool {
         session?.compactModelVariantProfile == NativeCompactModelVariantRequest.profile
@@ -93,7 +102,7 @@ final class AuthoringModel: ObservableObject {
         return selected.assets.first { $0.id == selected.approvedAssetId && $0.state == "approved" && $0.mime == "model/gltf-binary" }
     }
     var canPrepareCompactVariant: Bool {
-        compactAvailable && transfer != nil && transfer?.intent == nil && compactTransfer == nil
+        compactAvailable && transfer != nil && transfer?.intent == nil && compactTransfer == nil && gpuTransfer == nil
             && importFile == nil && activeIntakeID == nil && !metadataDirty && approvedFullModel != nil
     }
     var compactApprovalVisible: Bool {
@@ -130,7 +139,7 @@ final class AuthoringModel: ObservableObject {
     }
     var canInspectUnknownModel: Bool {
         modelOriginalInspectionAvailable && !usesHayesOriginal && transfer != nil && transfer?.intent == nil
-            && compactTransfer == nil && activeIntakeID == nil && selected?.archived != true
+            && compactTransfer == nil && gpuTransfer == nil && activeIntakeID == nil && selected?.archived != true
             && (selected == nil || selected?.approvedRevision != selected?.revision)
     }
     @Published private(set) var modelOriginalInspection: NativeModelOriginalInspection?
@@ -460,7 +469,16 @@ extension AuthoringModel {
         guard state.tenantId.lowercased() == session.tenantId.lowercased(), state.principalId.lowercased() == session.userId.lowercased() else { throw AuthoringFailure("IMPORT_SCOPE_CHANGED") }
         if transfer == nil, let intent = state.intent { importScale = intent.scaleMeters }
         transfer = state
-        importJob = nil; compactJob = nil
+        importJob = nil; compactJob = nil; gpuJob = nil
+        if let gpu = state.gpuVariant {
+            if let id = gpu.jobId, let api {
+                let observed = try? await api.gpuModelPreparationJob(id, artworkId: gpu.artworkId, input: gpu.request)
+                guard self.api === api, self.transfer?.revision == state.revision, self.transfer?.gpuVariant == gpu,
+                      self.session?.userId == session.userId, self.session?.tenantId == session.tenantId else { return }
+                gpuJob = observed
+            }
+            return
+        }
         if let compact = state.compactVariant {
             if let id = state.jobId, let api {
                 compactJob = try await api.compactModelVariantJob(id, artworkId: compact.artworkId, input: compact.request)
@@ -510,7 +528,7 @@ extension AuthoringModel {
     func prepareProductImage(_ url: URL, artworkId: String, artworkRevision: Int,
                              expectedAPI: AuthoringAPI, isCurrent: @escaping @MainActor () -> Bool) async throws {
         guard productImagePreparationAvailable, !busy, !dirty, activeIntakeID == nil,
-              compactTransfer == nil, api === expectedAPI, let transfer,
+              compactTransfer == nil, gpuTransfer == nil, api === expectedAPI, let transfer,
               transfer.intent == nil || transfer.intent?.productImagePreparation != nil,
               await expectedAPI.admitsProductImagePreparation, isCurrent() else {
             throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
@@ -608,7 +626,7 @@ extension AuthoringModel {
         }
     }
     func chooseImportFile(inspectUnknown: Bool = false) async {
-        guard !hasProductImageTransfer, compactTransfer == nil, !inspectUnknown || canInspectUnknownModel,
+        guard !hasProductImageTransfer, compactTransfer == nil, gpuTransfer == nil, !inspectUnknown || canInspectUnknownModel,
               !hasUnknownSourceUnits || usesHayesOriginal || ordinaryUnknownModel else { return }
         let hayes = usesHayesOriginal
         let unknown = inspectUnknown || ordinaryUnknownModel
@@ -677,7 +695,7 @@ extension AuthoringModel {
     func uploadImportFile() async {
         await action {
             guard !hasProductImageTransfer, let api, let selected, !metadataDirty, let file = importFile, let state = transfer,
-                  !inspectedReferencePending, state.compactVariant == nil else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
+                  !inspectedReferencePending, state.compactVariant == nil, state.gpuVariant == nil else { throw AuthoringFailure("IMPORT_FILE_REQUIRED") }
             if usesHayesOriginal {
                 guard hayesOriginalAvailable, let reference = selected.metadata?.displayReference,
                       file.sha256 == NativeHayesOriginalIntent.sourceSHA256,
@@ -1150,6 +1168,119 @@ extension AuthoringModel {
             }
         }
     }
+    func prepareGPUModel() async {
+        await action {
+            guard let api, let selected, var state = transfer, !metadataDirty,
+                  state.intent == nil, state.jobId == nil, state.fileName == nil, state.compactVariant == nil else {
+                throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED")
+            }
+            let retained: NativeGPUModelPreparationTransfer
+            let newAttempt = state.gpuVariant == nil
+            if let prior = state.gpuVariant {
+                guard prior.artworkId == selected.id else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+                retained = prior
+            } else {
+                guard canPrepareGPUModel, await api.admitsGPUModelPreparation,
+                      let full = approvedFullModel, let bytes = Int(exactly: full.bytes) else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+                let request = try NativeGPUModelPreparationRequest(revision: selected.revision, assetId: full.id,
+                    sha256: full.sha256, bytes: bytes, idempotencyKey: UUID().uuidString.lowercased(), generation: UUID().uuidString.lowercased())
+                retained = try NativeGPUModelPreparationTransfer(workspaceId: state.workspaceId, tenantId: state.tenantId,
+                    principalId: state.principalId, artworkId: selected.id, request: request)
+                state.gpuVariant = retained
+                try await persistImport(state)
+            }
+            guard self.api === api, transfer?.gpuVariant == retained, self.selected?.id == retained.artworkId else {
+                throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED")
+            }
+            let jobId: String
+            if let existing = retained.jobId {
+                jobId = existing
+            } else {
+                let observation: NativeGPUModelJobIdentity?
+                if newAttempt {
+                    observation = try await api.createGPUModelPreparationIdentity(artworkId: retained.artworkId, input: retained.request)
+                } else {
+                    observation = try await api.recoverGPUModelPreparationIdentity(artworkId: retained.artworkId, input: retained.request)
+                }
+                guard self.api === api, transfer?.gpuVariant == retained, self.selected?.id == retained.artworkId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+                guard let observation else {
+                    notice = "저장한 요청의 작업을 아직 확인하지 못했습니다. 같은 요청을 보존합니다."
+                    return
+                }
+                jobId = observation.jobId
+            }
+            guard self.api === api, var fresh = transfer, fresh.gpuVariant == retained else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            if retained.jobId == nil {
+                fresh.gpuVariant = try NativeGPUModelPreparationTransfer(workspaceId: retained.workspaceId, tenantId: retained.tenantId,
+                    principalId: retained.principalId, artworkId: retained.artworkId, request: retained.request, jobId: jobId)
+                try await persistImport(fresh)
+            }
+            do {
+                let job = try await api.gpuModelPreparationJob(jobId, artworkId: retained.artworkId, input: retained.request)
+                guard self.api === api, gpuTransfer?.jobId == jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+                gpuJob = job
+            } catch {
+                try Task.checkCancellation()
+                guard self.api === api, gpuTransfer?.jobId == jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+                notice = "작업을 보존했습니다. 현재 상태를 다시 확인하세요."
+            }
+        }
+    }
+
+    func refreshGPUModel() async {
+        await action {
+            guard let api, let gpu = gpuTransfer, let id = gpu.jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let job = try await api.gpuModelPreparationJob(id, artworkId: gpu.artworkId, input: gpu.request)
+            guard self.api === api, gpuTransfer == gpu else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            gpuJob = job
+        }
+    }
+
+    func cancelGPUModel() async {
+        await action {
+            guard let api, let gpu = gpuTransfer, let id = gpu.jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let job = try await api.cancelGPUModelPreparation(id, artworkId: gpu.artworkId, input: gpu.request)
+            guard self.api === api, gpuTransfer == gpu else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            gpuJob = job
+        }
+    }
+
+    func retryGPUModel() async {
+        await action {
+            guard let api, let gpu = gpuTransfer, let id = gpu.jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let job = try await api.retryGPUModelPreparation(id, artworkId: gpu.artworkId, input: gpu.request)
+            guard self.api === api, gpuTransfer == gpu else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            gpuJob = job
+        }
+    }
+
+    func clearCancelledGPUModel() async {
+        await action {
+            guard let api, let gpu = gpuTransfer, let id = gpu.jobId, var state = transfer else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let job = try await api.cancelGPUModelPreparation(id, artworkId: gpu.artworkId, input: gpu.request)
+            guard self.api === api, transfer?.revision == state.revision, gpuTransfer == gpu,
+                  gpu.permitsClearingCancelled(job) else {
+                throw AuthoringFailure("IMPORT_DRAIN_PENDING")
+            }
+            state.gpuVariant = nil
+            try await persistImport(state)
+            gpuJob = nil
+        }
+    }
+
+    func clearSelectedGPUModel() async {
+        await action {
+            guard let api, let gpu = gpuTransfer, let id = gpu.jobId, var state = transfer else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let job = try await api.gpuModelPreparationJob(id, artworkId: gpu.artworkId, input: gpu.request)
+            let selected = try await api.gpuModelSelection(artworkId: gpu.artworkId)
+            guard self.api === api, transfer?.revision == state.revision, gpuTransfer == gpu,
+                  gpu.permitsClearingSelected(job, selection: selected.selection) else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            state.gpuVariant = nil
+            try await persistImport(state)
+            gpuJob = nil
+        }
+    }
+
     func prepareCompactVariant() async {
         let allowed = canPrepareCompactVariant
         await action {

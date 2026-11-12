@@ -371,6 +371,10 @@ impl InstallationController {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let _profile = profile_lock(profile)?;
             self.ensure_active_creation_unlocked(service)?;
+            gpu_model_job_root_empty(&service.root)?;
+            if service.native_prepared()?.is_some_and(|prepared| prepared.kind == "personal")
+                && self.upload_unlocked(service)?.1.gpu_variant.is_some()
+            { return Err(err("NATIVE_GPU_MODEL_WORK_PENDING")); }
             let (registry,_) = load(&profile.root)?.ok_or_else(||err("INSTALLATION_SELECTION_INVALID"))?;
             let active = registry.installations.iter().find(|entry| entry.id == registry.active_id)
                 .ok_or_else(|| err("INSTALLATION_SELECTION_INVALID"))?;
@@ -410,6 +414,7 @@ impl InstallationController {
             // No snapshot is taken until the actual owned API/worker is reaped.
             session.quiesce_for_backup()?;
             session.verify_workspace_furnishing_writer_quiescence()?;
+            gpu_model_job_root_empty(&service.root)?;
             let id = Uuid::new_v4().to_string();
             let directory = service.root.join(format!("native-backup-{id}"));
             new_directory(&directory)?;

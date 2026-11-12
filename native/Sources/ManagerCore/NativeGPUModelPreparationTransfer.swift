@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
+/// Candidate bytes are server-authorized for this receipt; this is not proof
+/// that a user has viewed them or that a renderer supports this GLB.
+public struct NativeGPUModelCandidate: Sendable {
+    public let artworkId: String, jobId: String, receiptSHA256: String, candidateSHA256: String
+    public let data: Data
+    init(artworkId: String, jobId: String, receiptSHA256: String, candidateSHA256: String, data: Data) {
+        self.artworkId = artworkId; self.jobId = jobId; self.receiptSHA256 = receiptSHA256
+        self.candidateSHA256 = candidateSHA256; self.data = data
+    }
+}
+
 /// Durable identity only: never stores credentials, model bytes or a local path.
 public struct NativeGPUModelPreparationTransfer: Codable, Equatable, Sendable {
     public let version: Int
@@ -30,6 +41,16 @@ public struct NativeGPUModelPreparationTransfer: Codable, Equatable, Sendable {
             && NativeGPUModelPreparation.sameID(self.workspaceId, workspaceId) && NativeGPUModelPreparation.sameID(self.tenantId, tenantId)
             && NativeGPUModelPreparation.sameID(self.principalId, principalId) && NativeGPUModelPreparation.sameID(self.artworkId, artworkId)
             && ((self.jobId == nil && jobId == nil) || NativeGPUModelPreparation.sameID(self.jobId, jobId))
+    }
+    public func permitsClearingCancelled(_ job: NativeGPUModelPreparationJob) -> Bool {
+        job.request == request && NativeGPUModelPreparation.sameID(job.artworkId, artworkId)
+            && NativeGPUModelPreparation.sameID(job.value["id"].string, jobId)
+            && job.value["state"] == .string("cancelled") && job.value["gpuPreparation"]["workerDrained"] == .bool(true)
+    }
+    public func permitsClearingSelected(_ job: NativeGPUModelPreparationJob, selection: NativeGPUModelSelection?) -> Bool {
+        job.request == request && NativeGPUModelPreparation.sameID(job.artworkId, artworkId)
+            && NativeGPUModelPreparation.sameID(job.value["id"].string, jobId)
+            && selection?.matchesCandidate(job: job, request: request) == true
     }
 }
 
@@ -67,11 +88,17 @@ public struct NativeGPUModelReview: Sendable {
         let n = job.value["gpuPreparation"]
         guard NativeGPUModelPreparation.sameID(job.artworkId, artworkId), job.request == request,
               NativeGPUModelPreparation.exact(value, ["artworkId", "revision", "jobId", "receiptSHA256", "source", "candidate", "serverReceipt", "selection"]),
-              NativeGPUModelPreparation.sameID(value["artworkId"].string, artworkId), value["revision"] == .integer(Int64(request.revision)),
+              NativeGPUModelPreparation.sameID(value["artworkId"].string, artworkId),
               NativeGPUModelPreparation.sameID(value["jobId"].string, job.value["id"].string), n["status"] == .string("ready"),
               value["receiptSHA256"] == n["serverReceipt"]["sha256"], value["source"] == n["source"],
               value["candidate"] == n["candidate"], value["serverReceipt"] == n["serverReceipt"] else { throw NativeGPUModelPreparation.invalid() }
-        priorSelection = value["selection"] == .null ? nil : try NativeGPUModelSelection(value["selection"])
+        let selection = value["selection"] == .null ? nil : try NativeGPUModelSelection(value["selection"])
+        let initial = value["revision"] == .integer(Int64(request.revision))
+        let replay = request.revision < 2_147_483_647
+            && value["revision"] == .integer(Int64(request.revision + 1))
+            && selection?.matchesCandidate(job: job, request: request) == true
+        guard initial || replay else { throw NativeGPUModelPreparation.invalid() }
+        priorSelection = selection
         self.value = value
     }
 }
@@ -79,7 +106,7 @@ public struct NativeGPUModelReview: Sendable {
 public struct NativeGPUModelApprovalRequest: Encodable, Equatable, Sendable {
     public let revision: Int, jobId: String, receiptSHA256: String, candidateSHA256: String, generation: String
     public init(review: NativeGPUModelReview, request: NativeGPUModelPreparationRequest) throws {
-        guard request.valid, review.value["revision"] == .integer(Int64(request.revision)),
+        guard request.valid,
               review.value["serverReceipt"]["operationID"] == .string(request.idempotencyKey),
               review.value["serverReceipt"]["generation"] == .string(request.generation),
               NativeGPUModelPreparation.sameID(review.value["source"]["assetId"].string, request.assetId),

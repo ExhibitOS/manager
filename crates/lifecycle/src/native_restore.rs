@@ -663,6 +663,7 @@ impl InstallationController {
             let profile = self.profile.as_ref().ok_or_else(bad)?;
             let _profile = profile_lock(profile)?;
             self.ensure_active_creation_unlocked(service)?;
+            gpu_model_job_root_empty(&service.root)?;
             signed_release::trust::lifecycle_writer::admit(&service.root,&Action::Install)?;
             key(&input, &profile.root, &service.root)?;
             let prepared = service.native_prepared()?.ok_or_else(bad)?;
@@ -940,6 +941,7 @@ impl InstallationController {
             let profile = self.profile.as_ref().ok_or_else(bad)?;
             let _profile = profile_lock(profile)?;
             self.ensure_active_creation_unlocked(service)?;
+            gpu_model_job_root_empty(&service.root)?;
             let guard = service.lock()?;
             signed_release::trust::lifecycle_writer::admit(&service.root, &Action::Install)?;
             let directory = service.root.join(format!("native-restore-{id}"));
@@ -1358,6 +1360,24 @@ mod tests {
         assert!(validate_source(&source, "legacy_account", &"a".repeat(64), &target).is_err());
         source.owner_kind="personal".into();source.journal_names.insert("unknown.json".into(), "unexpected".into());
         assert!(validate_source(&source, "personal", &"a".repeat(64), &target).is_err());
+    }
+
+    #[test]
+    fn gpu_upload_restore_keeps_original_request_nonce_and_raw_owner_bytes() {
+        let f=fields();
+        let value=serde_json::json!({"format":1,"revision":9,
+            "workspaceId":f.0["WORKSPACE_ID"],"tenantId":f.0["TENANT_ID"],"principalId":f.0["PRINCIPAL_ID"],
+            "intent":null,"jobId":null,"fileName":null,
+            "gpuVariant":{"version":1,"workspaceId":f.0["WORKSPACE_ID"],"tenantId":f.0["TENANT_ID"],
+                "principalId":f.0["PRINCIPAL_ID"],"artworkId":"10000000-0000-4000-8000-000000000004",
+                "jobId":"10000000-0000-4000-8000-000000000005","request":{"revision":2,
+                    "assetId":"10000000-0000-4000-8000-000000000006","sha256":"a".repeat(64),"bytes":1829056,
+                    "idempotencyKey":"original-create-nonce","generation":"original-gpu-generation",
+                    "profile":"embedded-model-basecolor-uastc-512-mips-v1"}}});
+        let raw=serde_json::to_vec_pretty(&value).unwrap();
+        assert_eq!(rebound_journal("upload.json",&raw,&f).unwrap(),raw);
+        let mut foreign=value;foreign["gpuVariant"]["principalId"]="10000000-0000-4000-8000-000000000099".into();
+        assert!(rebound_journal("upload.json",&serde_json::to_vec(&foreign).unwrap(),&f).is_err());
     }
 
     #[test]

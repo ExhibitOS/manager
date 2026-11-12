@@ -272,6 +272,57 @@ impl CompactVariantTransfer {
             && (28..=32 * 1024 * 1024).contains(&request.bytes)
     }
 }
+/// Local continuation identity only; a job ID never proves a ready candidate.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GpuVariantTransfer {
+    pub version: u32,
+    pub workspace_id: String,
+    pub tenant_id: String,
+    pub principal_id: String,
+    pub artwork_id: String,
+    pub request: GpuVariantRequest,
+    #[serde(default, deserialize_with = "deserialize_present_gpu_job", skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GpuVariantRequest {
+    pub revision: u32,
+    pub asset_id: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub idempotency_key: String,
+    pub generation: String,
+    pub profile: String,
+}
+fn deserialize_present_gpu_job<'de, D: serde::Deserializer<'de>>(decoder: D)
+    -> std::result::Result<Option<String>, D::Error> {
+    String::deserialize(decoder).map(Some)
+}
+impl GpuVariantTransfer {
+    fn deserialize_present<'de, D: serde::Deserializer<'de>>(decoder: D)
+        -> std::result::Result<Option<Self>, D::Error> {
+        Self::deserialize(decoder).map(Some)
+    }
+    fn valid(&self, outer: &Transfer) -> bool {
+        let token = |value: &str| !value.is_empty() && value.len() <= 128
+            && value.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte));
+        let request = &self.request;
+        self.version == 1 && self.workspace_id == outer.workspace_id
+            && self.tenant_id == outer.tenant_id && self.principal_id == outer.principal_id
+            && uuid(&self.artwork_id) && uuid(&request.asset_id)
+            && self.job_id.as_ref().is_none_or(|id| uuid(id))
+            && (1..=i32::MAX as u32).contains(&request.revision)
+            && (28..=32 * 1024 * 1024).contains(&request.bytes) && hash_valid(&request.sha256)
+            && token(&request.idempotency_key) && token(&request.generation)
+            && request.profile == "embedded-model-basecolor-uastc-512-mips-v1"
+            && outer.intent.is_none() && outer.job_id.is_none() && outer.file_name.is_none()
+            && outer.compact_variant.is_none()
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Transfer {
@@ -285,13 +336,15 @@ pub struct Transfer {
     pub file_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_variant: Option<CompactVariantTransfer>,
+    #[serde(default, deserialize_with = "GpuVariantTransfer::deserialize_present", skip_serializing_if = "Option::is_none")]
+    pub gpu_variant: Option<GpuVariantTransfer>,
 }
 #[cfg(all(target_os = "macos", debug_assertions))]
 impl Transfer {
     pub(super) fn matches_retained_product_image(&self, proof: &super::native_maintenance::RetainedProductImage) -> bool {
         let Some(intent) = &self.intent else { return false };
         let Some(preparation) = &intent.product_image_preparation else { return false };
-        self.compact_variant.is_none()
+        self.gpu_variant.is_none() && self.compact_variant.is_none()
             && self.job_id.as_deref() == Some(proof.job_id.as_str())
             && uuid(&proof.replacement_request_id)
             && hash_valid(&proof.receipt_sha256)
@@ -318,6 +371,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
                 || name.contains('\\')
         })
         || (s.intent.is_none() && s.compact_variant.is_none() && (s.job_id.is_some() || s.file_name.is_some()))
+        || s.gpu_variant.as_ref().is_some_and(|gpu| !gpu.valid(s))
         || s.compact_variant.as_ref().is_some_and(|compact|
             s.intent.is_some() || s.file_name.is_some() || !compact.valid())
     {
@@ -354,6 +408,22 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
     }
     Ok(())
 }
+fn upload_transition_matches(current: &Transfer, next: &Transfer) -> bool {
+    if current.revision != next.revision { return false; }
+    let empty = |state: &Transfer| state.intent.is_none() && state.job_id.is_none()
+        && state.file_name.is_none() && state.compact_variant.is_none();
+    match (&current.gpu_variant, &next.gpu_variant) {
+        (None, None) => true,
+        (None, Some(gpu)) => empty(current) && gpu.job_id.is_none(),
+        (Some(_), None) => empty(next),
+        (Some(prior), Some(after)) => {
+            let mut bound = prior.clone();
+            if bound.job_id.is_none() { bound.job_id = after.job_id.clone(); }
+            bound == *after
+        }
+    }
+}
+
 impl InstallationController {
     pub(super) fn upload_unlocked(&self, service: &LifecycleService) -> Result<(String, Transfer)> {
         let profile = self
@@ -375,6 +445,7 @@ impl InstallationController {
             job_id: None,
             file_name: None,
             compact_variant: None,
+            gpu_variant: None,
         };
         let saved = match fs::symlink_metadata(profile.root.join(&file)) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => default.clone(),
@@ -421,7 +492,7 @@ impl InstallationController {
             {
                 return Err(err("NATIVE_UPLOAD_SCOPE_CHANGED"));
             }
-            if state.revision != current.revision {
+            if !upload_transition_matches(&current, &state) {
                 return Err(err("NATIVE_UPLOAD_STATE_CHANGED"));
             }
             let compact_matches = match (&current.compact_variant, &state.compact_variant) {
@@ -885,5 +956,76 @@ mod tests {
         }
         input["intent"]["derived"]["recipe"]["serverCertified"] = serde_json::json!(true);
         assert!(serde_json::from_value::<Transfer>(input).is_err());
+    }
+}
+
+#[cfg(test)]
+mod gpu_variant_tests {
+    use super::*;
+    fn state() -> Transfer {
+        let workspace = Uuid::new_v4().to_string();
+        let tenant = Uuid::new_v4().to_string();
+        let principal = Uuid::new_v4().to_string();
+        serde_json::from_value(serde_json::json!({
+            "format":1,"revision":7,"workspaceId":workspace,"tenantId":tenant,"principalId":principal,
+            "intent":null,"jobId":null,"fileName":null,
+            "gpuVariant":{"version":1,"workspaceId":workspace,"tenantId":tenant,"principalId":principal,
+                "artworkId":Uuid::new_v4().to_string(),"request":{"revision":2,
+                "assetId":Uuid::new_v4().to_string(),"sha256":"a".repeat(64),"bytes":1829056,
+                "idempotencyKey":"same-create-operation","generation":"same-original-generation",
+                "profile":"embedded-model-basecolor-uastc-512-mips-v1"}}
+        })).unwrap()
+    }
+    #[test]
+    fn gpu_pending_reopens_exact_original_request_without_minting_ready_authority() {
+        let pending = state(); validate(&pending).unwrap();
+        let bytes = serde_json::to_vec(&pending).unwrap();
+        let reopened: Transfer = serde_json::from_slice(&bytes).unwrap();
+        validate(&reopened).unwrap();
+        assert_eq!(serde_json::to_vec(&reopened).unwrap(), bytes);
+        assert!(reopened.gpu_variant.as_ref().unwrap().job_id.is_none());
+        assert_eq!(reopened.gpu_variant.as_ref().unwrap().request.generation, "same-original-generation");
+        let mut legacy = serde_json::to_value(&pending).unwrap();
+        legacy.as_object_mut().unwrap().remove("gpuVariant");
+        let old: Transfer = serde_json::from_value(legacy.clone()).unwrap(); validate(&old).unwrap();
+        assert_eq!(serde_json::to_value(old).unwrap(), legacy);
+    }
+    #[test]
+    fn gpu_pending_rejects_foreign_scope_open_fields_nulls_and_mixed_writers() {
+        let good = serde_json::to_value(state()).unwrap();
+        for field in ["workspaceId", "tenantId", "principalId"] {
+            let mut wrong = good.clone(); wrong["gpuVariant"][field] = Uuid::new_v4().to_string().into();
+            assert!(validate(&serde_json::from_value(wrong).unwrap()).is_err());
+        }
+        let mut mixed = good.clone(); mixed["fileName"] = "source.glb".into();
+        assert!(validate(&serde_json::from_value(mixed).unwrap()).is_err());
+        let mut wrong=good.clone();wrong["gpuVariant"]=Value::Null;
+        assert!(serde_json::from_value::<Transfer>(wrong).is_err());
+        let mut wrong=good.clone();wrong["gpuVariant"]["jobId"]=Value::Null;
+        assert!(serde_json::from_value::<Transfer>(wrong).is_err());
+        let mut wrong=good.clone();wrong["gpuVariant"]["request"]["path"]="/untrusted".into();
+        assert!(serde_json::from_value::<Transfer>(wrong).is_err());
+        let mut wrong=good;wrong["gpuVariant"]["request"]["profile"]="different".into();
+        assert!(validate(&serde_json::from_value(wrong).unwrap()).is_err());
+    }
+    #[test]
+    fn gpu_cas_binds_one_job_and_refuses_replacement_or_unknown_nonce_changes() {
+        let prior = state();
+        let mut bound = prior.clone();
+        bound.gpu_variant.as_mut().unwrap().job_id=Some(Uuid::new_v4().to_string());
+        assert!(upload_transition_matches(&prior, &bound));
+        assert!(upload_transition_matches(&bound, &bound));
+        let mut stale=bound.clone();stale.revision-=1;
+        assert!(!upload_transition_matches(&bound, &stale));
+        let mut replacement=bound.clone();replacement.gpu_variant.as_mut().unwrap().request.generation="new-nonce".into();
+        assert!(!upload_transition_matches(&bound, &replacement));
+        let mut replacement=bound.clone();replacement.gpu_variant.as_mut().unwrap().job_id=Some(Uuid::new_v4().to_string());
+        assert!(!upload_transition_matches(&bound, &replacement));
+        let mut unbound=bound.clone();unbound.gpu_variant.as_mut().unwrap().job_id=None;
+        assert!(!upload_transition_matches(&bound, &unbound));
+        let mut cleared=bound.clone();cleared.gpu_variant=None;
+        assert!(upload_transition_matches(&bound, &cleared));
+        assert!(upload_transition_matches(&cleared, &prior));
+        assert!(!upload_transition_matches(&cleared, &bound));
     }
 }

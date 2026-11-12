@@ -21,6 +21,8 @@ struct NativeImportControls: View {
             VStack(alignment: .leading, spacing: 12) {
                 if model.hasProductImageTransfer {
                     Text("전시의 선택 속성에서 JPEG 교체 준비를 이어갈 수 있습니다.")
+                } else if let gpu = model.gpuTransfer {
+                    gpuControls(gpu)
                 } else if let compact = model.compactTransfer {
                     compactControls(compact)
                 } else if !belongs, let id = model.transfer?.intent?.artworkId {
@@ -172,6 +174,13 @@ struct NativeImportControls: View {
                     .disabled(!ready || model.busy)
             }
           }
+          if model.canPrepareGPUModel {
+            Section("승인된 3D 모델의 감상용 파일") {
+                Text("원본 모델을 유지하며 감상용 파일을 따로 준비합니다.").foregroundStyle(.secondary)
+                Button("감상용 파일 준비") { Task { await model.prepareGPUModel() } }
+                    .disabled(!ready || model.busy)
+            }
+          }
           if model.canSelectIntake || !model.intakeRows.isEmpty {
             Section("작품 파일 대기 목록") {
                 Text("이 목록은 앱을 열어 두는 동안 유지됩니다. 파일마다 저장한 작품과 권리를 확인하고 하나씩 검사하세요.")
@@ -251,6 +260,44 @@ struct NativeImportControls: View {
             ProgressView("파일 검사 대기 중").controlSize(.small)
         } else if job.state == "processing" {
             ProgressView("파일 검사 중").controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    private func gpuControls(_ transfer: NativeGPUModelPreparationTransfer) -> some View {
+        if model.selected?.id != transfer.artworkId {
+            Text("다른 작품에 시작한 감상용 파일 준비가 있습니다.")
+            Button("준비 중인 작품 열기") { openArtwork(transfer.artworkId) }
+        } else if let job = model.gpuJob {
+            let phase = job.value["gpuPreparation"]["status"].string ?? ""
+            Text(phase == "ready" ? "감상용 파일 준비 완료 · 검토 대기" :
+                 phase == "failed" ? "감상용 파일 준비 실패" :
+                 phase == "cancelled" ? "감상용 파일 준비 중단" : "감상용 파일 준비 중")
+            Text("원본 모델은 유지됩니다. 준비 완료는 선택 승인이 아닙니다.").foregroundStyle(.secondary)
+            if job.value["gpuPreparation"]["workerDrained"] == .bool(false) && ["failed", "cancelled"].contains(phase) {
+                ProgressView("작업 종료 확인 중")
+            }
+            Button("작업 상태 확인") { Task { await model.refreshGPUModel() } }.disabled(model.busy)
+            if ["queued", "processing", "failed"].contains(job.value["state"].string ?? "") {
+                Button("준비 중단") { Task { await model.cancelGPUModel() } }.disabled(model.busy)
+            }
+            if phase == "failed", job.value["gpuPreparation"]["workerDrained"] == .bool(true),
+               (job.value["attempts"].integer ?? 5) < 5 {
+                Button("같은 작업 다시 준비") { Task { await model.retryGPUModel() } }.disabled(model.busy)
+            }
+            if phase == "cancelled", job.value["gpuPreparation"]["workerDrained"] == .bool(true) {
+                Button("중단한 작업 정리") { Task { await model.clearCancelledGPUModel() } }.disabled(model.busy)
+            }
+            if phase == "ready" {
+                Button("승인된 작업 확인 후 정리") { Task { await model.clearSelectedGPUModel() } }.disabled(model.busy)
+            }
+        } else if transfer.jobId != nil {
+            Text("보존된 작업 상태를 확인하세요.")
+            Button("작업 상태 확인") { Task { await model.refreshGPUModel() } }.disabled(model.busy)
+            Button("준비 중단") { Task { await model.cancelGPUModel() } }.disabled(model.busy)
+        } else {
+            Text("이전에 요청한 작업을 확인합니다.")
+            Button("같은 준비 요청 확인") { Task { await model.prepareGPUModel() } }.disabled(model.busy)
         }
     }
 

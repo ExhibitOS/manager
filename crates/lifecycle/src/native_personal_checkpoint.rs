@@ -50,6 +50,7 @@ fn admitted_pair(source: &str, target: &str) -> bool {
 }
 
 fn check_cold_transition_source(root: &Path, pair: (&str, &str)) -> Result<()> {
+    crate::installations::gpu_model_job_root_empty(root)?;
     #[cfg(feature = "workspace-v5-owner-validation")]
     if let Some(transition @ FurnishingTransition::Recover45 { .. }) = FurnishingTransition::from_manifests(pair) {
         return crate::native_runtime::catalog45_recovery_source_generation(root, transition.startup_recovery()).map(|_| ());
@@ -141,7 +142,7 @@ fn catalog45_activation_saved_document(
         && !crate::native_payload::catalog45_clean_exit_handoff(pair)
         && !crate::native_payload::catalog45_restored_backed_handoff(pair)
         && !crate::native_payload::catalog45_adoption_handoff(pair)
-        && !FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade50 { .. }))
+        && !FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. }))
     {
         return Ok(false);
     }
@@ -253,7 +254,7 @@ fn startup_cancellation_proof_matches(
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(feature = "workspace-v5-owner-validation")]
     if crate::native_payload::catalog45_adoption_handoff(pair)
-        || FurnishingTransition::from_manifests(pair).is_some_and(|transition| matches!(transition, FurnishingTransition::Upgrade50 { .. })) {
+        || FurnishingTransition::from_manifests(pair).is_some_and(|transition| matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. })) {
         return CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(feature = "workspace-v5-owner-validation")]
@@ -1143,7 +1144,7 @@ impl LifecycleService {
             if (crate::native_payload::catalog45_clean_exit_handoff(pair)
                 || crate::native_payload::catalog45_restored_backed_handoff(pair)
                 || crate::native_payload::catalog45_adoption_handoff(pair)
-                || FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade50 { .. })))
+                || FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. })))
                 && !catalog45_activation_saved_document(
                     pair, false, false, checkpoint.saved_document_sha256.as_deref(), document.ok_or_else(invalid)?,
                 )?
@@ -1348,6 +1349,7 @@ impl LifecycleService {
                 FurnishingTransition::Upgrade40(_) => target_payload.catalog40_upgrade_source_ledger()?,
                 FurnishingTransition::Upgrade44 { .. } => target_payload.catalog44_upgrade_source_ledger()?,
                 FurnishingTransition::Upgrade50 { .. } => target_payload.catalog50_upgrade_source_ledger()?,
+                FurnishingTransition::Upgrade49 { .. } => target_payload.catalog49_upgrade_source_ledger()?,
                 _ => target_payload.workspace_furnishing_ledger(target_catalog)?,
             };
             if source_payload.workspace_furnishing_ledger(source_catalog)? != target_expected_source {
@@ -1487,7 +1489,7 @@ impl InstallationController {
             if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
                 return Err(invalid());
             }
-            if FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade50 { .. }))
+            if FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. }))
                 && (document.pending.is_some() || document.saved_edit_version.is_none()
                     || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != document.saved_edit_version)
             { return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED")); }

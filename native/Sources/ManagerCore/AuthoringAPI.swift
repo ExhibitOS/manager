@@ -24,6 +24,8 @@ public struct AuthoringSession: Decodable, Sendable {
     public var modelOriginalInspectionProfile: String? = nil
     public var nativeLargeModelPreparationProfile: String? = nil
     public var compactModelVariantProfile: String? = nil
+    /// Proposed server field; no runtime family has been admitted yet.
+    public var nativeGpuModelPreparationProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
     public var nativeProductImageThumbnailRepairProfile: String? = nil
@@ -1908,6 +1910,177 @@ public actor AuthoringAPI {
               response.previewUrl == prefix + "/artworks/" + id + "/preview" else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
         return response
     }
+    /// Remains closed until the exact Native runtime family is independently admitted.
+    public var admitsGPUModelPreparation: Bool { false }
+    /// Must be replaced with an actual candidate-bound presented-frame witness.
+    private var hasGPUModelCandidatePresentation: Bool { false }
+
+    private var canObserveOwnedGPUModelPreparation: Bool {
+        nativeSession && !authenticationBusy && session != nil
+    }
+
+    private func checkedGPUJob(_ raw: DocumentValue, artworkId: String,
+                               input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        let current = generation
+        var verified: String?
+        if raw["gpuPreparation"]["status"] == .string("ready") {
+            guard let jobID = raw["id"].string else { throw NativeGPUModelPreparation.invalid() }
+            let review: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(artworkId))
+                + "/gpu-preparations/" + (try identifier(jobID)) + "/review")
+            guard generation == current, review["serverReceipt"] == raw["gpuPreparation"]["serverReceipt"],
+                  review["source"] == raw["gpuPreparation"]["source"], review["candidate"] == raw["gpuPreparation"]["candidate"],
+                  review["jobId"] == raw["id"], review["artworkId"].string?.lowercased() == artworkId.lowercased(),
+                  review["receiptSHA256"] == review["serverReceipt"]["sha256"] else { throw NativeGPUModelPreparation.invalid() }
+            verified = review["receiptSHA256"].string
+        }
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try NativeGPUModelPreparationJob(raw, artworkId: artworkId, request: input, verifiedReceiptSHA256: verified)
+    }
+
+    public func createGPUModelPreparation(artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        guard admitsGPUModelPreparation else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+        let current = generation, artworkId = try identifier(artworkId)
+        let full = try await artwork(artworkId)
+        guard generation == current, admitsGPUModelPreparation, input.matchesApprovedSource(full, artworkId: artworkId) else {
+            throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED")
+        }
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + artworkId + "/compact-preparations", method: "POST", body: encoded(input))
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try await checkedGPUJob(raw, artworkId: artworkId, input: input)
+    }
+
+    /// Submit a newly journaled intent; the returned ID alone is not a receipt.
+    public func createGPUModelPreparationIdentity(artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelJobIdentity {
+        guard admitsGPUModelPreparation, input.valid else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+        let current = generation, artworkId = try identifier(artworkId)
+        let full = try await artwork(artworkId)
+        guard generation == current, admitsGPUModelPreparation, input.matchesApprovedSource(full, artworkId: artworkId) else {
+            throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED")
+        }
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + artworkId + "/compact-preparations", method: "POST", body: encoded(input))
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try NativeGPUModelJobIdentity(raw, input: input)
+    }
+
+    /// A server-enforced read-only lookup for an already-journaled request.
+    /// Nil is only a point-in-time absence, never a worker-drain receipt.
+    public func recoverGPUModelPreparationIdentity(artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelJobIdentity? {
+        guard canObserveOwnedGPUModelPreparation, input.valid else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let current = generation, artworkId = try identifier(artworkId)
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + artworkId + "/gpu-preparations/recover", method: "POST", body: encoded(input))
+        guard generation == current,
+              NativeGPUModelPreparation.exact(raw, ["artworkId", "operationID", "generation", "job"]),
+              NativeGPUModelPreparation.sameID(raw["artworkId"].string, artworkId),
+              raw["operationID"] == .string(input.idempotencyKey), raw["generation"] == .string(input.generation) else {
+            throw NativeGPUModelPreparation.invalid()
+        }
+        return raw["job"] == .null ? nil : try NativeGPUModelJobIdentity(raw["job"], input: input)
+    }
+
+    public func gpuModelPreparationJob(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        guard canObserveOwnedGPUModelPreparation else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let current = generation, id = try identifier(id), artworkId = try identifier(artworkId)
+        let raw: DocumentValue = try await request("/api/v1/tenants/\(tenant)/imports/" + id)
+        guard generation == current, raw["id"].string?.lowercased() == id else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try await checkedGPUJob(raw, artworkId: artworkId, input: input)
+    }
+
+    public func cancelGPUModelPreparation(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        // Server permits owner cancellation even when source authority is lost;
+        // requiring a preflight status read would defeat that recovery path.
+        guard canObserveOwnedGPUModelPreparation else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let current = generation
+        let raw: DocumentValue = try await request("/api/v1/tenants/\(tenant)/imports/" + (try identifier(id)) + "/cancel", method: "POST", body: Data("{}".utf8))
+        guard generation == current, raw["id"].string?.lowercased() == id.lowercased() else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let job = try await checkedGPUJob(raw, artworkId: artworkId, input: input)
+        guard job.value["state"] == .string("cancelled") else { throw NativeGPUModelPreparation.invalid() }
+        return job
+    }
+
+    public func retryGPUModelPreparation(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        guard admitsGPUModelPreparation else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+        let current = generation
+        let prior = try await gpuModelPreparationJob(id, artworkId: artworkId, input: input)
+        guard prior.value["state"] == .string("failed"), prior.value["gpuPreparation"]["workerDrained"] == .bool(true),
+              let attempts = prior.value["attempts"].integer, attempts < 5 else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
+        let raw: DocumentValue = try await request("/api/v1/tenants/\(tenant)/imports/" + (try identifier(id)) + "/retry", method: "POST", body: Data("{}".utf8))
+        guard generation == current, admitsGPUModelPreparation, raw["id"].string?.lowercased() == id.lowercased() else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try await checkedGPUJob(raw, artworkId: artworkId, input: input)
+    }
+
+    public func reviewGPUModelPreparation(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelReview {
+        guard admitsGPUModelPreparation else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+        let current = generation
+        let job = try await gpuModelPreparationJob(id, artworkId: artworkId, input: input)
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(artworkId)) + "/gpu-preparations/" + (try identifier(id)) + "/review")
+        guard generation == current, admitsGPUModelPreparation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try NativeGPUModelReview(raw, artworkId: artworkId, request: input, job: job)
+    }
+
+    public func gpuModelSelection(artworkId: String) async throws -> NativeGPUModelSelectionReadback {
+        guard canObserveOwnedGPUModelPreparation else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(artworkId)) + "/gpu-preparations/selection")
+        return try NativeGPUModelSelectionReadback(raw, artworkId: artworkId)
+    }
+
+    public func gpuModelCandidate(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelCandidate {
+        let current = generation
+        let review = try await reviewGPUModelPreparation(id, artworkId: artworkId, input: input)
+        guard let receipt = review.value["receiptSHA256"].string, let hash = review.value["candidate"]["sha256"].string,
+              let count = review.value["candidate"]["bytes"].integer, (28...33_554_432).contains(count) else { throw NativeGPUModelPreparation.invalid() }
+        let path = prefix + "/artworks/" + (try identifier(artworkId)) + "/gpu-preparations/" + (try identifier(id))
+            + "/model?receiptSHA256=" + receipt + "&candidateSHA256=" + hash
+        guard let url = URL(string: path, relativeTo: base)?.absoluteURL, url.host == "127.0.0.1", url.port == base.port,
+              url.scheme == "http", generation == current, admitsGPUModelPreparation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        activeRequests += 1
+        defer { activeRequests -= 1 }
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        req.setValue("model/gltf-binary", forHTTPHeaderField: "Accept")
+        req.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        req.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
+        let (bytes, response) = try await transport.bytes(for: req)
+        defer { bytes.task.cancel() }
+        guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
+              http.mimeType?.lowercased() == "model/gltf-binary", http.value(forHTTPHeaderField: "x-exhibitos-sha256") == hash,
+              http.value(forHTTPHeaderField: "x-exhibitos-receipt-sha256") == receipt,
+              http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true,
+              http.expectedContentLength < 0 || http.expectedContentLength == count else { throw NativeGPUModelPreparation.invalid() }
+        var data = Data(); data.reserveCapacity(Int(count))
+        try await withTaskCancellationHandler {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < Int(count) else { throw NativeGPUModelPreparation.invalid() }
+                data.append(byte)
+            }
+        } onCancel: { bytes.task.cancel() }
+        guard generation == current, admitsGPUModelPreparation, data.count == Int(count), nativeImportSHA256(data) == hash else { throw NativeGPUModelPreparation.invalid() }
+        return NativeGPUModelCandidate(artworkId: artworkId, jobId: id, receiptSHA256: receipt, candidateSHA256: hash, data: data)
+    }
+
+    /// Caller must separately establish that the user reviewed the exact candidate.
+    public func approveGPUModelPreparation(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest,
+                                           candidate: NativeGPUModelCandidate) async throws -> NativeGPUModelApprovalResult {
+        guard admitsGPUModelPreparation, hasGPUModelCandidatePresentation, candidate.artworkId == artworkId, candidate.jobId == id,
+              nativeImportSHA256(candidate.data) == candidate.candidateSHA256 else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+        let current = generation
+        let job = try await gpuModelPreparationJob(id, artworkId: artworkId, input: input)
+        let review = try await reviewGPUModelPreparation(id, artworkId: artworkId, input: input)
+        let approval = try NativeGPUModelApprovalRequest(review: review, request: input)
+        guard generation == current, admitsGPUModelPreparation, approval.receiptSHA256 == candidate.receiptSHA256,
+              approval.candidateSHA256 == candidate.candidateSHA256 else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(artworkId)) + "/gpu-preparations/approve",
+                                                   method: "POST", body: encoded(approval))
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let result = try NativeGPUModelApprovalResult(raw, artworkId: artworkId, job: job, request: input)
+        let readback = try await gpuModelSelection(artworkId: artworkId)
+        guard generation == current, readback.selection == result.selection,
+              readback.selection?.matchesCandidate(job: job, request: input) == true else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+        let full = try await artwork(artworkId)
+        guard generation == current, full.approvedRevision == input.revision + 1,
+              full.approvedAssetId?.lowercased() == input.assetId.lowercased() else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+        return result
+    }
+
     public var admitsCompactModelVariant: Bool {
         nativeSession && !authenticationBusy && admitsRequiredModelPreparation
             && session?.compactModelVariantProfile == NativeCompactModelVariantRequest.profile

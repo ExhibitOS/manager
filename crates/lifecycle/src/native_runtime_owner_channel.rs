@@ -155,7 +155,7 @@ impl Setup {
         self.normal_selected_v3_bootstrap(auth, generation, super::oex_catalog_frames::Protocol::from(version).owner_mode())
     }
     pub(super) fn workspace_furnishing_bootstrap(&self, auth: &LocalAuthority, generation: &str, start: super::FurnishingStart) -> Result<Vec<u8>> {
-        if start == super::FurnishingStart::Upgrade045To050 {
+        if matches!(start, super::FurnishingStart::Upgrade045To050 | super::FurnishingStart::Upgrade045To049) {
             if self.hayes.is_some() || self.adoption.is_some() { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
             return self.normal_selected_v3_bootstrap(auth, generation, start.owner_mode());
         }
@@ -897,6 +897,7 @@ mod tests {
             (super::super::FurnishingStart::SelectedImport040, "workspace-furnishing-040-selected-import-v7"),
             (super::super::FurnishingStart::Upgrade039To040, "workspace-furnishing-039-to-040-upgrade-v1"),
             (super::super::FurnishingStart::Upgrade045To050, "workspace-furnishing-045-to-050-upgrade-v1"),
+            (super::super::FurnishingStart::Upgrade045To049, "workspace-furnishing-045-to-049-upgrade-v1"),
         ] {
             let wire = setup.workspace_furnishing_bootstrap(&auth, &generation, start).unwrap();
             let value: Value = serde_json::from_slice(&wire).unwrap();

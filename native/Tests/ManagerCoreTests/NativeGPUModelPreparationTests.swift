@@ -25,7 +25,7 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         let roles: [DocumentValue] = ["baseColor", "normal", "occlusion"].enumerated().map { i, role in
             .object(["role": .string(role), "textureIndex": .integer(Int64(i)), "sourceImageIndex": .integer(Int64(i)), "sourceSHA256": .string(fixtureDigest), "sourceBytes": .integer(50), "outputPngImageIndex": .integer(Int64(i)), "outputPngSHA256": .string(fixtureDigest), "outputPngBytes": .integer(50), "width": .integer(512), "height": .integer(512), "colorSpace": .string(i == 0 ? "srgb" : "linear")])
         }
-        let producer: DocumentValue = .object(["version": .integer(1), "tool": .object(["name": .string("toktx"), "version": .string("4.4.2"), "executableSHA256": .string(fixtureDigest), "librarySHA256": .string(fixtureDigest), "recipeSHA256": .string(NativeGPUModelPreparation.recipe)]), "geometry": .object(["algorithm": .string("glb-source-preservation-v1"), "sourceSHA256": .string(fixtureDigest), "outputSHA256": .string(fixtureDigest), "triangles": .integer(20000), "vertices": .integer(30000)]), "samplers": .object(["sourceSHA256": .string(fixtureDigest), "outputSHA256": .string(fixtureDigest), "semantics": .string("source-preserved-implicit-repeat-mipmapped")]), "roles": .array(roles), "ktx": .object(["imageIndex": .integer(3), "sha256": .string(fixtureDigest), "bytes": .integer(900), "width": .integer(512), "height": .integer(512), "levels": .integer(10), "format": .string("uastc"), "transfer": .string("srgb"), "opaque": .bool(true), "levelDimensions": .array([512,256,128,64,32,16,8,4,2,1].map { .integer(Int64($0)) })])])
+        let producer: DocumentValue = .object(["version": .integer(1), "tool": .object(["name": .string("toktx"), "version": .string("4.4.2"), "executableSHA256": .string(NativeGPUModelPreparation.encoderSHA256), "librarySHA256": .string(NativeGPUModelPreparation.encoderLibrarySHA256), "recipeSHA256": .string(NativeGPUModelPreparation.recipe)]), "geometry": .object(["algorithm": .string("glb-source-preservation-v1"), "sourceSHA256": .string(fixtureDigest), "outputSHA256": .string(fixtureDigest), "triangles": .integer(20000), "vertices": .integer(30000)]), "samplers": .object(["sourceSHA256": .string(fixtureDigest), "outputSHA256": .string(fixtureDigest), "semantics": .string("source-preserved-implicit-repeat-mipmapped")]), "roles": .array(roles), "ktx": .object(["imageIndex": .integer(3), "sha256": .string(fixtureDigest), "bytes": .integer(900), "width": .integer(512), "height": .integer(512), "levels": .integer(10), "format": .string("uastc"), "transfer": .string("srgb"), "opaque": .bool(true), "levelDimensions": .array([512,256,128,64,32,16,8,4,2,1].map { .integer(Int64($0)) })])])
         var receipt: [String: DocumentValue] = ["version": .integer(1), "purpose": .string(NativeGPUModelPreparation.purpose), "profile": .string(NativeGPUModelPreparation.profile), "recipeSHA256": .string(NativeGPUModelPreparation.recipe), "jobId": .string(job), "artworkId": .string(artwork), "artworkRevision": .integer(2), "operationID": .string("op-1"), "generation": .string("gen-1"), "source": source(), "candidate": candidate(), "producer": producer]
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let digest = SHA256.hash(data: try encoder.encode(DocumentValue.object(receipt))).map { String(format: "%02x", $0) }.joined()
@@ -49,6 +49,13 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         var bad = value; bad["gpuPreparation"]["workerDrained"] = .bool(false); XCTAssertThrowsError(try NativeGPUModelPreparationJob(bad, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt))
         bad = value; bad["gpuPreparation"]["serverReceipt"]["producer"]["tool"]["version"] = .string("4.0"); XCTAssertThrowsError(try NativeGPUModelPreparationJob(bad, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt))
         XCTAssertThrowsError(try NativeGPUModelPreparationJob(value, artworkId: artwork, request: req, verifiedReceiptSHA256: fixtureDigest))
+        var producer = value["gpuPreparation"]["serverReceipt"]["producer"]
+        XCTAssertTrue(NativeGPUModelPreparation.producer(producer))
+        producer["tool"]["executableSHA256"] = .string(fixtureDigest)
+        XCTAssertFalse(NativeGPUModelPreparation.producer(producer))
+        producer = value["gpuPreparation"]["serverReceipt"]["producer"]
+        producer["ktx"]["imageIndex"] = .integer(0)
+        XCTAssertFalse(NativeGPUModelPreparation.producer(producer))
     }
     func testHistoricalVendorRecipeIsRejected() throws {
         let req = try request()
@@ -91,6 +98,42 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         XCTAssertThrowsError(try NativeGPUModelApprovalResult(result, artworkId: otherArtwork, job: bound, request: req))
         selection["jobId"] = .string(UUID().uuidString.lowercased())
         XCTAssertFalse(try NativeGPUModelSelection(selection).matchesCandidate(job: bound, request: req))
+    }
+
+    func testCommittedApprovalReplayRequiresExactSelection() throws {
+        let (value, receipt) = try ready(), req = try request()
+        let bound = try NativeGPUModelPreparationJob(value, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt)
+        let n = value["gpuPreparation"]
+        let selection: DocumentValue = .object(["version": .integer(1), "profile": .string(NativeGPUModelPreparation.profile), "jobId": .string(job), "sourceAssetId": .string(asset), "candidateAssetId": .string(output), "candidateSHA256": .string(fixtureDigest), "receiptSHA256": .string(receipt), "approvedRevision": .integer(3)])
+        var review: DocumentValue = .object(["artworkId": .string(artwork), "revision": .integer(3), "jobId": .string(job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": selection])
+        let valid = try NativeGPUModelReview(review, artworkId: artwork, request: req, job: bound)
+        XCTAssertEqual(try NativeGPUModelApprovalRequest(review: valid, request: req).revision, 2)
+        review["selection"]["jobId"] = .string(UUID().uuidString.lowercased())
+        XCTAssertThrowsError(try NativeGPUModelReview(review, artworkId: artwork, request: req, job: bound))
+        review["selection"] = .null
+        XCTAssertThrowsError(try NativeGPUModelReview(review, artworkId: artwork, request: req, job: bound))
+        review["revision"] = .integer(4); review["selection"] = selection
+        XCTAssertThrowsError(try NativeGPUModelReview(review, artworkId: artwork, request: req, job: bound))
+    }
+
+    func testTransferClearRequiresMatchingTerminalAuthority() throws {
+        let req = try request(), owner = UUID().uuidString.lowercased()
+        let transfer = try NativeGPUModelPreparationTransfer(workspaceId: owner, tenantId: owner, principalId: owner, artworkId: artwork, request: req, jobId: job)
+        var cancelled = pending()
+        cancelled["state"] = .string("cancelled"); cancelled["gpuPreparation"]["status"] = .string("cancelled")
+        let undrained = try NativeGPUModelPreparationJob(cancelled, artworkId: artwork, request: req)
+        XCTAssertFalse(transfer.permitsClearingCancelled(undrained))
+        cancelled["gpuPreparation"]["workerDrained"] = .bool(true)
+        let drained = try NativeGPUModelPreparationJob(cancelled, artworkId: artwork, request: req)
+        XCTAssertTrue(transfer.permitsClearingCancelled(drained))
+        cancelled["id"] = .string(UUID().uuidString.lowercased())
+        let otherJob = try NativeGPUModelPreparationJob(cancelled, artworkId: artwork, request: req)
+        XCTAssertFalse(transfer.permitsClearingCancelled(otherJob))
+        let (value, receipt) = try ready()
+        let readyJob = try NativeGPUModelPreparationJob(value, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt)
+        XCTAssertFalse(transfer.permitsClearingSelected(readyJob, selection: nil))
+        let selected = try NativeGPUModelSelection(.object(["version": .integer(1), "profile": .string(NativeGPUModelPreparation.profile), "jobId": .string(job), "sourceAssetId": .string(asset), "candidateAssetId": .string(output), "candidateSHA256": .string(fixtureDigest), "receiptSHA256": .string(receipt), "approvedRevision": .integer(3)]))
+        XCTAssertTrue(transfer.permitsClearingSelected(readyJob, selection: selected))
     }
     func testRequestLimitsAndScopeBinding() throws {
         XCTAssertThrowsError(try NativeGPUModelPreparationRequest(revision: 0, assetId: asset, sha256: fixtureDigest, bytes: 10, idempotencyKey: "", generation: "x"))

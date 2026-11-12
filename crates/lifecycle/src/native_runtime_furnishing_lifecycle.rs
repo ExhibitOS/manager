@@ -23,6 +23,8 @@ pub(super) enum Admission {
     InterruptedReopen,
     #[serde(rename = "catalog-upgrade-045-to-050")]
     CatalogUpgrade045To050,
+    #[serde(rename = "catalog-upgrade-045-to-049")]
+    CatalogUpgrade045To049,
 }
 
 impl Admission {
@@ -36,6 +38,7 @@ impl Admission {
             Self::CatalogUpgrade044To045 => 6,
             Self::InterruptedReopen => 7,
             Self::CatalogUpgrade045To050 => 8,
+            Self::CatalogUpgrade045To049 => 9,
         }
     }
 }
@@ -126,6 +129,10 @@ impl Binding {
             && (crate::native_payload::catalog45_carried_restore_host_matches(tuple)
                 || (self.admission_kind == Admission::CleanReopen
                     && crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple).is_some()));
+        let gpu = self.catalog == 49
+            && matches!(self.admission_kind, Admission::CatalogUpgrade045To049 | Admission::CleanReopen)
+            && crate::native_payload::gpu_model_host_matches(tuple)
+            && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let thumbnail = self.catalog == 50
             && matches!(self.admission_kind, Admission::CatalogUpgrade045To050 | Admission::CleanReopen)
             && crate::native_payload::furnishing_thumbnail_host_matches(tuple)
@@ -137,7 +144,7 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -209,6 +216,9 @@ impl Binding {
             (Phase::Active | Phase::Clean, Admission::CatalogUpgrade044To045) => {
                 self.catalog == 45 && self.previous_generation.is_some() && self.restore.is_none()
             }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade045To049) => {
+                self.catalog == 49 && self.previous_generation.is_some()
+            }
             (Phase::Active | Phase::Clean, Admission::CatalogUpgrade045To050) => {
                 self.catalog == 50 && self.previous_generation.is_some()
             }
@@ -229,7 +239,7 @@ impl Binding {
                             value != 0 && value.to_string() == proof.target_system_identifier
                         })
                 || proof.carried_provenance.as_ref().is_some_and(|provenance|
-                    !carried_restore || proof.provenance.is_some()
+                    !(carried_restore || thumbnail || gpu) || proof.provenance.is_some()
                         || !provenance.matches(&proof.archive_manifest_sha256, &proof.target_system_identifier))
                 || proof.provenance.as_ref().is_some_and(|provenance|
                     !(retained_restore || crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple))
@@ -248,6 +258,7 @@ impl Binding {
         let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
             .or_else(|| crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::furnishing_thumbnail_carried_receipt_payload(tuple))
+            .or_else(|| crate::native_payload::gpu_model_carried_receipt_payload(tuple))
             .unwrap_or(self.payload_manifest_sha256.as_str());
         crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
             &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref(), proof.carried_provenance.as_ref())
@@ -304,7 +315,7 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
-        if matches!(transition, FurnishingTransition::Upgrade50 { .. }) {
+        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. }) {
             return if self.admission_kind == Admission::CleanReopen
                 && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
             { Ok(self.restore.as_ref()) } else { Err(err(ERROR)) };
@@ -364,6 +375,7 @@ impl Binding {
             FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
             FurnishingTransition::Upgrade44 { .. } => Admission::CatalogUpgrade044To045,
             FurnishingTransition::Upgrade50 { .. } => Admission::CatalogUpgrade045To050,
+            FurnishingTransition::Upgrade49 { .. } => Admission::CatalogUpgrade045To049,
             FurnishingTransition::Recover45 { .. } => Admission::InterruptedReopen,
             _ => Admission::CleanReopen,
         }
@@ -1887,5 +1899,17 @@ mod thumbnail_admission_tests {
         assert_eq!(Admission::InterruptedReopen.tag(), 7);
         assert_eq!(Admission::CatalogUpgrade045To050.tag(), 8);
         assert_eq!(serde_json::to_value(Admission::CatalogUpgrade045To050).unwrap(), "catalog-upgrade-045-to-050");
+    }
+}
+
+#[cfg(test)]
+mod gpu_admission_tests {
+    use super::*;
+    #[test]
+    fn gpu_kind9_does_not_reuse_thumbnail_kind8_or_interrupted_kind7() {
+        assert_eq!(Admission::CatalogUpgrade045To049.tag(), 9);
+        assert_eq!(Admission::CatalogUpgrade045To050.tag(), 8);
+        assert_eq!(Admission::InterruptedReopen.tag(), 7);
+        assert_eq!(serde_json::to_value(Admission::CatalogUpgrade045To049).unwrap(), "catalog-upgrade-045-to-049");
     }
 }
