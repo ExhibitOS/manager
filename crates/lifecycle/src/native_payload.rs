@@ -964,6 +964,13 @@ pub(crate) const CATALOG45_DEFAULT_1_10_TARGET: RuntimeTuple = (
     "43c873e85349b1bf48d8a3f466ab31f41f885b7cbde96ec1ea1fc91474fc684a",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_REFINED_BENCH_TARGET: RuntimeTuple = (
+    "3ea221c2ea0d4f419c6625ff63e7405a721de095",
+    "6b133c8f1372b8d886d08c894b43a17d8300fc7577db4b430874d8568557bbec",
+    "ad6cd9b1ae8941ce99eadb9673c7e4a6c72689aaedd628bcbe33e623eb524c13",
+);
+
 fn catalog45_model_adoption_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return [CATALOG45_MODEL_ADOPTION_VALIDATION, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
@@ -983,6 +990,7 @@ pub(crate) fn ordinary_fresh_catalog45_host_matches(tuple: (&str, &str, &str)) -
         || CATALOG45_BACKED_BENCH == tuple
         || CATALOG45_BOTTOM_CATALOG == tuple
         || CATALOG45_DEFAULT_1_10_TARGET == tuple
+        || CATALOG45_REFINED_BENCH_TARGET == tuple
         || catalog45_native_publication_host_matches(tuple) || catalog45_model_adoption_host_matches(tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
@@ -1033,7 +1041,7 @@ pub(crate) fn catalog45_carried_restore_payload(payload: &Payload) -> bool {
 /// after the separately authorized clean adoption handoff.
 pub(crate) fn catalog45_adoption_carried_receipt_payload(tuple: (&str, &str, &str)) -> Option<&'static str> {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET]
+    return [CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_REFINED_BENCH_TARGET]
         .contains(&tuple).then_some(CATALOG45_CARRIED_RESTORE_BASE.2);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; None }
@@ -1058,6 +1066,7 @@ fn catalog45_adoption_transition(pair: (&str, &str)) -> Option<(RuntimeTuple, Ru
         (CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET),
         (CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET),
         (CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET),
+        (CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_REFINED_BENCH_TARGET),
     ].into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -1291,6 +1300,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_FIXTURE_AUTHORING_TARGET.2 == manifest
         || CATALOG45_DEFAULT_1_7_TARGET.2 == manifest
         || CATALOG45_DEFAULT_1_10_TARGET.2 == manifest
+        || CATALOG45_REFINED_BENCH_TARGET.2 == manifest
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2 == manifest
         || CATALOG45_RECOVERY_TARGET.2 == manifest
         || CATALOG45_SELECTED_RECOVERY_TARGET.2 == manifest
@@ -1336,7 +1346,7 @@ impl FurnishingTransition {
 
     pub(crate) fn retains_catalog45_adoption_carried_restore(self) -> bool {
         matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045 }
-            if [CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET].contains(&source)
+            if [CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET].contains(&source)
                 && catalog45_adoption_transition((source.2, target.2)) == Some((source, target)))
     }
 
@@ -1351,7 +1361,8 @@ impl FurnishingTransition {
                 || (source == CATALOG45_THUMBNAIL_FRESHNESS_TARGET && target == CATALOG45_COMPLETE_STATIC_TARGET)
                 || (source == CATALOG45_COMPLETE_STATIC_TARGET && target == CATALOG45_FIXTURE_AUTHORING_TARGET)
                 || (source == CATALOG45_FIXTURE_AUTHORING_TARGET && target == CATALOG45_DEFAULT_1_7_TARGET)
-                || (source == CATALOG45_DEFAULT_1_7_TARGET && target == CATALOG45_DEFAULT_1_10_TARGET))
+                || (source == CATALOG45_DEFAULT_1_7_TARGET && target == CATALOG45_DEFAULT_1_10_TARGET)
+                || (source == CATALOG45_DEFAULT_1_10_TARGET && target == CATALOG45_REFINED_BENCH_TARGET))
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
@@ -3169,6 +3180,58 @@ mod normal_oex_release_declaration_tests {
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn refined_bench_admits_only_exact_default_1_10_successor() {
+        let source = CATALOG45_DEFAULT_1_10_TARGET;
+        let target = CATALOG45_REFINED_BENCH_TARGET;
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        assert_eq!(transition, FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045 });
+        assert!(transition.retains_catalog45_adoption_carried_restore());
+        assert!(transition.allows_catalog45_adoption_without_restore());
+        assert!(ordinary_fresh_catalog45_host_matches(source));
+        assert!(ordinary_fresh_catalog45_host_matches(target));
+        assert!(!catalog45_model_adoption_host_matches(target));
+        assert_eq!(catalog45_adoption_carried_receipt_payload(target), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+        assert!(saved_workspace_transition_target(target.2));
+        for pair in [(target.2, source.2), (target.2, target.2),
+                     (CATALOG45_DEFAULT_1_7_TARGET.2, target.2),
+                     (GPU_MODEL_WRAPPING_TARGET.2, target.2), (target.2, GPU_MODEL_WRAPPING_TARGET.2)] {
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        assert!(!ordinary_fresh_catalog45_host_matches((source.0, target.1, target.2)));
+        assert!(!ordinary_fresh_catalog45_host_matches((target.0, source.1, target.2)));
+        assert!(!ordinary_fresh_catalog45_host_matches((target.0, target.1, source.2)));
+        assert!(!catalog45_same_version_restore_host_matches(target));
+        assert!(!catalog45_carried_restore_host_matches(target));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact assembled refined bench ordinary45 runtime"]
+    fn opens_exact_refined_bench_target_payload() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_REFINED_BENCH_RUNTIME").unwrap());
+        let mut payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let tuple = CATALOG45_REFINED_BENCH_TARGET;
+        assert_eq!(payload.context().source_commit, tuple.0);
+        assert_eq!(payload.producer_sha256(), tuple.1);
+        assert_eq!(payload.context().manifest_sha256, tuple.2);
+        assert!(payload.ordinary_fresh_furnishing());
+        assert!(!payload.native_model_adoption_original_target());
+        assert!(!payload.native_model_adoption_carried_target());
+        assert!(payload.native_model_adoption_root().unwrap().is_none());
+        assert_eq!(catalog45_adoption_carried_receipt_payload(tuple), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+        for path in ["platform/scripts/native-model-adoption-capability-v1.json",
+                     "platform/scripts/native-model-adoption-carried-target-capability-v1.json"] {
+            payload.manifest.files.push(furnishing_ledger_file(path.into()));
+            assert!(payload.native_model_adoption_root().is_err());
+            payload.manifest.files.pop();
+        }
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
+        assert_eq!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045).unwrap().lines().count(), 45);
+        assert!(Payload::open_saved_workspace_transition(&root).is_ok());
+        assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn fixture_authoring_handoff_only_admits_current_exact_predecessor() {
         let source = CATALOG45_COMPLETE_STATIC_TARGET;
         let target = CATALOG45_FIXTURE_AUTHORING_TARGET;
@@ -4412,8 +4475,9 @@ impl Payload {
             let publication = catalog45_native_publication_host_matches((
                 &payload.manifest.source_commit, &payload.manifest.producer_sha256, &payload.manifest_sha256,
             ));
-            let ordinary_default_1_10 = (&payload.manifest.source_commit[..], payload.producer_sha256(), &payload.manifest_sha256[..]) == CATALOG45_DEFAULT_1_10_TARGET;
-            if selected || (!gpu && !thumbnail && !publication && !ordinary_default_1_10 && !payload.native_model_adoption_original_target()
+            let ordinary_default = [CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_REFINED_BENCH_TARGET]
+                .contains(&(&payload.manifest.source_commit[..], payload.producer_sha256(), &payload.manifest_sha256[..]));
+            if selected || (!gpu && !thumbnail && !publication && !ordinary_default && !payload.native_model_adoption_original_target()
                 && payload.retained_furnishing_catalog() != expected)
                 || payload.workspace_furnishing_catalog()? != expected
             {
@@ -4441,7 +4505,7 @@ impl Payload {
             CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
             CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH,
             CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
-            CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET,
+            CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_10_TARGET, CATALOG45_REFINED_BENCH_TARGET,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = furnishing_thumbnail_host_matches((&context.source_commit,
             payload.producer_sha256(), &context.manifest_sha256))
@@ -5569,6 +5633,7 @@ impl Payload {
                 && ([CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH].contains(&provenance)
                     || CATALOG45_CARRIED_RESTORE_BASE == provenance
                     || CATALOG45_DEFAULT_1_10_TARGET == provenance
+                    || CATALOG45_REFINED_BENCH_TARGET == provenance
                     || self.native_model_adoption_original_target()
                     || furnishing_thumbnail_host_matches(provenance)
                     || gpu_model_host_matches(provenance)))

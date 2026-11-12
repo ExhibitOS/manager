@@ -494,6 +494,8 @@ public actor AuthoringAPI {
         "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
     private static let default110RuntimeManifestPin =
         "43c873e85349b1bf48d8a3f466ab31f41f885b7cbde96ec1ea1fc91474fc684a"
+    private static let refinedBenchRuntimeManifestPin =
+        "ad6cd9b1ae8941ce99eadb9673c7e4a6c72689aaedd628bcbe33e623eb524c13"
     // Exact assembled parent045 +050 candidate. Dedicated adoption/preparation
     // families remain closed and no default runtime selection changes here.
     private static let furnishingThumbnail050RuntimeManifestPin =
@@ -613,6 +615,7 @@ public actor AuthoringAPI {
             || manifest == Self.fixtureAuthoringRuntimeManifestPin
             || manifest == Self.default17RuntimeManifestPin
             || manifest == Self.default110RuntimeManifestPin
+            || manifest == Self.refinedBenchRuntimeManifestPin
             || manifest == Self.furnishingThumbnail050RuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
@@ -3326,6 +3329,7 @@ public actor AuthoringAPI {
             || manifest == fixtureAuthoringRuntimeManifestPin
             || manifest == default17RuntimeManifestPin
             || manifest == default110RuntimeManifestPin
+            || manifest == refinedBenchRuntimeManifestPin
             || manifest == furnishingThumbnail050RuntimeManifestPin
         #else
         false
