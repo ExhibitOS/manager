@@ -4,6 +4,36 @@ import WebKit
 @testable import ManagerCore
 @MainActor
 final class ViewportResourcePolicyTests: XCTestCase {
+    func testRefinedBenchModelHasOnlyExactSameOriginTenantRule() async throws {
+        let origin = "http://127.0.0.1:13200", tenant = UUID().uuidString.lowercased()
+        let path = "/api/v1/tenants/\(tenant)/studio/furnishings/sculpture-bench-refined/1/model"
+        let encoded = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant)
+        let store = WKContentRuleListStore.default()!, id = "ExhibitOSRefinedBench-" + UUID().uuidString
+        let compiled = try await store.compileContentRuleList(forIdentifier: id, encodedContentRuleList: encoded)
+        XCTAssertNotNil(compiled)
+        try await store.removeContentRuleList(forIdentifier: id)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+        let patterns = try rules.dropFirst().map { rule -> NSRegularExpression in
+            let trigger = try XCTUnwrap(rule["trigger"] as? [String: Any])
+            XCTAssertEqual(trigger["url-filter-is-case-sensitive"] as? Bool, true)
+            return try NSRegularExpression(pattern: XCTUnwrap(trigger["url-filter"] as? String))
+        }
+        func allows(_ url: String) -> Bool {
+            patterns.contains { $0.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil }
+        }
+        XCTAssertTrue(allows(origin + path))
+        XCTAssertTrue(allows(origin + "/api/v1/auth/session"))
+        for denied in [
+            origin + path + "?x=1", origin + path + "/", origin + path + "/extra",
+            origin + path.replacingOccurrences(of: "/1/model", with: "/2/model"),
+            origin + path.replacingOccurrences(of: "/1/model", with: "/01/model"),
+            origin + path.replacingOccurrences(of: "sculpture-bench-refined", with: "backless-oak-bench"),
+            origin + path.replacingOccurrences(of: "sculpture-bench-refined", with: "SCULPTURE-bench-refined"),
+            origin + path.replacingOccurrences(of: tenant, with: UUID().uuidString.lowercased()),
+            "http://127.0.0.1:13201" + path, "http://localhost:13200" + path,
+            "https://127.0.0.1:13200" + path, "https://example.invalid" + path
+        ] { XCTAssertFalse(allows(denied), denied) }
+    }
     func testRegisteredSurfaceMapsAreExactOriginPathsInActualWebKitRules() async throws {
         let origin = "http://127.0.0.1:13200", tenant = UUID().uuidString.lowercased()
         let encoded = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant)

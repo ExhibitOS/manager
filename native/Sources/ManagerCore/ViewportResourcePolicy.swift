@@ -50,6 +50,8 @@ public enum ViewportResourcePolicy {
         let exhibitionId = uuidPattern(hex: "[a-fA-F0-9]", variant: "[89aAbB]")
         let viewportCheck = "api/v1/tenants/\(tenant)/studio/exhibitions/\(exhibitionId)/native-viewport-check$"
         var suffixes = ["native-viewport\\.html$", "assets/[A-Za-z0-9_.-]+\\.js$", "assets/[A-Za-z0-9_.-]+\\.css$", "basis/[A-Za-z0-9_.-]+\\.js$", "basis/[A-Za-z0-9_.-]+\\.wasm$", "api/v1/auth/session$", "api/v1/tenants/\(tenant)/studio/artworks/[a-fA-F0-9-]+$", viewportCheck, artwork + "$", artwork + "/display$", artwork + "/preview\\?expectedRevision=[0-9]+$"]
+        // URL filtering does not authorize methods or ownership; the server does.
+        suffixes.append("api/v1/tenants/\(tenant)/studio/furnishings/sculpture-bench-refined/1/model$")
         let workspaceResourceId = uuidPattern(hex: "[a-f0-9]", variant: "[89ab]")
         if workspaceMaterials {
             let version = "[1-9]" + String(repeating: "[0-9]?", count: 9)
