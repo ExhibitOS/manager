@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import XCTest
 import CryptoKit
+import WebKit
+import Darwin
 @testable import ManagerCore
 
 final class NativeGPUModelPreparationTests: XCTestCase {
@@ -241,6 +243,154 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         cancel.removeValue(forKey: "phase"); cancel["cancelled"] = .bool(true); cancel["drained"] = .bool(true)
         XCTAssertTrue(request.acceptsCancelled(.object(cancel)))
         cancel["drained"] = .bool(false); XCTAssertFalse(request.acceptsCancelled(.object(cancel)))
+    }
+
+    @MainActor
+    func testOptInGPUPreviewPolicyPNGDecodeComparison() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let input = env["EXHIBITOS_WK_PNG_PATH"], let expected = env["EXHIBITOS_WK_PNG_SHA256"],
+              let outputDirectory = env["EXHIBITOS_WK_PNG_OUTPUT_DIR"],
+              !input.isEmpty, !expected.isEmpty, !outputDirectory.isEmpty else {
+            throw XCTSkip("Requires an explicitly owned PNG, digest and diagnostic directory")
+        }
+        let exactSHA = "108d39f73c4d1d1d6e3a983bea98ceca2dc74e5703d8814307f3068094137be2"
+        func canonical(_ path: String) -> Bool {
+            path.hasPrefix("/") && URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path == path
+        }
+        guard canonical(input), canonical(outputDirectory), expected == exactSHA else { throw CocoaError(.fileReadInvalidFileName) }
+        let inputFD = Darwin.open(input, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard inputFD >= 0 else { throw CocoaError(.fileReadNoPermission) }
+        defer { Darwin.close(inputFD) }
+        var source = stat(), named = stat()
+        guard fstat(inputFD, &source) == 0, lstat(input, &named) == 0,
+              (source.st_mode & S_IFMT) == S_IFREG, source.st_uid == geteuid(), source.st_nlink == 1,
+              source.st_size == 396_887, source.st_dev == named.st_dev, source.st_ino == named.st_ino else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        let directoryFD = Darwin.open(outputDirectory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryFD >= 0 else { throw CocoaError(.fileReadNoPermission) }
+        defer { Darwin.close(directoryFD) }
+        var directory = stat(), directoryName = stat()
+        guard fstat(directoryFD, &directory) == 0, lstat(outputDirectory, &directoryName) == 0,
+              (directory.st_mode & S_IFMT) == S_IFDIR, directory.st_uid == geteuid(),
+              (directory.st_mode & 0o7777) == 0o700, directory.st_dev == directoryName.st_dev,
+              directory.st_ino == directoryName.st_ino else { throw CocoaError(.fileReadNoPermission) }
+        let handle = FileHandle(fileDescriptor: inputFD, closeOnDealloc: false)
+        let png = try handle.read(upToCount: 1_048_577) ?? Data()
+        var after = stat()
+        guard fstat(inputFD, &after) == 0, after.st_size == source.st_size, after.st_uid == source.st_uid,
+              after.st_nlink == 1, after.st_mtimespec.tv_sec == source.st_mtimespec.tv_sec,
+              after.st_mtimespec.tv_nsec == source.st_mtimespec.tv_nsec,
+              after.st_ctimespec.tv_sec == source.st_ctimespec.tv_sec,
+              after.st_ctimespec.tv_nsec == source.st_ctimespec.tv_nsec,
+              png.count == source.st_size,
+              SHA256.hash(data: png).map({ String(format: "%02x", $0) }).joined() == expected else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let (jobValue, receipt) = try ready(), req = try request(), owner = UUID().uuidString.lowercased()
+        let job = try NativeGPUModelPreparationJob(jobValue, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt)
+        let transfer = try NativeGPUModelPreparationTransfer(workspaceId: owner, tenantId: owner, principalId: owner, artworkId: artwork, request: req, jobId: self.job)
+        let n = jobValue["gpuPreparation"]
+        let review = try NativeGPUModelReview(.object(["artworkId": .string(artwork), "revision": .integer(2), "jobId": .string(self.job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": .null]), artworkId: artwork, request: req, job: job)
+        let preview = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review, epoch: owner, sequence: 1, requestId: UUID().uuidString.lowercased())
+        let gpuRules = try NativeGPUCandidatePreviewPolicy.encodedRules(origin: "http://127.0.0.1:13200", request: preview, verifiedAssets: ["assets/index-123.js"])
+        var variant = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(gpuRules.utf8)) as? [[String: Any]])
+        variant.append(["trigger": ["url-filter": "^blob:", "resource-type": ["image"]], "action": ["type": "ignore-previous-rules"]])
+        let variantRules = String(decoding: try JSONSerialization.data(withJSONObject: variant, options: [.sortedKeys]), as: UTF8.self)
+        let script = #"""
+        const context = {userAgent:navigator.userAgent.slice(0,512),scheme:location.protocol,
+          secureContext:isSecureContext,visibility:document.visibilityState,contentWorld:'page'};
+        let phase='wire', wireVerified=false, blobSize=null, bytes=null;
+        try {
+          const binary=atob(encoded), png=Uint8Array.from(binary,c=>c.charCodeAt(0)); bytes=png.length;
+          let roundtrip=''; for(const byte of png) roundtrip+=String.fromCharCode(byte);
+          if(png.length!==expectedLength||btoa(roundtrip)!==encoded) return {context,decode:{status:'wire-mismatch'}};
+          wireVerified=true; const blob=new Blob([png],{type:'image/png'}); blobSize=blob.size;
+          if(blobSize!==expectedLength) return {context,decode:{status:'blob-size-mismatch'}};
+          let expired=false,timer; phase='decode';
+          const pending=createImageBitmap(new Blob([png],{type:'image/png'}),{imageOrientation:'none',premultiplyAlpha:'none',colorSpaceConversion:'none'})
+            .then(bitmap=>{if(expired){bitmap.close();return null;}return bitmap;});
+          const timeout=new Promise(resolve=>{timer=setTimeout(()=>{expired=true;resolve(null);},15000);});
+          let bitmap;try{bitmap=await Promise.race([pending,timeout]);}finally{clearTimeout(timer);}
+          if(!bitmap)return {context,decode:{status:'timeout',bytes,wireVerified,blobSize}};
+          try{return {context,decode:{status:'success',bytes,wireVerified,blobSize,width:bitmap.width,height:bitmap.height}};}finally{bitmap.close();}
+        } catch(error) {
+          const name=typeof error?.name==='string'&&/^[A-Za-z]{1,40}$/.test(error.name)?error.name:'UnknownError';
+          return {context,decode:{status:phase==='decode'?'decoder-error':'script-error',name,bytes,wireVerified,blobSize}};
+        }
+        """#
+        let cases: [(String, String?)] = [("no-rules", nil), ("gpu-rules", gpuRules), ("gpu-plus-blob-image", variantRules)]
+        var records: [[String: Any]] = []
+        for (name, rules) in cases {
+            let rulesSHA = SHA256.hash(data: Data((rules ?? "[]").utf8)).map { String(format: "%02x", $0) }.joined()
+            let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
+            config.preferences.javaScriptCanOpenWindowsAutomatically = false
+            if let rules {
+                guard let store = WKContentRuleListStore.default() else {
+                    records.append(["case":name,"rulesSHA256":rulesSHA,"decode":["status":"compile-failure"]]); continue
+                }
+                let id = "ExhibitOSGPUDecodePolicy-" + UUID().uuidString
+                do {
+                    guard let compiled = try await store.compileContentRuleList(forIdentifier: id, encodedContentRuleList: rules) else {
+                        try? await store.removeContentRuleList(forIdentifier: id)
+                        records.append(["case":name,"rulesSHA256":rulesSHA,"decode":["status":"compile-failure"]]); continue
+                    }
+                    config.userContentController.add(compiled)
+                    try? await store.removeContentRuleList(forIdentifier: id)
+                } catch {
+                    try? await store.removeContentRuleList(forIdentifier: id)
+                    records.append(["case":name,"rulesSHA256":rulesSHA,"decode":["status":"compile-failure"]]); continue
+                }
+            }
+            let web = WKWebView(frame: .zero, configuration: config)
+            let resultData: Data = await withCheckedContinuation { continuation in
+                var completed = false
+                func finish(_ value: Data) { guard !completed else { return }; completed = true; continuation.resume(returning: value) }
+                Task { @MainActor in
+                    do {
+                        let value = try await web.callAsyncJavaScript(script, arguments: ["encoded":png.base64EncodedString(), "expectedLength":png.count], in:nil, contentWorld:.page)
+                        if let value = value as? [String: Any], JSONSerialization.isValidJSONObject(value),
+                           let snapshot = try? JSONSerialization.data(withJSONObject:value) { finish(snapshot) }
+                        else { finish(Data(#"{"decode":{"status":"host-invalid-result"}}"#.utf8)) }
+                    } catch { finish(Data(#"{"decode":{"status":"host-failure"}}"#.utf8)) }
+                }
+                DispatchQueue.main.asyncAfter(deadline:.now() + 20) { finish(Data(#"{"decode":{"status":"host-timeout"}}"#.utf8)) }
+            }
+            web.stopLoading()
+            let value = try XCTUnwrap(JSONSerialization.jsonObject(with: resultData) as? [String: Any])
+            var record = value; record["case"] = name; record["rulesSHA256"] = rulesSHA
+            records.append(record)
+        }
+        for index in records.indices {
+            records[index]["inputSHA256"] = expected
+            records[index]["inputBytes"] = png.count
+            if records[index]["context"] == nil { records[index]["context"] = ["status":"unavailable"] }
+        }
+        let statuses = records.map { (($0["decode"] as? [String: Any])?["status"] as? String) ?? "host-invalid-result" }
+        let captured = statuses.count == 3 && statuses.allSatisfy { $0 == "success" || $0 == "decoder-error" }
+        let reproduced = captured && statuses == ["success", "decoder-error", "success"]
+        let report: [String: Any] = ["diagnosticCaptured":captured, "policyInteractionReproduced":reproduced,
+            "productQualification":false, "renderQualification":false, "inputSHA256":expected, "inputBytes":png.count,
+            "os":ProcessInfo.processInfo.operatingSystemVersionString, "cases":records,
+            "isolation":["websiteDataStore":"nonPersistent", "javaScriptCanOpenWindowsAutomatically":false,
+                         "window":false, "cookies":false, "network":false,
+                         "productionDifferences":"isolated blank page without production window, cookies or network"]]
+        let encoded = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+        var finalDirectory = stat()
+        guard lstat(outputDirectory, &finalDirectory) == 0, finalDirectory.st_dev == directory.st_dev,
+              finalDirectory.st_ino == directory.st_ino, finalDirectory.st_uid == geteuid(),
+              (finalDirectory.st_mode & 0o7777) == 0o700 else { throw CocoaError(.fileWriteNoPermission) }
+        let outFD = openat(directoryFD, "diagnostic.json", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard outFD >= 0 else { throw CocoaError(.fileWriteFileExists) }
+        defer { Darwin.close(outFD) }
+        try encoded.withUnsafeBytes { raw in
+            var offset = 0
+            while offset < raw.count {
+                let count = Darwin.write(outFD, raw.baseAddress!.advanced(by: offset), raw.count - offset)
+                guard count > 0 else { throw CocoaError(.fileWriteUnknown) }; offset += count
+            }
+        }
+        XCTAssertTrue(captured, "Diagnostic capture did not complete")
     }
 
     func testPrivatePreviewPolicyIsBoundToOneCandidateAndExactAssets() throws {
