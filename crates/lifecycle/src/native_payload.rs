@@ -4421,6 +4421,75 @@ fn actual_files(
     }
     Ok(())
 }
+// Each admission still reads and hashes every declared regular file. Two
+// independent readers overlap filesystem latency without an unbounded task
+// queue, retained byte cache, or relaxing the final complete inventory check.
+fn verify_manifest_files<const READERS: usize>(root: &Path, items: &[Item]) -> Result<()> {
+    if !(1..=2).contains(&READERS) { return Err(invalid()); }
+    std::thread::scope(|scope| {
+        let mut readers = Vec::with_capacity(READERS);
+        for lane in 0..READERS {
+            readers.push(std::thread::Builder::new()
+                .name("runtime-admission".into())
+                .spawn_scoped(scope, move || -> Result<()> {
+                    for item in items.iter().skip(lane).step_by(READERS) {
+                        let path = contained(root, &item.path)?;
+                        let raw = fs::symlink_metadata(root.join(&item.path)).map_err(|_| invalid())?;
+                        match (&item.link, item.bytes, &item.sha256, item.executable) {
+                            (Some(link), None, None, None) => {
+                                if !raw.is_symlink() || link.len() > 2048 {
+                                    return Err(invalid());
+                                }
+                                let expected = fs::canonicalize(
+                                    root.join(&item.path)
+                                        .parent()
+                                        .ok_or_else(invalid)?
+                                        .join(link),
+                                )
+                                .map_err(|_| invalid())?;
+                                if expected != path || !expected.starts_with(&root) {
+                                    return Err(invalid());
+                                }
+                            }
+                            (None, Some(size), Some(hash), Some(executable)) => {
+                                if raw.is_symlink() || !raw.is_file() || raw.len() != size || !hash_valid(hash)
+                                {
+                                    return Err(invalid());
+                                }
+                                use std::os::unix::fs::PermissionsExt;
+                                if (raw.permissions().mode() & 0o111 != 0) != executable {
+                                    return Err(invalid());
+                                }
+                                let mut file = File::open(path).map_err(|_| invalid())?;
+                                let mut digest = Sha256::new();
+                                let mut block = [0u8; 64 * 1024];
+                                loop {
+                                    let length = file.read(&mut block).map_err(|_| invalid())?;
+                                    if length == 0 {
+                                        break;
+                                    }
+                                    digest.update(&block[..length]);
+                                }
+                                if format!("{:x}", digest.finalize()) != *hash {
+                                    return Err(invalid());
+                                }
+                            }
+                            _ => return Err(invalid()),
+                        }
+                    }
+                    Ok(())
+                }).map_err(|_| invalid())?);
+        }
+        // Join both readers even if one refuses. No worker or open file may
+        // outlive admission, and a refusal from either lane refuses the payload.
+        let mut accepted = true;
+        for reader in readers {
+            if !matches!(reader.join(), Ok(Ok(()))) { accepted = false; }
+        }
+        if accepted { Ok(()) } else { Err(invalid()) }
+    })
+}
+
 impl Payload {
     pub fn open(root: &Path) -> Result<Self> {
         if !root.is_absolute()
@@ -4504,50 +4573,8 @@ impl Payload {
             {
                 return Err(invalid());
             }
-            let path = contained(&root, &item.path)?;
-            let raw = fs::symlink_metadata(root.join(&item.path)).map_err(|_| invalid())?;
-            match (&item.link, item.bytes, &item.sha256, item.executable) {
-                (Some(link), None, None, None) => {
-                    if !raw.is_symlink() || link.len() > 2048 {
-                        return Err(invalid());
-                    }
-                    let expected = fs::canonicalize(
-                        root.join(&item.path)
-                            .parent()
-                            .ok_or_else(invalid)?
-                            .join(link),
-                    )
-                    .map_err(|_| invalid())?;
-                    if expected != path || !expected.starts_with(&root) {
-                        return Err(invalid());
-                    }
-                }
-                (None, Some(size), Some(hash), Some(executable)) => {
-                    if raw.is_symlink() || !raw.is_file() || raw.len() != size || !hash_valid(hash)
-                    {
-                        return Err(invalid());
-                    }
-                    use std::os::unix::fs::PermissionsExt;
-                    if (raw.permissions().mode() & 0o111 != 0) != executable {
-                        return Err(invalid());
-                    }
-                    let mut file = File::open(path).map_err(|_| invalid())?;
-                    let mut digest = Sha256::new();
-                    let mut block = [0u8; 64 * 1024];
-                    loop {
-                        let length = file.read(&mut block).map_err(|_| invalid())?;
-                        if length == 0 {
-                            break;
-                        }
-                        digest.update(&block[..length]);
-                    }
-                    if format!("{:x}", digest.finalize()) != *hash {
-                        return Err(invalid());
-                    }
-                }
-                _ => return Err(invalid()),
-            }
         }
+        verify_manifest_files::<2>(&root, &manifest.files)?;
         let mut actual = BTreeSet::new();
         actual_files(&root, &root, 0, &mut actual)?;
         if actual != names {
@@ -6154,5 +6181,29 @@ mod gpu_preview_resource_tests {
         }
         assert!(!gpu_preview_asset_path(&format!("assets/{}.js","a".repeat(200))));
         assert!(gpu_preview_asset_path("assets/native-viewport-Ab_12.js"));
+    }
+}
+
+#[cfg(test)]
+mod admission_io_measurement {
+    use super::*;
+    #[test]
+    #[ignore = "Explicit immutable runtime; compares fresh declared-file admission IO only, not GUI"]
+    fn actual_one_and_two_reader_admission_io() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_ADMISSION_IO_RUNTIME").expect("explicit runtime"));
+        let expected = std::env::var("EXHIBITOS_ADMISSION_IO_MANIFEST_SHA256").expect("explicit manifest SHA256");
+        let bytes = fs::read(root.join("manifest.json")).unwrap();
+        assert_eq!(digest(&bytes), expected);
+        let payload = Payload::open(&root).unwrap();
+        let mut observations = Vec::new();
+        // ABBA order; data and OS caches retained. Every observation reads all
+        // declared bytes. Final inventory and GUI/runtime startup are excluded.
+        for readers in [1, 2, 2, 1] {
+            let start = std::time::Instant::now();
+            if readers == 1 { verify_manifest_files::<1>(&root, &payload.manifest.files).unwrap(); }
+            else { verify_manifest_files::<2>(&root, &payload.manifest.files).unwrap(); }
+            observations.push(serde_json::json!({"readers":readers,"ms":start.elapsed().as_secs_f64()*1000.0}));
+        }
+        println!("ADMISSION_IO_MEASUREMENT={}", serde_json::json!({"manifestSHA256":expected,"observations":observations,"scope":"declared-file byte/path/type/mode/link verification only; not complete admission, startup or GUI","cacheCold":false}));
     }
 }
