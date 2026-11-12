@@ -2035,6 +2035,41 @@ mod tests {
         assert!(new_root_restore.check().is_err());
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn gpu_wrapping_same_catalog_preserves_exact_owner_physical_and_history() {
+        use crate::native_payload::{GPU_MODEL_LEGACY_TARGET as OLD, GPU_MODEL_WRAPPING_TARGET as NEW};
+        let step = FurnishingTransition::from_manifests((OLD.2, NEW.2)).unwrap();
+        assert!(!step.upgrades_catalog());
+        assert_eq!(step.source_catalog().version(), 49);
+        assert_eq!(step.target_catalog().version(), 49);
+        assert_eq!(step.source(), OLD); assert_eq!(step.target(), NEW);
+        for pair in [(NEW.2, OLD.2), (OLD.2, OLD.2), (NEW.2, NEW.2), ("unknown", NEW.2)] {
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        let mut prior = binding(GENERATION);
+        prior.catalog = 49; prior.phase = Phase::Clean; prior.admission_kind = Admission::CleanReopen;
+        prior.previous_generation = Some(LATER.into());
+        prior.source_commit = OLD.0.into(); prior.producer_sha256 = OLD.1.into();
+        prior.payload_manifest_sha256 = OLD.2.into(); prior.check().unwrap();
+        let mut target = binding(NEXT);
+        target.catalog = 49; target.source_commit = NEW.0.into();
+        target.producer_sha256 = NEW.1.into(); target.payload_manifest_sha256 = NEW.2.into();
+        for changed in ["owner", "physical", "phase"] {
+            let mut invalid = target.clone(); let mut source = prior.clone();
+            match changed {
+                "owner" => invalid.owner.tenant_id = "10000000-0000-4000-8000-000000000009".into(),
+                "physical" => invalid.physical.root_inode += 1,
+                _ => source.phase = Phase::Active,
+            }
+            assert!(invalid.consume_furnishing_transition(&source, step).is_err());
+        }
+        target.consume_furnishing_transition(&prior, step).unwrap();
+        assert_eq!(target.owner, prior.owner); assert_eq!(target.physical, prior.physical);
+        assert_eq!(target.restore, prior.restore); assert_eq!(target.previous_generation.as_deref(), Some(GENERATION));
+        assert_eq!(target.admission_kind, Admission::CleanReopen); target.check().unwrap();
+    }
+
     #[test]
     fn ordinary_furnishing_consumption_survives_db_only_pointer_rotation_and_refuses_replay() {
         use std::os::unix::fs::DirBuilderExt;

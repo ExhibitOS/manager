@@ -33,7 +33,7 @@ final class NativeAutomationGPUTests: XCTestCase {
 
     func testAdmissionRequiresNativeSessionExactManifestAndProfile() async throws {
         let tenant = UUID().uuidString.lowercased(), user = UUID().uuidString.lowercased()
-        let manifest = "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377"
+        let manifest = "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e"
         let credentials = LocalAuthoringSession(tenantId: tenant, principalId: user, origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43))
         for (pin, profile, expected) in [(manifest, NativeGPUModelPreparation.profile, true),
                                          (manifest, "wrong-profile", false),
@@ -68,7 +68,7 @@ final class NativeAutomationGPUTests: XCTestCase {
             request.url?.path == "/api/v1/auth/login" ? (200, Data("{\"authenticated\":true}".utf8)) : (200, session)
         }
         defer { GPUMockProtocol.configure(nil) }
-        let api = try AuthoringAPI(port: 18091, tenantId: tenant, nativeRuntimeManifestSHA256: "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377", protocolClasses: [GPUMockProtocol.self])
+        let api = try AuthoringAPI(port: 18091, tenantId: tenant, nativeRuntimeManifestSHA256: "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e", protocolClasses: [GPUMockProtocol.self])
         _ = try await api.login(subject: "synthetic", password: "synthetic")
         let admitted = await api.admitsGPUModelPreparation
         XCTAssertFalse(admitted)

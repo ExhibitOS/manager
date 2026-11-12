@@ -136,7 +136,8 @@ fn gpu_empty_document(
     pair: (&str, &str), document: &super::installations::native_document::DocumentState,
     owner: (&str, &str, &str),
 ) -> bool {
-    FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. }))
+    (FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. }))
+        || crate::native_payload::gpu_model_wrapping_transition(pair))
         && document.format == 1 && document.revision == 0
         && document.draft.is_none() && document.etag.is_none()
         && document.saved_edit_version.is_none() && document.pending.is_none()
@@ -1775,6 +1776,28 @@ mod tests {
             let mut unsaved = saved.clone(); unsaved.saved_edit_version = Some(2);
             assert!(check_saved_transition_document((pair.0, target), &unsaved, owner).is_err());
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn gpu_wrapping_same_catalog_transition_keeps_empty_document_scope() {
+        let old = crate::native_payload::GPU_MODEL_LEGACY_TARGET.2;
+        let new = crate::native_payload::GPU_MODEL_WRAPPING_TARGET.2;
+        let document = gpu_library_empty_document();
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        assert!(gpu_empty_document((old, new), &document, owner));
+        check_saved_transition_document((old, new), &document, owner).unwrap();
+        for pair in [(new, old), (old, old), (new, new), ("unknown", new)] {
+            assert!(!gpu_empty_document(pair, &document, owner));
+            assert!(check_saved_transition_document(pair, &document, owner).is_err());
+        }
+        let mut changed = document.clone(); changed.revision = 1;
+        assert!(!gpu_empty_document((old, new), &changed, owner));
+        assert!(!gpu_empty_document((old, new), &document, (owner.1, owner.0, owner.2)));
+        let digest = saved_document_digest(&document).unwrap();
+        changed = document.clone(); changed.saved_edit_version = Some(1);
+        assert!(!gpu_empty_document((old, new), &changed, owner));
+        assert_ne!(digest, saved_document_digest(&changed).unwrap());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
