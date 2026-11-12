@@ -1743,6 +1743,41 @@ impl Session {
         if self.cancelled() { return Err(err("NATIVE_CANCELLED")); }
         plan.retain()
     }
+    /// Read-only resources for one currently ready ordinary B owner. This does
+    /// not renew credentials, grant a job, or modify a preview/review nonce.
+    pub(crate) fn native_gpu_preview_resources(&mut self) -> Result<Value> {
+        let unavailable = || err("NATIVE_GPU_PREVIEW_UNAVAILABLE");
+        let context = self.payload.context();
+        if !crate::native_payload::gpu_model_host_matches((&context.source_commit,
+                self.payload.producer_sha256(), &context.manifest_sha256))
+            || self.oex_upload_selection_started || self.normal_oex_selected
+            || self.transition_fence.is_some() || self.auxiliary.is_some()
+        { return Err(unavailable()); }
+        if self.status()?.state != "ready" || !self.readiness.ready
+            || self.node.is_none() || self.postgres.is_none()
+        { return Err(unavailable()); }
+        self.check_workspace_furnishing_channel()?;
+        let binding = self.active_furnishing_binding().ok_or_else(unavailable)?.clone();
+        binding.check()?;
+        if binding.catalog != 49 || binding.admission_kind != Admission::CleanReopen {
+            return Err(unavailable());
+        }
+        let physical = self.furnishing_writer_lifetime.as_ref().ok_or_else(unavailable)?.identity()?;
+        let owner = self.service.personal_identity()?;
+        let authority = self.local_authority.as_ref().ok_or_else(unavailable)?;
+        let current = current_run(&self.service.root)?.ok_or_else(unavailable)?;
+        if physical != binding.physical || current.id != binding.generation
+            || current.furnishing.as_ref() != Some(&binding)
+            || owner != (binding.owner.workspace_id.clone(), binding.owner.tenant_id.clone(), binding.owner.principal_id.clone())
+            || owner != (authority.workspace_id.clone(), authority.tenant_id.clone(), authority.principal_id.clone())
+            || authority.owner_uid != unsafe { libc::geteuid() } || binding.owner.owner_uid != authority.owner_uid
+            || binding.source_commit != context.source_commit || binding.producer_sha256 != self.payload.producer_sha256()
+            || binding.payload_manifest_sha256 != context.manifest_sha256
+        { return Err(unavailable()); }
+        self.check_native_observation_fence()?;
+        self.payload.native_gpu_preview_resources()
+    }
+
     /// Explicit private IPC only, never part of status/journal/log output.
     pub fn authoring_session(&mut self) -> Result<Value> {
         if self.oex_upload_selection_started { return Err(err("NATIVE_OEX_SESSION_BOUND")); }

@@ -2113,6 +2113,7 @@ mod normal_oex_release_declaration_tests {
         let payload = gpu_ledger_fixture();
         assert!(payload.workspace_furnishing_catalog().is_err());
         assert!(payload.gpu_model_upgrade_script().is_err());
+        assert!(payload.native_gpu_preview_resources().is_err());
     }
 
     #[test]
@@ -3967,6 +3968,43 @@ fn relative_name(name: &str) -> bool {
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
 }
+const GPU_PREVIEW_WEB_PREFIX: &str = "platform/apps/web/dist/";
+const GPU_PREVIEW_FIXED: [&str; 4] = [
+    "native-viewport.html", "basis/basis_transcoder.js", "basis/basis_transcoder.wasm",
+    "basis/exhibitos-basis-worker.js",
+];
+
+fn gpu_preview_asset_path(path: &str) -> bool {
+    let Some(name) = path.strip_prefix("assets/") else { return false; };
+    !name.is_empty() && path.len() <= 200 && !name.contains('/') && !name.contains("..")
+        && path.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"/_.-".contains(&byte))
+        && (name.ends_with(".js") || name.ends_with(".css"))
+}
+
+/// Enumerate exact paths from the authenticated payload inventory. The caller
+/// receives no prefix/wildcard grant, filesystem path, URL or caller authority.
+fn gpu_preview_resource_paths(files: &[Item]) -> Result<Vec<String>> {
+    let unavailable = || err("NATIVE_GPU_PREVIEW_UNAVAILABLE");
+    let mut paths = BTreeSet::new();
+    let mut assets = 0usize;
+    for item in files {
+        let Some(path) = item.path.strip_prefix(GPU_PREVIEW_WEB_PREFIX) else { continue; };
+        let fixed = GPU_PREVIEW_FIXED.contains(&path);
+        let compiled = path.starts_with("assets/") && (path.ends_with(".js") || path.ends_with(".css"));
+        if !fixed && !compiled { continue; }
+        if (!fixed && !gpu_preview_asset_path(path)) || item.link.is_some()
+            || item.executable != Some(false) || !item.bytes.is_some_and(|bytes| (1..=16 * 1024 * 1024).contains(&bytes))
+            || !item.sha256.as_deref().is_some_and(hash_valid) || !paths.insert(path.to_owned())
+        { return Err(unavailable()); }
+        if compiled { assets += 1; }
+        if assets > 256 { return Err(unavailable()); }
+    }
+    if assets == 0 || !GPU_PREVIEW_FIXED.into_iter().all(|path| paths.contains(path)) {
+        return Err(unavailable());
+    }
+    Ok(paths.into_iter().collect())
+}
+
 /// Bound the files actually consumed by Platform's loadFreezeRuntime rather
 /// than unrelated authoring assets in the same web directory. Platform still
 /// performs its own full descriptor, MIME, hash and 16 MiB validation.
@@ -4510,6 +4548,16 @@ impl Payload {
         }
         self.recheck()?;
         Ok(self.script())
+    }
+
+    pub(crate) fn native_gpu_preview_resources(&self) -> Result<serde_json::Value> {
+        if !gpu_model_host_matches((&self.manifest.source_commit,
+                &self.manifest.producer_sha256, &self.manifest_sha256))
+            || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::GpuModelPreparation049)
+        { return Err(err("NATIVE_GPU_PREVIEW_UNAVAILABLE")); }
+        self.recheck()?;
+        let paths = gpu_preview_resource_paths(&self.manifest.files)?;
+        Ok(serde_json::json!({"format":1,"payloadManifestSha256":self.manifest_sha256,"paths":paths}))
     }
 
     pub(crate) fn workspace_furnishing_validation(&self) -> Result<bool> {
@@ -5728,5 +5776,60 @@ mod r5_copy_recipe_tests {
         let current=digest(&serde_json::to_vec(NATIVE_COPY_FILES).unwrap());
         let r5=digest(&serde_json::to_vec(&("authenticated-native-r5-copy-v1",NATIVE_R5_COPY_FILES,NATIVE_R5_COPY_ABSENT,NATIVE_R5_COPY_CATALOG,NATIVE_R5_COPY_TOOLS)).unwrap());
         assert_ne!(current,r5,"The existing source-target recipe digest equality refuses cross-recipe pairs");
+    }
+}
+
+#[cfg(test)]
+mod gpu_preview_resource_tests {
+    use super::*;
+    fn file(path: &str) -> Item {
+        Item { path: format!("{GPU_PREVIEW_WEB_PREFIX}{path}"), bytes: Some(128),
+            sha256: Some("a".repeat(64)), executable: Some(false), link: None }
+    }
+    fn files() -> Vec<Item> {
+        GPU_PREVIEW_FIXED.into_iter().chain(["assets/native-viewport-ab12.js", "assets/viewport-CD34.css"])
+            .map(file).collect()
+    }
+    #[test]
+    fn preview_closure_contains_only_exact_verified_web_dist_files() {
+        let mut rows=files();
+        rows.push(file("assets/unrelated.png"));
+        let mut outside=file("assets/ignored.js");outside.path="platform/apps/web/dist-static/assets/ignored.js".into();rows.push(outside);
+        let mut modules=file("assets/ignored.js");modules.path="platform/node_modules/basis/ignored.js".into();rows.push(modules);
+        let paths=gpu_preview_resource_paths(&rows).unwrap();
+        assert_eq!(paths.len(),6);
+        assert!(paths.contains(&"native-viewport.html".into()));
+        assert!(paths.contains(&"basis/exhibitos-basis-worker.js".into()));
+        assert!(!paths.iter().any(|path| path.starts_with('/') || path.contains("ignored") || path.ends_with(".png")));
+    }
+    #[test]
+    fn preview_closure_refuses_missing_duplicate_symlink_or_unverified_entries() {
+        let mut rows=files();rows.remove(0);assert!(gpu_preview_resource_paths(&rows).is_err());
+        let mut rows=files();rows.push(file("basis/basis_transcoder.wasm"));assert!(gpu_preview_resource_paths(&rows).is_err());
+        for (link, executable, bytes, hash) in [
+            (Some("elsewhere".into()),Some(false),Some(128),Some("a".repeat(64))),
+            (None,Some(true),Some(128),Some("a".repeat(64))),
+            (None,Some(false),Some(0),Some("a".repeat(64))),
+            (None,Some(false),Some(16*1024*1024+1),Some("a".repeat(64))),
+            (None,Some(false),Some(128),None),
+        ] {
+            let mut rows=files();let last=rows.last_mut().unwrap();
+            last.link=link;last.executable=executable;last.bytes=bytes;last.sha256=hash;
+            assert!(gpu_preview_resource_paths(&rows).is_err());
+        }
+        let only_fixed:Vec<_>=GPU_PREVIEW_FIXED.into_iter().map(file).collect();
+        assert!(gpu_preview_resource_paths(&only_fixed).is_err());
+        let mut too_many=files();
+        for n in 0..255 {too_many.push(file(&format!("assets/chunk-{n}.js")));}
+        assert!(gpu_preview_resource_paths(&too_many).is_err());
+    }
+    #[test]
+    fn preview_asset_paths_are_bounded_ascii_relative_single_level_and_query_free() {
+        for path in ["/assets/a.js","assets/../a.js","assets/a/b.js","assets/a\\b.js",
+            "assets/a.js?x=1","assets/a.js#x","assets/%2e.js","assets/한글.js","assets/a..js","assets/a.wasm"] {
+            assert!(!gpu_preview_asset_path(path),"{path}");
+        }
+        assert!(!gpu_preview_asset_path(&format!("assets/{}.js","a".repeat(200))));
+        assert!(gpu_preview_asset_path("assets/native-viewport-Ab_12.js"));
     }
 }

@@ -1066,6 +1066,7 @@ impl Host {
             | UiCommand::NativeHosting { selection_token, .. }
             | UiCommand::SavePublicationState { selection_token, .. }
             | UiCommand::NativeAuthoringSession { selection_token }
+            | UiCommand::NativeGpuPreviewResources { selection_token }
             | UiCommand::StaticExport { selection_token, .. } =>
                 self.exporter.detail_held(selection_token)?,
             _ => false,
@@ -1443,6 +1444,15 @@ impl Host {
             return state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?
                 .recover_hayes_release(job_id, &transfer, *current_artwork_revision,
                     finished_artwork.as_ref().map(|(artwork, display)| (artwork.as_str(), display.as_str())));
+        }
+        if let UiCommand::NativeGpuPreviewResources { selection_token } = &request.command {
+            let root = self.selected(selection_token)?;
+            let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+            if state.root.as_ref() != Some(&root) || state.busy || state.detail_closing || state.selected_oex {
+                return Err(err("NATIVE_NOT_READY"));
+            }
+            return state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?
+                .native_gpu_preview_resources();
         }
         if let UiCommand::NativeAuthoringSession { selection_token } = &request.command {
             let root = self.selected(selection_token)?;

@@ -224,6 +224,10 @@ pub enum Command {
         selection_token: String,
     },
     #[cfg(target_os = "macos")]
+    NativeGpuPreviewResources {
+        selection_token: String,
+    },
+    #[cfg(target_os = "macos")]
     NativeStart {
         selection_token: String,
     },
@@ -579,6 +583,7 @@ impl TryFrom<WireRequest> for Request {
                 | "native_status"
                 | "native_stop"
                 | "native_authoring_session"
+                | "native_gpu_preview_resources"
         ) {
             if wire.state.is_some() {
                 return Err("NATIVE_PROTOCOL_INVALID");
@@ -589,6 +594,7 @@ impl TryFrom<WireRequest> for Request {
                     selection_token,
                     account,
                 },
+                ("native_gpu_preview_resources", None) => Command::NativeGpuPreviewResources { selection_token },
                 ("native_authoring_session", None) => {
                     Command::NativeAuthoringSession { selection_token }
                 }
@@ -729,6 +735,7 @@ impl Request {
             Command::NativeHayesExecute { .. } | Command::NativeHayesRelease { .. } => return Err(err("NATIVE_HOST_REQUIRED")),
             #[cfg(target_os = "macos")]
             Command::NativeAuthoringSession { .. }
+            | Command::NativeGpuPreviewResources { .. }
             | Command::NativeModelAdoption { .. }
             | Command::NativeHosting { .. }
             | Command::NativeHostingStatus { .. }
@@ -778,5 +785,25 @@ mod furnishing_thumbnail_wire_tests {
         let mut absent=save.clone();absent.as_object_mut().unwrap().remove("selection_token");assert!(serde_json::from_value::<Request>(absent).is_err());
         let mut other=save;other["document"]=serde_json::json!({"format":1,"revision":0,"workspaceId":Uuid::new_v4().to_string(),"tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),"draft":null,"etag":null,"savedEditVersion":null,"pending":null});
         assert!(serde_json::from_value::<Request>(other).is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod gpu_preview_resource_wire_tests {
+    use super::*;
+    #[test]
+    fn preview_getter_accepts_only_existing_selection_token_and_no_caller_paths() {
+        let good=serde_json::json!({"version":1,"id":1,"command":"native_gpu_preview_resources","selection_token":"selected"});
+        let parsed:WireRequest=serde_json::from_value(good.clone()).unwrap();
+        assert!(matches!(Request::try_from(parsed).unwrap().command,Command::NativeGpuPreviewResources{..}));
+        let mut missing=good.clone();missing.as_object_mut().unwrap().remove("selection_token");
+        assert!(Request::try_from(serde_json::from_value::<WireRequest>(missing).unwrap()).is_err());
+        for (field,value) in [("path",serde_json::json!("/caller")),("paths",serde_json::json!(["assets/a.js"])),
+            ("url",serde_json::json!("https://caller.invalid/")),("payloadManifestSha256",serde_json::json!("a".repeat(64))),
+            ("state",serde_json::json!({})),("account",serde_json::json!({}))] {
+            let mut wrong=good.clone();wrong[field]=value;
+            let result=serde_json::from_value::<WireRequest>(wrong).map_err(|_|()).and_then(|wire|Request::try_from(wire).map_err(|_|()));
+            assert!(result.is_err(),"{field}");
+        }
     }
 }
