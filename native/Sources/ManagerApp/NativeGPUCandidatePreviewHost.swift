@@ -166,7 +166,7 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
         } catch {
             if cancelled { return }
             #if DEBUG
-            let failure: String
+            var failure: String
             if let error = error as? AuthoringFailure {
                 let code = error.code.range(of: "^[A-Z0-9_]{1,80}$", options: .regularExpression) != nil ? error.code : "other"
                 failure = "authoring:\(code)"
@@ -174,6 +174,17 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
                 let error = error as NSError
                 let domain = ["WKErrorDomain", "NSURLErrorDomain", "NSCocoaErrorDomain"].contains(error.domain) ? error.domain : "other"
                 failure = "ns:\(domain):\(error.code)"
+                if domain == "WKErrorDomain" {
+                    let exception: String
+                    if let message = error.userInfo["WKJavaScriptExceptionMessage"] as? String {
+                        let code = message.hasPrefix("Error: ") ? String(message.dropFirst(7)) : message
+                        let bytes = code.utf8
+                        exception = (1...80).contains(bytes.count) && bytes.allSatisfy {
+                            (65...90).contains($0) || (48...57).contains($0) || $0 == 95
+                        } ? code : "other"
+                    } else { exception = "absent" }
+                    failure += ":exception=\(exception)"
+                }
             }
             let shape = stage == .readyShape ? " accept=\(readyAccepted.map { $0 ? "true" : "false" } ?? "unknown") keys=\(readyKeys)" : ""
             let method = stage == .pageMethodWait ? " methodAvailable=\(lastMethodAvailable.map { $0 ? "true" : "false" } ?? "unknown")" : ""
