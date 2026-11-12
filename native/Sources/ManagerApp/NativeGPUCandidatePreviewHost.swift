@@ -168,7 +168,10 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
             #if DEBUG
             var failure: String
             if let error = error as? AuthoringFailure {
-                let code = error.code.range(of: "^[A-Z0-9_]{1,80}$", options: .regularExpression) != nil ? error.code : "other"
+                let bytes = error.code.utf8
+                let code = (1...80).contains(bytes.count) && bytes.allSatisfy {
+                    (65...90).contains($0) || (48...57).contains($0) || $0 == 95
+                } ? error.code : "other"
                 failure = "authoring:\(code)"
             } else {
                 let error = error as NSError
