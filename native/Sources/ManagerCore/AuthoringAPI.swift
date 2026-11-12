@@ -33,6 +33,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
+    public var nativeLightObjectAuthoringProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
@@ -52,12 +53,16 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
+    public var roomBaseLightPlacementProfile: String? = nil
 
     public var advertisesFurnishingWalkingCollision: Bool {
         nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile
     }
 
     public var advertisesRoomBaseLight: Bool { roomBaseLightProfile == RoomBaseLightAction.profile }
+    public var advertisesRoomBaseLightPlacement: Bool {
+        advertisesRoomBaseLight && roomBaseLightPlacementProfile == RoomBaseLightPlacement.profile
+    }
     public var advertisesRenderedArtworkThumbnail: Bool {
         nativeRenderedArtworkThumbnailProfile == ViewportRenderedThumbnail.profile
     }
@@ -3247,22 +3252,30 @@ public actor AuthoringAPI {
             && session?.nativeFixtureAuthoringProposalProfile == "saved-head-fixture-v1"
     }
 
+    public var admitsNativeLightObjectAuthoringProposal: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && session?.nativeLightObjectAuthoringProposalProfile == LightObjectAuthoring.profile
+    }
+
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
+        let lightObject = LightObjectAuthoring.commands.contains(operation)
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let scene = ["set-pedestal", "add-light", "set-light-details"].contains(operation)
-        let admitted = fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let admitted = lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
         guard admitted,
-              let session else {
+              let session,
+              operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation) else {
+              (lightObject || ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }

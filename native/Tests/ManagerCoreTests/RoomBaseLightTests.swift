@@ -17,7 +17,7 @@ final class RoomBaseLightTests: XCTestCase {
 
     private var detail: DocumentValue {
         .object(["lightId": .string(lightId), "fixture": .string("none"), "purpose": .string("room-base"),
-                 "range": .integer(12)])
+                 "range": .number(8.059776671843954), "basePlacement": .string("auto")])
     }
 
     private func proposal(_ base: NativeExhibitionDraft, roomId: String) -> DocumentValue {

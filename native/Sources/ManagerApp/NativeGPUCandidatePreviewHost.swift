@@ -170,7 +170,7 @@ struct NativeGPUCandidatePreviewView: NSViewRepresentable {
         init(_ controller: NativeGPUCandidatePreviewController) { self.controller = controller }
     }
     func makeCoordinator() -> Coordinator { Coordinator(controller) }
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: NSViewRepresentableContext<NativeGPUCandidatePreviewView>) -> WKWebView {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.userContentController.add(controller, name: "exhibitosViewport")
@@ -179,7 +179,7 @@ struct NativeGPUCandidatePreviewView: NSViewRepresentable {
         controller.attach(web)
         return web
     }
-    func updateNSView(_ web: WKWebView, context: Context) {}
+    func updateNSView(_ web: WKWebView, context: NSViewRepresentableContext<NativeGPUCandidatePreviewView>) {}
     static func dismantleNSView(_ web: WKWebView, coordinator: Coordinator) {
         // The controller retains the operation and its unknown drain state.
         coordinator.controller.requestClose()

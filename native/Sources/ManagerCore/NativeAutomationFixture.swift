@@ -108,6 +108,7 @@ enum NativeAutomationFixture {
                 lights[index]["transform"] = .object(["position": .vector(targetPosition), "rotation": .vector(targetRotation), "scale": .vector([1, 1, 1])])
                 expected["lights"] = .array(lights)
             }
+            expected = try RoomBaseLightIntent.manualize(expected, lightId: actualId)
             self.frame = frame; lightId = actualId; self.expected = expected
             expectedPosition = targetPosition; expectedRotation = targetRotation
             value = .object(["version": .integer(1), "epoch": .string(frame.epoch), "sequence": .integer(Int64(frame.sequence)),
