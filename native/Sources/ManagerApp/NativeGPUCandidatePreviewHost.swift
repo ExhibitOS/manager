@@ -70,6 +70,7 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
         var stage = StartupStage.setup
         var readyAccepted: Bool?
         var readyKeys = "unavailable"
+        var lastMethodAvailable: Bool?
         #endif
         do {
             let req = lifecycle.request.value
@@ -102,8 +103,13 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
             while true {
                 try Task.checkCancellation()
                 guard !cancelled, ContinuousClock.now < deadline else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
-                if !web.isLoading, web.url == page,
-                   (try? await web.callAsyncJavaScript("return typeof window.exhibitosViewport?.gpuCandidatePreview === 'function';", arguments: [:], in: nil, contentWorld: .page)) as? Bool == true { break }
+                if !web.isLoading, web.url == page {
+                    let methodAvailable = (try? await web.callAsyncJavaScript("return typeof window.exhibitosViewport?.gpuCandidatePreview === 'function';", arguments: [:], in: nil, contentWorld: .page)) as? Bool
+                    #if DEBUG
+                    lastMethodAvailable = methodAvailable
+                    #endif
+                    if methodAvailable == true { break }
+                }
                 try await Task.sleep(for: .milliseconds(50))
             }
             #if DEBUG
@@ -170,7 +176,8 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
                 failure = "ns:\(domain):\(error.code)"
             }
             let shape = stage == .readyShape ? " accept=\(readyAccepted.map { $0 ? "true" : "false" } ?? "unknown") keys=\(readyKeys)" : ""
-            NSLog("%@", "NativeGPUPreviewStartupFailure stage=\(stage.rawValue) error=\(failure) beginIssued=\(beginIssued) isLoading=\(web.isLoading) pageMatches=\(page != nil && web.url == page) visible=\(web.window?.isVisible == true && !web.isHiddenOrHasHiddenAncestor)\(shape)")
+            let method = stage == .pageMethodWait ? " methodAvailable=\(lastMethodAvailable.map { $0 ? "true" : "false" } ?? "unknown")" : ""
+            NSLog("%@", "NativeGPUPreviewStartupFailure stage=\(stage.rawValue) error=\(failure) beginIssued=\(beginIssued) isLoading=\(web.isLoading) pageMatches=\(page != nil && web.url == page) visible=\(web.window?.isVisible == true && !web.isHiddenOrHasHiddenAncestor)\(method)\(shape)")
             #endif
             invalidate("감상용 파일을 표시하지 못했습니다. 작업 상태를 확인하세요.")
             if beginIssued { await cancelAndDrain() } else { finishWithoutBegin() }
