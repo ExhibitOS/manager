@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import XCTest
 import WebKit
+import CryptoKit
+import Darwin
 @testable import ManagerCore
 @MainActor
 final class ViewportResourcePolicyTests: XCTestCase {
@@ -206,6 +208,129 @@ final class ViewportResourcePolicyTests: XCTestCase {
         let legacy = try await web.callAsyncJavaScript("candidate.surfaces.push({id:'surface'}); return [candidate.surfaces.length, candidate.openings.length, candidate.lights.length, candidate.placements.length];", arguments: ["candidate":foundation], in: nil, contentWorld: .page)
         // Diagnostic of the old bridge; only JSON wire independence is the contract.
         print("Legacy Foundation array lengths: \(legacy as? [Int] ?? [])")
+    }
+    func testOptInIsolatedWKPNGDecodeDiagnostic() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let input = env["EXHIBITOS_WK_PNG_PATH"], let expected = env["EXHIBITOS_WK_PNG_SHA256"],
+              let output = env["EXHIBITOS_WK_PNG_OUTPUT_DIR"], !input.isEmpty, !expected.isEmpty, !output.isEmpty else {
+            throw XCTSkip("Requires explicit owned PNG, SHA-256 and diagnostic output directory")
+        }
+        func canonical(_ path: String) -> Bool {
+            path.hasPrefix("/") && URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path == path
+        }
+        guard canonical(input), canonical(output), expected.count == 64,
+              expected.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
+        let inputFD = Darwin.open(input, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard inputFD >= 0 else { throw CocoaError(.fileReadNoPermission) }
+        defer { Darwin.close(inputFD) }
+        var source = stat(), named = stat()
+        guard fstat(inputFD, &source) == 0, lstat(input, &named) == 0,
+              (source.st_mode & S_IFMT) == S_IFREG, source.st_uid == geteuid(), source.st_nlink == 1,
+              source.st_size > 0, source.st_size <= 1_048_576,
+              source.st_dev == named.st_dev, source.st_ino == named.st_ino else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        let directoryFD = Darwin.open(output, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryFD >= 0 else { throw CocoaError(.fileReadNoPermission) }
+        defer { Darwin.close(directoryFD) }
+        var directory = stat(), directoryName = stat()
+        guard fstat(directoryFD, &directory) == 0, lstat(output, &directoryName) == 0,
+              (directory.st_mode & S_IFMT) == S_IFDIR, directory.st_uid == geteuid(),
+              (directory.st_mode & 0o7777) == 0o700,
+              directory.st_dev == directoryName.st_dev, directory.st_ino == directoryName.st_ino else {
+            throw CocoaError(.fileReadNoPermission)
+        }
+        let handle = FileHandle(fileDescriptor: inputFD, closeOnDealloc: false)
+        let png = try handle.read(upToCount: 1_048_577) ?? Data()
+        var after = stat()
+        guard fstat(inputFD, &after) == 0, after.st_size == source.st_size,
+              after.st_mtimespec.tv_sec == source.st_mtimespec.tv_sec,
+              after.st_mtimespec.tv_nsec == source.st_mtimespec.tv_nsec,
+              after.st_uid == source.st_uid, after.st_nlink == 1,
+              after.st_ctimespec.tv_sec == source.st_ctimespec.tv_sec,
+              after.st_ctimespec.tv_nsec == source.st_ctimespec.tv_nsec,
+              png.count == source.st_size,
+              SHA256.hash(data: png).map({ String(format: "%02x", $0) }).joined() == expected else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
+        config.preferences.javaScriptCanOpenWindowsAutomatically = false
+        let web = WKWebView(frame: .zero, configuration: config)
+        let script = #"""
+        const context = { userAgent: navigator.userAgent.slice(0, 512), scheme: location.protocol,
+          secureContext: isSecureContext, visibility: document.visibilityState, contentWorld: 'page' };
+        let phase = 'wire';
+        try {
+          const binary = atob(encoded);
+          const png = Uint8Array.from(binary, c => c.charCodeAt(0));
+          let roundtrip = ''; for (const byte of png) roundtrip += String.fromCharCode(byte);
+          if (png.length !== expectedLength || btoa(roundtrip) !== encoded) {
+            return { context, decode: { status: 'wire-mismatch' } };
+          }
+          const blob = new Blob([png], {type:'image/png'});
+          if (blob.size !== expectedLength) return { context, decode: { status: 'blob-size-mismatch' } };
+          let expired = false, timer;
+          phase = 'decode';
+          const pending = createImageBitmap(new Blob([png],{type:'image/png'}),{imageOrientation:'none',premultiplyAlpha:'none',colorSpaceConversion:'none'})
+            .then(bitmap => { if (expired) { bitmap.close(); return null; } return bitmap; });
+          const timeout = new Promise(resolve => { timer = setTimeout(() => { expired = true; resolve(null); }, 15000); });
+          let bitmap;
+          try { bitmap = await Promise.race([pending, timeout]); } finally { clearTimeout(timer); }
+          if (!bitmap) return { context, decode: { status: 'timeout', bytes: png.length, blobSize: blob.size } };
+          try { return { context, decode: { status: 'success', bytes: png.length, blobSize: blob.size,
+            width: bitmap.width, height: bitmap.height } }; } finally { bitmap.close(); }
+        } catch (error) {
+          const name = typeof error?.name === 'string' && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : 'UnknownError';
+          return { context, decode: { status: phase === 'decode' ? 'decoder-error' : 'script-error', name } };
+        }
+        """#
+        let result: [String: Any] = await withCheckedContinuation { continuation in
+            var completed = false
+            func finish(_ value: [String: Any]) {
+                guard !completed else { return }
+                completed = true
+                continuation.resume(returning: value)
+            }
+            Task { @MainActor in
+                do {
+                    let value = try await web.callAsyncJavaScript(script,
+                        arguments: ["encoded": png.base64EncodedString(), "expectedLength": png.count],
+                        in: nil, contentWorld: .page)
+                    finish((value as? [String: Any]) ?? ["decode": ["status": "host-invalid-result"]])
+                } catch { finish(["decode": ["status": "host-failure"]]) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                finish(["decode": ["status": "host-timeout"]])
+            }
+        }
+        let status = (result["decode"] as? [String: Any])?["status"] as? String ?? "host-invalid-result"
+        let report: [String: Any] = [
+            "diagnosticExecution": status.hasPrefix("host-") ? status : "completed", "result": result,
+            "productQualification": false, "renderQualification": false,
+            "os": ProcessInfo.processInfo.operatingSystemVersionString,
+            "isolation": ["websiteDataStore": "nonPersistent", "javaScriptCanOpenWindowsAutomatically": false,
+                          "window": false, "contentRules": false, "cookies": false,
+                          "productionDifferences": "isolated blank page, no production window, rules or cookies"]
+        ]
+        let encoded = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+        var finalDirectory = stat()
+        guard lstat(output, &finalDirectory) == 0, finalDirectory.st_dev == directory.st_dev,
+              finalDirectory.st_ino == directory.st_ino, finalDirectory.st_uid == geteuid(),
+              (finalDirectory.st_mode & 0o7777) == 0o700 else { throw CocoaError(.fileWriteNoPermission) }
+        let outFD = openat(directoryFD, "diagnostic.json", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard outFD >= 0 else { throw CocoaError(.fileWriteFileExists) }
+        defer { Darwin.close(outFD) }
+        try encoded.withUnsafeBytes { raw in
+            var offset = 0
+            while offset < raw.count {
+                let count = Darwin.write(outFD, raw.baseAddress!.advanced(by: offset), raw.count - offset)
+                guard count > 0 else { throw CocoaError(.fileWriteUnknown) }
+                offset += count
+            }
+        }
     }
     func testPrivateFloorAddsOnlyExactOakMapRulesWhenEnabled() throws {
         let origin = "http://127.0.0.1:13200"
