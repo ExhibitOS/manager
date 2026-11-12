@@ -1289,6 +1289,42 @@ request and new destination while retaining the saved head and prior attempt.
 Exact admission is separate from actual successor-output qualification.
 
 
+## Atomic existing bench visual replacement (source slice)
+
+The generic SDK operations `workspace-bench-visual-check` and
+`workspace-bench-visual-replace` accept the same closed command:
+`{etag, benchId, placementId, expectedFurnishingId, expectedFurnishingVersion,
+expectedModelSha256, furnishingId, furnishingVersion, modelSha256, intakeId}`.
+Both furnishing versions are 1. No draft, pose, seat, viewpoint or collision
+override is accepted from the caller. The command pins the existing backed
+host and visual binding, then selects one different registered bench.
+
+The client requires a clean saved head and the live session marker
+`workspaceBenchVisualReplacementProfile: workspace-bench-visual-replacement-v1`
+with existing room-visual admission. It checks current registered intake/model
+bytes and validates the complete prospective candidate with current If-Match.
+Only the existing placement's furnishing reference and linked host's model
+digest change; an unused old scene descriptor is removed and a missing target
+descriptor appended. Seat dimensions/material, host/placement pose and scale,
+viewpoints, collision overrides and unrelated scene data are preserved. The
+server independently enforces this exact delta and current rights on Save.
+
+`check` revalidates on every call and returns the prospective draft without
+staging it. `replace` stages one revision-checked local edit; ordinary explicit
+`save` remains separate. Use the existing full-candidate preview before Save to
+check geometry, seating and walking fit. Preserving authored collision settings
+does not mean the new model has an identical computed hull. These SDK commands
+are not added to the installed authoring CLI allowlist. Source checks do not
+establish actual intake, scene fit, Save or a qualified new runtime.
+
+The source-only macOS owner-validation admission pins the assembled catalog 45
+default-furnishings 1.10 runtime manifest
+`43c873e85349b1bf48d8a3f466ab31f41f885b7cbde96ec1ea1fc91474fc684a`
+and the directed saved-workspace transition from the existing 1.7 manifest
+`1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738`.
+This adds no general manifest or reverse transition admission. Actual runtime
+qualification and migration remain subject to the matching integration tests.
+
 ## Atomic workspace info-stand replacement (source slice)
 
 The generic automation SDK adds `workspace-info-stand-replace` for an explicitly
