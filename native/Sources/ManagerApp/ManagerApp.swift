@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import SwiftUI
+import OSLog
 import AppKit
 import ManagerCore
 
@@ -222,7 +223,23 @@ final class ManagerModel: ObservableObject {
                 invalidateRetainedAuthoring()
                 let generation = retainedAuthoringGeneration
                 authoringConnectionStatus = "작업 공간 연결을 준비하고 있습니다…"
-                credentials = try await bridge.authoringSession(context)
+                let sessionStarted = ContinuousClock.now
+                var sessionOutcome = "failed"
+                do {
+                    defer {
+                        let elapsed = sessionStarted.duration(to: .now).components
+                        let milliseconds = Double(elapsed.seconds) * 1_000 + Double(elapsed.attoseconds) / 1e15
+                        Logger(subsystem: "org.exhibitos.manager.validation", category: "native-startup")
+                            .notice("Authoring session outcome=\(sessionOutcome, privacy: .public) duration_ms=\(milliseconds, privacy: .public)")
+                    }
+                    do {
+                        credentials = try await bridge.authoringSession(context)
+                        sessionOutcome = Task.isCancelled ? "cancelled" : "succeeded"
+                    } catch {
+                        sessionOutcome = error is CancellationError || Task.isCancelled ? "cancelled" : "failed"
+                        throw error
+                    }
+                }
                 guard !quitting, generation == retainedAuthoringGeneration,
                       self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                 await authoring.connect(credentials) { [weak self] stage in

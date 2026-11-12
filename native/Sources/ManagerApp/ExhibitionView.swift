@@ -290,6 +290,9 @@ final class ExhibitionModel: ObservableObject {
     }
 
     private var catalogImageOrder: [String] = []
+    private var catalogImageEpoch = UUID()
+    private let catalogImageRequestFence = CatalogImageRequestFence()
+    private var catalogImageSelections: [String: NativeArtworkThumbnailSelection] = [:]
     private var catalogThumbnailTail: Task<Void, Never>?
     private var catalogThumbnailTailId: UUID?
     @Published private(set) var catalogThumbnailSaving = false
@@ -415,6 +418,11 @@ final class ExhibitionModel: ObservableObject {
                 expectedSelectionVersion: attempt.selectionVersion, session: session, authority: authority)
             guard current() else { return }
             catalogThumbnailReceipt = receipt
+            if let entry = catalogEntries[attempt.rendered.artworkId], entry.revision == attempt.rendered.revision {
+                invalidateCatalogImage(entry)
+                await loadCatalogImage(entry)
+                guard current() else { return }
+            }
             #if DEBUG
             if let (capture, reservation) = attempt.evidence {
                 do { try capture.writeSelection(receipt, requestId: attempt.requestId, to: reservation) }
@@ -459,7 +467,21 @@ final class ExhibitionModel: ObservableObject {
     }
     #endif
 
-    func catalogImageKey(_ entry: ArtworkCatalogEntry) -> String { entry.id + ":" + String(entry.revision) }
+    private func catalogImageRevisionKey(_ entry: ArtworkCatalogEntry) -> String { entry.id + ":" + String(entry.revision) }
+    func catalogImageKey(_ entry: ArtworkCatalogEntry) -> String {
+        let revision = catalogImageRevisionKey(entry) + ":" + catalogImageEpoch.uuidString
+            + ":" + String(catalogImageRequestFence.generation(for: catalogImageRevisionKey(entry)))
+        guard let selection = catalogImageSelections[catalogImageRevisionKey(entry)], let binding = selection.bindingId else { return revision }
+        return revision + ":" + String(selection.selectionVersion) + ":" + binding.uuidString.lowercased()
+    }
+    private func invalidateCatalogImage(_ entry: ArtworkCatalogEntry) {
+        catalogImageRequestFence.invalidate(catalogImageRevisionKey(entry))
+        let revision = catalogImageRevisionKey(entry)
+        catalogImages = catalogImages.filter { $0.key != revision && !$0.key.hasPrefix(revision + ":") }
+        catalogImageOrder.removeAll { $0 == revision || $0.hasPrefix(revision + ":") }
+        catalogPreviewFailures = catalogPreviewFailures.filter { $0 != revision && !$0.hasPrefix(revision + ":") }
+        catalogImageSelections.removeValue(forKey: revision)
+    }
     func loadCatalogImage(_ entry: ArtworkCatalogEntry) async {
         let previous = catalogThumbnailTail, jobId = UUID(), access = viewportAccessID
         // Visible cards share one request lane; they cannot overfill the shared producer's bounded queue.
@@ -474,21 +496,51 @@ final class ExhibitionModel: ObservableObject {
         if catalogThumbnailTailId == jobId { catalogThumbnailTail = nil; catalogThumbnailTailId = nil }
     }
     private func loadCatalogImageSerial(_ entry: ArtworkCatalogEntry) async {
-        let key = catalogImageKey(entry), access = viewportAccessID
-        guard catalogImages[key] == nil, viewportController.thumbnailSupported else { return }
+        var key = catalogImageKey(entry)
+        let access = viewportAccessID, imageEpoch = catalogImageEpoch
+        let imageGeneration = catalogImageRequestFence.generation(for: catalogImageRevisionKey(entry))
+        guard catalogImages[key] == nil, !catalogPreviewFailures.contains(key) else { return }
+        let api = self.api, session = self.session, authority = catalogThumbnailAuthority
+        func current() -> Bool {
+            viewportAccessID == access && catalogImageEpoch == imageEpoch
+                && catalogImageRequestFence.isCurrent(imageGeneration, for: catalogImageRevisionKey(entry)) && self.api === api
+                && self.session?.csrfToken == session?.csrfToken
+                && catalogThumbnailAuthority === authority
+                && library.contains(where: { $0.id == entry.id && $0.revision == entry.revision })
+        }
         do {
-            let data = try await viewportController.thumbnail(artworkId: entry.id, revision: entry.revision)
+            let data: Data
+            if let api, await api.admitsSelectedArtworkThumbnailRead {
+                guard let session, let authority, authority.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+                let selection = try await api.artworkThumbnailSelection(artworkId: entry.id, revision: entry.revision,
+                    session: session, authority: authority)
+                guard current(), authority.isCurrent else { return }
+                catalogImageSelections[catalogImageRevisionKey(entry)] = selection
+                key = catalogImageKey(entry)
+                if catalogImages[key] != nil { return }
+                if selection.bindingId != nil {
+                    data = try await api.selectedArtworkThumbnail(artworkId: entry.id, revision: entry.revision,
+                        selection: selection, session: session, authority: authority)
+                } else {
+                    guard viewportController.thumbnailSupported else { return }
+                    data = try await viewportController.thumbnail(artworkId: entry.id, revision: entry.revision)
+                }
+            } else {
+                guard viewportController.thumbnailSupported else { return }
+                data = try await viewportController.thumbnail(artworkId: entry.id, revision: entry.revision)
+            }
             try Task.checkCancellation()
-            guard viewportAccessID == access, library.contains(where: { $0.id == entry.id && $0.revision == entry.revision }) else { return }
+            guard current(), catalogImageKey(entry) == key else { return }
             guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil), image.width <= 256, image.height <= 256 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
             if catalogImageOrder.count >= 64, let oldest = catalogImageOrder.first { catalogImages.removeValue(forKey: oldest); catalogImageOrder.removeFirst() }
             catalogImages[key] = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
             catalogImageOrder.removeAll { $0 == key }; catalogImageOrder.append(key); catalogPreviewFailures.remove(key)
         } catch {
-            guard !Task.isCancelled, viewportAccessID == access else { return }
+            guard !Task.isCancelled, current() else { return }
             catalogPreviewFailures.insert(key)
-            // Keep the first bounded rejection without a redraw/retry loop.
+            if (error as? AuthoringFailure)?.status == 401 { invalidateCatalogThumbnailAuthority() }
+            // A selected-image rejection cannot silently replace it with a freshly rendered candidate.
             if !viewportController.diagnostic.hasPrefix("THUMBNAIL ·") {
                 viewportController.diagnose("THUMBNAIL", error)
             }
@@ -1528,7 +1580,7 @@ final class ExhibitionModel: ObservableObject {
         if state?.etag != nil { storedImmutable = true }
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { pendingCatalogThumbnail = nil; clearWallFinishPreview(); sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; lightObjectPreview = nil; lightObjectDisplayDraft = nil; lightObjectPreviewAccessID = nil; lightObjectSharedForm = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = [] }
+        if accessChanged { pendingCatalogThumbnail = nil; clearWallFinishPreview(); sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; lightObjectPreview = nil; lightObjectDisplayDraft = nil; lightObjectPreviewAccessID = nil; lightObjectSharedForm = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogImageSelections = [:]; catalogPreviewFailures = [] }
         floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
         if accessChanged {
             floorImages = [:]; floorImageAttempts = []
@@ -3077,6 +3129,11 @@ final class ExhibitionModel: ObservableObject {
         if more { items += page.items.filter { row in !items.contains(where: { $0.id == row.id }) } } else { items = page.items }
         cursor = page.nextCursor
         let artworks = try await api.artworks()
+        if await api.admitsSelectedArtworkThumbnailRead {
+            catalogThumbnailTail?.cancel()
+            catalogImageEpoch = UUID()
+            catalogImageSelections = [:]; catalogImages = [:]; catalogImageOrder = []; catalogPreviewFailures = []
+        }
         library = artworks.items.filter { $0.approvedRevision == $0.revision }
         libraryCursor = artworks.nextCursor
         refreshCatalogMetadata()

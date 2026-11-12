@@ -484,6 +484,8 @@ public actor AuthoringAPI {
         "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
     private static let fixtureAuthoringRuntimeManifestPin =
         "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"
+    private static let default111RuntimeManifestPin =
+        "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84"
     private static let default17RuntimeManifestPin =
         "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
     // Exact assembled parent045 +050 candidate. Dedicated adoption/preparation
@@ -657,6 +659,7 @@ public actor AuthoringAPI {
     private func encoded<T: Encodable>(_ body: T) throws -> Data { try JSONEncoder().encode(body) }
     private enum CatalogThumbnailStage: String {
         case selectionRead = "selection-get"
+        case selectionImage = "selection-image-get"
         case artworkRead = "artwork-get"
         case selectionWrite = "selection-post"
 
@@ -953,6 +956,76 @@ public actor AuthoringAPI {
         guard (0..<Int(Int32.max)).contains(selection.selectionVersion),
               (selection.selectionVersion == 0) == (selection.bindingId == nil) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
         return selection
+    }
+
+    // Exact reviewed read-route tuple; the live session still requires current authority.
+    // Existing rendered-display-preview-v1 sessions do not establish this endpoint.
+    private nonisolated static let selectedArtworkThumbnailRuntimePin = "1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238"
+    public nonisolated static func supportsSelectedArtworkThumbnailRuntime(manifest: String?) -> Bool {
+        #if DEBUG
+        manifest == selectedArtworkThumbnailRuntimePin
+        #else
+        false
+        #endif
+    }
+    public var admitsSelectedArtworkThumbnailRead: Bool {
+        nativeSession && !authenticationBusy && session?.advertisesRenderedArtworkThumbnail == true
+            && Self.supportsSelectedArtworkThumbnailRuntime(manifest: nativeRuntimeManifestSHA256)
+    }
+
+    /// Reads only the current selected image; a missing selection never renders or selects a candidate.
+    public func selectedArtworkThumbnail(artworkId: String, revision: Int,
+                                         selection: NativeArtworkThumbnailSelection, session expected: AuthoringSession,
+                                         authority: CatalogThumbnailAuthority) async throws -> Data {
+        guard admitsSelectedArtworkThumbnailRead else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        try requireCatalogThumbnailAuthority(expected, stage: .selectionImage)
+        guard authority.isCurrent, let binding = selection.bindingId,
+              (1...Int(Int32.max)).contains(revision), (1...Int(Int32.max)).contains(selection.selectionVersion) else {
+            throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+        }
+        let held = generation
+        let bindingId = binding.uuidString.lowercased()
+        let path = prefix + "/artworks/" + (try identifier(artworkId)) + "/thumbnail-selection/" + bindingId
+            + "/image?expectedRevision=\(revision)&expectedSelectionVersion=\(selection.selectionVersion)"
+        guard let url = URL(string: path, relativeTo: base)?.absoluteURL else { throw AuthoringFailure("LOCAL_SCOPE_INVALID") }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.setValue("image/png", forHTTPHeaderField: "Accept")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
+        request.setValue(expected.csrfToken, forHTTPHeaderField: "x-csrf-token")
+        activeRequests += 1
+        defer { activeRequests -= 1 }
+        let (bytes, response) = try await transport.bytes(for: request)
+        defer { bytes.task.cancel() }
+        func current() throws {
+            guard held == generation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            guard authority.isCurrent else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            try requireCatalogThumbnailAuthority(expected, stage: .selectionImage)
+        }
+        try current()
+        guard let http = response as? HTTPURLResponse, http.url == url else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let success = http.statusCode == 200
+        if success {
+            try SelectedArtworkThumbnailPNG.validateHeaders(http, revision: revision, selection: selection)
+        }
+        let limit = success ? 512 * 1024 : 4096
+        var data = Data()
+        try await withTaskCancellationHandler {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < limit else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+                data.append(byte)
+            }
+        } onCancel: { bytes.task.cancel() }
+        try current()
+        guard success else {
+            let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
+            let code = envelope?.code ?? "REQUEST_FAILED"
+            if http.statusCode == 401 { generation &+= 1; clear() }
+            throw AuthoringFailure(AuthoringFailure.safeCode(code) ? code : "REQUEST_FAILED", status: http.statusCode)
+        }
+        try SelectedArtworkThumbnailPNG.validate(data, response: http)
+        return data
     }
 
     @discardableResult
@@ -3174,6 +3247,7 @@ public actor AuthoringAPI {
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
             || supportsPreReadyPreservationReadback(manifest: manifest)
+            || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -3250,6 +3324,8 @@ public actor AuthoringAPI {
             || manifest == completeStaticRuntimeManifestPin
             || manifest == fixtureAuthoringRuntimeManifestPin
             || manifest == default17RuntimeManifestPin
+            || manifest == default111RuntimeManifestPin
+            || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || manifest == furnishingThumbnail050RuntimeManifestPin
         #else
         false
