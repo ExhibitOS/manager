@@ -690,6 +690,54 @@ impl FurnishingTransitionTrial {
         Ok(true)
     }
 
+    // Explicit physical recovery of the original failed049 trial only. A
+    // commit marker is not rollback proof and failed readiness is not history.
+    fn committed_gpu_ordinary_failure_shape(
+        &self, transition: FurnishingTransition, current: &Current, context: &Context,
+        has_completion: bool,
+    ) -> Result<bool> {
+        let target = (
+            "daf4fe857051ad4d08a009ddf25cf95ab8e76227",
+            "09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634",
+            "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377",
+        );
+        if !matches!(transition, FurnishingTransition::Upgrade49 { .. })
+            || transition.source() != crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET
+            || transition.target() != target || has_completion { return Ok(false); }
+        let prior = self.source_binding(transition)?;
+        let Some(binding) = current.furnishing.as_ref() else { return Ok(false); };
+        binding.check()?;
+        Ok(prior.restore.is_none() && self.source.id == prior.generation
+            && current.format == 1 && current.id == self.generation && binding.generation == self.generation
+            && binding.phase == Phase::Active && binding.admission_kind == Admission::CleanReopen
+            && binding.matches_catalog_tuple(49, target)
+            && binding.previous_generation.as_deref() == Some(prior.generation.as_str())
+            && binding.owner == prior.owner && binding.physical == prior.physical && binding.restore == prior.restore
+            && context.format == 1 && context.job_id.as_deref() == Some(self.generation.as_str())
+            && context.state == "failed" && !context.readiness.ready
+            && context.error_code.as_deref() == Some("NATIVE_PROCESS_EXITED")
+            && context.failure_code.as_deref() == Some("NATIVE_PROCESS_EXITED")
+            && context.postgres_pid.is_none() && context.node_pid.is_none() && context.auxiliary_pid.is_none()
+            && context.exits.len() == 3 && context.exits.get("postgres") == Some(&0)
+            && context.exits.get("auxiliary") == Some(&0) && context.exits.get("node") == Some(&1))
+    }
+
+    // The caller holds the authenticated pending checkpoint's operation and
+    // physical writer fences. No live drain or generic exit rule is changed.
+    fn committed_gpu_ordinary_failure_cold(&self, root: &Path, transition: FurnishingTransition) -> Result<bool> {
+        let Some(current) = current_run(root)? else { return Ok(false); };
+        let (context, completion) = read_run(root, &current.id)?;
+        if !self.committed_gpu_ordinary_failure_shape(transition, &current, &context, completion.is_some())? {
+            return Ok(false);
+        }
+        let binding = current.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        if gpu_model_upgrade_completion(root, binding).is_err() { return Ok(false); }
+        check_interrupted_root(root)?;
+        if exists(&root.join("native-database/postmaster.pid"))? { return Ok(false); }
+        let (source, _) = self.recoverable_source_completion(root, transition)?;
+        Ok(source.ports == context.ports)
+    }
+
     pub(crate) fn hold_source(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<FurnishingTransitionWriterGuard> {
         let (guard, observed) = self.hold(service, transition)?;
         if observed != self.source {
@@ -4988,5 +5036,120 @@ mod gpu049_ordinary_hayes_tests {
             Some(FurnishingStart::Upgrade045To049), Some(FurnishingStart::Upgrade045To050)] {
             assert!(!ordinary_inherited_hayes(&payload, start));
         }
+    }
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+mod gpu049_committed_recovery_tests {
+    use super::*;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    fn fixture() -> (FurnishingTransitionTrial, FurnishingTransition, Current, Context) {
+        let source = crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET;
+        let target = ("daf4fe857051ad4d08a009ddf25cf95ab8e76227",
+            "09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634",
+            "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377");
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        let mut current = super::furnishing_thumbnail_upgrade_result_tests::binding();
+        current.catalog = 49; current.restore = None;
+        current.source_commit = target.0.into(); current.producer_sha256 = target.1.into();
+        current.payload_manifest_sha256 = target.2.into();
+        let mut prior = current.clone(); prior.catalog = 45; prior.phase = Phase::Clean;
+        prior.admission_kind = Admission::CleanReopen;
+        prior.generation = current.previous_generation.clone().unwrap();
+        prior.previous_generation = Some("10000000-0000-4000-8000-000000000006".into());
+        prior.source_commit = source.0.into(); prior.producer_sha256 = source.1.into();
+        prior.payload_manifest_sha256 = source.2.into(); prior.check().unwrap();
+        current.previous_generation = None; current.admission_kind = Admission::FreshEmpty;
+        current.consume_furnishing_transition(&prior, transition).unwrap();
+        current.admission_kind = Admission::CleanReopen; current.check().unwrap();
+        let trial = FurnishingTransitionTrial { source: Current { format: 1,
+            id: prior.generation.clone(), furnishing: Some(prior) }, generation: current.generation.clone() };
+        let context = Context { format: 1, job_id: Some(current.generation.clone()), state: "failed".into(),
+            ports: Ports::default(), readiness: Readiness::default(), error_code: Some("NATIVE_PROCESS_EXITED".into()),
+            failure_code: Some("NATIVE_PROCESS_EXITED".into()), postgres_pid: None, node_pid: None,
+            auxiliary_pid: None, exits: BTreeMap::from([("postgres".into(), 0), ("auxiliary".into(), 0),
+                ("node".into(), 1)]), log_truncated: false };
+        (trial, transition, Current { format: 1, id: current.generation.clone(), furnishing: Some(current) }, context)
+    }
+
+    #[test]
+    fn gpu049_committed_failure_requires_exact_trial_owner_and_node1_shape() {
+        let (trial, transition, current, context) = fixture();
+        let accepts = |trial: &FurnishingTransitionTrial, current: &Current, context: &Context|
+            trial.committed_gpu_ordinary_failure_shape(transition, current, context, false).unwrap_or(false);
+        assert!(accepts(&trial, &current, &context));
+        assert!(!trial.committed_gpu_ordinary_failure_shape(transition, &current, &context, true).unwrap());
+        for (role, exit) in [("node", 0), ("node", -9), ("node", 2), ("postgres", 1), ("auxiliary", -15), ("other", 0)] {
+            let mut bad = context.clone(); bad.exits.insert(role.into(), exit);
+            assert!(!accepts(&trial, &current, &bad));
+        }
+        let mut bad = context.clone(); bad.node_pid = Some(std::process::id());
+        assert!(!accepts(&trial, &current, &bad));
+        let mut bad = context.clone(); bad.failure_code = Some("NATIVE_CANCELLED".into());
+        assert!(!accepts(&trial, &current, &bad));
+        let mut bad = current.clone(); bad.furnishing.as_mut().unwrap().owner.principal_id = "10000000-0000-4000-8000-000000000099".into();
+        assert!(!accepts(&trial, &bad, &context));
+        let mut bad = current.clone(); bad.furnishing.as_mut().unwrap().physical.root_inode += 1;
+        assert!(!accepts(&trial, &bad, &context));
+        let mut bad = current.clone(); bad.furnishing.as_mut().unwrap().admission_kind = Admission::CatalogUpgrade045To049;
+        assert!(!accepts(&trial, &bad, &context));
+        let mut bad = current.clone(); bad.furnishing.as_mut().unwrap().payload_manifest_sha256 = "f".repeat(64);
+        assert!(!accepts(&trial, &bad, &context));
+        let mut bad = trial.clone(); bad.generation = "10000000-0000-4000-8000-000000000099".into();
+        assert!(!accepts(&bad, &current, &context));
+    }
+
+    #[test]
+    fn authenticated_gpu049_node1_recovery_requires_marker_source_completion_and_cold_writer() {
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("gpu049-cold-recover-{}", Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let guard = FurnishingTransitionWriterGuard::acquire(&root).unwrap();
+        let (mut trial, transition, mut current, context) = fixture();
+        let physical = guard.identity().unwrap();
+        trial.source.furnishing.as_mut().unwrap().physical = physical;
+        current.furnishing.as_mut().unwrap().physical = physical;
+        let source = trial.source.furnishing.as_ref().unwrap();
+        let target = current.furnishing.as_ref().unwrap();
+        let runs = directory(&root, "native-runs").unwrap();
+        let source_run = directory(&runs, &source.generation).unwrap();
+        let target_run = directory(&runs, &trial.generation).unwrap();
+        let mut source_context = context.clone(); source_context.job_id = Some(source.generation.clone());
+        source_context.state = "stopped".into(); source_context.error_code = None; source_context.failure_code = None;
+        source_context.exits = BTreeMap::from([("node".into(), 0), ("postgres".into(), 0)]);
+        let proof = || FurnishingCompletion { binding_sha256: source.sha256().unwrap(), consumed_by: Some(trial.generation.clone()) };
+        write_run(&source_run, &source_context, Some(proof())).unwrap();
+        write_run(&target_run, &context, None).unwrap();
+        write_json(&root, "native-current-run.json", &current).unwrap();
+        let receipt = serde_json::json!({"version":1,"mode":"workspace-furnishing-045-to-049-upgrade-v1",
+            "profile":"embedded-model-basecolor-uastc-512-mips-v1","state":"applied",
+            "workspaceId":target.owner.workspace_id,"tenantId":target.owner.tenant_id,"principalId":target.owner.principal_id,
+            "runtimeGeneration":target.generation,"payloadManifestSha256":target.payload_manifest_sha256,"catalogRows":46,
+            "migration":"049_gpu_model_preparation.sql","migrationSha256":crate::native_payload::GPU_MODEL_SCHEMA.2,"drained":true});
+        let mut wire = b"EXHIBITOS_NATIVE_GPU_MODEL_PREPARATION_UPGRADE_RESULT ".to_vec();
+        wire.extend(serde_json::to_vec(&receipt).unwrap());
+        let marker = target_run.join("gpu-model-049-committed.txt");
+        let mut file = OpenOptions::new().create_new(true).write(true).mode(0o600).open(&marker).unwrap();
+        file.write_all(&wire).unwrap(); drop(file);
+        let raw = fs::read(target_run.join("state.json")).unwrap();
+        assert!(check_cold_transition_root(&root, Some(&trial.generation)).is_err());
+        assert!(trial.check_recovery_root(&root, &guard, transition, None).is_ok());
+        fs::write(&marker, b"not an authenticated049 receipt").unwrap();
+        assert!(!trial.committed_gpu_ordinary_failure_cold(&root, transition).unwrap_or(false));
+        fs::write(&marker, &wire).unwrap();
+        let database = directory(&root, "native-database").unwrap();
+        let postmaster = database.join("postmaster.pid");
+        fs::write(&postmaster, format!("{}\n", std::process::id())).unwrap();
+        assert!(!trial.committed_gpu_ordinary_failure_cold(&root, transition).unwrap_or(false));
+        fs::remove_file(postmaster).unwrap();
+        let mut live = context.clone(); live.node_pid = Some(std::process::id());
+        write_run(&target_run, &live, None).unwrap();
+        assert!(!trial.committed_gpu_ordinary_failure_cold(&root, transition).unwrap_or(false));
+        write_run(&target_run, &context, None).unwrap();
+        let mut foreign = proof(); foreign.consumed_by = Some("10000000-0000-4000-8000-000000000099".into());
+        write_run(&source_run, &source_context, Some(foreign)).unwrap();
+        assert!(trial.committed_gpu_ordinary_failure_cold(&root, transition).is_err());
+        assert_eq!(fs::read(target_run.join("state.json")).unwrap(), raw);
+        drop(guard); fs::remove_dir_all(root).unwrap();
     }
 }
