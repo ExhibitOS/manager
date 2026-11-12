@@ -358,6 +358,38 @@ const INFO_STAND_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     231,
     "36a0dfacb8a71463737f723ab7f6c260e686d5a13fe6878a826b54817f3b71c1",
 );
+const FURNISHING_THUMBNAIL_DIRECTORY: &str = "platform/database/native-workspace-furnishing-thumbnail/";
+pub(crate) const FURNISHING_THUMBNAIL_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-workspace-furnishing-thumbnail/050_workspace_furnishing_thumbnail.sql",
+    5974,
+    "8461cad231b80c109b1aaedcef6e1a4d599143313faf00f366f52e79780219fc",
+);
+const FURNISHING_THUMBNAIL_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-furnishing-thumbnail-capability-v1.json",
+    273,
+    "3c3e6a6cea3f0d83c55996cab5a4e98d48d92cce28ea090fe6b969a7764014f5",
+);
+// The producer source is frozen, but no complete candidate has been assembled
+// or admitted. A source/marker match cannot populate this manifest allowlist.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const FURNISHING_THUMBNAIL_TARGETS: &[RuntimeTuple] = &[];
+
+pub(crate) fn furnishing_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return FURNISHING_THUMBNAIL_TARGETS.contains(&tuple)
+        && tuple.0 == "55e8ad6c861eab44326ee8db60db2692e3f7baf7"
+        && tuple.1 == "02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5";
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
+pub(crate) fn furnishing_thumbnail_carried_receipt_payload(tuple: (&str, &str, &str)) -> Option<&'static str> {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return furnishing_thumbnail_host_matches(tuple).then_some(CATALOG45_CARRIED_RESTORE_BASE.2);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; None }
+}
+
 const HAYES_FRAME_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.0,
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.1,
@@ -1204,6 +1236,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_PLACED_EXIT_DOORS.2 == manifest
         || CATALOG45_BACKED_BENCH.2 == manifest
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
+        || FURNISHING_THUMBNAIL_TARGETS.iter().any(|target| target.2 == manifest && furnishing_thumbnail_host_matches(*target))
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1215,6 +1248,7 @@ pub(crate) enum FurnishingTransition {
     Upgrade39(Catalog39Upgrade),
     Upgrade40(Catalog40Upgrade),
     Upgrade44 { source: RuntimeTuple, target: RuntimeTuple },
+    Upgrade50 { source: RuntimeTuple, target: RuntimeTuple },
     Recover45 { source: RuntimeTuple, target: RuntimeTuple },
     SameCatalog { source: RuntimeTuple, target: RuntimeTuple, catalog: WorkspaceFurnishingCatalog },
 }
@@ -1249,6 +1283,12 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair.0 == CATALOG45_DEFAULT_1_7_TARGET.2
+            && let Some(&target) = FURNISHING_THUMBNAIL_TARGETS.iter().find(|target|
+                target.2 == pair.1 && furnishing_thumbnail_host_matches(**target))
+        {
+            return Some(Self::Upgrade50 { source: CATALOG45_DEFAULT_1_7_TARGET, target });
+        }
         if let Some((source, target)) = catalog45_adoption_transition(pair) {
             return Some(Self::SameCatalog {
                 source,
@@ -1432,13 +1472,14 @@ impl FurnishingTransition {
 
     #[cfg(test)]
     pub(crate) fn upgrades_catalog(self) -> bool {
-        matches!(self, Self::Upgrade39(_) | Self::Upgrade40(_) | Self::Upgrade44 { .. })
+        matches!(self, Self::Upgrade39(_) | Self::Upgrade40(_) | Self::Upgrade44 { .. } | Self::Upgrade50 { .. })
     }
 
     pub(crate) fn source_catalog(self) -> WorkspaceFurnishingCatalog {
         match self {
             Self::Upgrade39(_) => WorkspaceFurnishingCatalog::MaterialPublication039,
             Self::Upgrade44 { .. } => WorkspaceFurnishingCatalog::HayesRelease044,
+            Self::Upgrade50 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::Recover45 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::SameCatalog { catalog, .. } => catalog,
             _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
@@ -1449,6 +1490,7 @@ impl FurnishingTransition {
         match self {
             Self::Upgrade40(_) => WorkspaceFurnishingCatalog::HayesRelease044,
             Self::Upgrade44 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            Self::Upgrade50 { .. } => WorkspaceFurnishingCatalog::FurnishingThumbnail050,
             Self::Recover45 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::SameCatalog { catalog, .. } => catalog,
             _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
@@ -1461,7 +1503,7 @@ impl FurnishingTransition {
             Self::Tangent => CATALOG40_FRAME_TARGET,
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
             Self::Upgrade40(step) => step.source,
-            Self::Upgrade44 { source, .. } => source,
+            Self::Upgrade44 { source, .. } | Self::Upgrade50 { source, .. } => source,
             Self::Recover45 { source, .. } => source,
             Self::SameCatalog { source, .. } => source,
         }
@@ -1473,7 +1515,7 @@ impl FurnishingTransition {
             Self::Tangent => CATALOG40_TANGENT_TARGET,
             Self::Upgrade39(target) => target.0,
             Self::Upgrade40(step) => step.target,
-            Self::Upgrade44 { target, .. } => target,
+            Self::Upgrade44 { target, .. } | Self::Upgrade50 { target, .. } => target,
             Self::Recover45 { target, .. } => target,
             Self::SameCatalog { target, .. } => target,
         }
@@ -1520,6 +1562,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     LargeModelPreparation046,
     FreshImagePreparation047,
     InfoStandPreparation048,
+    FurnishingThumbnail050,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -1538,6 +1581,7 @@ impl WorkspaceFurnishingCatalog {
             Self::LargeModelPreparation046 => 46,
             Self::FreshImagePreparation047 => 47,
             Self::InfoStandPreparation048 => 48,
+            Self::FurnishingThumbnail050 => 50,
         }
     }
 
@@ -1545,7 +1589,8 @@ impl WorkspaceFurnishingCatalog {
         matches!(self, Self::Writer037 | Self::Publication038 | Self::MaterialPublication039
             | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042
             | Self::HayesDisposition043 | Self::HayesRelease044 | Self::RequiredModelPreparation045
-            | Self::LargeModelPreparation046 | Self::FreshImagePreparation047 | Self::InfoStandPreparation048)
+            | Self::LargeModelPreparation046 | Self::FreshImagePreparation047 | Self::InfoStandPreparation048
+            | Self::FurnishingThumbnail050)
     }
 }
 
@@ -1884,6 +1929,69 @@ mod normal_oex_release_declaration_tests {
             payload.manifest.files.push(furnishing_ledger_file(format!("platform/database/{dir}/{index:03}_fixture.sql")));
         }
         payload
+    }
+
+    fn thumbnail_ledger_fixture() -> Payload {
+        let mut payload = furnishing_ledger_fixture();
+        payload.manifest.files.push(furnishing_ledger_file(WORKSPACE_FURNISHING_WRITER_SCHEMA.into()));
+        for (path, bytes, hash) in [
+            (WORKSPACE_FURNISHING_PUBLICATION_SCHEMA, WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_BYTES,
+                WORKSPACE_FURNISHING_PUBLICATION_SCHEMA_SHA256),
+            WORKSPACE_MATERIAL_PUBLICATION_SCHEMA, WORKSPACE_MATERIAL_MULTIMAP_SCHEMA,
+            WORKSPACE_FRAME_PREPARATION_SCHEMA, HAYES_ORIGINAL_SCHEMA, HAYES_DISPOSITION_SCHEMA,
+            HAYES_RELEASE_SCHEMA, MODEL_PREPARATION_SCHEMA, FURNISHING_THUMBNAIL_SCHEMA,
+        ] {
+            payload.manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(hash.into()),
+                executable: Some(false), link: None });
+        }
+        payload
+    }
+
+    #[test]
+    fn furnishing_thumbnail_050_is_parent45_plus_one_exact_migration() {
+        let payload = thumbnail_ledger_fixture();
+        let catalog = WorkspaceFurnishingCatalog::FurnishingThumbnail050;
+        assert_eq!(catalog.version(), 50);
+        assert!(catalog.uses_writer_lease());
+        let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ledger.lines().count(), 46);
+        assert_eq!(ledger.lines().last().unwrap(), format!("050_workspace_furnishing_thumbnail.sql|{}", FURNISHING_THUMBNAIL_SCHEMA.2));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045).is_err());
+    }
+
+    #[test]
+    fn furnishing_thumbnail_050_rejects_missing_parent_or_changed_migration() {
+        let mut payload = thumbnail_ledger_fixture();
+        payload.manifest.files.last_mut().unwrap().sha256 = Some("e".repeat(64));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::FurnishingThumbnail050).is_err());
+        payload.manifest.files.last_mut().unwrap().sha256 = Some(FURNISHING_THUMBNAIL_SCHEMA.2.into());
+        payload.manifest.files.retain(|file| !file.path.ends_with("001_fixture.sql"));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::FurnishingThumbnail050).is_err());
+    }
+
+    #[test]
+    fn furnishing_thumbnail_050_rejects_046_047_048_and_unified_migration_mix() {
+        for (path, bytes, hash) in [LARGE_MODEL_PREPARATION_SCHEMA, FRESH_IMAGE_PREPARATION_SCHEMA,
+            INFO_STAND_PREPARATION_SCHEMA, ("platform/database/native-unified-light/049_light.sql", 1, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")] {
+            let mut payload = thumbnail_ledger_fixture();
+            payload.manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(hash.into()), executable: Some(false), link: None });
+            assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::FurnishingThumbnail050).is_err());
+        }
+    }
+
+    #[test]
+    fn furnishing_thumbnail_source_and_marker_do_not_admit_an_unassembled_runtime() {
+        let tuple = ("55e8ad6c861eab44326ee8db60db2692e3f7baf7",
+            "02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        assert!(!furnishing_thumbnail_host_matches(tuple));
+        assert!(furnishing_thumbnail_carried_receipt_payload(tuple).is_none());
+        let mut payload = thumbnail_ledger_fixture();
+        payload.manifest.source_commit = tuple.0.into(); payload.manifest.producer_sha256 = tuple.1.into();
+        payload.manifest_sha256 = tuple.2.into();
+        let (path, bytes, hash) = FURNISHING_THUMBNAIL_CAPABILITY;
+        payload.manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(hash.into()), executable: Some(false), link: None });
+        assert!(payload.workspace_furnishing_catalog().is_err());
     }
 
     #[test]
@@ -3951,12 +4059,16 @@ impl Payload {
     pub(crate) fn open_workspace_v5_validation(root: &Path, selected: bool) -> Result<Self> {
         let mut payload = Self::open(root)?;
         if !workspace_v5_validation_matches(&payload.manifest, &payload.manifest_sha256, selected) {
-            // This selector admits catalog 045 only for an existing workspace.
-            let expected = Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045);
+            // Existing-workspace validation never admits selected import or a
+            // source-only thumbnail candidate without its exact manifest pin.
+            let thumbnail = furnishing_thumbnail_host_matches((&payload.manifest.source_commit,
+                &payload.manifest.producer_sha256, &payload.manifest_sha256));
+            let expected = Some(if thumbnail { WorkspaceFurnishingCatalog::FurnishingThumbnail050 }
+                else { WorkspaceFurnishingCatalog::RequiredModelPreparation045 });
             let publication = catalog45_native_publication_host_matches((
                 &payload.manifest.source_commit, &payload.manifest.producer_sha256, &payload.manifest_sha256,
             ));
-            if selected || (!publication && !payload.native_model_adoption_original_target()
+            if selected || (!thumbnail && !publication && !payload.native_model_adoption_original_target()
                 && payload.retained_furnishing_catalog() != expected)
                 || payload.workspace_furnishing_catalog()? != expected
             {
@@ -3986,7 +4098,10 @@ impl Payload {
             CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
             CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
-        let retained_catalog = payload.retained_furnishing_catalog().or(
+        let retained_catalog = furnishing_thumbnail_host_matches((&context.source_commit,
+            payload.producer_sha256(), &context.manifest_sha256))
+            .then_some(WorkspaceFurnishingCatalog::FurnishingThumbnail050)
+            .or(payload.retained_furnishing_catalog()).or(
             ordinary_catalog45.then_some(WorkspaceFurnishingCatalog::RequiredModelPreparation045),
         );
         if let Some(expected) = retained_catalog {
@@ -4189,6 +4304,24 @@ impl Payload {
         Ok(Some(&self.root))
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn furnishing_thumbnail_upgrade_script(&self) -> Result<PathBuf> {
+        if !furnishing_thumbnail_host_matches((&self.manifest.source_commit,
+                &self.manifest.producer_sha256, &self.manifest_sha256))
+            || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::FurnishingThumbnail050)
+        { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        for (path, hash) in [
+            ("platform/scripts/local-runtime.mjs", "93250a38af737b4a2b9affa72567f67bc6e67f624d252f61ed382a93c68f9c73"),
+            ("platform/scripts/native-workspace-furnishing-bootstrap.mjs", "aec07582c5ad85a06e1d0d59b040488bea2a9d03ebc675efc9fed7687d165bdc"),
+        ] {
+            if !self.manifest.files.iter().any(|file| file.path == path && file.link.is_none()
+                && file.executable == Some(false) && file.sha256.as_deref() == Some(hash))
+            { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        }
+        self.recheck()?;
+        Ok(self.script())
+    }
+
     pub(crate) fn workspace_furnishing_validation(&self) -> Result<bool> {
         Ok(self.workspace_furnishing_catalog()?.is_some())
     }
@@ -4222,6 +4355,7 @@ impl Payload {
         let pinned_portal = self.retained_furnishing_catalog().is_some()
             || self.ordinary_fresh_furnishing()
             || catalog45_carried_restore_payload(self)
+            || furnishing_thumbnail_host_matches((&self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256))
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
                     && self.manifest_sha256 == manifest);
@@ -4291,6 +4425,10 @@ impl Payload {
         if fresh_image_declared != fresh_image_pinned {
             return Err(unqualified());
         }
+        let thumbnail_pinned = furnishing_thumbnail_host_matches(tuple);
+        let thumbnail_declared = self.manifest.files.iter().any(|file|
+            file.path == FURNISHING_THUMBNAIL_CAPABILITY.0 || file.path.starts_with(FURNISHING_THUMBNAIL_DIRECTORY));
+        if thumbnail_declared != thumbnail_pinned { return Err(unqualified()); }
         let info_stand_pinned = info_stand_preparation_host_matches(tuple);
         let info_stand_declared = self.manifest.files.iter().any(|file|
             file.path == INFO_STAND_PREPARATION_CAPABILITY.0 || file.path.starts_with(INFO_STAND_PREPARATION_DIRECTORY));
@@ -4298,7 +4436,7 @@ impl Payload {
             return Err(unqualified());
         }
         let model_preparation_pinned = required_model_preparation_host_matches(tuple)
-            || self.ordinary_fresh_furnishing() || catalog45_carried_restore_host_matches(tuple);
+            || self.ordinary_fresh_furnishing() || catalog45_carried_restore_host_matches(tuple) || thumbnail_pinned;
         let model_preparation_declared = self.manifest.files.iter().any(|file|
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {
@@ -4451,6 +4589,15 @@ impl Payload {
                                             }
                                             return Ok(Some(WorkspaceFurnishingCatalog::FreshImagePreparation047));
                                         }
+                                        if thumbnail_pinned {
+                                            if !pinned_file(FURNISHING_THUMBNAIL_CAPABILITY)
+                                                || !pinned_file(FURNISHING_THUMBNAIL_SCHEMA)
+                                                || ["platform/scripts/native-model-adoption-capability-v1.json",
+                                                    "platform/scripts/native-model-adoption-carried-target-capability-v1.json"]
+                                                    .into_iter().any(|path| self.manifest.files.iter().any(|file| file.path == path))
+                                            { return Err(unqualified()); }
+                                            return Ok(Some(WorkspaceFurnishingCatalog::FurnishingThumbnail050));
+                                        }
                                         if info_stand_pinned {
                                             if !pinned_file(INFO_STAND_PREPARATION_CAPABILITY) || !pinned_file(INFO_STAND_PREPARATION_SCHEMA) {
                                                 return Err(unqualified());
@@ -4500,6 +4647,10 @@ impl Payload {
                 continue;
             };
             if !name.ends_with(".sql") { continue; }
+            if catalog == WorkspaceFurnishingCatalog::FurnishingThumbnail050
+                && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
+                && file.path != FURNISHING_THUMBNAIL_SCHEMA.0
+            { return Err(invalid()); }
             let number = if file.path.starts_with(WORKSPACE_FURNISHING_WRITER_DIRECTORY) {
                 if !catalog.uses_writer_lease() || file.path != WORKSPACE_FURNISHING_WRITER_SCHEMA {
                     return Err(invalid());
@@ -4586,6 +4737,12 @@ impl Payload {
                     return Err(invalid());
                 }
                 47
+            } else if file.path.starts_with(FURNISHING_THUMBNAIL_DIRECTORY) {
+                let (path, bytes, hash) = FURNISHING_THUMBNAIL_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::FurnishingThumbnail050
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                { return Err(invalid()); }
+                50
             } else if file.path.starts_with(INFO_STAND_PREPARATION_DIRECTORY) {
                 let (path, bytes, hash) = INFO_STAND_PREPARATION_SCHEMA;
                 if catalog != WorkspaceFurnishingCatalog::InfoStandPreparation048
@@ -4610,7 +4767,8 @@ impl Payload {
         }
         // These isolated catalogs append one migration to 045.
         let count = match catalog {
-            WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048 => 46,
+            WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048
+                | WorkspaceFurnishingCatalog::FurnishingThumbnail050 => 46,
             _ => catalog.version(),
         };
         if rows.len() != count as usize { return Err(invalid()); }
@@ -4630,6 +4788,15 @@ impl Payload {
     pub(crate) fn catalog40_upgrade_source_ledger(&self) -> Result<String> {
         let full = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::HayesRelease044)?;
         Ok(full.lines().take(40).collect::<Vec<_>>().join("\n"))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn catalog50_upgrade_source_ledger(&self) -> Result<String> {
+        let full = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::FurnishingThumbnail050)?;
+        let (source, last) = full.rsplit_once('\n').ok_or_else(invalid)?;
+        let (path, _, sha) = FURNISHING_THUMBNAIL_SCHEMA;
+        if last != format!("{}|{sha}", path.rsplit('/').next().ok_or_else(invalid)?) { return Err(invalid()); }
+        Ok(source.into())
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -4991,7 +5158,8 @@ impl Payload {
             || (private_editor
                 && ([CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH].contains(&provenance)
                     || CATALOG45_CARRIED_RESTORE_BASE == provenance
-                    || self.native_model_adoption_original_target()))
+                    || self.native_model_adoption_original_target()
+                    || furnishing_thumbnail_host_matches(provenance)))
             || (catalog45_recovery_host_matches(provenance)
                 && !self.catalog45_pre_ready_preservation_validation()
                 && !self.catalog45_pre_ready_hayes_preservation_validation());

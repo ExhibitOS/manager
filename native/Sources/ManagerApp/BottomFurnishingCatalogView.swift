@@ -101,6 +101,7 @@ struct BottomFurnishingCatalogView: View {
     @State private var category: FurnishingDrawerCategory = .all
     @State private var query = ""
     @State private var selectedID: String?
+    @State private var thumbnailReview: FurnishingThumbnailReviewModel?
     @State private var bundled: [BundledWorkspaceFurnishings.Item] = []
     @State private var workspace: [WorkspaceFurnishingSummary] = []
     @State private var cursor: String?
@@ -144,7 +145,7 @@ struct BottomFurnishingCatalogView: View {
 
     private var thumbnailWork: ThumbnailWork? {
         guard workspaceVisible,
-              model.furnishingThumbnailFrameReady, controller.furnishingThumbnailSupported else { return nil }
+              (model.durableFurnishingThumbnailsAvailable || (model.furnishingThumbnailFrameReady && controller.furnishingThumbnailSupported)) else { return nil }
         var ids = visibleRows.compactMap { row -> String? in
             guard case .workspace(let item) = row, item.rightsAvailability.display else { return nil }; return item.id
         }
@@ -242,6 +243,7 @@ struct BottomFurnishingCatalogView: View {
                 }
             }
         }
+        .sheet(item: $thumbnailReview) { FurnishingThumbnailReviewView(model: $0) }
         .controlSize(.small)
         .padding(8)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -297,6 +299,13 @@ struct BottomFurnishingCatalogView: View {
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? Color.accentColor : Color(nsColor: .separatorColor)))
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            if case .workspace(let item) = row, model.durableFurnishingThumbnailsAvailable {
+                Button("대표 이미지 확인·선택", systemImage: "photo") {
+                    thumbnailReview = model.makeFurnishingThumbnailReview(item)
+                }
+            }
+        }
         .disabled(!canSelect || !row.selectable)
         .accessibilityLabel("\(row.name), \(row.sourceLabel)")
         .accessibilityValue(previewStatus(row) ?? "")

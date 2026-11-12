@@ -147,7 +147,7 @@ final class NativeViewportController: ObservableObject {
         throw AuthoringFailure("VIEWPORT_FRAME_STALE")
     }
     @Published fileprivate(set) var acceptedSequence = 0
-    fileprivate var registeredFurnishingThumbnailAction: ((WorkspaceFurnishing, NativeExhibitionDraft) async throws -> Data)?
+    fileprivate var registeredFurnishingThumbnailAction: ((WorkspaceFurnishing, NativeExhibitionDraft) async throws -> (ViewportFurnishingThumbnailRequest, Data))?
     fileprivate var thumbnailAction: ((String, Int) async throws -> (ViewportThumbnailReply, ViewportThumbnailRequest))?
     fileprivate var sceneSnapshotAction: ((NativeStudioResponse, SceneSnapshotCamera, String) async throws -> SceneSnapshotResult)?
     #if DEBUG
@@ -234,9 +234,10 @@ final class NativeViewportController: ObservableObject {
     }
 
     func furnishingThumbnail(_ item: WorkspaceFurnishing, draft: NativeExhibitionDraft) async throws -> Data {
-        guard furnishingThumbnailSupported, let registeredFurnishingThumbnailAction else {
-            throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE")
-        }
+        return try await furnishingThumbnailCapture(item, draft: draft).1
+    }
+    func furnishingThumbnailCapture(_ item: WorkspaceFurnishing, draft: NativeExhibitionDraft) async throws -> (ViewportFurnishingThumbnailRequest, Data) {
+        guard furnishingThumbnailSupported, let registeredFurnishingThumbnailAction else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         return try await registeredFurnishingThumbnailAction(item, draft)
     }
 
@@ -258,9 +259,19 @@ final class NativeViewportController: ObservableObject {
         return image
     }
     func findSelection() async {
-        guard connected, findSelectionSupported, let findSelectionAction else { return }
-        do { try await findSelectionAction(); message = "선택한 배치가 보이도록 시점을 맞췄습니다." }
+        guard connected, findSelectionSupported, findSelectionAction != nil else { return }
+        do { try await findSelectionChecked(); message = "선택한 배치가 보이도록 시점을 맞췄습니다." }
         catch { message = "선택한 배치를 찾지 못했습니다. 선택과 기존 시점은 유지됩니다."; diagnose("FIND", error) }
+    }
+    func acknowledgesOrdinarySelection(draft: NativeExhibitionDraft?, tenantId: String?, principalId: String?, selection: ViewportSelection) -> Bool {
+        acknowledges(draft: draft, tenantId: tenantId, principalId: principalId)
+            && acknowledgedFrame?.selection == selection && acknowledgedFrame?.disabled == false && editingContextActive
+    }
+    /// Reuses the same private camera request and guards, exposing completion to
+    /// a typed prospective preview without turning a disabled frame editable.
+    func findSelectionChecked() async throws {
+        guard connected, findSelectionSupported, let findSelectionAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+        try await findSelectionAction()
     }
     @Published fileprivate(set) var sceneProgress: ViewportSceneProgress? = .preparing
     @Published var rendering = false
@@ -1067,7 +1078,7 @@ struct NativeViewport: NSViewRepresentable {
                       JSONSerialization.isValidJSONObject(reply) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
                 let bytes = try JSONSerialization.data(withJSONObject: reply)
                 guard bytes.count <= 710_000 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
-                return try JSONDecoder().decode(ViewportFurnishingThumbnailReply.self, from: bytes).pngData(matching: request)
+                return (request, try JSONDecoder().decode(ViewportFurnishingThumbnailReply.self, from: bytes).pngData(matching: request))
             }
             controller.thumbnailAction = { [weak self] artworkId, revision in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.thumbnailSupported,
@@ -1326,10 +1337,10 @@ struct NativeViewportArea: View {
         return identity.uuidString + digest.map { String(format: "%02x", $0) }.joined()
     }
     private func renderer(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
-        let selectionBlocked = !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.placingArtwork
+        let selectionBlocked = !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing || model.placingArtwork
         let workspaceFurnishings = model.workspaceFurnishingIntakeAvailable
         let workspaceMaterialMultimap = model.workspaceMaterialMultimapAvailable
-        return NativeViewport(credentials: credentials, privateFloor: model.privateFloorRuntimeAvailable, workspaceMaterials: model.workspaceMaterialPreviewAvailable, workspaceMaterialMultimap: workspaceMaterialMultimap, workspaceFurnishings: workspaceFurnishings, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.viewportFormDirty || model.positionDirty || model.wallFinishPreviewing || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing, interactionDisabled: selectionBlocked || NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: model.boundedPlacementCapability != nil, acknowledged: model.boundedPlacementReady), selectionDisabled: selectionBlocked, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+        return NativeViewport(credentials: credentials, privateFloor: model.privateFloorRuntimeAvailable, workspaceMaterials: model.workspaceMaterialPreviewAvailable, workspaceMaterialMultimap: workspaceMaterialMultimap, workspaceFurnishings: workspaceFurnishings, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.viewportFormDirty || model.positionDirty || model.wallFinishPreviewing || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing, interactionDisabled: selectionBlocked || NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: model.boundedPlacementCapability != nil, acknowledged: model.boundedPlacementReady), selectionDisabled: selectionBlocked, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
             .id(rendererIdentity(credentials) + String(model.privateFloorRuntimeAvailable) + String(model.workspaceMaterialPreviewAvailable) + String(workspaceMaterialMultimap) + String(workspaceFurnishings))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)

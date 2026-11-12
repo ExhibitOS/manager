@@ -21,6 +21,8 @@ pub(super) enum Admission {
     #[serde(rename = "catalog-upgrade-044-to-045")]
     CatalogUpgrade044To045,
     InterruptedReopen,
+    #[serde(rename = "catalog-upgrade-045-to-050")]
+    CatalogUpgrade045To050,
 }
 
 impl Admission {
@@ -33,6 +35,7 @@ impl Admission {
             Self::CatalogUpgrade040To044 => 5,
             Self::CatalogUpgrade044To045 => 6,
             Self::InterruptedReopen => 7,
+            Self::CatalogUpgrade045To050 => 8,
         }
     }
 }
@@ -123,6 +126,10 @@ impl Binding {
             && (crate::native_payload::catalog45_carried_restore_host_matches(tuple)
                 || (self.admission_kind == Admission::CleanReopen
                     && crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple).is_some()));
+        let thumbnail = self.catalog == 50
+            && matches!(self.admission_kind, Admission::CatalogUpgrade045To050 | Admission::CleanReopen)
+            && crate::native_payload::furnishing_thumbnail_host_matches(tuple)
+            && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
             42 => crate::native_payload::hayes_validation_host_matches(tuple),
             43 => crate::native_payload::hayes_disposition_host_matches(tuple),
@@ -130,7 +137,7 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -202,6 +209,9 @@ impl Binding {
             (Phase::Active | Phase::Clean, Admission::CatalogUpgrade044To045) => {
                 self.catalog == 45 && self.previous_generation.is_some() && self.restore.is_none()
             }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade045To050) => {
+                self.catalog == 50 && self.previous_generation.is_some()
+            }
             (Phase::ActivatedRestore, Admission::VerifiedRestore) => {
                 self.previous_generation.is_none() && self.restore.is_some()
             }
@@ -237,6 +247,7 @@ impl Binding {
         let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
         let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
             .or_else(|| crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple))
+            .or_else(|| crate::native_payload::furnishing_thumbnail_carried_receipt_payload(tuple))
             .unwrap_or(self.payload_manifest_sha256.as_str());
         crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
             &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref(), proof.carried_provenance.as_ref())
@@ -293,6 +304,11 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
+        if matches!(transition, FurnishingTransition::Upgrade50 { .. }) {
+            return if self.admission_kind == Admission::CleanReopen
+                && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
+            { Ok(self.restore.as_ref()) } else { Err(err(ERROR)) };
+        }
         if transition.allows_catalog45_adoption_without_restore() && self.restore.is_none() {
             return if self.admission_kind == Admission::CleanReopen { Ok(None) } else { Err(err(ERROR)) };
         }
@@ -347,6 +363,7 @@ impl Binding {
             FurnishingTransition::Upgrade39(_) => Admission::CatalogUpgrade039To040,
             FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
             FurnishingTransition::Upgrade44 { .. } => Admission::CatalogUpgrade044To045,
+            FurnishingTransition::Upgrade50 { .. } => Admission::CatalogUpgrade045To050,
             FurnishingTransition::Recover45 { .. } => Admission::InterruptedReopen,
             _ => Admission::CleanReopen,
         }
@@ -1859,5 +1876,16 @@ mod tests {
         assert!(furnishing_lifetime::WriterLifetime::acquire_existing(&root).is_err());
         assert!(fs::read_dir(&root).unwrap().next().is_none());
         fs::remove_dir(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_admission_tests {
+    use super::*;
+    #[test]
+    fn furnishing_thumbnail_kind8_keeps_interrupted_kind7_unchanged() {
+        assert_eq!(Admission::InterruptedReopen.tag(), 7);
+        assert_eq!(Admission::CatalogUpgrade045To050.tag(), 8);
+        assert_eq!(serde_json::to_value(Admission::CatalogUpgrade045To050).unwrap(), "catalog-upgrade-045-to-050");
     }
 }

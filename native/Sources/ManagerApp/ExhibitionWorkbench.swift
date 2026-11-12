@@ -54,7 +54,7 @@ struct NativeExhibitionView: View {
     }
 
     private enum InspectorScope: String, CaseIterable, Identifiable {
-        case selection, lighting, floor, roomAudio, cover, exhibition, viewingPlan, walkingCollision, output
+        case selection, lighting, floor, roomAudio, cover, exhibition, viewingPlan, walkingCollision, infoStand, output
         var id: Self { self }
         var title: String {
             switch self {
@@ -66,6 +66,7 @@ struct NativeExhibitionView: View {
             case .exhibition: "전시 정보"
             case .viewingPlan: "관람 순서"
             case .walkingCollision: "걷기 충돌"
+            case .infoStand: "안내대 교체"
             case .output: "저장·내보내기"
             }
         }
@@ -84,21 +85,24 @@ struct NativeExhibitionView: View {
     }
     private var editRestricted: Bool { readOnly || model.boundedReadOnly || model.boundedPolicyPending || controller.boundedReadOnly || model.boundedPlacementCapability != nil }
     private var formLocked: Bool {
-        !ready || readOnly || model.entrancePreviewActive || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying || model.placingArtwork
+        !ready || readOnly || model.entrancePreviewActive || model.busy || model.pending || model.immutable || model.architectureDirty || model.architectureApplying || model.placingArtwork || model.infoStandPreviewing
     }
     private var saveLocked: Bool {
+        if model.infoStandPreviewing { return true }
         if model.boundedPlacementCapability != nil {
             return !ready || readOnly || !model.boundedPlacementReady || model.boundedPendingRecoveryBlocked || model.busy || model.entrancePreviewActive || !model.dirty
         }
         return !ready || editRestricted || model.boundedPendingRecoveryBlocked || model.busy || model.entrancePreviewActive || (model.immutable && !model.pending)
     }
     private func requestOpen(_ id: String?) {
+        guard !model.infoStandPreviewing else { return }
         guard (id != nil || !model.boundedNavigationLocked), !model.entrancePreviewActive, !model.pending, !model.busy, !model.placingArtwork, id != nil || (active && !readOnly) else { return }
         if model.dirty { pendingOpen = id; pendingNew = id == nil; pendingAdopt = false; discardPrompt = true }
         else { Task { if let id { await model.open(id) } else if controller.editingContextActive { await model.new() } } }
     }
     private func inspect(_ value: InspectorScope) {
         guard value != .cover || !model.placingArtwork else { return }
+        if value != .infoStand { model.cancelInfoStandPreview() }
         scope = value; inspectorVisible = true; browserVisible = false
         if value == .cover { coverPurpose = true }
     }
@@ -266,7 +270,7 @@ struct NativeExhibitionView: View {
                     .keyboardShortcut(.cancelAction)
             } else {
                 Button { model.previewEntrance(.walk, systemReducedMotion: reducedMotion) } label: { Label("걸어보기", systemImage: "figure.walk") }
-                    .labelStyle(.iconOnly).disabled(!ready || !model.viewportController.connected || !model.viewportController.entrancePreviewSupported || model.busy || model.pending || model.entrancePreviewBusy)
+                    .labelStyle(.iconOnly).disabled(!ready || !model.viewportController.connected || !model.viewportController.entrancePreviewSupported || model.busy || model.pending || model.entrancePreviewBusy || model.infoStandPreviewing)
             }
             Button { Task { if controller.editingContextActive { await model.save() } } } label: { Label(model.pending ? "저장 응답 다시 확인" : "전시 저장", systemImage: "square.and.arrow.down") }
                 .labelStyle(.iconOnly).disabled(saveLocked).keyboardShortcut("s", modifiers: .command)
@@ -321,7 +325,7 @@ struct NativeExhibitionView: View {
             } else if model.immutable {
                 HStack { Text("공개용 저장본").foregroundStyle(.secondary); Button("복제해서 편집") { Task { await model.copyForEditing() } }.disabled(!ready || readOnly || !model.canCopyForEditing) }
             } else if model.dirty {
-                Text("아직 저장하지 않은 입력이 있습니다.").foregroundStyle(.secondary)
+                Text(model.infoStandPreviewing ? "안내대·명판 미리보기입니다. 적용 전에는 전시에 보관되지 않습니다." : "아직 저장하지 않은 입력이 있습니다.").foregroundStyle(.secondary)
             } else if model.reusablePublicationId != nil {
                 Text("편집 초안은 저장해도 공개본을 바꾸지 않습니다.").foregroundStyle(.secondary)
             } else if model.notice.isEmpty {
@@ -380,6 +384,8 @@ struct NativeExhibitionView: View {
             ScrollView { ViewingPlanSettingsView(model: model, controller: controller, ready: ready) }
         case .walkingCollision:
             WalkingCollisionInspector(model: model, ready: ready && !editRestricted)
+        case .infoStand:
+            ScrollView { WorkspaceInfoStandPreviewView(model: model, ready: ready && !editRestricted) }
         case .floor:
             ScrollView { NativeFloorSettingsInspector(model: model, viewport: controller, ready: ready).padding(12) }
         case .roomAudio:

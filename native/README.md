@@ -1363,3 +1363,51 @@ registered furnishing intake/thumbnail/replacement, the corrected painting
 lighting output or public viewing. The previously failed export remains failed;
 a later observed export of its already frozen publication is a distinct scoped
 operation with preserved failure evidence and the existing safe API trace.
+
+### Registered furnishing thumbnail candidates
+
+The optional `workspaceFurnishingThumbnailProfile` session value
+`workspace-furnishing-thumbnail-v1` adds reviewed thumbnail candidates and a
+separate representative-image selection. The Native 050 consumer source keeps
+its target manifest allowlist empty until the frozen Server payload has actually
+been assembled and its exact tuple reviewed. These interfaces alone do not
+qualify a runtime or authorize a workspace transition.
+
+The scoped authoring adapter exposes `workspace-furnishing-thumbnail-prepare`,
+`-candidates`, `-candidate`, `-image`, `-selection`, `-select`, and
+`-selected-image` (each with the full prefix). Prepare accepts the closed command
+`{capture, pngInputPath}`: `capture` is the existing six-field renderer capture,
+and the PNG path must be present with its SHA-256 in the automation input map.
+The captured Native revision, edit version and ETag are provenance; unrelated
+scene edits do not require rendering another identical registered-model image.
+Live owner, registered descriptor, model bytes, render recipe and display rights
+are rechecked. Preparation does not select, stage a scene edit, or save one.
+
+Read commands use `{id, version:1}`; candidate/image add `candidateId`. Selection
+adds `candidateId`, `receiptSha256` and `expectedSelectionVersion`; the envelope
+request ID is the selection nonce. A successful recorded POST is exactly the
+requested selection version plus one. A later GET supplies current selection,
+which can differ during replay. Preserve the same request, CAS and PNG after an
+uncertain response; do not invent a replacement nonce as an automatic retry.
+
+When admitted, the ordinary furnishing-card menu opens **대표 이미지 확인·선택**.
+Ready images can be reviewed before explicit selection. Selected cards load the
+server-selected, hash-checked PNG after reopening; ordinary card reads do not
+create candidates. Existing runtimes retain their transient preview behavior.
+Actual candidate admission, selection/reopen and GUI qualification remain
+separate checks against the assembled payload.
+
+The stand inspector also accepts a one-purpose closed replacement proposal
+`{etag, modelSha256, intakeId, placement, plaque}`. It focuses the target artwork
+before showing a cached prospective stand/plaque frame. Cancel discards that
+preview; Apply stages one checked candidate, and exhibition Save remains a
+separate action. The saved-scene snapshot guard is unchanged. Physical fit and
+ordinary GUI acceptance require actual target-camera checks before applying.
+
+Unresolved GUI thumbnail requests retain their original capture or selection
+nonce/CAS in owner-scoped session state across sheet dismissal and reopening.
+Reconnecting the same owner refreshes API authority without replacing that
+intent; other owners cannot borrow it. A first definitively rejected POST may
+refresh selection, while an uncertain replay keeps the original request.
+Unresolved-intent recovery across application termination is not qualified by
+these session-lifecycle checks.

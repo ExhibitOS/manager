@@ -46,6 +46,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceArtworkFramePreparationProfile: String? = nil
     public var workspaceInfoStandPreparationProfile: String? = nil
     public var workspaceInfoStandReplacementProfile: String? = nil
+    public var workspaceFurnishingThumbnailProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
@@ -105,6 +106,27 @@ public struct AuthoringSession: Decodable, Sendable {
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
     public let nextCursor: String?
+}
+public struct WorkspaceFurnishingThumbnailCandidatePage: Sendable {
+    public let source: WorkspaceFurnishingThumbnailSource
+    public let items: [WorkspaceFurnishingThumbnailCandidate]
+    public let nextCursor: String?
+}
+public struct WorkspaceFurnishingThumbnailSelectionResult: Sendable {
+    /// A retried POST can replay a historical selection; current is a later GET.
+    public let recorded: WorkspaceFurnishingThumbnailSelection
+    public let current: WorkspaceFurnishingThumbnailSelection
+}
+/// This HTTP POST was rejected before acknowledgement. It does not disprove
+/// an earlier uncertain attempt with the same request ID.
+public struct WorkspaceFurnishingThumbnailSelectionRejection: Error, Sendable {
+    public let requestId: String
+    public let failure: AuthoringFailure
+}
+public struct WorkspaceFurnishingThumbnailImage: Sendable {
+    public let selection: WorkspaceFurnishingThumbnailSelection
+    public let candidate: WorkspaceFurnishingThumbnailCandidate
+    public let data: Data
 }
 public struct NativeArtist: Codable, Sendable, Identifiable {
     public let id: String
@@ -1560,7 +1582,7 @@ public actor AuthoringAPI {
     }
 
     private func readPreviewBytes(path: String, expectedBytes: Int, sha256: String, mime: String,
-                                  invalidCode: String, requireDigestHeader: Bool) async throws -> Data {
+                                  invalidCode: String, requireDigestHeader: Bool, requiresNativeReadCSRF: Bool = false) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation
         let url = base.appendingPathComponent(path)
@@ -1569,9 +1591,15 @@ public actor AuthoringAPI {
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.setValue(mime, forHTTPHeaderField: "Accept")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        if requiresNativeReadCSRF {
+            guard nativeSession, let session else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            request.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
+            request.setValue(session.csrfToken, forHTTPHeaderField: "x-csrf-token")
+        }
         let (bytes, response) = try await transport.bytes(for: request)
         defer { bytes.task.cancel() }
-        if requireDigestHeader, let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 403 {
+        if requiresNativeReadCSRF, generation != current { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        if requireDigestHeader || requiresNativeReadCSRF, let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 403 {
             throw AuthoringFailure("DISPLAY_PERMISSION_REQUIRED", status: 403)
         }
         guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
@@ -2499,6 +2527,180 @@ public actor AuthoringAPI {
         let model = furnishing.details.model
         return try await readPreviewBytes(path: path, expectedBytes: model.bytes, sha256: model.sha256,
             mime: model.mime, invalidCode: "FURNISHING_RESPONSE_INVALID", requireDigestHeader: true)
+    }
+
+    public var admitsWorkspaceFurnishingThumbnails: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil && admitsWorkspaceFurnishings
+            && session?.workspaceFurnishingThumbnailProfile == WorkspaceFurnishingThumbnailSubmission.kind
+    }
+
+    private func checkFurnishingThumbnailScope(_ document: NativeDocumentState, generation held: UInt64) throws {
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard admitsWorkspaceFurnishingThumbnails, document.tenantId == tenant, session?.tenantId == document.tenantId,
+              session?.userId == document.principalId,
+              [document.workspaceId, document.tenantId, document.principalId].allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_THUMBNAIL_UNAVAILABLE")
+        }
+    }
+
+    private func thumbnailFurnishing(_ id: String, version: Int, document: NativeDocumentState,
+                                     generation held: UInt64) async throws -> WorkspaceFurnishing {
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let item = try await workspaceFurnishing(id, version: version)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        try NativeFurnishingThumbnailRules.requireDisplay(item.details.rights)
+        return item
+    }
+
+    private func recheckThumbnailFurnishing(_ item: WorkspaceFurnishing, document: NativeDocumentState,
+                                            generation held: UInt64) async throws {
+        let latest = try await thumbnailFurnishing(item.id, version: item.version, document: document, generation: held)
+        guard latest == item else { throw AuthoringFailure("MODEL_CONFLICT") }
+    }
+
+    public func prepareWorkspaceFurnishingThumbnail(_ submission: WorkspaceFurnishingThumbnailSubmission,
+                                                    in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailCandidate {
+        let held = generation
+        try checkFurnishingThumbnailScope(document, generation: held)
+        guard submission.workspaceId == document.workspaceId, submission.request.tenantId == document.tenantId,
+              submission.request.principalId == document.principalId else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let item = try await thumbnailFurnishing(submission.request.furnishingId, version: submission.request.furnishingVersion,
+                                               document: document, generation: held)
+        // A capture can outlive unrelated scene edits, but never a source change.
+        _ = try WorkspaceFurnishingThumbnailSubmission.checkedRenderRequest(submission.value["renderRequest"], document: document, furnishing: item)
+        let path = try workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-candidates"
+        let raw: DocumentValue = try await request(path, method: "POST", body: submission.body)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let candidate = try WorkspaceFurnishingThumbnailCandidate(value: raw, document: document, furnishing: item, submission: submission)
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return candidate
+    }
+
+    public func workspaceFurnishingThumbnailCandidates(_ id: String, version: Int,
+                                                       in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailCandidatePage {
+        let held = generation
+        let item = try await thumbnailFurnishing(id, version: version, document: document, generation: held)
+        let raw: DocumentValue = try await request(workspaceFurnishingVersionPath(id, version: version) + "/thumbnail-candidates", requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        guard case .object(let fields) = raw, Set(fields.keys) == ["source", "items", "nextCursor"],
+              raw["nextCursor"] == .null, let rows = raw["items"].items, rows.count <= 16 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let source = try WorkspaceFurnishingThumbnailSource(value: raw["source"], furnishing: item)
+        let candidates = try rows.map { try WorkspaceFurnishingThumbnailCandidate(value: $0, document: document, furnishing: item) }
+        guard candidates.allSatisfy({ $0.source == source }), Set(candidates.map { $0.candidateId.lowercased() }).count == candidates.count else {
+            throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+        }
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return WorkspaceFurnishingThumbnailCandidatePage(source: source, items: candidates, nextCursor: nil)
+    }
+
+    private func readFurnishingThumbnailCandidate(_ item: WorkspaceFurnishing, candidateId: String,
+                                                   document: NativeDocumentState, generation held: UInt64) async throws -> WorkspaceFurnishingThumbnailCandidate {
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let id = try identifier(candidateId)
+        guard UUID(uuidString: id) != nil else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let raw: DocumentValue = try await request(workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-candidates/" + id,
+                                                    requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let candidate = try WorkspaceFurnishingThumbnailCandidate(value: raw, document: document, furnishing: item)
+        guard candidate.candidateId == id else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        return candidate
+    }
+
+    public func workspaceFurnishingThumbnailCandidate(_ id: String, version: Int, candidateId: String,
+                                                      in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailCandidate {
+        let held = generation
+        let item = try await thumbnailFurnishing(id, version: version, document: document, generation: held)
+        let candidate = try await readFurnishingThumbnailCandidate(item, candidateId: candidateId, document: document, generation: held)
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return candidate
+    }
+
+    private func readFurnishingThumbnailSelection(_ item: WorkspaceFurnishing, document: NativeDocumentState,
+                                                   generation held: UInt64) async throws -> WorkspaceFurnishingThumbnailSelection {
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let raw: DocumentValue = try await request(workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-selection", requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        return try WorkspaceFurnishingThumbnailSelection(value: raw, document: document, furnishing: item)
+    }
+
+    public func workspaceFurnishingThumbnailSelection(_ id: String, version: Int,
+                                                      in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailSelection {
+        let held = generation
+        let item = try await thumbnailFurnishing(id, version: version, document: document, generation: held)
+        let selection = try await readFurnishingThumbnailSelection(item, document: document, generation: held)
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return selection
+    }
+
+    public func selectWorkspaceFurnishingThumbnail(_ candidate: WorkspaceFurnishingThumbnailCandidate,
+                                                   expectedSelectionVersion: Int64, requestId: String,
+                                                   in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailSelectionResult {
+        let held = generation
+        try checkFurnishingThumbnailScope(document, generation: held)
+        guard (0...2_147_483_646).contains(expectedSelectionVersion), UUID(uuidString: requestId) != nil else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let item = try await thumbnailFurnishing(candidate.source.furnishingId, version: candidate.source.furnishingVersion, document: document, generation: held)
+        _ = try WorkspaceFurnishingThumbnailCandidate(value: candidate.value, document: document, furnishing: item)
+        let body: DocumentValue = .object(["requestId": .string(requestId), "candidateId": .string(candidate.candidateId),
+            "receiptSha256": .string(candidate.receiptSha256), "expectedSelectionVersion": .integer(expectedSelectionVersion)])
+        // Send the caller's original CAS and nonce once. A replay can be older
+        // than current selection; preflighting current version would break it.
+        let raw: DocumentValue
+        do {
+            raw = try await request(workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-selection",
+                                    method: "POST", body: encoded(body))
+        } catch let failure as AuthoringFailure where [400, 403, 404, 409, 422].contains(failure.status) {
+            throw WorkspaceFurnishingThumbnailSelectionRejection(requestId: requestId, failure: failure)
+        }
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let recorded = try WorkspaceFurnishingThumbnailSelection(value: raw, document: document, furnishing: item)
+        guard recorded.matches(candidate), recorded.selectionVersion == expectedSelectionVersion + 1 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let current = try await readFurnishingThumbnailSelection(item, document: document, generation: held)
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return WorkspaceFurnishingThumbnailSelectionResult(recorded: recorded, current: current)
+    }
+
+    /// Review a ready candidate without selecting it. Issued PNG and source
+    /// are rechecked on both sides of the bounded native read.
+    public func workspaceFurnishingThumbnailImage(_ candidate: WorkspaceFurnishingThumbnailCandidate,
+                                                 in document: NativeDocumentState) async throws -> Data {
+        let held = generation
+        let item = try await thumbnailFurnishing(candidate.source.furnishingId, version: candidate.source.furnishingVersion,
+                                                document: document, generation: held)
+        let current = try await readFurnishingThumbnailCandidate(item, candidateId: candidate.candidateId, document: document, generation: held)
+        guard current == candidate else { throw AuthoringFailure("FURNISHING_THUMBNAIL_CONFLICT") }
+        let path = try workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-candidates/" + candidate.candidateId + "/image"
+        let data = try await readPreviewBytes(path: path, expectedBytes: candidate.thumbnail.bytes, sha256: candidate.thumbnail.sha256,
+                                             mime: "image/png", invalidCode: "CATALOG_PREVIEW_INVALID", requireDigestHeader: false,
+                                             requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        _ = try candidate.checkedPNG(data)
+        let latest = try await readFurnishingThumbnailCandidate(item, candidateId: candidate.candidateId, document: document, generation: held)
+        guard latest == candidate else { throw AuthoringFailure("FURNISHING_THUMBNAIL_CONFLICT") }
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return data
+    }
+
+    public func selectedWorkspaceFurnishingThumbnail(_ id: String, version: Int,
+                                                     in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailImage? {
+        let held = generation
+        let item = try await thumbnailFurnishing(id, version: version, document: document, generation: held)
+        let selection = try await readFurnishingThumbnailSelection(item, document: document, generation: held)
+        guard let selected = selection.selected else {
+            try await recheckThumbnailFurnishing(item, document: document, generation: held)
+            return nil
+        }
+        let candidate = try await readFurnishingThumbnailCandidate(item, candidateId: selected.candidateId, document: document, generation: held)
+        guard selection.matches(candidate) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let path = try workspaceFurnishingVersionPath(id, version: version) + "/thumbnail-candidates/" + candidate.candidateId + "/image"
+        let data = try await readPreviewBytes(path: path, expectedBytes: candidate.thumbnail.bytes, sha256: candidate.thumbnail.sha256,
+                                             mime: "image/png", invalidCode: "CATALOG_PREVIEW_INVALID", requireDigestHeader: false,
+                                             requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        _ = try candidate.checkedPNG(data)
+        let latest = try await readFurnishingThumbnailSelection(item, document: document, generation: held)
+        guard latest == selection else { throw AuthoringFailure("FURNISHING_THUMBNAIL_CONFLICT") }
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return WorkspaceFurnishingThumbnailImage(selection: selection, candidate: candidate, data: data)
     }
 
     private func checkInfoStandApproval(_ furnishing: WorkspaceFurnishing, intakeId: String) async throws {

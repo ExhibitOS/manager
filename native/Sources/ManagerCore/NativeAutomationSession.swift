@@ -7,6 +7,7 @@ import Darwin
 /// used by ManagerApp. Each installed CLI admits only its scoped commands.
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
+        "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
@@ -579,6 +580,74 @@ public actor NativeAutomationSession {
             "png": .object(["mime": .string("image/png"), "width": .integer(256), "height": .integer(256),
                 "bytes": .integer(Int64(capture.pngData.count)), "sha256": .string(capture.pngSha256),
                 "base64": .string(capture.pngData.base64EncodedString())])])
+    }
+
+    private func executeFurnishingThumbnail(_ operation: String, request: DocumentValue,
+                                             api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
+        guard selectedOEXFormat == nil, await api.admitsWorkspaceFurnishingThumbnails,
+              request["inputPath"] == .null, request["outputPath"] == .null else {
+            throw BridgeFailure("WORKSPACE_FURNISHING_THUMBNAIL_UNAVAILABLE")
+        }
+        try checkedRevision(request, current)
+        let result: DocumentValue
+        if operation == "workspace-furnishing-thumbnail-prepare" {
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["capture", "pngInputPath"])
+            guard let path = command["pngInputPath"].string, let expected = inputs[path],
+                  let id = command["capture"]["request"]["furnishingId"].string else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            let url = URL(fileURLWithPath: path)
+            guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            let png = try await ImportFileSnapshot.load(url, byteLimit: 512 * 1024)
+            guard png.mime == "image/png", png.sha256 == expected else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+            let item = try await api.workspaceFurnishing(id, version: 1)
+            let submission = try WorkspaceFurnishingThumbnailSubmission(capture: command["capture"], pngData: png.data,
+                                                                        document: current, furnishing: item)
+            result = try await api.prepareWorkspaceFurnishingThumbnail(submission, in: current).value
+        } else {
+            let keys: Set<String>
+            switch operation {
+            case "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image": keys = ["id", "version", "candidateId"]
+            case "workspace-furnishing-thumbnail-select": keys = ["id", "version", "candidateId", "receiptSha256", "expectedSelectionVersion"]
+            default: keys = ["id", "version"]
+            }
+            let command = try NativeAutomationArtworkRules.command(request, keys: keys)
+            guard let id = command["id"].string, workspaceFurnishingID(id), command["version"] == .integer(1) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            switch operation {
+            case "workspace-furnishing-thumbnail-candidates":
+                let page = try await api.workspaceFurnishingThumbnailCandidates(id, version: 1, in: current)
+                result = .object(["source": page.source.value, "items": .array(page.items.map(\.value)), "nextCursor": .null])
+            case "workspace-furnishing-thumbnail-selection":
+                result = try await api.workspaceFurnishingThumbnailSelection(id, version: 1, in: current).value
+            case "workspace-furnishing-thumbnail-selected-image":
+                if let image = try await api.selectedWorkspaceFurnishingThumbnail(id, version: 1, in: current) {
+                    var png = image.candidate.thumbnail.value; png["base64"] = .string(image.data.base64EncodedString())
+                    result = .object(["selection": image.selection.value, "candidate": image.candidate.value, "png": png])
+                } else { result = .null }
+            default:
+                guard let candidateId = command["candidateId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                let candidate = try await api.workspaceFurnishingThumbnailCandidate(id, version: 1, candidateId: candidateId, in: current)
+                if operation == "workspace-furnishing-thumbnail-candidate" { result = candidate.value }
+                else if operation == "workspace-furnishing-thumbnail-image" {
+                    let data = try await api.workspaceFurnishingThumbnailImage(candidate, in: current)
+                    var png = candidate.thumbnail.value; png["base64"] = .string(data.base64EncodedString())
+                    result = .object(["candidate": candidate.value, "png": png])
+                } else {
+                    guard command["receiptSha256"] == .string(candidate.receiptSha256),
+                          let version = command["expectedSelectionVersion"].integer,
+                          let requestId = request["requestId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                    do {
+                        let selection = try await api.selectWorkspaceFurnishingThumbnail(candidate, expectedSelectionVersion: version,
+                                                                                       requestId: requestId, in: current)
+                        result = .object(["recorded": selection.recorded.value, "current": selection.current.value])
+                    } catch let rejected as WorkspaceFurnishingThumbnailSelectionRejection { throw rejected.failure }
+                }
+            }
+        }
+        // Recheck the live owner after await. Unrelated scene edits do not
+        // invalidate a registered-model representation or rewrite its history.
+        _ = try await checked(request)
+        return result
     }
 
     private func finishedHayes(_ context: Context, api: AuthoringAPI, document: NativeDocumentState,
@@ -1466,7 +1535,7 @@ public actor NativeAutomationSession {
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
-            let allowed: Set<String> = ["read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve"]
+            let allowed: Set<String> = ["workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve"]
             guard allowed.contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
@@ -1773,6 +1842,8 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
             result = try await executeWorkspaceFurnishing(operation, request: request, api: api)
+        case "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image":
+            result = try await executeFurnishingThumbnail(operation, request: request, api: api, current: current)
         case "workspace-furnishing-thumbnail-render":
             result = try await furnishingThumbnail(request, context: context, api: api, current: current)
         case "workspace-furnishing-place":
