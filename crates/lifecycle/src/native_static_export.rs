@@ -1739,10 +1739,11 @@ impl InstallationController {
         let root = &self.profile.as_ref().ok_or_else(bad)?.root;
         let name = format!("native-static-export-{}.json", digest(service.root.as_os_str().as_encoded_bytes()));
         let identity = service.personal_identity()?;
+        gpu_model_job_root_empty(&service.root)?;
         let (_, upload) = self.upload_unlocked(service)?;
         let (_, publication_state) = self.publication_unlocked(service)?;
         let publication = publication_state.completed.as_ref().ok_or_else(bad)?;
-        if upload.intent.is_some() || upload.job_id.is_some() || upload.file_name.is_some() || upload.compact_variant.is_some()
+        if upload.intent.is_some() || upload.job_id.is_some() || upload.file_name.is_some() || upload.compact_variant.is_some() || upload.gpu_variant.is_some()
             || document.etag.as_deref() != Some(publication.source_etag.as_str())
             || document.draft.as_ref().and_then(|draft| draft["exhibitionId"].as_str()) != Some(publication.source_exhibition_id.as_str())
             || publication.mode.as_deref() != Some("native-original-v1")
@@ -2037,6 +2038,15 @@ impl Exporter {
         port: u16,
         detail_authority: Option<StaticDetailAuthority<'_>>,
     ) -> Result<Status> {
+        self.controller.with_current(&token, |service| {
+            let profile = self.controller.profile.as_ref().ok_or_else(bad)?;
+            let _lock = profile_lock(profile)?;
+            gpu_model_job_root_empty(&service.root)?;
+            if self.controller.upload_unlocked(service)?.1.gpu_variant.is_some() {
+                return Err(err("NATIVE_GPU_MODEL_WORK_PENDING"));
+            }
+            Ok(())
+        })?;
         let current = self.status(&token)?;
         if (self.active() && !input.saved_head_verified) || self.detail_held(&token)? {
             return Err(err("BUSY"));

@@ -24,6 +24,8 @@ public struct AuthoringSession: Decodable, Sendable {
     public var modelOriginalInspectionProfile: String? = nil
     public var nativeLargeModelPreparationProfile: String? = nil
     public var compactModelVariantProfile: String? = nil
+    /// Proposed server field; no runtime family has been admitted yet.
+    public var nativeGpuModelPreparationProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
     public var nativeProductImageThumbnailRepairProfile: String? = nil
@@ -47,6 +49,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceArtworkFramePreparationProfile: String? = nil
     public var workspaceInfoStandPreparationProfile: String? = nil
     public var workspaceInfoStandReplacementProfile: String? = nil
+    public var workspaceFurnishingThumbnailProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
@@ -110,6 +113,33 @@ public struct AuthoringSession: Decodable, Sendable {
 public struct AuthoringPage<Item: Decodable & Sendable>: Decodable, Sendable {
     public let items: [Item]
     public let nextCursor: String?
+}
+public struct WorkspaceFurnishingThumbnailCandidatePage: Sendable {
+    public let source: WorkspaceFurnishingThumbnailSource
+    public let items: [WorkspaceFurnishingThumbnailCandidate]
+    public let nextCursor: String?
+}
+public struct WorkspaceFurnishingThumbnailSelectionResult: Sendable {
+    /// A retried POST can replay a historical selection; current is a later GET.
+    public let recorded: WorkspaceFurnishingThumbnailSelection
+    public let current: WorkspaceFurnishingThumbnailSelection
+}
+/// This capture POST was definitively rejected on this attempt. A prior
+/// uncertain use of the same capture request ID still requires reconciliation.
+public struct WorkspaceFurnishingThumbnailPreparationRejection: Error, Sendable {
+    public let requestId: String
+    public let failure: AuthoringFailure
+}
+/// This HTTP POST was rejected before acknowledgement. It does not disprove
+/// an earlier uncertain attempt with the same request ID.
+public struct WorkspaceFurnishingThumbnailSelectionRejection: Error, Sendable {
+    public let requestId: String
+    public let failure: AuthoringFailure
+}
+public struct WorkspaceFurnishingThumbnailImage: Sendable {
+    public let selection: WorkspaceFurnishingThumbnailSelection
+    public let candidate: WorkspaceFurnishingThumbnailCandidate
+    public let data: Data
 }
 public struct NativeArtist: Codable, Sendable, Identifiable {
     public let id: String
@@ -456,6 +486,10 @@ public actor AuthoringAPI {
         "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"
     private static let default17RuntimeManifestPin =
         "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
+    // Exact assembled parent045 +050 candidate. Dedicated adoption/preparation
+    // families remain closed and no default runtime selection changes here.
+    private static let furnishingThumbnail050RuntimeManifestPin =
+        "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626"
     private static let completeStaticRuntimeManifestPin =
         "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088"
     private static let thumbnailFreshnessRuntimeManifestPin =
@@ -570,6 +604,7 @@ public actor AuthoringAPI {
             || manifest == Self.completeStaticRuntimeManifestPin
             || manifest == Self.fixtureAuthoringRuntimeManifestPin
             || manifest == Self.default17RuntimeManifestPin
+            || manifest == Self.furnishingThumbnail050RuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -671,7 +706,7 @@ public actor AuthoringAPI {
         }
     }
 
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil, requiresNativeReadCSRF: Bool = false) async throws -> T {
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil, requiresNativeReadCSRF: Bool = false, gpuApprovalFence: (generation: UInt64, authority: NativeGPUPreviewApprovalAuthority)? = nil) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -712,6 +747,10 @@ public actor AuthoringAPI {
         }
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
+        if let fence = gpuApprovalFence {
+            guard method == "POST", generation == fence.generation, admitsGPUModelPreparation,
+                  fence.authority.beginDispatch() else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+        }
         do { (bytes, response) = try await transport.bytes(for: request) }
         catch {
             catalogThumbnail?.stage.recordTransportFailure(error)
@@ -1565,7 +1604,7 @@ public actor AuthoringAPI {
     }
 
     private func readPreviewBytes(path: String, expectedBytes: Int, sha256: String, mime: String,
-                                  invalidCode: String, requireDigestHeader: Bool) async throws -> Data {
+                                  invalidCode: String, requireDigestHeader: Bool, requiresNativeReadCSRF: Bool = false) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation
         let url = base.appendingPathComponent(path)
@@ -1574,9 +1613,15 @@ public actor AuthoringAPI {
         var request = URLRequest(url: url, timeoutInterval: 30)
         request.setValue(mime, forHTTPHeaderField: "Accept")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        if requiresNativeReadCSRF {
+            guard nativeSession, let session else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            request.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
+            request.setValue(session.csrfToken, forHTTPHeaderField: "x-csrf-token")
+        }
         let (bytes, response) = try await transport.bytes(for: request)
         defer { bytes.task.cancel() }
-        if requireDigestHeader, let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 403 {
+        if requiresNativeReadCSRF, generation != current { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        if requireDigestHeader || requiresNativeReadCSRF, let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 403 {
             throw AuthoringFailure("DISPLAY_PERMISSION_REQUIRED", status: 403)
         }
         guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
@@ -1874,6 +1919,226 @@ public actor AuthoringAPI {
               response.previewUrl == prefix + "/artworks/" + id + "/preview" else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
         return response
     }
+    /// The independently verified B049 payload; discovery is not admission.
+    public nonisolated static func supportsGPUModelPreparationRuntime(manifestSHA256: String?, ready: Bool) -> Bool {
+        ready && manifestSHA256 == "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e"
+    }
+
+    public var admitsGPUModelPreparation: Bool {
+        nativeSession && !authenticationBusy
+            && Self.supportsGPUModelPreparationRuntime(manifestSHA256: nativeRuntimeManifestSHA256, ready: true)
+            && session?.nativeGpuModelPreparationProfile == NativeGPUModelPreparation.profile
+    }
+
+    private var canObserveOwnedGPUModelPreparation: Bool {
+        nativeSession && !authenticationBusy && session != nil
+    }
+
+    /// Shares the already-authenticated cookie only with an admitted, freshly
+    /// reviewed GPU preview; never requests or rotates a second local session.
+    public func gpuPreviewCredentials(for expected: AuthoringSession, transfer: NativeGPUModelPreparationTransfer) async throws -> LocalAuthoringSession {
+        guard admitsGPUModelPreparation, let current = session, let id = transfer.jobId,
+              current.userId == expected.userId, current.tenantId == expected.tenantId,
+              current.role == expected.role, current.csrfToken == expected.csrfToken, current.expiresAt == expected.expiresAt,
+              transfer.tenantId.lowercased() == current.tenantId.lowercased(), transfer.principalId.lowercased() == current.userId.lowercased(),
+              let credentials = localRendererCredentials, credentials.tenantId.lowercased() == current.tenantId.lowercased(),
+              credentials.principalId.lowercased() == current.userId.lowercased(), credentials.origin == base.absoluteString else {
+            throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        _ = try await reviewGPUModelPreparation(id, artworkId: transfer.artworkId, input: transfer.request)
+        guard generation == heldGeneration, admitsGPUModelPreparation, let held = session,
+              held.userId == current.userId, held.tenantId == current.tenantId, held.role == current.role,
+              held.csrfToken == current.csrfToken, held.expiresAt == current.expiresAt else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return credentials
+    }
+
+    private func checkedGPUJob(_ raw: DocumentValue, artworkId: String,
+                               input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        let current = generation
+        var verified: String?
+        if raw["gpuPreparation"]["status"] == .string("ready") {
+            guard let jobID = raw["id"].string else { throw NativeGPUModelPreparation.invalid() }
+            let review: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(artworkId))
+                + "/gpu-preparations/" + (try identifier(jobID)) + "/review")
+            guard generation == current, review["serverReceipt"] == raw["gpuPreparation"]["serverReceipt"],
+                  review["source"] == raw["gpuPreparation"]["source"], review["candidate"] == raw["gpuPreparation"]["candidate"],
+                  review["jobId"] == raw["id"], review["artworkId"].string?.lowercased() == artworkId.lowercased(),
+                  review["receiptSHA256"] == review["serverReceipt"]["sha256"] else { throw NativeGPUModelPreparation.invalid() }
+            verified = review["receiptSHA256"].string
+        }
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try NativeGPUModelPreparationJob(raw, artworkId: artworkId, request: input, verifiedReceiptSHA256: verified)
+    }
+
+    public func createGPUModelPreparation(artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        guard admitsGPUModelPreparation else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+        let current = generation, artworkId = try identifier(artworkId)
+        let full = try await artwork(artworkId)
+        guard generation == current, admitsGPUModelPreparation, input.matchesApprovedSource(full, artworkId: artworkId) else {
+            throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED")
+        }
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + artworkId + "/compact-preparations", method: "POST", body: encoded(input))
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try await checkedGPUJob(raw, artworkId: artworkId, input: input)
+    }
+
+    /// Submit a newly journaled intent; the returned ID alone is not a receipt.
+    public func createGPUModelPreparationIdentity(artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelJobIdentity {
+        guard admitsGPUModelPreparation, input.valid else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+        let current = generation, artworkId = try identifier(artworkId)
+        let full = try await artwork(artworkId)
+        guard generation == current, admitsGPUModelPreparation, input.matchesApprovedSource(full, artworkId: artworkId) else {
+            throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED")
+        }
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + artworkId + "/compact-preparations", method: "POST", body: encoded(input))
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try NativeGPUModelJobIdentity(raw, input: input)
+    }
+
+    /// A server-enforced read-only lookup for an already-journaled request.
+    /// Nil is only a point-in-time absence, never a worker-drain receipt.
+    public func recoverGPUModelPreparationIdentity(artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelJobIdentity? {
+        guard canObserveOwnedGPUModelPreparation, input.valid else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let current = generation, artworkId = try identifier(artworkId)
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + artworkId + "/gpu-preparations/recover", method: "POST", body: encoded(input))
+        guard generation == current,
+              NativeGPUModelPreparation.exact(raw, ["artworkId", "operationID", "generation", "job"]),
+              NativeGPUModelPreparation.sameID(raw["artworkId"].string, artworkId),
+              raw["operationID"] == .string(input.idempotencyKey), raw["generation"] == .string(input.generation) else {
+            throw NativeGPUModelPreparation.invalid()
+        }
+        return raw["job"] == .null ? nil : try NativeGPUModelJobIdentity(raw["job"], input: input, observesHistoricalFailed: true)
+    }
+
+    public func gpuModelPreparationJob(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        guard canObserveOwnedGPUModelPreparation else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let current = generation, id = try identifier(id), artworkId = try identifier(artworkId)
+        let raw: DocumentValue = try await request("/api/v1/tenants/\(tenant)/imports/" + id)
+        guard generation == current, raw["id"].string?.lowercased() == id else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try await checkedGPUJob(raw, artworkId: artworkId, input: input)
+    }
+
+    public func cancelGPUModelPreparation(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        // Server permits owner cancellation even when source authority is lost;
+        // requiring a preflight status read would defeat that recovery path.
+        guard canObserveOwnedGPUModelPreparation else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let current = generation
+        let raw: DocumentValue = try await request("/api/v1/tenants/\(tenant)/imports/" + (try identifier(id)) + "/cancel", method: "POST", body: Data("{}".utf8))
+        guard generation == current, raw["id"].string?.lowercased() == id.lowercased() else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let job = try await checkedGPUJob(raw, artworkId: artworkId, input: input)
+        guard job.value["state"] == .string("cancelled") else { throw NativeGPUModelPreparation.invalid() }
+        return job
+    }
+
+    public func retryGPUModelPreparation(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
+        guard admitsGPUModelPreparation else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+        let current = generation
+        let prior = try await gpuModelPreparationJob(id, artworkId: artworkId, input: input)
+        guard prior.value["state"] == .string("failed"), prior.value["gpuPreparation"]["workerDrained"] == .bool(true),
+              let attempts = prior.value["attempts"].integer, attempts < 5 else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
+        let raw: DocumentValue = try await request("/api/v1/tenants/\(tenant)/imports/" + (try identifier(id)) + "/retry", method: "POST", body: Data("{}".utf8))
+        guard generation == current, admitsGPUModelPreparation, raw["id"].string?.lowercased() == id.lowercased() else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try await checkedGPUJob(raw, artworkId: artworkId, input: input)
+    }
+
+    public func reviewGPUModelPreparation(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelReview {
+        guard admitsGPUModelPreparation else { throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE") }
+        let current = generation
+        let job = try await gpuModelPreparationJob(id, artworkId: artworkId, input: input)
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(artworkId)) + "/gpu-preparations/" + (try identifier(id)) + "/review")
+        guard generation == current, admitsGPUModelPreparation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try NativeGPUModelReview(raw, artworkId: artworkId, request: input, job: job)
+    }
+
+    public func gpuModelSelection(artworkId: String) async throws -> NativeGPUModelSelectionReadback {
+        guard canObserveOwnedGPUModelPreparation else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let raw: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(artworkId)) + "/gpu-preparations/selection")
+        return try NativeGPUModelSelectionReadback(raw, artworkId: artworkId)
+    }
+
+    public func gpuModelCandidate(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelCandidate {
+        let current = generation
+        let review = try await reviewGPUModelPreparation(id, artworkId: artworkId, input: input)
+        guard let receipt = review.value["receiptSHA256"].string, let hash = review.value["candidate"]["sha256"].string,
+              let count = review.value["candidate"]["bytes"].integer, (28...33_554_432).contains(count) else { throw NativeGPUModelPreparation.invalid() }
+        let path = prefix + "/artworks/" + (try identifier(artworkId)) + "/gpu-preparations/" + (try identifier(id))
+            + "/model?receiptSHA256=" + receipt + "&candidateSHA256=" + hash
+        guard let url = URL(string: path, relativeTo: base)?.absoluteURL, url.host == "127.0.0.1", url.port == base.port,
+              url.scheme == "http", generation == current, admitsGPUModelPreparation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        activeRequests += 1
+        defer { activeRequests -= 1 }
+        var req = URLRequest(url: url, timeoutInterval: 30)
+        req.setValue("model/gltf-binary", forHTTPHeaderField: "Accept")
+        req.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        req.setValue(base.absoluteString, forHTTPHeaderField: "Origin")
+        let (bytes, response) = try await transport.bytes(for: req)
+        defer { bytes.task.cancel() }
+        guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
+              http.mimeType?.lowercased() == "model/gltf-binary", http.value(forHTTPHeaderField: "x-exhibitos-sha256") == hash,
+              http.value(forHTTPHeaderField: "x-exhibitos-receipt-sha256") == receipt,
+              http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true,
+              http.expectedContentLength < 0 || http.expectedContentLength == count else { throw NativeGPUModelPreparation.invalid() }
+        var data = Data(); data.reserveCapacity(Int(count))
+        try await withTaskCancellationHandler {
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < Int(count) else { throw NativeGPUModelPreparation.invalid() }
+                data.append(byte)
+            }
+        } onCancel: { bytes.task.cancel() }
+        guard generation == current, admitsGPUModelPreparation, data.count == Int(count), nativeImportSHA256(data) == hash else { throw NativeGPUModelPreparation.invalid() }
+        return NativeGPUModelCandidate(artworkId: artworkId, jobId: id, receiptSHA256: receipt, candidateSHA256: hash, data: data)
+    }
+
+    /// The package-only authority is minted by the currently visible preview
+    /// after a verified draw. It cannot be reconstructed from a CLI or JSON.
+    package func approveGPUModelPreparation(transfer: NativeGPUModelPreparationTransfer,
+        authority: NativeGPUPreviewApprovalAuthority) async throws -> NativeGPUModelApprovalResult {
+        defer { authority.finish() }
+        guard admitsGPUModelPreparation, let session, let id = transfer.jobId,
+              let manifest = nativeRuntimeManifestSHA256 else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+        let current = generation
+        let job = try await gpuModelPreparationJob(id, artworkId: transfer.artworkId, input: transfer.request)
+        let review = try await reviewGPUModelPreparation(id, artworkId: transfer.artworkId, input: transfer.request)
+        let approval = try NativeGPUModelApprovalRequest(review: review, request: transfer.request)
+        guard generation == current, admitsGPUModelPreparation, let live = self.session,
+              live.userId == session.userId, live.tenantId == session.tenantId, live.role == session.role,
+              live.csrfToken == session.csrfToken, live.expiresAt == session.expiresAt,
+              authority.matches(transfer: transfer, session: live, manifest: manifest, review: review) else {
+            throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+        }
+        do {
+            let raw: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(transfer.artworkId)) + "/gpu-preparations/approve",
+                method: "POST", body: encoded(approval), gpuApprovalFence: (current, authority))
+            guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            let result = try NativeGPUModelApprovalResult(raw, artworkId: transfer.artworkId, job: job, request: transfer.request)
+            let readback = try await gpuModelSelection(artworkId: transfer.artworkId)
+            guard generation == current, readback.selection == result.selection,
+                  transfer.permitsClearingSelected(job, selection: readback.selection) else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let full = try await artwork(transfer.artworkId)
+            guard generation == current, full.approvedRevision == transfer.request.revision + 1,
+                  full.approvedAssetId?.lowercased() == transfer.request.assetId.lowercased() else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            return result
+        } catch {
+            if authority.wasDispatched { throw AuthoringFailure("GPU_APPROVAL_OUTCOME_UNKNOWN") }
+            throw error
+        }
+    }
+
+    /// Readback after a lost response never dispatches another mutation.
+    package func reconcileGPUModelApproval(transfer: NativeGPUModelPreparationTransfer) async throws -> Bool {
+        guard let id = transfer.jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+        let current = generation
+        let job = try await gpuModelPreparationJob(id, artworkId: transfer.artworkId, input: transfer.request)
+        let selection = try await gpuModelSelection(artworkId: transfer.artworkId)
+        guard generation == current, transfer.permitsClearingSelected(job, selection: selection.selection) else { return false }
+        let full = try await artwork(transfer.artworkId)
+        guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return full.approvedRevision == transfer.request.revision + 1
+            && full.approvedAssetId?.lowercased() == transfer.request.assetId.lowercased()
+    }
+
     public var admitsCompactModelVariant: Bool {
         nativeSession && !authenticationBusy && admitsRequiredModelPreparation
             && session?.compactModelVariantProfile == NativeCompactModelVariantRequest.profile
@@ -2506,6 +2771,187 @@ public actor AuthoringAPI {
             mime: model.mime, invalidCode: "FURNISHING_RESPONSE_INVALID", requireDigestHeader: true)
     }
 
+    public var admitsWorkspaceFurnishingThumbnails: Bool {
+        nativeSession && !authenticationBusy
+            && Self.supportsWorkspaceFurnishingThumbnailRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && admitsWorkspaceFurnishings
+            && session?.workspaceFurnishingThumbnailProfile == WorkspaceFurnishingThumbnailSubmission.kind
+    }
+
+    private func checkFurnishingThumbnailScope(_ document: NativeDocumentState, generation held: UInt64) throws {
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard admitsWorkspaceFurnishingThumbnails, document.tenantId == tenant, session?.tenantId == document.tenantId,
+              session?.userId == document.principalId,
+              [document.workspaceId, document.tenantId, document.principalId].allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_THUMBNAIL_UNAVAILABLE")
+        }
+    }
+
+    private func thumbnailFurnishing(_ id: String, version: Int, document: NativeDocumentState,
+                                     generation held: UInt64) async throws -> WorkspaceFurnishing {
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let item = try await workspaceFurnishing(id, version: version)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        try NativeFurnishingThumbnailRules.requireDisplay(item.details.rights)
+        return item
+    }
+
+    private func recheckThumbnailFurnishing(_ item: WorkspaceFurnishing, document: NativeDocumentState,
+                                            generation held: UInt64) async throws {
+        let latest = try await thumbnailFurnishing(item.id, version: item.version, document: document, generation: held)
+        guard latest == item else { throw AuthoringFailure("MODEL_CONFLICT") }
+    }
+
+    public func prepareWorkspaceFurnishingThumbnail(_ submission: WorkspaceFurnishingThumbnailSubmission,
+                                                    in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailCandidate {
+        let held = generation
+        try checkFurnishingThumbnailScope(document, generation: held)
+        guard submission.workspaceId == document.workspaceId, submission.request.tenantId == document.tenantId,
+              submission.request.principalId == document.principalId else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let item = try await thumbnailFurnishing(submission.request.furnishingId, version: submission.request.furnishingVersion,
+                                               document: document, generation: held)
+        // A capture can outlive unrelated scene edits, but never a source change.
+        _ = try WorkspaceFurnishingThumbnailSubmission.checkedRenderRequest(submission.value["renderRequest"], document: document, furnishing: item)
+        let path = try workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-candidates"
+        let raw: DocumentValue
+        do {
+            raw = try await request(path, method: "POST", body: submission.body)
+        } catch let failure as AuthoringFailure where [400, 403, 404, 409, 422].contains(failure.status) {
+            throw WorkspaceFurnishingThumbnailPreparationRejection(requestId: submission.request.requestId, failure: failure)
+        }
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let candidate = try WorkspaceFurnishingThumbnailCandidate(value: raw, document: document, furnishing: item, submission: submission)
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return candidate
+    }
+
+    public func workspaceFurnishingThumbnailCandidates(_ id: String, version: Int,
+                                                       in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailCandidatePage {
+        let held = generation
+        let item = try await thumbnailFurnishing(id, version: version, document: document, generation: held)
+        let raw: DocumentValue = try await request(workspaceFurnishingVersionPath(id, version: version) + "/thumbnail-candidates", requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        guard case .object(let fields) = raw, Set(fields.keys) == ["source", "items", "nextCursor"],
+              raw["nextCursor"] == .null, let rows = raw["items"].items, rows.count <= 16 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let source = try WorkspaceFurnishingThumbnailSource(value: raw["source"], furnishing: item)
+        let candidates = try rows.map { try WorkspaceFurnishingThumbnailCandidate(value: $0, document: document, furnishing: item) }
+        guard candidates.allSatisfy({ $0.source == source }), Set(candidates.map { $0.candidateId.lowercased() }).count == candidates.count else {
+            throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+        }
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return WorkspaceFurnishingThumbnailCandidatePage(source: source, items: candidates, nextCursor: nil)
+    }
+
+    private func readFurnishingThumbnailCandidate(_ item: WorkspaceFurnishing, candidateId: String,
+                                                   document: NativeDocumentState, generation held: UInt64) async throws -> WorkspaceFurnishingThumbnailCandidate {
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let id = try identifier(candidateId)
+        guard UUID(uuidString: id) != nil else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let raw: DocumentValue = try await request(workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-candidates/" + id,
+                                                    requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let candidate = try WorkspaceFurnishingThumbnailCandidate(value: raw, document: document, furnishing: item)
+        guard candidate.candidateId == id else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        return candidate
+    }
+
+    public func workspaceFurnishingThumbnailCandidate(_ id: String, version: Int, candidateId: String,
+                                                      in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailCandidate {
+        let held = generation
+        let item = try await thumbnailFurnishing(id, version: version, document: document, generation: held)
+        let candidate = try await readFurnishingThumbnailCandidate(item, candidateId: candidateId, document: document, generation: held)
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return candidate
+    }
+
+    private func readFurnishingThumbnailSelection(_ item: WorkspaceFurnishing, document: NativeDocumentState,
+                                                   generation held: UInt64) async throws -> WorkspaceFurnishingThumbnailSelection {
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let raw: DocumentValue = try await request(workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-selection", requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        return try WorkspaceFurnishingThumbnailSelection(value: raw, document: document, furnishing: item)
+    }
+
+    public func workspaceFurnishingThumbnailSelection(_ id: String, version: Int,
+                                                      in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailSelection {
+        let held = generation
+        let item = try await thumbnailFurnishing(id, version: version, document: document, generation: held)
+        let selection = try await readFurnishingThumbnailSelection(item, document: document, generation: held)
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return selection
+    }
+
+    public func selectWorkspaceFurnishingThumbnail(_ candidate: WorkspaceFurnishingThumbnailCandidate,
+                                                   expectedSelectionVersion: Int64, requestId: String,
+                                                   in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailSelectionResult {
+        let held = generation
+        try checkFurnishingThumbnailScope(document, generation: held)
+        guard (0...2_147_483_646).contains(expectedSelectionVersion), UUID(uuidString: requestId) != nil else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let item = try await thumbnailFurnishing(candidate.source.furnishingId, version: candidate.source.furnishingVersion, document: document, generation: held)
+        _ = try WorkspaceFurnishingThumbnailCandidate(value: candidate.value, document: document, furnishing: item)
+        let body: DocumentValue = .object(["requestId": .string(requestId), "candidateId": .string(candidate.candidateId),
+            "receiptSha256": .string(candidate.receiptSha256), "expectedSelectionVersion": .integer(expectedSelectionVersion)])
+        // Send the caller's original CAS and nonce once. A replay can be older
+        // than current selection; preflighting current version would break it.
+        let raw: DocumentValue
+        do {
+            raw = try await request(workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-selection",
+                                    method: "POST", body: encoded(body))
+        } catch let failure as AuthoringFailure where [400, 403, 404, 409, 422].contains(failure.status) {
+            throw WorkspaceFurnishingThumbnailSelectionRejection(requestId: requestId, failure: failure)
+        }
+        try checkFurnishingThumbnailScope(document, generation: held)
+        let recorded = try WorkspaceFurnishingThumbnailSelection(value: raw, document: document, furnishing: item)
+        guard recorded.matches(candidate), recorded.selectionVersion == expectedSelectionVersion + 1 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let current = try await readFurnishingThumbnailSelection(item, document: document, generation: held)
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return WorkspaceFurnishingThumbnailSelectionResult(recorded: recorded, current: current)
+    }
+
+    /// Review a ready candidate without selecting it. Issued PNG and source
+    /// are rechecked on both sides of the bounded native read.
+    public func workspaceFurnishingThumbnailImage(_ candidate: WorkspaceFurnishingThumbnailCandidate,
+                                                 in document: NativeDocumentState) async throws -> Data {
+        let held = generation
+        let item = try await thumbnailFurnishing(candidate.source.furnishingId, version: candidate.source.furnishingVersion,
+                                                document: document, generation: held)
+        let current = try await readFurnishingThumbnailCandidate(item, candidateId: candidate.candidateId, document: document, generation: held)
+        guard current == candidate else { throw AuthoringFailure("FURNISHING_THUMBNAIL_CONFLICT") }
+        let path = try workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-candidates/" + candidate.candidateId + "/image"
+        let data = try await readPreviewBytes(path: path, expectedBytes: candidate.thumbnail.bytes, sha256: candidate.thumbnail.sha256,
+                                             mime: "image/png", invalidCode: "CATALOG_PREVIEW_INVALID", requireDigestHeader: false,
+                                             requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        _ = try candidate.checkedPNG(data)
+        let latest = try await readFurnishingThumbnailCandidate(item, candidateId: candidate.candidateId, document: document, generation: held)
+        guard latest == candidate else { throw AuthoringFailure("FURNISHING_THUMBNAIL_CONFLICT") }
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return data
+    }
+
+    public func selectedWorkspaceFurnishingThumbnail(_ id: String, version: Int,
+                                                     in document: NativeDocumentState) async throws -> WorkspaceFurnishingThumbnailImage? {
+        let held = generation
+        let item = try await thumbnailFurnishing(id, version: version, document: document, generation: held)
+        let selection = try await readFurnishingThumbnailSelection(item, document: document, generation: held)
+        guard let selected = selection.selected else {
+            try await recheckThumbnailFurnishing(item, document: document, generation: held)
+            return nil
+        }
+        let candidate = try await readFurnishingThumbnailCandidate(item, candidateId: selected.candidateId, document: document, generation: held)
+        guard selection.matches(candidate) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        let path = try workspaceFurnishingVersionPath(id, version: version) + "/thumbnail-candidates/" + candidate.candidateId + "/image"
+        let data = try await readPreviewBytes(path: path, expectedBytes: candidate.thumbnail.bytes, sha256: candidate.thumbnail.sha256,
+                                             mime: "image/png", invalidCode: "CATALOG_PREVIEW_INVALID", requireDigestHeader: false,
+                                             requiresNativeReadCSRF: true)
+        try checkFurnishingThumbnailScope(document, generation: held)
+        _ = try candidate.checkedPNG(data)
+        let latest = try await readFurnishingThumbnailSelection(item, document: document, generation: held)
+        guard latest == selection else { throw AuthoringFailure("FURNISHING_THUMBNAIL_CONFLICT") }
+        try await recheckThumbnailFurnishing(item, document: document, generation: held)
+        return WorkspaceFurnishingThumbnailImage(selection: selection, candidate: candidate, data: data)
+    }
+
     private func checkInfoStandApproval(_ furnishing: WorkspaceFurnishing, intakeId: String) async throws {
         guard let manifest = infoStandPreparationManifest else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         let intake = try await workspaceFurnishingIntake(intakeId)
@@ -2782,6 +3228,14 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsWorkspaceFurnishingThumbnailRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == furnishingThumbnail050RuntimeManifestPin
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsOrdinaryNativePublicationRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == nativePublicationCapacityManifestPin
@@ -2796,6 +3250,7 @@ public actor AuthoringAPI {
             || manifest == completeStaticRuntimeManifestPin
             || manifest == fixtureAuthoringRuntimeManifestPin
             || manifest == default17RuntimeManifestPin
+            || manifest == furnishingThumbnail050RuntimeManifestPin
         #else
         false
         #endif

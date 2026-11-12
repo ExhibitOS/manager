@@ -357,6 +357,10 @@ public actor NativeBridge {
     public func uploadState(_ context: Context) throws -> NativeUploadState {
         try request("upload_state", fields: ["selection_token": context.selectionToken])
     }
+    public func gpuPreviewResources(_ context: Context, expectedManifestSHA256: String) throws -> Set<String> {
+        let resources: NativeGPUPreviewResources = try request("native_gpu_preview_resources", fields: ["selection_token": context.selectionToken])
+        return try resources.checked(expectedManifestSHA256: expectedManifestSHA256)
+    }
     public func oexImportState(_ context: Context) throws -> NativeOEXImportState {
         try request("oex_import_state", fields: ["selection_token": context.selectionToken])
     }
@@ -367,6 +371,13 @@ public actor NativeBridge {
     public func saveUploadState(_ context: Context, state: NativeUploadState) throws -> NativeUploadState {
         let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state))
         return try request("save_upload_state", fields: ["selection_token": context.selectionToken, "transfer": object])
+    }
+    public func furnishingThumbnailState(_ context: Context) throws -> NativeFurnishingThumbnailState {
+        try request("furnishing_thumbnail_state", fields: ["selection_token": context.selectionToken])
+    }
+    public func saveFurnishingThumbnailState(_ context: Context, state: NativeFurnishingThumbnailState) throws -> NativeFurnishingThumbnailState {
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state))
+        return try request("save_furnishing_thumbnail_state", fields: ["selection_token": context.selectionToken, "thumbnail": object])
     }
     public func nativeStatus(_ context: Context) throws -> NativeHostStatus {
         try request("native_status", fields: ["selection_token": context.selectionToken])

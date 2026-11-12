@@ -21,9 +21,19 @@ pub(super) enum Admission {
     #[serde(rename = "catalog-upgrade-044-to-045")]
     CatalogUpgrade044To045,
     InterruptedReopen,
+    #[serde(rename = "catalog-upgrade-045-to-050")]
+    CatalogUpgrade045To050,
+    #[serde(rename = "catalog-upgrade-045-to-049")]
+    CatalogUpgrade045To049,
 }
 
 impl Admission {
+    // Wire proof policy shared with Binding's carried-proof validation. Exact
+    // catalog/tuple and restore shape checks remain independently mandatory.
+    fn allows_carried_v4(self) -> bool {
+        matches!(self, Self::VerifiedRestore | Self::CleanReopen | Self::CatalogUpgrade045To050 | Self::CatalogUpgrade045To049)
+    }
+
     fn tag(self) -> u8 {
         match self {
             Self::FreshEmpty => 1,
@@ -33,6 +43,8 @@ impl Admission {
             Self::CatalogUpgrade040To044 => 5,
             Self::CatalogUpgrade044To045 => 6,
             Self::InterruptedReopen => 7,
+            Self::CatalogUpgrade045To050 => 8,
+            Self::CatalogUpgrade045To049 => 9,
         }
     }
 }
@@ -123,6 +135,14 @@ impl Binding {
             && (crate::native_payload::catalog45_carried_restore_host_matches(tuple)
                 || (self.admission_kind == Admission::CleanReopen
                     && crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple).is_some()));
+        let gpu = self.catalog == 49
+            && matches!(self.admission_kind, Admission::CatalogUpgrade045To049 | Admission::CleanReopen)
+            && crate::native_payload::gpu_model_host_matches(tuple)
+            && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
+        let thumbnail = self.catalog == 50
+            && matches!(self.admission_kind, Admission::CatalogUpgrade045To050 | Admission::CleanReopen)
+            && crate::native_payload::furnishing_thumbnail_host_matches(tuple)
+            && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
             42 => crate::native_payload::hayes_validation_host_matches(tuple),
             43 => crate::native_payload::hayes_disposition_host_matches(tuple),
@@ -130,7 +150,7 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -202,6 +222,12 @@ impl Binding {
             (Phase::Active | Phase::Clean, Admission::CatalogUpgrade044To045) => {
                 self.catalog == 45 && self.previous_generation.is_some() && self.restore.is_none()
             }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade045To049) => {
+                self.catalog == 49 && self.previous_generation.is_some()
+            }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade045To050) => {
+                self.catalog == 50 && self.previous_generation.is_some()
+            }
             (Phase::ActivatedRestore, Admission::VerifiedRestore) => {
                 self.previous_generation.is_none() && self.restore.is_some()
             }
@@ -219,7 +245,8 @@ impl Binding {
                             value != 0 && value.to_string() == proof.target_system_identifier
                         })
                 || proof.carried_provenance.as_ref().is_some_and(|provenance|
-                    !carried_restore || proof.provenance.is_some()
+                    !self.admission_kind.allows_carried_v4()
+                        || !(carried_restore || thumbnail || gpu) || proof.provenance.is_some()
                         || !provenance.matches(&proof.archive_manifest_sha256, &proof.target_system_identifier))
                 || proof.provenance.as_ref().is_some_and(|provenance|
                     !(retained_restore || crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple))
@@ -237,6 +264,8 @@ impl Binding {
         let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
         let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
             .or_else(|| crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple))
+            .or_else(|| crate::native_payload::furnishing_thumbnail_carried_receipt_payload(tuple))
+            .or_else(|| crate::native_payload::gpu_model_carried_receipt_payload(tuple))
             .unwrap_or(self.payload_manifest_sha256.as_str());
         crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
             &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref(), proof.carried_provenance.as_ref())
@@ -293,6 +322,11 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
+        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. }) {
+            return if self.admission_kind == Admission::CleanReopen
+                && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
+            { Ok(self.restore.as_ref()) } else { Err(err(ERROR)) };
+        }
         if transition.allows_catalog45_adoption_without_restore() && self.restore.is_none() {
             return if self.admission_kind == Admission::CleanReopen { Ok(None) } else { Err(err(ERROR)) };
         }
@@ -347,6 +381,8 @@ impl Binding {
             FurnishingTransition::Upgrade39(_) => Admission::CatalogUpgrade039To040,
             FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
             FurnishingTransition::Upgrade44 { .. } => Admission::CatalogUpgrade044To045,
+            FurnishingTransition::Upgrade50 { .. } => Admission::CatalogUpgrade045To050,
+            FurnishingTransition::Upgrade49 { .. } => Admission::CatalogUpgrade045To049,
             FurnishingTransition::Recover45 { .. } => Admission::InterruptedReopen,
             _ => Admission::CleanReopen,
         }
@@ -492,7 +528,7 @@ impl Exchange {
         }
         if let Some(proof) = &self.carried_restore_proof {
             if self.restore_proof.is_some() || self.previous_runtime_generation.is_some()
-                || !matches!(self.admission_kind, Admission::VerifiedRestore | Admission::CleanReopen)
+                || !self.admission_kind.allows_carried_v4()
             { return Err(err(ERROR)); }
             let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
             bytes.extend(decode(&digest(&canonical))?);
@@ -1705,6 +1741,335 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn furnishing_thumbnail_carried_binding_preserves_original_proof_through_upgrade_and_reopen() {
+        let source = crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET;
+        let target = (
+            "55e8ad6c861eab44326ee8db60db2692e3f7baf7",
+            "02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5",
+            "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626",
+        );
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        let pin = |generation: &str, catalog, tuple: (&str, &str, &str)| {
+            let mut value = binding(generation);
+            value.catalog = catalog;
+            value.source_commit = tuple.0.into(); value.producer_sha256 = tuple.1.into();
+            value.payload_manifest_sha256 = tuple.2.into(); value
+        };
+        let mut prior = pin(GENERATION, 45, source);
+        prior.phase = Phase::Clean; prior.admission_kind = Admission::CleanReopen;
+        prior.previous_generation = Some("10000000-0000-4000-8000-000000000004".into());
+        let observation = serde_json::json!({
+            "version":1,"sourceHandoffSha256":"60ed3615a4072856a1cb1449fa532acd307d8c237a09095b356566db4ed90b88",
+            "priorRestoreProof":{
+                "restoreId":"10000000-0000-4000-8000-000000000007",
+                "backupId":"10000000-0000-4000-8000-000000000008",
+                "authenticatedManifestSha256":"c".repeat(64),
+                "sourceDatabaseSystemId":"110","sourceDatabaseOid":"16000",
+                "targetDatabaseSystemId":"220","targetDatabaseOid":"16002",
+                "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)
+            },
+            "archiveSourceDatabaseSystemId":"220","archiveSourceDatabaseOid":"16002",
+            "targetDatabaseSystemId":"330","targetDatabaseOid":"16004",
+            "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)
+        });
+        prior.restore = Some(Restore {
+            id:"10000000-0000-4000-8000-000000000009".into(),
+            backup_id:"10000000-0000-4000-8000-000000000010".into(),
+            archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
+            target_system_identifier:"330".into(), provenance:None,
+            carried_provenance:Some(serde_json::from_value(observation).unwrap()),
+        });
+        let assert_carried_exchange = |value: &Binding| {
+            let key = [0x55; 32];
+            let auth = LocalAuthority {
+                format:1, workspace_id:value.owner.workspace_id.clone(), tenant_id:value.owner.tenant_id.clone(),
+                principal_id:value.owner.principal_id.clone(), owner_uid:value.owner.owner_uid,
+                session_token:String::new(), csrf_token:String::new(),
+            };
+            let start = if value.admission_kind == Admission::CatalogUpgrade045To050 {
+                FurnishingStart::Upgrade045To050
+            } else { FurnishingStart::Reopen };
+            let lease = furnishing_lease::Lease::new(&auth, &value.generation, start,
+                value.payload_manifest_sha256.clone(), value.physical);
+            let lease_body = lease.signed(&key, furnishing_lease::Kind::Lease).unwrap();
+            let exchange = Exchange::new(value, &lease_body).unwrap();
+            let mut frames = serde_json::Map::new();
+            let restore = value.restore.as_ref().unwrap();
+            for kind in [Kind::Admission, Kind::AdmissionAck, Kind::Stop, Kind::Drained] {
+                let bytes = exchange.signed(&key, kind)
+                    .expect("Binding-validated carried050 must sign every v4 exchange frame");
+                assert!(bytes.len() < LIMIT);
+                exchange.check_frame(&key, kind, &bytes).unwrap();
+                frames.insert(kind.name().into(), Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)));
+                assert!(exchange.check_frame(&[0x56; 32], kind, &bytes).is_err());
+                let mut frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(frame["version"], 4);
+                assert_eq!(frame["admissionKind"], serde_json::to_value(value.admission_kind).unwrap());
+                assert!(frame.get("restoreProof").is_none());
+                assert!(frame.get("previousRuntimeGeneration").is_none());
+                assert_eq!(frame["carriedRestoreProof"]["restoreId"], restore.id);
+                assert_eq!(frame["carriedRestoreProof"]["backupId"], restore.backup_id);
+                assert_eq!(frame["carriedRestoreProof"]["authenticatedManifestSha256"], restore.archive_manifest_sha256);
+                assert_eq!(frame["carriedRestoreProof"]["observation"],
+                    serde_json::to_value(restore.carried_provenance.as_ref().unwrap()).unwrap());
+                frame["carriedRestoreProof"]["observation"]["provenanceTableSha256"] = "e".repeat(64).into();
+                assert!(exchange.check_frame(&key, kind, &serde_json::to_vec(&frame).unwrap()).is_err());
+            }
+            let mut lease_fields: Value = serde_json::from_slice(&lease_body).unwrap();
+            let mut ordinary_fields: Value = serde_json::from_slice(&exchange.signed(&key, Kind::Admission).unwrap()).unwrap();
+            for field in ["version", "kind", "mac"] {
+                lease_fields.as_object_mut().unwrap().remove(field);
+                ordinary_fields.as_object_mut().unwrap().remove(field);
+            }
+            assert_eq!(lease_fields.as_object().unwrap().len(), 10);
+            serde_json::json!({
+                "name":if value.admission_kind == Admission::CatalogUpgrade045To050 {"upgrade050-carried"} else {"reopen050-carried"},
+                "canonicalActiveBindingJSON":serde_json::to_string(value).unwrap(),
+                "leaseFields":lease_fields,
+                "leaseFrameBase64":base64::Engine::encode(&base64::engine::general_purpose::STANDARD,&lease_body),
+                "ordinaryFields":ordinary_fields,"frames":frames,
+            })
+        };
+        let mut upgraded = pin(NEXT, 50, target);
+        upgraded.consume_furnishing_transition(&prior, transition).unwrap();
+        assert_eq!(upgraded.admission_kind, Admission::CatalogUpgrade045To050);
+        assert_eq!(upgraded.restore, prior.restore);
+        assert_eq!(upgraded.owner, prior.owner); assert_eq!(upgraded.physical, prior.physical);
+        let upgrade_case = assert_carried_exchange(&upgraded);
+        upgraded.phase = Phase::Clean;
+        let mut reopened = pin(LATER, 50, target);
+        reopened.consume(&upgraded).unwrap();
+        assert_eq!(reopened.admission_kind, Admission::CleanReopen);
+        assert_eq!(reopened.restore, prior.restore);
+        let reopen_case = assert_carried_exchange(&reopened);
+        if let Some(path) = std::env::var_os("EXHIBITOS_TEST_THUMBNAIL050_CARRIED_WIRE_FIXTURE") {
+            use std::os::unix::fs::OpenOptionsExt;
+            let path = PathBuf::from(path);
+            assert!(path.is_absolute());
+            let parent = path.parent().unwrap();
+            installations::private_directory(parent).unwrap();
+            let fixture = serde_json::json!({"format":1,"synthetic":true,"keyHex":"55".repeat(32),
+                "cases":[upgrade_case,reopen_case]});
+            let bytes = serde_json::to_vec_pretty(&fixture).unwrap();
+            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).unwrap();
+            std::io::Write::write_all(&mut output,&bytes).unwrap();output.sync_all().unwrap();
+            File::open(parent).unwrap().sync_all().unwrap();
+        }
+        let mut wrong_archive = reopened.clone();
+        wrong_archive.restore.as_mut().unwrap().archive_manifest_sha256 = "f".repeat(64);
+        assert!(wrong_archive.check().is_err());
+        let mut missing_carried = reopened.clone();
+        missing_carried.restore.as_mut().unwrap().carried_provenance = None;
+        assert!(missing_carried.check().is_err());
+        let mut wrong_manifest = reopened.clone();
+        wrong_manifest.payload_manifest_sha256 = "f".repeat(64);
+        assert!(wrong_manifest.check().is_err());
+        let mut new_root_restore = reopened.clone();
+        new_root_restore.phase = Phase::ActivatedRestore;
+        new_root_restore.admission_kind = Admission::VerifiedRestore;
+        new_root_restore.previous_generation = None;
+        assert!(new_root_restore.check().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn gpu_carried_binding_preserves_original_proof_through_upgrade_and_reopen() {
+        let source = crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET;
+        let target = (
+            "daf4fe857051ad4d08a009ddf25cf95ab8e76227",
+            "09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634",
+            "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377",
+        );
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        let pin = |generation: &str, catalog, tuple: (&str, &str, &str)| {
+            let mut value = binding(generation);
+            value.catalog = catalog;
+            value.source_commit = tuple.0.into(); value.producer_sha256 = tuple.1.into();
+            value.payload_manifest_sha256 = tuple.2.into(); value
+        };
+        let mut prior = pin(GENERATION, 45, source);
+        prior.phase = Phase::Clean; prior.admission_kind = Admission::CleanReopen;
+        prior.previous_generation = Some("10000000-0000-4000-8000-000000000004".into());
+        let observation = serde_json::json!({
+            "version":1,"sourceHandoffSha256":"60ed3615a4072856a1cb1449fa532acd307d8c237a09095b356566db4ed90b88",
+            "priorRestoreProof":{
+                "restoreId":"10000000-0000-4000-8000-000000000007",
+                "backupId":"10000000-0000-4000-8000-000000000008",
+                "authenticatedManifestSha256":"c".repeat(64),
+                "sourceDatabaseSystemId":"110","sourceDatabaseOid":"16000",
+                "targetDatabaseSystemId":"220","targetDatabaseOid":"16002",
+                "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)
+            },
+            "archiveSourceDatabaseSystemId":"220","archiveSourceDatabaseOid":"16002",
+            "targetDatabaseSystemId":"330","targetDatabaseOid":"16004",
+            "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)
+        });
+        prior.restore = Some(Restore {
+            id:"10000000-0000-4000-8000-000000000009".into(),
+            backup_id:"10000000-0000-4000-8000-000000000010".into(),
+            archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
+            target_system_identifier:"330".into(), provenance:None,
+            carried_provenance:Some(serde_json::from_value(observation).unwrap()),
+        });
+        let assert_carried_exchange = |value: &Binding| {
+            let key = [0x55; 32];
+            let auth = LocalAuthority {
+                format:1, workspace_id:value.owner.workspace_id.clone(), tenant_id:value.owner.tenant_id.clone(),
+                principal_id:value.owner.principal_id.clone(), owner_uid:value.owner.owner_uid,
+                session_token:String::new(), csrf_token:String::new(),
+            };
+            let start = if value.admission_kind == Admission::CatalogUpgrade045To049 {
+                FurnishingStart::Upgrade045To049
+            } else { FurnishingStart::Reopen };
+            let lease = furnishing_lease::Lease::new(&auth, &value.generation, start,
+                value.payload_manifest_sha256.clone(), value.physical);
+            let lease_body = lease.signed(&key, furnishing_lease::Kind::Lease).unwrap();
+            let lease_frame: Value = serde_json::from_slice(&lease_body).unwrap();
+            assert_eq!(lease_frame["mode"], start.owner_mode());
+            assert_eq!(lease_frame["payloadManifestSHA256"], target.2);
+            assert_eq!(value.admission_kind.tag(), if matches!(start, FurnishingStart::Upgrade045To049) { 9 } else { 2 });
+            let exchange = Exchange::new(value, &lease_body).unwrap();
+            let mut frames = serde_json::Map::new();
+            let restore = value.restore.as_ref().unwrap();
+            for kind in [Kind::Admission, Kind::AdmissionAck, Kind::Stop, Kind::Drained] {
+                let bytes = exchange.signed(&key, kind)
+                    .expect("Binding-validated carried049 must sign every v4 exchange frame");
+                assert!(bytes.len() < LIMIT);
+                exchange.check_frame(&key, kind, &bytes).unwrap();
+                frames.insert(kind.name().into(), Value::String(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes)));
+                assert!(exchange.check_frame(&[0x56; 32], kind, &bytes).is_err());
+                let mut frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(frame["version"], 4);
+                assert_eq!(frame["admissionKind"], serde_json::to_value(value.admission_kind).unwrap());
+                assert!(frame.get("restoreProof").is_none());
+                assert!(frame.get("previousRuntimeGeneration").is_none());
+                assert_eq!(frame["carriedRestoreProof"]["restoreId"], restore.id);
+                assert_eq!(frame["carriedRestoreProof"]["backupId"], restore.backup_id);
+                assert_eq!(frame["carriedRestoreProof"]["authenticatedManifestSha256"], restore.archive_manifest_sha256);
+                assert_eq!(frame["carriedRestoreProof"]["observation"],
+                    serde_json::to_value(restore.carried_provenance.as_ref().unwrap()).unwrap());
+                for field in ["admissionKind", "activeBindingSHA256", "carriedRestoreProof"] {
+                    let mut altered = frame.clone();
+                    altered[field] = match field {
+                        "admissionKind" => serde_json::json!("catalog-upgrade-045-to-050"),
+                        "activeBindingSHA256" => serde_json::json!("f".repeat(64)),
+                        _ => Value::Null,
+                    };
+                    assert!(exchange.check_frame(&key, kind, &serde_json::to_vec(&altered).unwrap()).is_err());
+                }
+                frame["carriedRestoreProof"]["observation"]["provenanceTableSha256"] = "e".repeat(64).into();
+                assert!(exchange.check_frame(&key, kind, &serde_json::to_vec(&frame).unwrap()).is_err());
+            }
+            let mut lease_fields: Value = serde_json::from_slice(&lease_body).unwrap();
+            let mut ordinary_fields: Value = serde_json::from_slice(&exchange.signed(&key, Kind::Admission).unwrap()).unwrap();
+            for field in ["version", "kind", "mac"] {
+                lease_fields.as_object_mut().unwrap().remove(field);
+                ordinary_fields.as_object_mut().unwrap().remove(field);
+            }
+            assert_eq!(lease_fields.as_object().unwrap().len(), 10);
+            serde_json::json!({
+                "name":if value.admission_kind == Admission::CatalogUpgrade045To049 {"upgrade049-carried"} else {"reopen049-carried"},
+                "canonicalActiveBindingJSON":serde_json::to_string(value).unwrap(),
+                "leaseFields":lease_fields,
+                "leaseFrameBase64":base64::Engine::encode(&base64::engine::general_purpose::STANDARD,&lease_body),
+                "ordinaryFields":ordinary_fields,"frames":frames,
+            })
+        };
+        let mut upgraded = pin(NEXT, 49, target);
+        upgraded.consume_furnishing_transition(&prior, transition).unwrap();
+        assert_eq!(upgraded.admission_kind, Admission::CatalogUpgrade045To049);
+        assert_eq!(upgraded.restore, prior.restore);
+        assert_eq!(upgraded.owner, prior.owner); assert_eq!(upgraded.physical, prior.physical);
+        let upgrade_case = assert_carried_exchange(&upgraded);
+        for admission in [Admission::CatalogUpgrade045To050, Admission::InterruptedReopen, Admission::FreshEmpty, Admission::VerifiedRestore] {
+            let mut wrong = upgraded.clone(); wrong.admission_kind = admission;
+            assert!(wrong.check().is_err());
+            assert!(Exchange::new(&wrong, b"not-an-authority").is_err());
+        }
+        for field in ["sourceCommit", "producerSha256", "payloadManifestSha256"] {
+            let mut value = serde_json::to_value(&upgraded).unwrap();
+            value[field] = if field == "sourceCommit" { "f".repeat(40).into() } else { "f".repeat(64).into() };
+            let wrong: Binding = serde_json::from_value(value).unwrap();
+            assert!(wrong.check().is_err());
+            assert!(Exchange::new(&wrong, b"not-an-authority").is_err());
+        }
+        let mut value = serde_json::to_value(&upgraded).unwrap();
+        value["restore"]["carriedProvenance"]["targetDatabaseSystemId"] = "331".into();
+        let wrong: Binding = serde_json::from_value(value).unwrap();
+        assert!(wrong.check().is_err());
+        assert!(Exchange::new(&wrong, b"not-an-authority").is_err());
+        upgraded.phase = Phase::Clean;
+        let mut reopened = pin(LATER, 49, target);
+        reopened.consume(&upgraded).unwrap();
+        assert_eq!(reopened.admission_kind, Admission::CleanReopen);
+        assert_eq!(reopened.restore, prior.restore);
+        let reopen_case = assert_carried_exchange(&reopened);
+        if let Some(path) = std::env::var_os("EXHIBITOS_TEST_GPU049_CARRIED_WIRE_FIXTURE") {
+            use std::os::unix::fs::OpenOptionsExt;
+            let path = PathBuf::from(path);
+            assert!(path.is_absolute());
+            let parent = path.parent().unwrap();
+            installations::private_directory(parent).unwrap();
+            let fixture = serde_json::json!({"format":1,"synthetic":true,"keyHex":"55".repeat(32),
+                "cases":[upgrade_case,reopen_case]});
+            let bytes = serde_json::to_vec_pretty(&fixture).unwrap();
+            let mut output = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).unwrap();
+            std::io::Write::write_all(&mut output,&bytes).unwrap();output.sync_all().unwrap();
+            File::open(parent).unwrap().sync_all().unwrap();
+        }
+        let mut wrong_archive = reopened.clone();
+        wrong_archive.restore.as_mut().unwrap().archive_manifest_sha256 = "f".repeat(64);
+        assert!(wrong_archive.check().is_err());
+        let mut missing_carried = reopened.clone();
+        missing_carried.restore.as_mut().unwrap().carried_provenance = None;
+        assert!(missing_carried.check().is_err());
+        let mut wrong_manifest = reopened.clone();
+        wrong_manifest.payload_manifest_sha256 = "f".repeat(64);
+        assert!(wrong_manifest.check().is_err());
+        let mut new_root_restore = reopened.clone();
+        new_root_restore.phase = Phase::ActivatedRestore;
+        new_root_restore.admission_kind = Admission::VerifiedRestore;
+        new_root_restore.previous_generation = None;
+        assert!(new_root_restore.check().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn gpu_wrapping_same_catalog_preserves_exact_owner_physical_and_history() {
+        use crate::native_payload::{GPU_MODEL_LEGACY_TARGET as OLD, GPU_MODEL_WRAPPING_TARGET as NEW};
+        let step = FurnishingTransition::from_manifests((OLD.2, NEW.2)).unwrap();
+        assert!(!step.upgrades_catalog());
+        assert_eq!(step.source_catalog().version(), 49);
+        assert_eq!(step.target_catalog().version(), 49);
+        assert_eq!(step.source(), OLD); assert_eq!(step.target(), NEW);
+        for pair in [(NEW.2, OLD.2), (OLD.2, OLD.2), (NEW.2, NEW.2), ("unknown", NEW.2)] {
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        let mut prior = binding(GENERATION);
+        prior.catalog = 49; prior.phase = Phase::Clean; prior.admission_kind = Admission::CleanReopen;
+        prior.previous_generation = Some(LATER.into());
+        prior.source_commit = OLD.0.into(); prior.producer_sha256 = OLD.1.into();
+        prior.payload_manifest_sha256 = OLD.2.into(); prior.check().unwrap();
+        let mut target = binding(NEXT);
+        target.catalog = 49; target.source_commit = NEW.0.into();
+        target.producer_sha256 = NEW.1.into(); target.payload_manifest_sha256 = NEW.2.into();
+        for changed in ["owner", "physical", "phase"] {
+            let mut invalid = target.clone(); let mut source = prior.clone();
+            match changed {
+                "owner" => invalid.owner.tenant_id = "10000000-0000-4000-8000-000000000009".into(),
+                "physical" => invalid.physical.root_inode += 1,
+                _ => source.phase = Phase::Active,
+            }
+            assert!(invalid.consume_furnishing_transition(&source, step).is_err());
+        }
+        target.consume_furnishing_transition(&prior, step).unwrap();
+        assert_eq!(target.owner, prior.owner); assert_eq!(target.physical, prior.physical);
+        assert_eq!(target.restore, prior.restore); assert_eq!(target.previous_generation.as_deref(), Some(GENERATION));
+        assert_eq!(target.admission_kind, Admission::CleanReopen); target.check().unwrap();
+    }
+
     #[test]
     fn ordinary_furnishing_consumption_survives_db_only_pointer_rotation_and_refuses_replay() {
         use std::os::unix::fs::DirBuilderExt;
@@ -1859,5 +2224,34 @@ mod tests {
         assert!(furnishing_lifetime::WriterLifetime::acquire_existing(&root).is_err());
         assert!(fs::read_dir(&root).unwrap().next().is_none());
         fs::remove_dir(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_admission_tests {
+    use super::*;
+    #[test]
+    fn furnishing_thumbnail_kind8_keeps_interrupted_kind7_unchanged() {
+        assert_eq!(Admission::InterruptedReopen.tag(), 7);
+        assert_eq!(Admission::CatalogUpgrade045To050.tag(), 8);
+        assert!(Admission::CatalogUpgrade045To050.allows_carried_v4());
+        assert!(Admission::VerifiedRestore.allows_carried_v4());
+        assert!(Admission::CleanReopen.allows_carried_v4());
+        assert!(!Admission::InterruptedReopen.allows_carried_v4());
+        assert!(!Admission::FreshEmpty.allows_carried_v4());
+        assert_eq!(serde_json::to_value(Admission::CatalogUpgrade045To050).unwrap(), "catalog-upgrade-045-to-050");
+    }
+}
+
+#[cfg(test)]
+mod gpu_admission_tests {
+    use super::*;
+    #[test]
+    fn gpu_kind9_does_not_reuse_thumbnail_kind8_or_interrupted_kind7() {
+        assert_eq!(Admission::CatalogUpgrade045To049.tag(), 9);
+        assert!(Admission::CatalogUpgrade045To049.allows_carried_v4());
+        assert_eq!(Admission::CatalogUpgrade045To050.tag(), 8);
+        assert_eq!(Admission::InterruptedReopen.tag(), 7);
+        assert_eq!(serde_json::to_value(Admission::CatalogUpgrade045To049).unwrap(), "catalog-upgrade-045-to-049");
     }
 }

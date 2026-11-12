@@ -75,7 +75,7 @@ mod hayes_probe_source;
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040, Upgrade040To044, Upgrade044To045 }
+enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040, Upgrade040To044, Upgrade044To045, Upgrade045To050, Upgrade045To049 }
 
 #[derive(Clone, Copy)]
 enum StartMode<'a> {
@@ -100,7 +100,7 @@ impl FurnishingStart {
     }
 
     fn opens_existing(self) -> bool {
-        matches!(self, Self::Reopen | Self::Upgrade039To040 | Self::Upgrade040To044 | Self::Upgrade044To045)
+        matches!(self, Self::Reopen | Self::Upgrade039To040 | Self::Upgrade040To044 | Self::Upgrade044To045 | Self::Upgrade045To050 | Self::Upgrade045To049)
     }
 
     fn owner_mode(self) -> &'static str {
@@ -113,9 +113,87 @@ impl FurnishingStart {
             Self::Upgrade039To040 => "workspace-furnishing-039-to-040-upgrade-v1",
             Self::Upgrade040To044 => "workspace-furnishing-040-to-044-upgrade-v1",
             Self::Upgrade044To045 => "workspace-furnishing-044-to-045-upgrade-v1",
+            Self::Upgrade045To050 => "workspace-furnishing-045-to-050-upgrade-v1",
+            Self::Upgrade045To049 => "workspace-furnishing-045-to-049-upgrade-v1",
         }
     }
 }
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn thumbnail_upgrade_completion(root: &Path, binding: &Binding) -> Result<()> {
+    let path = format!("native-runs/{}/furnishing-thumbnail-050-committed.txt", binding.generation);
+    let bytes = installation_backup::source_bytes(root, &path, 4096, true)?;
+    validate_thumbnail_upgrade_result(&bytes, binding)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn validate_thumbnail_upgrade_result(bytes: &[u8], binding: &Binding) -> Result<()> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Receipt {
+        version: u32, mode: String, profile: String, state: String,
+        workspace_id: String, tenant_id: String, principal_id: String, runtime_generation: String,
+        payload_manifest_sha256: String, catalog_rows: u32, migration: String, migration_sha256: String, drained: bool,
+    }
+    let error = || err("NATIVE_FURNISHING_THUMBNAIL_UPGRADE_UNQUALIFIED");
+    let body = bytes.strip_prefix(b"EXHIBITOS_NATIVE_FURNISHING_THUMBNAIL_UPGRADE_RESULT ").ok_or_else(error)?;
+    let receipt: Receipt = serde_json::from_slice(body).map_err(|_| error())?;
+    if receipt.version != 1 || receipt.mode != FurnishingStart::Upgrade045To050.owner_mode()
+        || receipt.profile != "workspace-furnishing-thumbnail-v1" || !matches!(receipt.state.as_str(), "applied" | "already-applied")
+        || receipt.workspace_id != binding.owner.workspace_id || receipt.tenant_id != binding.owner.tenant_id
+        || receipt.principal_id != binding.owner.principal_id || receipt.runtime_generation != binding.generation
+        || receipt.payload_manifest_sha256 != binding.payload_manifest_sha256 || receipt.catalog_rows != 46
+        || receipt.migration != "050_workspace_furnishing_thumbnail.sql"
+        || receipt.migration_sha256 != crate::native_payload::FURNISHING_THUMBNAIL_SCHEMA.2 || !receipt.drained
+    { return Err(error()); }
+    Ok(())
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn gpu_model_upgrade_completion(root: &Path, binding: &Binding) -> Result<()> {
+    let path = format!("native-runs/{}/gpu-model-049-committed.txt", binding.generation);
+    let bytes = installation_backup::source_bytes(root, &path, 4096, true)?;
+    validate_gpu_model_upgrade_result(&bytes, binding)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn validate_gpu_model_upgrade_result(bytes: &[u8], binding: &Binding) -> Result<()> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Receipt {
+        version: u32, mode: String, profile: String, state: String,
+        workspace_id: String, tenant_id: String, principal_id: String, runtime_generation: String,
+        payload_manifest_sha256: String, catalog_rows: u32, migration: String, migration_sha256: String, drained: bool,
+    }
+    let error = || err("NATIVE_GPU_MODEL_PREPARATION_UPGRADE_UNQUALIFIED");
+    let body = bytes.strip_prefix(b"EXHIBITOS_NATIVE_GPU_MODEL_PREPARATION_UPGRADE_RESULT ").ok_or_else(error)?;
+    let receipt: Receipt = serde_json::from_slice(body).map_err(|_| error())?;
+    if receipt.version != 1 || receipt.mode != FurnishingStart::Upgrade045To049.owner_mode()
+        || receipt.profile != "embedded-model-basecolor-uastc-512-mips-v1" || !matches!(receipt.state.as_str(), "applied" | "already-applied")
+        || receipt.workspace_id != binding.owner.workspace_id || receipt.tenant_id != binding.owner.tenant_id
+        || receipt.principal_id != binding.owner.principal_id || receipt.runtime_generation != binding.generation
+        || receipt.payload_manifest_sha256 != binding.payload_manifest_sha256 || receipt.catalog_rows != 46
+        || receipt.migration != "049_gpu_model_preparation.sql"
+        || receipt.migration_sha256 != crate::native_payload::GPU_MODEL_SCHEMA.2 || !receipt.drained
+    { return Err(error()); }
+    Ok(())
+}
+
+
+fn ordinary_inherited_hayes(payload: &Payload, start: Option<FurnishingStart>) -> bool {
+    (payload.retained_furnishing_catalog().is_some()
+        && matches!(start, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
+        || (payload.ordinary_fresh_furnishing()
+            && matches!(start, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
+        || (crate::native_payload::catalog45_carried_restore_payload(payload)
+            && start == Some(FurnishingStart::Reopen))
+        || (crate::native_payload::furnishing_thumbnail_host_matches((&payload.context().source_commit,
+                payload.producer_sha256(), &payload.context().manifest_sha256))
+            && start == Some(FurnishingStart::Reopen))
+        || (crate::native_payload::gpu_model_host_matches((&payload.context().source_commit,
+                payload.producer_sha256(), &payload.context().manifest_sha256))
+            && start == Some(FurnishingStart::Reopen))
+}
+
 fn native_port_bind_code(error: &std::io::Error) -> &'static str {
     match error.kind() {
         std::io::ErrorKind::AddrInUse => "NATIVE_PORT_IN_USE",
@@ -556,6 +634,110 @@ impl FurnishingTransitionTrial {
         Ok(prior)
     }
 
+    /// The one legacy050 carried-v4 encoder failure occurred before the first
+    /// ordinary admission frame. This is not a generic failed-run/negative-exit
+    /// allowance, and absence of a commit marker is not SQL rollback evidence.
+    fn failed_thumbnail_helper_shape(
+        &self, transition: FurnishingTransition, current: &Current, context: &Context,
+        has_completion: bool, has_commit_marker: bool,
+    ) -> Result<bool> {
+        let legacy_target = (
+            "55e8ad6c861eab44326ee8db60db2692e3f7baf7",
+            "02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5",
+            "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626",
+        );
+        if !matches!(transition, FurnishingTransition::Upgrade50 { .. })
+            || transition.source() != crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET
+            || transition.target() != legacy_target || has_completion || has_commit_marker
+        { return Ok(false); }
+        let prior = self.source_binding(transition)?;
+        // Only the original v4 case hit the legacy pre-frame encoder guard.
+        if !prior.restore.as_ref().is_some_and(|restore|
+            restore.provenance.is_none() && restore.carried_provenance.is_some())
+        { return Ok(false); }
+        let Some(binding) = current.furnishing.as_ref() else { return Ok(false); };
+        binding.check()?;
+        Ok(self.source.id == prior.generation && current.format == 1
+            && current.id == self.generation && binding.generation == self.generation
+            && binding.phase == Phase::Active && binding.admission_kind == Admission::CatalogUpgrade045To050
+            && binding.matches_catalog_tuple(50, legacy_target)
+            && binding.previous_generation.as_deref() == Some(prior.generation.as_str())
+            && binding.owner == prior.owner && binding.physical == prior.physical && binding.restore == prior.restore
+            && context.format == 1 && context.job_id.as_deref() == Some(self.generation.as_str())
+            && context.state == "failed" && !context.readiness.ready
+            && context.readiness.version.is_none() && context.readiness.protocol_version.is_none()
+            && context.readiness.error_code.is_none()
+            && context.error_code.as_deref() == Some(furnishing_lifecycle::ERROR)
+            && context.failure_code.as_deref() == Some(furnishing_lifecycle::ERROR)
+            && context.postgres_pid.is_none() && context.node_pid.is_none() && context.auxiliary_pid.is_none()
+            && context.exits.len() == 2 && context.exits.get("postgres") == Some(&0)
+            && context.exits.get("auxiliary") == Some(&-15))
+    }
+
+    /// Called only with the existing operation and physical writer fences held.
+    /// Authenticate the sealed trial's original source completion as well as
+    /// the exact failed generation; never mint a replacement drain receipt.
+    fn failed_thumbnail_helper_cold(&self, root: &Path, transition: FurnishingTransition) -> Result<bool> {
+        let Some(current) = current_run(root)? else { return Ok(false); };
+        let (context, completion) = read_run(root, &current.id)?;
+        let marker = root.join(format!("native-runs/{}/furnishing-thumbnail-050-committed.txt", self.generation));
+        if !self.failed_thumbnail_helper_shape(transition, &current, &context,
+            completion.is_some(), exists(&marker)?)? { return Ok(false); }
+        check_interrupted_root(root)?;
+        if exists(&root.join("native-database/postmaster.pid"))? { return Ok(false); }
+        let (source, _) = self.recoverable_source_completion(root, transition)?;
+        if source.ports != context.ports { return Ok(false); }
+        Ok(true)
+    }
+
+    // Explicit physical recovery of the original failed049 trial only. A
+    // commit marker is not rollback proof and failed readiness is not history.
+    fn committed_gpu_ordinary_failure_shape(
+        &self, transition: FurnishingTransition, current: &Current, context: &Context,
+        has_completion: bool,
+    ) -> Result<bool> {
+        let target = (
+            "daf4fe857051ad4d08a009ddf25cf95ab8e76227",
+            "09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634",
+            "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377",
+        );
+        if !matches!(transition, FurnishingTransition::Upgrade49 { .. })
+            || transition.source() != crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET
+            || transition.target() != target || has_completion { return Ok(false); }
+        let prior = self.source_binding(transition)?;
+        let Some(binding) = current.furnishing.as_ref() else { return Ok(false); };
+        binding.check()?;
+        Ok(prior.restore.is_none() && self.source.id == prior.generation
+            && current.format == 1 && current.id == self.generation && binding.generation == self.generation
+            && binding.phase == Phase::Active && binding.admission_kind == Admission::CleanReopen
+            && binding.matches_catalog_tuple(49, target)
+            && binding.previous_generation.as_deref() == Some(prior.generation.as_str())
+            && binding.owner == prior.owner && binding.physical == prior.physical && binding.restore == prior.restore
+            && context.format == 1 && context.job_id.as_deref() == Some(self.generation.as_str())
+            && context.state == "failed" && !context.readiness.ready
+            && context.error_code.as_deref() == Some("NATIVE_PROCESS_EXITED")
+            && context.failure_code.as_deref() == Some("NATIVE_PROCESS_EXITED")
+            && context.postgres_pid.is_none() && context.node_pid.is_none() && context.auxiliary_pid.is_none()
+            && context.exits.len() == 3 && context.exits.get("postgres") == Some(&0)
+            && context.exits.get("auxiliary") == Some(&0) && context.exits.get("node") == Some(&1))
+    }
+
+    // The caller holds the authenticated pending checkpoint's operation and
+    // physical writer fences. No live drain or generic exit rule is changed.
+    fn committed_gpu_ordinary_failure_cold(&self, root: &Path, transition: FurnishingTransition) -> Result<bool> {
+        let Some(current) = current_run(root)? else { return Ok(false); };
+        let (context, completion) = read_run(root, &current.id)?;
+        if !self.committed_gpu_ordinary_failure_shape(transition, &current, &context, completion.is_some())? {
+            return Ok(false);
+        }
+        let binding = current.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        if gpu_model_upgrade_completion(root, binding).is_err() { return Ok(false); }
+        check_interrupted_root(root)?;
+        if exists(&root.join("native-database/postmaster.pid"))? { return Ok(false); }
+        let (source, _) = self.recoverable_source_completion(root, transition)?;
+        Ok(source.ports == context.ports)
+    }
+
     pub(crate) fn hold_source(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<FurnishingTransitionWriterGuard> {
         let (guard, observed) = self.hold(service, transition)?;
         if observed != self.source {
@@ -593,7 +775,14 @@ impl FurnishingTransitionTrial {
                 || target.owner != prior.owner || target.physical != prior.physical
                 || target.previous_generation.as_deref() != Some(prior.generation.as_str())
                 || !target.matches_catalog_tuple(transition.target_catalog().version(), transition.target())
-                || target.admission_kind != Binding::transition_admission(transition) || target.restore != prior.restore
+                || !(target.admission_kind == Binding::transition_admission(transition)
+                    || (matches!(transition, FurnishingTransition::Upgrade50 { .. })
+                        && target.admission_kind == Admission::CleanReopen
+                        && thumbnail_upgrade_completion(&service.root, target).is_ok())
+                    || (matches!(transition, FurnishingTransition::Upgrade49 { .. })
+                        && target.admission_kind == Admission::CleanReopen
+                        && gpu_model_upgrade_completion(&service.root, target).is_ok()))
+                || target.restore != prior.restore
             {
                 return Err(err(furnishing_lifecycle::ERROR));
             }
@@ -644,6 +833,20 @@ impl FurnishingTransitionTrial {
         let binding = current.furnishing.as_ref().ok_or_else(cold)?;
         let (context, _) = read_run(root, &current.id)?;
         if check_cold_checkpoint_root(root).is_ok() {
+            return Ok(());
+        }
+        if self.failed_thumbnail_helper_cold(root, transition)? { return Ok(()); }
+        if self.committed_gpu_ordinary_failure_cold(root, transition)? { return Ok(()); }
+        if ((matches!(transition, FurnishingTransition::Upgrade50 { .. })
+                && thumbnail_upgrade_completion(root, binding).is_ok())
+            || (matches!(transition, FurnishingTransition::Upgrade49 { .. })
+                && gpu_model_upgrade_completion(root, binding).is_ok()))
+            && context.exits.get("postgres") == Some(&0)
+            && context.exits.get("auxiliary") == Some(&0)
+            && check_cold_transition_root(root, Some(&current.id)).is_ok()
+        {
+            // Only an explicitly requested physical recovery may restore the
+            // sealed045 beforeimage; a050 commit marker never means rollback.
             return Ok(());
         }
         // Starting is durable before consuming the source. start_inner records
@@ -1262,6 +1465,8 @@ impl Session {
                         FurnishingTransition::Upgrade39(_) => FurnishingStart::Upgrade039To040,
                         FurnishingTransition::Upgrade40(_) => FurnishingStart::Upgrade040To044,
                         FurnishingTransition::Upgrade44 { .. } => FurnishingStart::Upgrade044To045,
+                        FurnishingTransition::Upgrade50 { .. } => FurnishingStart::Upgrade045To050,
+                        FurnishingTransition::Upgrade49 { .. } => FurnishingStart::Upgrade045To049,
                         _ => FurnishingStart::Reopen,
                     }));
                 }
@@ -1355,6 +1560,151 @@ impl Session {
     fn active_furnishing_binding(&self) -> Option<&Binding> {
         self.furnishing_binding.as_ref().filter(|binding| binding.phase == Phase::Active
             && self.job_id.as_deref() == Some(binding.generation.as_str()))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn run_furnishing_thumbnail_upgrade(&mut self, environment: &[(&str, String)]) -> Result<()> {
+        const ERROR: &str = "NATIVE_FURNISHING_THUMBNAIL_UPGRADE_UNQUALIFIED";
+        let (_, transition) = self.furnishing_transition_trial.as_ref().ok_or_else(|| err(ERROR))?;
+        if !matches!(transition, FurnishingTransition::Upgrade50 { .. }) || self.transition_fence.is_none()
+            || self.node.is_some() || self.auxiliary.is_some() || self.postgres.is_none()
+        { return Err(err(ERROR)); }
+        let binding = self.active_furnishing_binding().ok_or_else(|| err(ERROR))?.clone();
+        if binding.admission_kind != Admission::CatalogUpgrade045To050 { return Err(err(ERROR)); }
+        let full = self.payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::FurnishingThumbnail050)?;
+        let source = self.payload.catalog50_upgrade_source_ledger()?;
+        let observed = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name")?;
+        // Only this owned helper accepts the exact46 retry. Ordinary reopen
+        // always requires the target ledger before it starts any Node child.
+        if observed != source && observed != full { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
+        let script = self.payload.furnishing_thumbnail_upgrade_script()?;
+        let generation = self.job_id.as_deref().ok_or_else(|| err(ERROR))?.to_owned();
+        let lifetime = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err(ERROR))?;
+        let writer = lifetime.duplicate_for_writer()?;
+        let authority = self.local_authority.as_ref().ok_or_else(|| err(ERROR))?;
+        let lease = furnishing_lease::Lease::new(authority, &generation, FurnishingStart::Upgrade045To050,
+            self.payload.context().manifest_sha256, writer.identity);
+        let mut setup = owner_channel::Setup::new()?.with_furnishing_writer(writer);
+        let mut input = setup.workspace_furnishing_bootstrap(authority, &generation, FurnishingStart::Upgrade045To050)?;
+        let spawned = self.spawn(&self.payload.node(), &[script.to_string_lossy().into()], environment,
+            Some(&input), true, false, Some(&setup));
+        input.fill(0);
+        self.auxiliary = Some(spawned?);
+        setup.close_child();
+        self.record()?;
+        let authority = self.local_authority.as_ref().ok_or_else(|| err(ERROR))?;
+        let mut channel = setup.handshake(authority, &generation, &self.cancellation)?;
+        let cancellation = self.cancellation.clone();
+        // Once an ordinary frame may have been attempted, no later error
+        // (including Stop/Drained decode or post-COMMIT cleanup) may acquire
+        // the legacy pre-frame encoder-failure signature used by recovery.
+        let attempted = (|| {
+            let mut fence = || {
+                self.check_native_observation_fence()?;
+                let identity = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err(ERROR))?.identity()?;
+                if identity != lease.identity || self.postgres.as_mut().ok_or_else(|| err(ERROR))?.child
+                    .try_wait().map_err(|_| err(ERROR))?.is_some() { return Err(err(ERROR)); }
+                Ok(())
+            };
+            channel.bind_ordinary_furnishing(&lease, &binding, &cancellation, &mut fence)?;
+            channel.drain_ordinary_furnishing(Instant::now() + Duration::from_secs(60), &cancellation, &mut fence)?;
+            drop(fence);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let bytes = loop {
+                self.check_native_observation_fence()?;
+                if self.cancelled() { return Err(err("NATIVE_CANCELLED")); }
+                let child = self.auxiliary.as_mut().ok_or_else(|| err(ERROR))?;
+                if let Some(code) = child.poll()? {
+                    let bytes = child.capture.as_ref().and_then(|v| v.lock().ok().map(|b| b.clone())).ok_or_else(|| err(ERROR))?;
+                    self.exits.insert("auxiliary".into(), code);
+                    self.auxiliary = None;
+                    self.record()?;
+                    if code != 0 { return Err(err(ERROR)); }
+                    break bytes;
+                }
+                if Instant::now() >= deadline { return Err(err("NATIVE_PROCESS_TIMEOUT")); }
+                thread::sleep(Duration::from_millis(25));
+            };
+            validate_thumbnail_upgrade_result(&bytes, &binding)?;
+            self.payload.recheck()?;
+            // Diagnostic proof of the actual committed/drained helper boundary.
+            // A later ordinary startup failure is not represented as rollback.
+            write_private_new(self.run.as_ref().ok_or_else(|| err(ERROR))?,
+                "furnishing-thumbnail-050-committed.txt", &bytes, 4096)?;
+            Ok(())
+        })();
+        attempted.map_err(|error: LifecycleError| {
+            if error.code == furnishing_lifecycle::ERROR { err(ERROR) } else { error }
+        })
+
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn run_gpu_model_upgrade(&mut self, environment: &[(&str, String)]) -> Result<()> {
+        const ERROR: &str = "NATIVE_GPU_MODEL_PREPARATION_UPGRADE_UNQUALIFIED";
+        let (_, transition) = self.furnishing_transition_trial.as_ref().ok_or_else(|| err(ERROR))?;
+        if !matches!(transition, FurnishingTransition::Upgrade49 { .. }) || self.transition_fence.is_none()
+            || self.node.is_some() || self.auxiliary.is_some() || self.postgres.is_none()
+        { return Err(err(ERROR)); }
+        let binding = self.active_furnishing_binding().ok_or_else(|| err(ERROR))?.clone();
+        if binding.admission_kind != Admission::CatalogUpgrade045To049 { return Err(err(ERROR)); }
+        let full = self.payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::GpuModelPreparation049)?;
+        let source = self.payload.catalog49_upgrade_source_ledger()?;
+        let observed = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name")?;
+        // Only this owned helper accepts the exact46 retry. Ordinary reopen
+        // always requires the target ledger before it starts any Node child.
+        if observed != source && observed != full { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
+        let script = self.payload.gpu_model_upgrade_script()?;
+        let generation = self.job_id.as_deref().ok_or_else(|| err(ERROR))?.to_owned();
+        let lifetime = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err(ERROR))?;
+        let writer = lifetime.duplicate_for_writer()?;
+        let authority = self.local_authority.as_ref().ok_or_else(|| err(ERROR))?;
+        let lease = furnishing_lease::Lease::new(authority, &generation, FurnishingStart::Upgrade045To049,
+            self.payload.context().manifest_sha256, writer.identity);
+        let mut setup = owner_channel::Setup::new()?.with_furnishing_writer(writer);
+        let mut input = setup.workspace_furnishing_bootstrap(authority, &generation, FurnishingStart::Upgrade045To049)?;
+        let spawned = self.spawn(&self.payload.node(), &[script.to_string_lossy().into()], environment,
+            Some(&input), true, false, Some(&setup));
+        input.fill(0);
+        self.auxiliary = Some(spawned?);
+        setup.close_child();
+        self.record()?;
+        let authority = self.local_authority.as_ref().ok_or_else(|| err(ERROR))?;
+        let mut channel = setup.handshake(authority, &generation, &self.cancellation)?;
+        let cancellation = self.cancellation.clone();
+        let mut fence = || {
+            self.check_native_observation_fence()?;
+            let identity = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err(ERROR))?.identity()?;
+            if identity != lease.identity || self.postgres.as_mut().ok_or_else(|| err(ERROR))?.child
+                .try_wait().map_err(|_| err(ERROR))?.is_some() { return Err(err(ERROR)); }
+            Ok(())
+        };
+        channel.bind_ordinary_furnishing(&lease, &binding, &cancellation, &mut fence)?;
+        channel.drain_ordinary_furnishing(Instant::now() + Duration::from_secs(60), &cancellation, &mut fence)?;
+        drop(fence);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let bytes = loop {
+            self.check_native_observation_fence()?;
+            if self.cancelled() { return Err(err("NATIVE_CANCELLED")); }
+            let child = self.auxiliary.as_mut().ok_or_else(|| err(ERROR))?;
+            if let Some(code) = child.poll()? {
+                let bytes = child.capture.as_ref().and_then(|v| v.lock().ok().map(|b| b.clone())).ok_or_else(|| err(ERROR))?;
+                self.exits.insert("auxiliary".into(), code);
+                self.auxiliary = None;
+                self.record()?;
+                if code != 0 { return Err(err(ERROR)); }
+                break bytes;
+            }
+            if Instant::now() >= deadline { return Err(err("NATIVE_PROCESS_TIMEOUT")); }
+            thread::sleep(Duration::from_millis(25));
+        };
+        validate_gpu_model_upgrade_result(&bytes, &binding)?;
+        self.payload.recheck()?;
+        // Diagnostic proof of the actual committed/drained helper boundary.
+        // A later ordinary startup failure is not represented as rollback.
+        write_private_new(self.run.as_ref().ok_or_else(|| err(ERROR))?,
+            "gpu-model-049-committed.txt", &bytes, 4096)?;
+        Ok(())
     }
 
     fn verify_workspace_furnishing_ledger(&mut self) -> Result<()> {
@@ -1524,6 +1874,41 @@ impl Session {
         if self.cancelled() { return Err(err("NATIVE_CANCELLED")); }
         plan.retain()
     }
+    /// Read-only resources for one currently ready ordinary B owner. This does
+    /// not renew credentials, grant a job, or modify a preview/review nonce.
+    pub(crate) fn native_gpu_preview_resources(&mut self) -> Result<Value> {
+        let unavailable = || err("NATIVE_GPU_PREVIEW_UNAVAILABLE");
+        let context = self.payload.context();
+        if !crate::native_payload::gpu_model_host_matches((&context.source_commit,
+                self.payload.producer_sha256(), &context.manifest_sha256))
+            || self.oex_upload_selection_started || self.normal_oex_selected
+            || self.transition_fence.is_some() || self.auxiliary.is_some()
+        { return Err(unavailable()); }
+        if self.status()?.state != "ready" || !self.readiness.ready
+            || self.node.is_none() || self.postgres.is_none()
+        { return Err(unavailable()); }
+        self.check_workspace_furnishing_channel()?;
+        let binding = self.active_furnishing_binding().ok_or_else(unavailable)?.clone();
+        binding.check()?;
+        if binding.catalog != 49 || binding.admission_kind != Admission::CleanReopen {
+            return Err(unavailable());
+        }
+        let physical = self.furnishing_writer_lifetime.as_ref().ok_or_else(unavailable)?.identity()?;
+        let owner = self.service.personal_identity()?;
+        let authority = self.local_authority.as_ref().ok_or_else(unavailable)?;
+        let current = current_run(&self.service.root)?.ok_or_else(unavailable)?;
+        if physical != binding.physical || current.id != binding.generation
+            || current.furnishing.as_ref() != Some(&binding)
+            || owner != (binding.owner.workspace_id.clone(), binding.owner.tenant_id.clone(), binding.owner.principal_id.clone())
+            || owner != (authority.workspace_id.clone(), authority.tenant_id.clone(), authority.principal_id.clone())
+            || authority.owner_uid != unsafe { libc::geteuid() } || binding.owner.owner_uid != authority.owner_uid
+            || binding.source_commit != context.source_commit || binding.producer_sha256 != self.payload.producer_sha256()
+            || binding.payload_manifest_sha256 != context.manifest_sha256
+        { return Err(unavailable()); }
+        self.check_native_observation_fence()?;
+        self.payload.native_gpu_preview_resources()
+    }
+
     /// Explicit private IPC only, never part of status/journal/log output.
     pub fn authoring_session(&mut self) -> Result<Value> {
         if self.oex_upload_selection_started { return Err(err("NATIVE_OEX_SESSION_BOUND")); }
@@ -2014,7 +2399,7 @@ const { isDeepStrictEqual } = require('node:util');
             .map_err(|_| err("NATIVE_DATABASE_UNAVAILABLE"))
     }
     fn start_inner(&mut self, services: bool, maintenance_system: Option<&str>, existing_database: bool,
-        furnishing: Option<FurnishingStart>,
+        mut furnishing: Option<FurnishingStart>,
     ) -> Result<()> {
         let mut reservations = Vec::new();
         for port in [self.ports.web, self.ports.api, self.ports.database] {
@@ -2357,6 +2742,36 @@ const { isDeepStrictEqual } = require('node:util');
         } else {
             None
         };
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if furnishing == Some(FurnishingStart::Upgrade045To050) {
+            self.run_furnishing_thumbnail_upgrade(&environment)?;
+            self.verify_workspace_furnishing_ledger()?;
+            // The helper-only kind8 has drained. The following ordinary node
+            // receives a new authenticated clean-reopen exchange, never kind8.
+            let mut binding = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.clone();
+            binding.admission_kind = Admission::CleanReopen;
+            binding.check()?;
+            self.publish_current(Some(binding.clone()))?;
+            self.furnishing_binding = Some(binding);
+            furnishing = Some(FurnishingStart::Reopen);
+        }
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        if furnishing == Some(FurnishingStart::Upgrade045To050) { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if furnishing == Some(FurnishingStart::Upgrade045To049) {
+            self.run_gpu_model_upgrade(&environment)?;
+            self.verify_workspace_furnishing_ledger()?;
+            // The helper-only kind9 has drained. The following ordinary node
+            // receives a new authenticated clean-reopen exchange, never kind9.
+            let mut binding = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.clone();
+            binding.admission_kind = Admission::CleanReopen;
+            binding.check()?;
+            self.publish_current(Some(binding.clone()))?;
+            self.furnishing_binding = Some(binding);
+            furnishing = Some(FurnishingStart::Reopen);
+        }
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        if furnishing == Some(FurnishingStart::Upgrade045To049) { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
         let generation = self.job_id.as_deref().ok_or_else(|| err("NATIVE_JOURNAL_INVALID"))?;
         let mut furnishing_lease = None;
         let mut owner_setup = if let Some(start) = furnishing {
@@ -2372,12 +2787,7 @@ const { isDeepStrictEqual } = require('node:util');
             }
             Some(owner_channel::Setup::new()?)
         } else { None };
-        if (self.payload.retained_furnishing_catalog().is_some()
-            && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
-            || (self.payload.ordinary_fresh_furnishing()
-                && matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
-            || (crate::native_payload::catalog45_carried_restore_payload(&self.payload)
-                && furnishing == Some(FurnishingStart::Reopen))
+        if ordinary_inherited_hayes(&self.payload, furnishing)
         {
             self.payload.recheck()?;
             let generation_id = Uuid::parse_str(generation).map_err(|_| err("HAYES_OPERATION_UNAVAILABLE"))?;
@@ -2707,7 +3117,7 @@ const { isDeepStrictEqual } = require('node:util');
             if services {
                 match furnishing {
                     Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039 | FurnishingStart::SelectedImport040) => (),
-                    Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045) => {
+                    Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045 | FurnishingStart::Upgrade045To050 | FurnishingStart::Upgrade045To049) => {
                         let source = prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                         let transition = self.furnishing_transition_trial.as_ref();
@@ -3371,12 +3781,46 @@ const { isDeepStrictEqual } = require('node:util');
             thread::sleep(Duration::from_millis(100));
         }
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn failed_thumbnail_transition_drained(&self) -> Result<bool> {
+        let Some((trial, transition)) = &self.furnishing_transition_trial else { return Ok(false); };
+        if self.transition_fence.is_none() || self.any_owned() || self.state != "failed"
+            || self.failure.as_deref() != Some(furnishing_lifecycle::ERROR)
+            || self.job_id.as_deref() != Some(trial.generation.as_str())
+            || self.exits.len() != 2 || self.exits.get("postgres") != Some(&0)
+            || self.exits.get("auxiliary") != Some(&-15)
+        { return Ok(false); }
+        self.check_native_observation_fence()?;
+        let binding = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        let physical = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.identity()?;
+        let (workspace,tenant,principal) = self.service.personal_identity()?;
+        if physical != binding.physical || binding.owner.workspace_id != workspace
+            || binding.owner.tenant_id != tenant || binding.owner.principal_id != principal
+            || binding.owner.owner_uid != unsafe { libc::geteuid() }
+        { return Ok(false); }
+        trial.failed_thumbnail_helper_cold(&self.service.root, *transition)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn check_drained_transition_failure_root(&self, confirmed: Option<&str>) -> Result<()> {
+        self.drained_transition_guard()?;
+        #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+        if confirmed.is_some() && confirmed == self.job_id.as_deref()
+            && self.failed_thumbnail_transition_drained()? { return Ok(()); }
+        check_cold_transition_root(&self.service.root, confirmed)
+    }
+
     #[cfg(debug_assertions)]
     pub(crate) fn drained_transition_guard(&self) -> Result<&OperationGuard> {
         if self.transition_fence.is_none() || self.any_owned()
             || !matches!(self.state.as_str(), "stopped" | "failed")
-            || !clean_node_quiescence(self.exits.contains_key("node"), self.node_drain_requested, &self.exits)
-            || self.exits.values().any(|code| *code != 0) {
+            || !clean_node_quiescence(self.exits.contains_key("node"), self.node_drain_requested, &self.exits) {
+            return Err(err("NATIVE_STOP_PENDING"));
+        }
+        if self.exits.values().any(|code| *code != 0) {
+            #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+            if !self.failed_thumbnail_transition_drained()? { return Err(err("NATIVE_STOP_PENDING")); }
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", target_os = "macos")))]
             return Err(err("NATIVE_STOP_PENDING"));
         }
         self.check_native_observation_fence()?;
@@ -4353,5 +4797,360 @@ impl Drop for OwnedOexClaim<'_> {
         // Any path without both settlement and operation-complete remains
         // uncertain: close the channel and preserve the durable records.
         if !self.settled {if let Some(mut channel)=self.session.owner_channel.take(){channel.invalidate();}}
+    }
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+mod furnishing_thumbnail_upgrade_result_tests {
+    use super::*;
+    pub(super) fn binding() -> Binding {
+        Binding { version: 1, phase: Phase::Active,
+            generation: "10000000-0000-4000-8000-000000000004".into(),
+            previous_generation: Some("10000000-0000-4000-8000-000000000005".into()),
+            admission_kind: Admission::CatalogUpgrade045To050,
+            owner: FurnishingOwner { workspace_id: "10000000-0000-4000-8000-000000000001".into(),
+                tenant_id: "10000000-0000-4000-8000-000000000002".into(),
+                principal_id: "10000000-0000-4000-8000-000000000003".into(), owner_uid: 501 },
+            source_commit: "a".repeat(40), producer_sha256: "b".repeat(64), payload_manifest_sha256: "c".repeat(64),
+            catalog: 50, physical: FurnishingWriterIdentity { root_device: 1, root_inode: 2, lock_device: 1, lock_inode: 3 },
+            restore: None, interrupted_claim_generations: Vec::new() }
+    }
+    fn receipt(binding: &Binding) -> Value {
+        serde_json::json!({"version":1,"mode":"workspace-furnishing-045-to-050-upgrade-v1",
+            "profile":"workspace-furnishing-thumbnail-v1","state":"applied",
+            "workspaceId":binding.owner.workspace_id,"tenantId":binding.owner.tenant_id,"principalId":binding.owner.principal_id,
+            "runtimeGeneration":binding.generation,"payloadManifestSha256":binding.payload_manifest_sha256,
+            "catalogRows":46,"migration":"050_workspace_furnishing_thumbnail.sql",
+            "migrationSha256":crate::native_payload::FURNISHING_THUMBNAIL_SCHEMA.2,"drained":true})
+    }
+    fn wire(value: &Value) -> Vec<u8> {
+        let mut bytes=b"EXHIBITOS_NATIVE_FURNISHING_THUMBNAIL_UPGRADE_RESULT ".to_vec();
+        bytes.extend(serde_json::to_vec(value).unwrap());bytes.push(b'\n');bytes
+    }
+    #[test]
+    fn furnishing_thumbnail_upgrade_result_binds_exact_completed_or_idempotent_helper() {
+        let binding=binding();let mut value=receipt(&binding);
+        validate_thumbnail_upgrade_result(&wire(&value),&binding).unwrap();
+        value["state"]="already-applied".into();validate_thumbnail_upgrade_result(&wire(&value),&binding).unwrap();
+    }
+    #[test]
+    fn furnishing_thumbnail_upgrade_result_rejects_foreign_incomplete_or_open_receipt() {
+        let binding=binding();let good=receipt(&binding);
+        for (field,value) in [("workspaceId",serde_json::json!("10000000-0000-4000-8000-000000000099")),
+            ("runtimeGeneration",serde_json::json!("10000000-0000-4000-8000-000000000099")),
+            ("payloadManifestSha256",serde_json::json!("d".repeat(64))),
+            ("catalogRows",serde_json::json!(50)),("drained",serde_json::json!(false)),
+            ("state",serde_json::json!("pending")),("extra",serde_json::json!(true))] {
+            let mut bad=good.clone();bad[field]=value;
+            assert!(validate_thumbnail_upgrade_result(&wire(&bad),&binding).is_err());
+        }
+        let mut duplicate=wire(&good);duplicate.extend(wire(&good));
+        assert!(validate_thumbnail_upgrade_result(&duplicate,&binding).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+mod gpu_model_upgrade_result_tests {
+    use super::*;
+    fn binding() -> Binding {
+        Binding { version: 1, phase: Phase::Active,
+            generation: "10000000-0000-4000-8000-000000000004".into(),
+            previous_generation: Some("10000000-0000-4000-8000-000000000005".into()),
+            admission_kind: Admission::CatalogUpgrade045To049,
+            owner: FurnishingOwner { workspace_id: "10000000-0000-4000-8000-000000000001".into(),
+                tenant_id: "10000000-0000-4000-8000-000000000002".into(),
+                principal_id: "10000000-0000-4000-8000-000000000003".into(), owner_uid: 501 },
+            source_commit: "a".repeat(40), producer_sha256: "b".repeat(64), payload_manifest_sha256: "c".repeat(64),
+            catalog: 49, physical: FurnishingWriterIdentity { root_device: 1, root_inode: 2, lock_device: 1, lock_inode: 3 },
+            restore: None, interrupted_claim_generations: Vec::new() }
+    }
+    fn receipt(binding: &Binding) -> Value {
+        serde_json::json!({"version":1,"mode":"workspace-furnishing-045-to-049-upgrade-v1",
+            "profile":"embedded-model-basecolor-uastc-512-mips-v1","state":"applied",
+            "workspaceId":binding.owner.workspace_id,"tenantId":binding.owner.tenant_id,"principalId":binding.owner.principal_id,
+            "runtimeGeneration":binding.generation,"payloadManifestSha256":binding.payload_manifest_sha256,
+            "catalogRows":46,"migration":"049_gpu_model_preparation.sql",
+            "migrationSha256":crate::native_payload::GPU_MODEL_SCHEMA.2,"drained":true})
+    }
+    fn wire(value: &Value) -> Vec<u8> {
+        let mut bytes=b"EXHIBITOS_NATIVE_GPU_MODEL_PREPARATION_UPGRADE_RESULT ".to_vec();
+        bytes.extend(serde_json::to_vec(value).unwrap());bytes.push(b'\n');bytes
+    }
+    #[test]
+    fn furnishing_gpu_model_upgrade_result_binds_exact_completed_or_idempotent_helper() {
+        let binding=binding();let mut value=receipt(&binding);
+        validate_gpu_model_upgrade_result(&wire(&value),&binding).unwrap();
+        value["state"]="already-applied".into();validate_gpu_model_upgrade_result(&wire(&value),&binding).unwrap();
+    }
+    #[test]
+    fn furnishing_gpu_model_upgrade_result_rejects_foreign_incomplete_or_open_receipt() {
+        let binding=binding();let good=receipt(&binding);
+        for (field,value) in [("workspaceId",serde_json::json!("10000000-0000-4000-8000-000000000099")),
+            ("runtimeGeneration",serde_json::json!("10000000-0000-4000-8000-000000000099")),
+            ("payloadManifestSha256",serde_json::json!("d".repeat(64))),
+            ("catalogRows",serde_json::json!(50)),("drained",serde_json::json!(false)),
+            ("state",serde_json::json!("pending")),("extra",serde_json::json!(true))] {
+            let mut bad=good.clone();bad[field]=value;
+            assert!(validate_gpu_model_upgrade_result(&wire(&bad),&binding).is_err());
+        }
+        let mut duplicate=wire(&good);duplicate.extend(wire(&good));
+        assert!(validate_gpu_model_upgrade_result(&duplicate,&binding).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+mod thumbnail_failed_helper_recovery_tests {
+    use super::*;
+    fn fixture() -> (FurnishingTransitionTrial, FurnishingTransition, Current, Context) {
+        let source = crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET;
+        let target = ("55e8ad6c861eab44326ee8db60db2692e3f7baf7",
+            "02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5",
+            "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626");
+        let transition = FurnishingTransition::from_manifests((source.2,target.2)).unwrap();
+        let mut current = super::furnishing_thumbnail_upgrade_result_tests::binding();
+        current.source_commit=target.0.into();current.producer_sha256=target.1.into();current.payload_manifest_sha256=target.2.into();
+        let mut prior=current.clone();prior.catalog=45;prior.phase=Phase::Clean;prior.admission_kind=Admission::CleanReopen;
+        prior.generation=current.previous_generation.clone().unwrap();
+        prior.previous_generation=Some("10000000-0000-4000-8000-000000000006".into());
+        prior.source_commit=source.0.into();prior.producer_sha256=source.1.into();prior.payload_manifest_sha256=source.2.into();
+        prior.restore=Some(serde_json::from_value(serde_json::json!({
+            "id":"10000000-0000-4000-8000-000000000009","backupId":"10000000-0000-4000-8000-000000000010",
+            "archiveManifestSha256":"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55",
+            "targetSystemIdentifier":"330","carriedProvenance":{"version":1,
+                "sourceHandoffSha256":"60ed3615a4072856a1cb1449fa532acd307d8c237a09095b356566db4ed90b88",
+                "priorRestoreProof":{"restoreId":"10000000-0000-4000-8000-000000000007",
+                    "backupId":"10000000-0000-4000-8000-000000000008","authenticatedManifestSha256":"c".repeat(64),
+                    "sourceDatabaseSystemId":"110","sourceDatabaseOid":"16000","targetDatabaseSystemId":"220",
+                    "targetDatabaseOid":"16002","provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)},
+                "archiveSourceDatabaseSystemId":"220","archiveSourceDatabaseOid":"16002",
+                "targetDatabaseSystemId":"330","targetDatabaseOid":"16004",
+                "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)}})).unwrap());
+        prior.check().expect("original carried1a03 source fixture must validate");
+        // Receipt-result fixtures are already admitted. A transition instead
+        // begins with the same fresh constructor shape as the carried-binding
+        // lifecycle regression; consume supplies lineage/proof/admission once.
+        current.previous_generation=None;
+        current.admission_kind=Admission::FreshEmpty;
+        current.consume_furnishing_transition(&prior,transition)
+            .expect("fresh050 constructor must consume the valid carried1a03 source");
+        let trial=FurnishingTransitionTrial {source:Current {format:1,id:prior.generation.clone(),furnishing:Some(prior)},generation:current.generation.clone()};
+        let context=Context {format:1,job_id:Some(current.generation.clone()),state:"failed".into(),ports:Ports::default(),
+            readiness:Readiness::default(),error_code:Some(furnishing_lifecycle::ERROR.into()),failure_code:Some(furnishing_lifecycle::ERROR.into()),
+            postgres_pid:None,node_pid:None,auxiliary_pid:None,exits:BTreeMap::from([("postgres".into(),0),("auxiliary".into(),-15)]),log_truncated:false};
+        (trial,transition,Current {format:1,id:current.generation.clone(),furnishing:Some(current)},context)
+    }
+    fn accepts(trial:&FurnishingTransitionTrial, transition:FurnishingTransition, current:&Current, context:&Context) -> bool {
+        trial.failed_thumbnail_helper_shape(transition,current,context,false,false).unwrap_or(false)
+    }
+    #[test]
+    fn legacy_thumbnail_helper_drain_is_exact_and_never_post_admission_authority() {
+        let (trial,transition,current,context)=fixture();
+        assert!(accepts(&trial,transition,&current,&context));
+        assert!(!trial.failed_thumbnail_helper_shape(transition,&current,&context,true,false).unwrap());
+        assert!(!trial.failed_thumbnail_helper_shape(transition,&current,&context,false,true).unwrap());
+        for code in ["NATIVE_FURNISHING_THUMBNAIL_UPGRADE_UNQUALIFIED","NATIVE_CANCELLED","NATIVE_DATABASE_UNAVAILABLE"] {
+            let mut bad=context.clone();bad.failure_code=Some(code.into());bad.error_code=Some(code.into());
+            assert!(!accepts(&trial,transition,&current,&bad));
+        }
+        for (role,exit) in [("postgres",1),("auxiliary",0),("auxiliary",1),("auxiliary",-9),("node",0)] {
+            let mut bad=context.clone();bad.exits.insert(role.into(),exit);
+            assert!(!accepts(&trial,transition,&current,&bad));
+        }
+        let mut bad=context.clone();bad.postgres_pid=Some(42);assert!(!accepts(&trial,transition,&current,&bad));
+        let mut bad=context.clone();bad.node_pid=Some(42);assert!(!accepts(&trial,transition,&current,&bad));
+        let mut bad=context.clone();bad.auxiliary_pid=Some(42);assert!(!accepts(&trial,transition,&current,&bad));
+        let mut bad=context.clone();bad.readiness.ready=true;assert!(!accepts(&trial,transition,&current,&bad));
+        let mut bad=context.clone();bad.readiness.version=Some("unexpected".into());assert!(!accepts(&trial,transition,&current,&bad));
+        let mut bad=context.clone();bad.state="stopping".into();assert!(!accepts(&trial,transition,&current,&bad));
+        let mut bad=context.clone();bad.job_id=Some("10000000-0000-4000-8000-000000000099".into());
+        assert!(!accepts(&trial,transition,&current,&bad));
+    }
+    #[test]
+    fn legacy_thumbnail_helper_drain_requires_original_proof_tuple_and_same_trial_owner() {
+        let (trial,transition,current,context)=fixture();
+        let mut bad=current.clone();bad.furnishing.as_mut().unwrap().owner.principal_id="10000000-0000-4000-8000-000000000099".into();
+        assert!(!accepts(&trial,transition,&bad,&context));
+        let mut bad=current.clone();bad.furnishing.as_mut().unwrap().physical.root_inode+=1;
+        assert!(!accepts(&trial,transition,&bad,&context));
+        let mut bad=current.clone();bad.furnishing.as_mut().unwrap().restore=None;
+        assert!(!accepts(&trial,transition,&bad,&context));
+        let mut bad=current.clone();bad.furnishing.as_mut().unwrap().payload_manifest_sha256="f".repeat(64);
+        assert!(!accepts(&trial,transition,&bad,&context));
+        let mut bad=current.clone();bad.furnishing.as_mut().unwrap().admission_kind=Admission::CleanReopen;
+        assert!(!accepts(&trial,transition,&bad,&context));
+        let mut bad=current.clone();bad.furnishing.as_mut().unwrap().previous_generation=Some("10000000-0000-4000-8000-000000000099".into());
+        assert!(!accepts(&trial,transition,&bad,&context));
+        let mut bad=trial.clone();bad.generation="10000000-0000-4000-8000-000000000099".into();
+        assert!(!accepts(&bad,transition,&current,&context));
+        let mut bad=trial.clone();bad.source.id="10000000-0000-4000-8000-000000000099".into();
+        assert!(!accepts(&bad,transition,&current,&context));
+        let mut bad=trial.clone();bad.source.furnishing.as_mut().unwrap().restore=None;
+        assert!(!accepts(&bad,transition,&current,&context));
+    }
+    #[test]
+    fn authenticated_legacy_failed_helper_cold_check_preserves_raw_run_and_source_consumption() {
+        use std::os::unix::fs::DirBuilderExt;
+        let (trial,transition,current,context)=fixture();
+        let root=fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("thumbnail-helper-drain-{}",Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let runs=directory(&root,"native-runs").unwrap();
+        let source=trial.source.furnishing.as_ref().unwrap();
+        let source_run=directory(&runs,&source.generation).unwrap();
+        let target_run=directory(&runs,&trial.generation).unwrap();
+        let mut source_context=context.clone();source_context.job_id=Some(source.generation.clone());source_context.state="stopped".into();
+        source_context.error_code=None;source_context.failure_code=None;
+        source_context.exits=BTreeMap::from([("node".into(),0),("postgres".into(),0)]);
+        let proof=||FurnishingCompletion {binding_sha256:source.sha256().unwrap(),consumed_by:Some(trial.generation.clone())};
+        write_run(&source_run,&source_context,Some(proof())).unwrap();
+        write_run(&target_run,&context,None).unwrap();write_json(&root,"native-current-run.json",&current).unwrap();
+        let raw=fs::read(target_run.join("state.json")).unwrap();
+        assert!(trial.failed_thumbnail_helper_cold(&root,transition).unwrap());
+        assert!(check_cold_transition_root(&root,Some(&trial.generation)).is_err()); // generic predicate remains strict
+        let marker=target_run.join("furnishing-thumbnail-050-committed.txt");
+        fs::write(&marker,b"not rollback evidence").unwrap();
+        assert!(!trial.failed_thumbnail_helper_cold(&root,transition).unwrap());fs::remove_file(marker).unwrap();
+        let database=directory(&root,"native-database").unwrap();let postmaster=database.join("postmaster.pid");
+        fs::write(&postmaster,b"0\n").unwrap();assert!(!trial.failed_thumbnail_helper_cold(&root,transition).unwrap_or(false));fs::remove_file(postmaster).unwrap();
+        let mut foreign=proof();foreign.consumed_by=Some("10000000-0000-4000-8000-000000000099".into());
+        write_run(&source_run,&source_context,Some(foreign)).unwrap();
+        assert!(trial.failed_thumbnail_helper_cold(&root,transition).is_err());
+        assert_eq!(fs::read(target_run.join("state.json")).unwrap(),raw);
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+mod gpu049_ordinary_hayes_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires exact actual GPU049 payload; read-only, no workspace start"]
+    fn actual_gpu049_ordinary_reopen_requires_inherited_hayes_channel() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_GPU_MODEL049_RUNTIME").unwrap());
+        let payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(),
+            Some(WorkspaceFurnishingCatalog::GpuModelPreparation049));
+        // Node's ordinary full045-family bootstrap requires the inherited
+        // Hayes owner even though the helper-only049 upgrade does not.
+        assert!(ordinary_inherited_hayes(&payload, Some(FurnishingStart::Reopen)));
+        for start in [None, Some(FurnishingStart::Initialize),
+            Some(FurnishingStart::Upgrade045To049), Some(FurnishingStart::Upgrade045To050)] {
+            assert!(!ordinary_inherited_hayes(&payload, start));
+        }
+    }
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+mod gpu049_committed_recovery_tests {
+    use super::*;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    fn fixture() -> (FurnishingTransitionTrial, FurnishingTransition, Current, Context) {
+        let source = crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET;
+        let target = ("daf4fe857051ad4d08a009ddf25cf95ab8e76227",
+            "09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634",
+            "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377");
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        let mut current = super::furnishing_thumbnail_upgrade_result_tests::binding();
+        current.catalog = 49; current.restore = None;
+        current.source_commit = target.0.into(); current.producer_sha256 = target.1.into();
+        current.payload_manifest_sha256 = target.2.into();
+        let mut prior = current.clone(); prior.catalog = 45; prior.phase = Phase::Clean;
+        prior.admission_kind = Admission::CleanReopen;
+        prior.generation = current.previous_generation.clone().unwrap();
+        prior.previous_generation = Some("10000000-0000-4000-8000-000000000006".into());
+        prior.source_commit = source.0.into(); prior.producer_sha256 = source.1.into();
+        prior.payload_manifest_sha256 = source.2.into(); prior.check().unwrap();
+        current.previous_generation = None; current.admission_kind = Admission::FreshEmpty;
+        current.consume_furnishing_transition(&prior, transition).unwrap();
+        current.admission_kind = Admission::CleanReopen; current.check().unwrap();
+        let trial = FurnishingTransitionTrial { source: Current { format: 1,
+            id: prior.generation.clone(), furnishing: Some(prior) }, generation: current.generation.clone() };
+        let context = Context { format: 1, job_id: Some(current.generation.clone()), state: "failed".into(),
+            ports: Ports::default(), readiness: Readiness::default(), error_code: Some("NATIVE_PROCESS_EXITED".into()),
+            failure_code: Some("NATIVE_PROCESS_EXITED".into()), postgres_pid: None, node_pid: None,
+            auxiliary_pid: None, exits: BTreeMap::from([("postgres".into(), 0), ("auxiliary".into(), 0),
+                ("node".into(), 1)]), log_truncated: false };
+        (trial, transition, Current { format: 1, id: current.generation.clone(), furnishing: Some(current) }, context)
+    }
+
+    #[test]
+    fn gpu049_committed_failure_requires_exact_trial_owner_and_node1_shape() {
+        let (trial, transition, current, context) = fixture();
+        let accepts = |trial: &FurnishingTransitionTrial, current: &Current, context: &Context|
+            trial.committed_gpu_ordinary_failure_shape(transition, current, context, false).unwrap_or(false);
+        assert!(accepts(&trial, &current, &context));
+        assert!(!trial.committed_gpu_ordinary_failure_shape(transition, &current, &context, true).unwrap());
+        for (role, exit) in [("node", 0), ("node", -9), ("node", 2), ("postgres", 1), ("auxiliary", -15), ("other", 0)] {
+            let mut bad = context.clone(); bad.exits.insert(role.into(), exit);
+            assert!(!accepts(&trial, &current, &bad));
+        }
+        let mut bad = context.clone(); bad.node_pid = Some(std::process::id());
+        assert!(!accepts(&trial, &current, &bad));
+        let mut bad = context.clone(); bad.failure_code = Some("NATIVE_CANCELLED".into());
+        assert!(!accepts(&trial, &current, &bad));
+        let mut bad = current.clone(); bad.furnishing.as_mut().unwrap().owner.principal_id = "10000000-0000-4000-8000-000000000099".into();
+        assert!(!accepts(&trial, &bad, &context));
+        let mut bad = current.clone(); bad.furnishing.as_mut().unwrap().physical.root_inode += 1;
+        assert!(!accepts(&trial, &bad, &context));
+        let mut bad = current.clone(); bad.furnishing.as_mut().unwrap().admission_kind = Admission::CatalogUpgrade045To049;
+        assert!(!accepts(&trial, &bad, &context));
+        let mut bad = current.clone(); bad.furnishing.as_mut().unwrap().payload_manifest_sha256 = "f".repeat(64);
+        assert!(!accepts(&trial, &bad, &context));
+        let mut bad = trial.clone(); bad.generation = "10000000-0000-4000-8000-000000000099".into();
+        assert!(!accepts(&bad, &current, &context));
+    }
+
+    #[test]
+    fn authenticated_gpu049_node1_recovery_requires_marker_source_completion_and_cold_writer() {
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("gpu049-cold-recover-{}", Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        let guard = FurnishingTransitionWriterGuard::acquire(&root).unwrap();
+        let (mut trial, transition, mut current, context) = fixture();
+        let physical = guard.identity().unwrap();
+        trial.source.furnishing.as_mut().unwrap().physical = physical;
+        current.furnishing.as_mut().unwrap().physical = physical;
+        let source = trial.source.furnishing.as_ref().unwrap();
+        let target = current.furnishing.as_ref().unwrap();
+        let runs = directory(&root, "native-runs").unwrap();
+        let source_run = directory(&runs, &source.generation).unwrap();
+        let target_run = directory(&runs, &trial.generation).unwrap();
+        let mut source_context = context.clone(); source_context.job_id = Some(source.generation.clone());
+        source_context.state = "stopped".into(); source_context.error_code = None; source_context.failure_code = None;
+        source_context.exits = BTreeMap::from([("node".into(), 0), ("postgres".into(), 0)]);
+        let proof = || FurnishingCompletion { binding_sha256: source.sha256().unwrap(), consumed_by: Some(trial.generation.clone()) };
+        write_run(&source_run, &source_context, Some(proof())).unwrap();
+        write_run(&target_run, &context, None).unwrap();
+        write_json(&root, "native-current-run.json", &current).unwrap();
+        let receipt = serde_json::json!({"version":1,"mode":"workspace-furnishing-045-to-049-upgrade-v1",
+            "profile":"embedded-model-basecolor-uastc-512-mips-v1","state":"applied",
+            "workspaceId":target.owner.workspace_id,"tenantId":target.owner.tenant_id,"principalId":target.owner.principal_id,
+            "runtimeGeneration":target.generation,"payloadManifestSha256":target.payload_manifest_sha256,"catalogRows":46,
+            "migration":"049_gpu_model_preparation.sql","migrationSha256":crate::native_payload::GPU_MODEL_SCHEMA.2,"drained":true});
+        let mut wire = b"EXHIBITOS_NATIVE_GPU_MODEL_PREPARATION_UPGRADE_RESULT ".to_vec();
+        wire.extend(serde_json::to_vec(&receipt).unwrap());
+        let marker = target_run.join("gpu-model-049-committed.txt");
+        let mut file = OpenOptions::new().create_new(true).write(true).mode(0o600).open(&marker).unwrap();
+        file.write_all(&wire).unwrap(); drop(file);
+        let raw = fs::read(target_run.join("state.json")).unwrap();
+        assert!(check_cold_transition_root(&root, Some(&trial.generation)).is_err());
+        assert!(trial.check_recovery_root(&root, &guard, transition, None).is_ok());
+        fs::write(&marker, b"not an authenticated049 receipt").unwrap();
+        assert!(!trial.committed_gpu_ordinary_failure_cold(&root, transition).unwrap_or(false));
+        fs::write(&marker, &wire).unwrap();
+        let database = directory(&root, "native-database").unwrap();
+        let postmaster = database.join("postmaster.pid");
+        fs::write(&postmaster, format!("{}\n", std::process::id())).unwrap();
+        assert!(!trial.committed_gpu_ordinary_failure_cold(&root, transition).unwrap_or(false));
+        fs::remove_file(postmaster).unwrap();
+        let mut live = context.clone(); live.node_pid = Some(std::process::id());
+        write_run(&target_run, &live, None).unwrap();
+        assert!(!trial.committed_gpu_ordinary_failure_cold(&root, transition).unwrap_or(false));
+        write_run(&target_run, &context, None).unwrap();
+        let mut foreign = proof(); foreign.consumed_by = Some("10000000-0000-4000-8000-000000000099".into());
+        write_run(&source_run, &source_context, Some(foreign)).unwrap();
+        assert!(trial.committed_gpu_ordinary_failure_cold(&root, transition).is_err());
+        assert_eq!(fs::read(target_run.join("state.json")).unwrap(), raw);
+        drop(guard); fs::remove_dir_all(root).unwrap();
     }
 }

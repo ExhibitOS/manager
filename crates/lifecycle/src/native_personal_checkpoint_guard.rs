@@ -34,7 +34,7 @@ impl InstallationController {
             token,
             key_path,
             staging,
-            None,
+            TransitionRetention::None,
             |service, profile, document, key| {
                 let guard = service.lock()?;
                 service.check_prepare_guard(&guard)?;
@@ -55,7 +55,7 @@ impl InstallationController {
                     checkpoint.new_manifest.as_str(),
                 );
                 checkpoint.check_host(true)?;
-                checkpoint.check_retained(None)?;
+                checkpoint.check_retained(TransitionRetention::None)?;
                 if checkpoint.staged != staging
                     || target.context().manifest_sha256 != pair.1
                     || catalog45_startup_recovery(pair)

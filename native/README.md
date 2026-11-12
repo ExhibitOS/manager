@@ -1364,6 +1364,64 @@ lighting output or public viewing. The previously failed export remains failed;
 a later observed export of its already frozen publication is a distinct scoped
 operation with preserved failure evidence and the existing safe API trace.
 
+### Registered furnishing thumbnail candidates
+
+The optional `workspaceFurnishingThumbnailProfile` session value
+`workspace-furnishing-thumbnail-v1` adds reviewed thumbnail candidates and a
+separate representative-image selection. The Native 050 consumer source keeps
+one exact local-validation tuple: source `55e8ad6c861eab44326ee8db60db2692e3f7baf7`,
+producer `02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5`,
+manifest `2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626`.
+The assembled payload and reader delta have independent review. This does not
+qualify an official runtime or authorize a workspace transition.
+
+The scoped authoring adapter exposes `workspace-furnishing-thumbnail-prepare`,
+`-candidates`, `-candidate`, `-image`, `-selection`, `-select`, and
+`-selected-image` (each with the full prefix). Prepare accepts the closed command
+`{capture, pngInputPath}`: `capture` is the existing six-field renderer capture,
+and the PNG path must be present with its SHA-256 in the automation input map.
+The captured Native revision, edit version and ETag are provenance; unrelated
+scene edits do not require rendering another identical registered-model image.
+Live owner, registered descriptor, model bytes, render recipe and display rights
+are rechecked. Preparation does not select, stage a scene edit, or save one.
+
+Read commands use `{id, version:1}`; candidate/image add `candidateId`. Selection
+adds `candidateId`, `receiptSha256` and `expectedSelectionVersion`; the envelope
+request ID is the selection nonce. A successful recorded POST is exactly the
+requested selection version plus one. A later GET supplies current selection,
+which can differ during replay. Preserve the same request, CAS and PNG after an
+uncertain response; do not invent a replacement nonce as an automatic retry.
+
+When admitted, the ordinary furnishing-card menu opens **대표 이미지 확인·선택**.
+Ready images can be reviewed before explicit selection. Selected cards load the
+server-selected, hash-checked PNG after reopening; ordinary card reads do not
+create candidates. Existing runtimes retain their transient preview behavior.
+Actual candidate admission, selection/reopen and GUI qualification remain
+separate checks against the assembled payload.
+
+The stand inspector also accepts a one-purpose closed replacement proposal
+`{etag, modelSha256, intakeId, placement, plaque}`. It focuses the target artwork
+before showing a cached prospective stand/plaque frame. Cancel discards that
+preview; Apply stages one checked candidate, and exhibition Save remains a
+separate action. The saved-scene snapshot guard is unchanged. Physical fit and
+ordinary GUI acceptance require actual target-camera checks before applying.
+
+Before dispatching a GUI thumbnail mutation, the existing Native owner store
+persists one bounded private intent per personal workspace. It retains the
+original capture metadata and canonical PNG, or the issued candidate and original
+selection nonce/CAS. The journal uses its own revision and does not change the
+exhibition document. Reopening the sheet or app reads that intent and refreshes
+registered descriptor and display authority before continuing the same request.
+A ready capture can be reconciled by its original renderer request ID; an
+uncertain selection replays its original mutation nonce. A known result whose
+local acknowledgement failed only retries the local journal completion.
+
+The journal is optional in existing backups and is restored byte-for-byte only
+for the same owner; absent legacy journals stay absent. Pending intent blocks
+personal-runtime transition. These source paths and focused tests do not claim
+actual application-termination, current-data transition or backup/restore
+qualification against the assembled runtime.
+
 ## Coupled light-object source correspondence
 
 The source negotiates `nativeLightObjectAuthoringProposalProfile:

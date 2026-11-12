@@ -15,6 +15,9 @@ pub mod native_document;
 #[path = "native_upload.rs"]
 pub mod native_upload;
 #[cfg(target_os = "macos")]
+#[path = "native_furnishing_thumbnail.rs"]
+pub mod native_furnishing_thumbnail;
+#[cfg(target_os = "macos")]
 #[path = "native_oex_import.rs"]
 pub mod native_oex_import;
 #[cfg(target_os = "macos")]
@@ -331,6 +334,24 @@ impl Drop for DestinationLease<'_> {
         }
     }
 }
+/// GPU scratch is not a portable backup member. Only the producer may remove
+/// its owned, known-drained files; lifecycle operations never clear this root.
+#[cfg(target_os = "macos")]
+pub(crate) fn gpu_model_job_root_empty(root: &Path) -> Result<()> {
+    let path = root.join("native-gpu-model-jobs");
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(err("NATIVE_GPU_MODEL_WORK_PENDING")),
+        Ok(_) => {
+            private_directory(&path).map_err(|_| err("NATIVE_GPU_MODEL_WORK_PENDING"))?;
+            if fs::canonicalize(&path).ok().as_deref() != Some(path.as_path())
+                || fs::read_dir(&path).map_err(|_| err("NATIVE_GPU_MODEL_WORK_PENDING"))?.next().is_some()
+            { return Err(err("NATIVE_GPU_MODEL_WORK_PENDING")); }
+            Ok(())
+        }
+    }
+}
+
 impl InstallationController {
     /// Construct only an explicitly selected, entirely new profile and hand
     /// its locked default root directly to the session initializer. This is
@@ -404,7 +425,7 @@ impl InstallationController {
     pub(crate) fn with_personal_transition<T>(
         &self,
         token: &str,
-        retained: Option<&native_maintenance::RetainedProductImage>,
+        retained: native_maintenance::TransitionRetention<'_>,
         task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<T>,
     ) -> Result<T> {
         self.with_current_mutation(token, |service| {
@@ -417,6 +438,9 @@ impl InstallationController {
             if self.oex_import_unlocked(service)?.1.intent.is_some() {
                 return Err(err("NATIVE_OEX_IMPORT_PENDING"));
             }
+            if self.furnishing_thumbnail_unlocked(service)?.1.pending.is_some() {
+                return Err(err("NATIVE_FURNISHING_THUMBNAIL_PENDING"));
+            }
             let document = self.document_unlocked(service)?.1;
             let version = document.draft.as_ref().and_then(|v| v.get("editVersion")).and_then(Value::as_u64);
             if document.pending.is_some() || (document.draft.is_some() && version != document.saved_edit_version)
@@ -425,7 +449,7 @@ impl InstallationController {
             }
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let (file, transfer) = self.upload_unlocked(service)?;
-            if let Some(proof) = retained {
+            if let Some(proof) = retained.image() {
                 if !transfer.matches_retained_product_image(proof)
                     || document.etag.as_deref() != Some(proof.saved_etag.as_str())
                     || digest(&installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?)
@@ -434,21 +458,37 @@ impl InstallationController {
                     return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
                 }
                 proof.check_replacement_attempt(&document)?;
-            } else if transfer.intent.is_some() {
+            } else if let Some(proof) = retained.gpu() {
+                if !transfer.matches_retained_gpu_variant(proof,
+                    &installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?)
+                {
+                    return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+                }
+            } else if transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some()
+                || transfer.compact_variant.is_some() || transfer.gpu_variant.is_some() {
                 return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
             }
+            gpu_model_job_root_empty(&service.root)?;
             task(service, &profile.root, &document)
         })
     }
 
     #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
     pub(crate) fn personal_transition_journal_digests(&self, service: &LifecycleService, profile: &Path) -> Result<Vec<Option<String>>> {
-        let journals = [
+        let mut journals = vec![
             (self.document_unlocked(service)?.0, 2_200_000),
             (self.upload_unlocked(service)?.0, native_upload::LIMIT),
             (self.publication_unlocked(service)?.0, 2_200_000),
             (self.oex_import_unlocked(service)?.0, 65_536),
         ];
+        let thumbnail = self.furnishing_thumbnail_unlocked(service)?.0;
+        // Preserve the legacy four-entry digest vector when no new journal has
+        // ever existed. Neither reading nor checkpointing materializes it.
+        match fs::symlink_metadata(profile.join(&thumbnail)) {
+            Ok(_) => journals.push((thumbnail, native_furnishing_thumbnail::LIMIT)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(_) => return Err(err("STATE_UNAVAILABLE")),
+        }
         journals.iter().map(|(name, limit)| {
             match fs::symlink_metadata(profile.join(name)) {
                 Ok(_) => Ok(Some(digest(&installation_backup::source_bytes(profile, name, *limit, true)?))),
@@ -467,7 +507,7 @@ impl InstallationController {
     ) -> Result<()> {
         let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
         let (file, transfer) = self.upload_unlocked(service)?;
-        if transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some() || transfer.compact_variant.is_some()
+        if transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some() || transfer.compact_variant.is_some() || transfer.gpu_variant.is_some()
             || document.etag.as_deref() != Some(proof.saved_etag.as_str())
             || digest(&installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?)
                 != proof.transfer_sha256
@@ -2244,5 +2284,30 @@ mod windows_managed_tests {
         );
         assert!(!path.join("installation-selection.json").exists());
         cleanup(parent);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod gpu_job_root_tests {
+    use super::*;
+    #[test]
+    fn lifecycle_preserves_nonempty_gpu_work_and_refuses_symlink_or_public_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let root=fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("gpu-root-{}",Uuid::new_v4()));
+        new_directory(&root).unwrap();
+        gpu_model_job_root_empty(&root).unwrap();
+        let jobs=root.join("native-gpu-model-jobs");new_directory(&jobs).unwrap();
+        gpu_model_job_root_empty(&root).unwrap();
+        fs::write(jobs.join("unknown-worker.bin"),b"retained").unwrap();
+        assert!(gpu_model_job_root_empty(&root).is_err());
+        assert_eq!(fs::read(jobs.join("unknown-worker.bin")).unwrap(),b"retained");
+        fs::remove_file(jobs.join("unknown-worker.bin")).unwrap();
+        fs::set_permissions(&jobs,fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(gpu_model_job_root_empty(&root).is_err());
+        fs::set_permissions(&jobs,fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir(&jobs).unwrap();
+        std::os::unix::fs::symlink(&root,&jobs).unwrap();
+        assert!(gpu_model_job_root_empty(&root).is_err());
+        fs::remove_file(&jobs).unwrap();fs::remove_dir(&root).unwrap();
     }
 }

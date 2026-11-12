@@ -2,6 +2,7 @@
 import SwiftUI
 import AppKit
 import ImageIO
+import CryptoKit
 import UniformTypeIdentifiers
 import ManagerCore
 
@@ -95,6 +96,79 @@ final class ExhibitionModel: ObservableObject {
         return furnishingThumbnails[key]
     }
 
+    private let furnishingThumbnailReviews = FurnishingThumbnailReviewSessions()
+    var durableFurnishingThumbnailsAvailable: Bool {
+        workspaceFurnishingIntakeAvailable && session?.workspaceFurnishingThumbnailProfile == WorkspaceFurnishingThumbnailSubmission.kind
+            && !infoStandPreviewing && readThumbnailCheckpoint != nil && writeThumbnailCheckpoint != nil
+    }
+    func makeFurnishingThumbnailReview(_ summary: WorkspaceFurnishingSummary) -> FurnishingThumbnailReviewModel? {
+        guard durableFurnishingThumbnailsAvailable, !busy, summary.rightsAvailability.display,
+              let api, let owner = state, let readCheckpoint = readThumbnailCheckpoint,
+              let writeCheckpoint = writeThumbnailCheckpoint else { return nil }
+        let access = viewportAccessID
+        let document: () -> NativeDocumentState? = { [weak self] in
+            guard let self, self.api === api, self.viewportAccessID == access, !self.infoStandPreviewing,
+                  let current = self.state, current.workspaceId == owner.workspaceId,
+                  current.tenantId == owner.tenantId, current.principalId == owner.principalId else { return nil }
+            return current
+        }
+        let capture: () async throws -> WorkspaceFurnishingThumbnailSubmission = { [weak self] in
+            guard let self, let base = document(), self.furnishingThumbnailFrameReady,
+                  let draft = base.draft, let etag = base.etag else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+            let item = try await api.workspaceFurnishing(summary.id, version: summary.version)
+            let (request, bytes) = try await self.viewportController.furnishingThumbnailCapture(item, draft: draft)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            guard let latest = document(), try encoder.encode(latest) == encoder.encode(base) else {
+                throw AuthoringFailure("NATIVE_DOCUMENT_STATE_CHANGED")
+            }
+            let raw: DocumentValue = .object(["workspaceId": .string(base.workspaceId), "nativeRevision": .integer(Int64(base.revision)),
+                "editVersion": draft.document["editVersion"], "baseETag": .string(etag),
+                "request": try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(request)),
+                "png": .object(["mime": .string("image/png"), "width": .integer(256), "height": .integer(256),
+                    "bytes": .integer(Int64(bytes.count)), "sha256": .string(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())])])
+            return try WorkspaceFurnishingThumbnailSubmission(capture: raw, pngData: bytes, document: base, furnishing: item)
+        }
+        let refreshed: () async -> Void = { [weak self] in
+            guard let self, document() != nil else { return }
+            await self.loadFurnishingThumbnail(summary, retry: true)
+        }
+        let key = FurnishingThumbnailReviewSessions.Key(owner: owner, furnishingId: summary.id)
+        if let retained = furnishingThumbnailReviews.existing(key) {
+            guard retained.rebind(name: summary.name, api: api, document: document, capture: capture, refreshed: refreshed,
+                readCheckpoint: readCheckpoint, writeCheckpoint: writeCheckpoint) else { return nil }
+            return retained
+        }
+        let review = FurnishingThumbnailReviewModel(name: summary.name, furnishingId: summary.id, owner: owner, api: api,
+            document: document, capture: capture, refreshed: refreshed,
+                readCheckpoint: readCheckpoint, writeCheckpoint: writeCheckpoint)
+        guard furnishingThumbnailReviews.retain(review, for: key) else {
+            notice = "확인 중인 이미지 요청을 먼저 마친 뒤 다른 이미지를 준비하세요."; return nil
+        }
+        return review
+    }
+    private func loadSelectedFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary) async throws -> Bool {
+        guard let api, let owner = state, let lookup = furnishingThumbnailLookupKey(summary) else { return false }
+        guard await api.admitsWorkspaceFurnishingThumbnails else { return false }
+        let item = try await api.workspaceFurnishing(summary.id, version: summary.version)
+        guard let selected = try await api.selectedWorkspaceFurnishingThumbnail(summary.id, version: summary.version, in: owner) else { return false }
+        let latest = try await api.workspaceFurnishing(summary.id, version: summary.version)
+        guard self.api === api, furnishingThumbnailLookupKey(summary) == lookup,
+              state?.workspaceId == owner.workspaceId, item == latest, item.details.rights.permissions.display,
+              let key = furnishingThumbnailKey(.init(access: lookup.access, item: item)),
+              let image = NSImage(data: selected.data) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        var expires: Date?
+        if let text = item.details.rights.expiresAt {
+            let formatter = ISO8601DateFormatter(); expires = formatter.date(from: text)
+            if expires == nil { formatter.formatOptions.insert(.withFractionalSeconds); expires = formatter.date(from: text) }
+            guard let expires, expires > .now else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        }
+        furnishingThumbnailOrder.removeAll { $0 == key }; furnishingThumbnailOrder.append(key)
+        if furnishingThumbnailOrder.count > 16 { furnishingThumbnails.removeValue(forKey: furnishingThumbnailOrder.removeFirst()) }
+        furnishingThumbnails[key] = .ready(image, expires: expires)
+        furnishingThumbnailLookupFailures.remove(lookup)
+        return true
+    }
+
     /// Existing registry cards need the same current descriptor/rights binding
     /// as a live intake return. Read it without creating or saving an intake.
     func loadFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary, retry: Bool) async {
@@ -110,6 +184,17 @@ final class ExhibitionModel: ObservableObject {
     }
 
     private func loadExistingFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary, retry: Bool) async {
+        if durableFurnishingThumbnailsAvailable {
+            do { if try await loadSelectedFurnishingThumbnail(summary) { return } }
+            catch {
+                guard let lookup = furnishingThumbnailLookupKey(summary), !Task.isCancelled else { return }
+                let stale = furnishingThumbnailOrder.filter { $0.access == lookup.access && $0.furnishingID == summary.id && $0.version == summary.version }
+                for key in stale { furnishingThumbnails.removeValue(forKey: key) }
+                furnishingThumbnailOrder.removeAll { stale.contains($0) }
+                furnishingThumbnailLookupFailures.insert(lookup)
+                return
+            }
+        }
         guard furnishingThumbnailFrameReady, viewportController.furnishingThumbnailSupported,
               let lookup = furnishingThumbnailLookupKey(summary), let api else { return }
         switch furnishingThumbnail(for: summary) {
@@ -605,6 +690,7 @@ final class ExhibitionModel: ObservableObject {
         if entranceHostRecovering { return draft }
         if entrancePreviewBase == draft, let value = entrancePreviewDraft { return value }
         if viewingPointInput != nil { return viewingPointPreview ?? draft }
+        if let value = checkedInfoStandPreview?.displayDraft { return value }
         if let value = furnishingPreview?.displayDraft { return value }
         if let value = sharedFurnishingPreview?.displayDraft { return value }
         if let value = spaceLightingPreview?.displayDraft { return value }
@@ -1208,6 +1294,8 @@ final class ExhibitionModel: ObservableObject {
     var canRedo: Bool { !entrancePreviewActive && (!immutable || boundedPlacementReady) && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
+    private var readThumbnailCheckpoint: (() async throws -> NativeFurnishingThumbnailState)?
+    private var writeThumbnailCheckpoint: ((NativeFurnishingThumbnailState) async throws -> NativeFurnishingThumbnailState)?
     private var read: (() async throws -> NativeDocumentState)?
     private var write: ((NativeDocumentState) async throws -> NativeDocumentState)?
     var draft: NativeExhibitionDraft? { state?.draft }
@@ -1215,7 +1303,7 @@ final class ExhibitionModel: ObservableObject {
     // A staged wall command blocks ordinary native/3D edits, while its own
     // negotiated auxiliary request still needs the unchanged editable frame.
     var viewportFormDirty: Bool { viewingPointInput != nil || floorDirty || nonFloorFormDirty }
-    var formDirty: Bool { viewportFormDirty || wallFinishDirty }
+    var formDirty: Bool { viewportFormDirty || wallFinishDirty || infoStandPreviewing }
     private var nonFloorFormDirty: Bool {
         guard let draft else { return false }
         let entranceDirty = (entranceEditable && ((try? draft.viewerEntranceSettings()) != entrance || coverEntry.isDirty)) || installationDirty || publicationWatermark.isDirty
@@ -1404,7 +1492,7 @@ final class ExhibitionModel: ObservableObject {
         }
         return true
     }
-    func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, selectedBoundedPolicy: Bool = false, ordinaryBoundedRuntime: Bool = false, boundedRuntimeQualified: Bool = false, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
+    func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, selectedBoundedPolicy: Bool = false, ordinaryBoundedRuntime: Bool = false, boundedRuntimeQualified: Bool = false, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState, readThumbnailCheckpoint: (() async throws -> NativeFurnishingThumbnailState)? = nil, writeThumbnailCheckpoint: ((NativeFurnishingThumbnailState) async throws -> NativeFurnishingThumbnailState)? = nil) async {
         // Explicit reconnect during a preview has a separate acknowledgement
         // boundary. Never run the ordinary access-change reset on this path.
         if entrancePreviewActive {
@@ -1419,6 +1507,7 @@ final class ExhibitionModel: ObservableObject {
         // Cancellation awaits the old renderer. Another owned operation may
         // have started in the meantime; never replace its account/store binding.
         guard !busy, !placingArtwork, !architectureApplying else { return }
+        clearInfoStandPreview(); infoStandProposal = nil; infoStandProposalName = nil; infoStandReplacementName = nil
         if let old = self.session, old.tenantId != session.tenantId || old.userId != session.userId {
             guard !dirty else { sceneSnapshotConnectionGeneration = UUID(); self.api = nil; viewportCredentials = nil; failure = AuthoringFailure("DRAFT_ACCOUNT_MISMATCH"); return }
             state = nil; reusablePublicationId = nil; items = []; library = []; comparison = nil; exportedURL = nil; exportedSHA256 = nil; catalogArtworkId = ""; catalogStatus = ""
@@ -1446,6 +1535,7 @@ final class ExhibitionModel: ObservableObject {
             clearPrivateFloorCatalog()
         }
         self.read = read; self.write = write
+        self.readThumbnailCheckpoint = readThumbnailCheckpoint; self.writeThumbnailCheckpoint = writeThumbnailCheckpoint
         viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanPreviewContext = nil; viewingPlanPreviewHostEpoch = nil; viewingPlanPreviewSequence = nil
         clearViewingPointPreview()
         // Reconnecting may replace the native store closures even for the same
@@ -1526,7 +1616,7 @@ final class ExhibitionModel: ObservableObject {
     }
     func previewEntrance(_ action: EntrancePreviewAction = .show, thumbnails: Bool = false, systemReducedMotion: Bool) {
         guard !entranceCredentialRenewalPending, !busy, !pending, !placingArtwork, !architectureApplying, !entrancePreviewBusy, entranceEditable,
-              !surfaceMaterialPreviewing, !lightPreviewing, !benchPreviewing, !plaquePreviewing, !furnishingPreviewing, !spaceLightingPreviewing,
+              !surfaceMaterialPreviewing, !lightPreviewing, !benchPreviewing, !plaquePreviewing, !furnishingPreviewing, !spaceLightingPreviewing, !infoStandPreviewing,
               let base = draft else { return }
         do {
             entranceSystemReducedMotion = systemReducedMotion
@@ -1680,6 +1770,210 @@ final class ExhibitionModel: ObservableObject {
         workspaceFurnishingRoomVisualAvailable && api?.workspaceInfoStandPreparationRuntimeQualified == true
             && session?.advertisesWorkspaceInfoStandPreparation == true
     }
+    @Published private(set) var infoStandProposalName: String?
+    @Published private(set) var infoStandReplacementName: String?
+    @Published private(set) var infoStandStatus = ""
+    @Published private var infoStandProposal: WorkspaceInfoStandProposal?
+    @Published private var infoStandPreview: WorkspaceInfoStandPreview?
+    @Published private var infoStandTargetFocused = false
+    private struct InfoStandBinding {
+        let access: UUID, context: UUID
+        let host: String
+        let api: AuthoringAPI
+        let session: AuthoringSession
+        let credentials: LocalAuthoringSession
+    }
+    private var infoStandBinding: InfoStandBinding?
+    private var infoStandFocusBinding: InfoStandBinding?
+    private var infoStandFocusCameraSequence: Int?
+    var infoStandPreviewing: Bool { infoStandPreview != nil }
+    private var infoStandTargetPlacement: String? {
+        guard let draft, let proposal = infoStandProposal,
+              let plaque = try? PlaqueSettings.list(in: draft).first(where: { $0.id == proposal.replacement.plaqueId }),
+              case .artwork(let id) = plaque.source else { return nil }
+        return id
+    }
+    var infoStandTargetTitle: String? {
+        guard let draft, let id = infoStandTargetPlacement,
+              let placement = draft.placements.first(where: { $0["id"].string == id }) else { return nil }
+        return draft.artworks.first(where: { $0["revisionId"] == placement["artworkRevisionId"] })?["metadata"]["title"].string
+    }
+    var infoStandPlaqueSize: String? {
+        guard let replacement = infoStandProposal?.replacement else { return nil }
+        return String(format: "%.0f × %.0f cm", replacement.plaqueWidth * 100, replacement.plaqueHeight * 100)
+    }
+    private func infoStandContextReady(acknowledging expected: NativeExhibitionDraft?) -> Bool {
+        workspaceFurnishingRoomVisualAvailable && session?.advertisesWorkspaceInfoStandReplacement == true
+            && !selectedBoundedPolicy && !ordinaryBoundedRuntime && !pending && state?.dirty == false && state?.draft != nil && state?.etag != nil
+            && !entrancePreviewActive && !placingArtwork && !architectureApplying
+            && !viewportFormDirty && !wallFinishDirty && !positionDirty && !architectureGeometryDirty
+            && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty
+            && !furnishingDirty && !viewingPlanDirty && viewingPointInput == nil
+            && !furnishingPreviewing && !surfaceMaterialPreviewing && !wallFinishPreviewing
+            && !lightPreviewing && !benchPreviewing && !plaquePreviewing && !spaceLightingPreviewing
+            && viewportPresentation == .threeD && viewportController.connected && viewportController.editingContextActive
+            && !editingLocked(acknowledging: expected)
+    }
+    var canOpenInfoStandProposal: Bool { !busy && !infoStandPreviewing && infoStandContextReady(acknowledging: draft) }
+    var canFocusInfoStandTarget: Bool {
+        canOpenInfoStandProposal && infoStandProposal?.etag == state?.etag && infoStandTargetPlacement != nil
+            && viewportController.findSelectionSupported
+    }
+    var canPreviewInfoStandReplacement: Bool {
+        guard canFocusInfoStandTarget, infoStandTargetFocused, let binding = infoStandFocusBinding else { return false }
+        return matchesInfoStandBinding(binding) && infoStandFocusCameraSequence == viewportCameraSequence
+            && viewportSelection?.kind == "placement" && viewportSelection?.id == infoStandTargetPlacement
+    }
+    private func matchesInfoStandBinding(_ binding: InfoStandBinding) -> Bool {
+        guard self.api === binding.api, viewportAccessID == binding.access,
+              viewportController.editingContextGeneration == binding.context, viewportController.hostEpoch == binding.host,
+              let session, let credentials = viewportCredentials else { return false }
+        return session.tenantId == binding.session.tenantId && session.userId == binding.session.userId
+            && session.role == binding.session.role && session.csrfToken == binding.session.csrfToken
+            && session.expiresAt == binding.session.expiresAt
+            && session.advertisesWorkspaceInfoStandReplacement
+            && credentials.tenantId == binding.credentials.tenantId && credentials.principalId == binding.credentials.principalId
+            && credentials.origin == binding.credentials.origin && credentials.token == binding.credentials.token
+    }
+    private var checkedInfoStandPreview: WorkspaceInfoStandPreview? {
+        guard let preview = infoStandPreview, let binding = infoStandBinding, let current = state,
+              matchesInfoStandBinding(binding), (try? preview.apply(to: current)) != nil else { return nil }
+        return preview
+    }
+    var canApplyInfoStandReplacement: Bool {
+        guard !busy, let preview = checkedInfoStandPreview, preview.changed,
+              let credentials = viewportCredentials,
+              infoStandContextReady(acknowledging: preview.displayDraft) else { return false }
+        return viewportController.confirmsMetadataPreview(preview.displayDraft, tenantId: credentials.tenantId,
+                                                         principalId: credentials.principalId)
+    }
+    private func clearInfoStandPreview() {
+        infoStandPreview = nil; infoStandBinding = nil; infoStandTargetFocused = false
+        infoStandFocusBinding = nil; infoStandFocusCameraSequence = nil
+    }
+    func cancelInfoStandPreview() {
+        guard !busy, infoStandPreviewing else { return }
+        clearInfoStandPreview()
+        infoStandStatus = "미리보기를 취소했습니다. 안내대와 명판의 기존 배치는 유지됩니다."
+    }
+    func openInfoStandProposal() {
+        guard canOpenInfoStandProposal else { return }
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false; panel.message = "현재 전시에 준비한 안내대·명판 교체안을 선택하세요."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let size = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard size.isRegularFile == true, let count = size.fileSize, (1...65_536).contains(count) else {
+                throw AuthoringFailure("WORKSPACE_INFO_STAND_REPLACEMENT_INVALID")
+            }
+            let bytes = try Data(contentsOf: url)
+            guard bytes.count == count else { throw AuthoringFailure("WORKSPACE_INFO_STAND_REPLACEMENT_INVALID") }
+            let proposal = try WorkspaceInfoStandProposal(JSONDecoder().decode(DocumentValue.self, from: bytes))
+            guard canOpenInfoStandProposal, proposal.etag == state?.etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+            infoStandProposal = proposal; infoStandProposalName = url.lastPathComponent
+            infoStandReplacementName = nil; infoStandTargetFocused = false
+            infoStandFocusBinding = nil; infoStandFocusCameraSequence = nil
+            guard infoStandTargetTitle != nil else {
+                infoStandProposal = nil; infoStandProposalName = nil
+                throw AuthoringFailure("WORKSPACE_INFO_STAND_REPLACEMENT_INVALID")
+            }
+            infoStandStatus = "교체안을 열었습니다. 대상 작품을 찾은 뒤 안내대와 명판을 미리 보세요."
+        } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("WORKSPACE_INFO_STAND_REPLACEMENT_INVALID") }
+    }
+    func focusInfoStandTarget() async {
+        guard canFocusInfoStandTarget, let id = infoStandTargetPlacement, let proposal = infoStandProposal,
+              let current = state, let api, let session, let credentials = viewportCredentials,
+              let host = viewportController.hostEpoch else { return }
+        let access = viewportAccessID, context = viewportController.editingContextGeneration
+        let binding = InfoStandBinding(access: access, context: context, host: host, api: api, session: session, credentials: credentials)
+        placementId = id; selectPlacement()
+        // Selection needs its ordinary acknowledged frame before findSelection.
+        // A second press after selection is ready is harmless and never stages.
+        guard viewportController.acknowledgesOrdinarySelection(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId,
+                                                              selection: .init(kind: "placement", id: id)) else {
+            infoStandStatus = "대상 작품을 선택했습니다. 선택이 화면에 표시되면 ‘대상 작품 보기’를 누르세요."
+            return
+        }
+        do {
+            try await viewportController.findSelectionChecked()
+            guard canFocusInfoStandTarget, matchesInfoStandBinding(binding), infoStandProposal == proposal,
+                  state?.revision == current.revision, state?.draft == current.draft, state?.etag == current.etag,
+                  viewportSelection == .init(kind: "placement", id: id) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            infoStandTargetFocused = true
+            infoStandFocusBinding = binding; infoStandFocusCameraSequence = viewportCameraSequence
+            infoStandStatus = "대상 작품의 시점을 맞췄습니다. 이 시점에서 교체안을 미리 볼 수 있습니다."
+        } catch { infoStandTargetFocused = false; failure = error as? AuthoringFailure ?? AuthoringFailure("VIEWPORT_FRAME_STALE") }
+    }
+    func previewInfoStandReplacement() async {
+        guard canPreviewInfoStandReplacement, let proposal = infoStandProposal, let base = state, let baseDraft = base.draft,
+              let api, let session, let credentials = viewportCredentials, let host = viewportController.hostEpoch else { return }
+        guard base.tenantId == session.tenantId, base.principalId == session.userId,
+              base.tenantId == credentials.tenantId, base.principalId == credentials.principalId else { return }
+        let binding = InfoStandBinding(access: viewportAccessID, context: viewportController.editingContextGeneration,
+                                       host: host, api: api, session: session, credentials: credentials)
+        await work {
+            guard await api.admitsWorkspaceInfoStandReplacement else { throw AuthoringFailure("WORKSPACE_INFO_STAND_REPLACEMENT_UNAVAILABLE") }
+            let furnishing = try await api.workspaceFurnishing(proposal.replacement.placement.furnishingId, version: proposal.replacement.placement.furnishingVersion)
+            let prospective = try await api.prepareWorkspaceInfoStandReplacement(proposal.replacement, in: base,
+                expectedModelSHA256: proposal.modelSHA256, intakeId: proposal.intakeId)
+            let saved = try await api.exhibition(baseDraft.id)
+            let policy = try await api.nativeViewportPolicy(baseDraft.id)
+            try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: base)
+            let fresh = try await api.workspaceFurnishing(furnishing.id, version: furnishing.version)
+            guard matchesInfoStandBinding(binding), infoStandProposal == proposal, state?.revision == base.revision,
+                  state?.draft == base.draft, state?.etag == base.etag, state?.pending == nil,
+                  furnishing == fresh, furnishing.details.rights.permissions.display,
+                  saved.draft == base.draft, saved.etag == base.etag,
+                  await api.admitsWorkspaceInfoStandReplacement,
+                  infoStandContextReady(acknowledging: draft),
+                  let version = (prospective ?? baseDraft).candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["version"].integer else {
+                throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+            }
+            // The API just checked the runtime's supported extension version.
+            // The local preview uses that already-validated candidate version.
+            let preview = try WorkspaceInfoStandPreview(base: base, replacement: proposal.replacement, furnishing: furnishing,
+                supportedExtensionVersion: version, prospectiveDraft: prospective)
+            guard let current = state, (try? preview.apply(to: current)) != nil else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            infoStandReplacementName = furnishing.details.name
+            guard preview.changed else { infoStandStatus = "현재 안내대·명판과 같은 교체안입니다."; return }
+            infoStandBinding = binding; infoStandPreview = preview
+            infoStandStatus = "미리보기입니다. 명판이 안내대 위에 놓이는지와 주변 작품·통로의 간격을 확인하세요."
+        }
+    }
+    func applyInfoStandReplacement() async {
+        guard canApplyInfoStandReplacement, let preview = checkedInfoStandPreview,
+              let binding = infoStandBinding, let proposal = infoStandProposal, let baseDraft = preview.base.draft else { return }
+        await work(allowInfoStandPreview: true) {
+            guard let current = state, canApplyInfoStandAuthority(preview, binding: binding),
+                  await binding.api.admitsWorkspaceInfoStandReplacement else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            _ = try preview.apply(to: current)
+            let prospective = try await binding.api.prepareWorkspaceInfoStandReplacement(proposal.replacement, in: current,
+                expectedModelSHA256: proposal.modelSHA256, intakeId: proposal.intakeId)
+            let saved = try await binding.api.exhibition(baseDraft.id)
+            let policy = try await binding.api.nativeViewportPolicy(baseDraft.id)
+            try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: current)
+            let fresh = try await binding.api.workspaceFurnishing(preview.furnishing.id, version: preview.furnishing.version)
+            guard canApplyInfoStandAuthority(preview, binding: binding), infoStandProposal == proposal, let live = state,
+                  fresh == preview.furnishing, fresh.details.rights.permissions.display,
+                  saved.draft == current.draft, saved.etag == current.etag,
+                  prospective?.candidate == preview.displayDraft.candidate,
+                  await binding.api.admitsWorkspaceInfoStandReplacement else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            var next = live; next.draft = try preview.apply(to: live)
+            try await persist(next)
+            clearInfoStandPreview(); infoStandProposal = nil; infoStandProposalName = nil; syncFields()
+            infoStandStatus = "안내대와 명판 교체를 이 Mac에 보관했습니다. 전시 저장은 별도로 진행하세요."
+            notice = infoStandStatus
+        }
+    }
+    private func canApplyInfoStandAuthority(_ preview: WorkspaceInfoStandPreview, binding: InfoStandBinding) -> Bool {
+        guard matchesInfoStandBinding(binding), infoStandProposal?.replacement == preview.replacement,
+              let current = state, (try? preview.apply(to: current)) != nil,
+              infoStandContextReady(acknowledging: preview.displayDraft) else { return false }
+        return viewportController.confirmsMetadataPreview(preview.displayDraft, tenantId: binding.credentials.tenantId,
+                                                         principalId: binding.credentials.principalId)
+    }
     var workspacePortalFinishAvailable: Bool {
         workspaceFurnishingIntakeAvailable && api?.workspacePortalFinishRuntimeQualified == true
             && session?.advertisesWorkspacePortalFinish == true
@@ -1705,7 +1999,7 @@ final class ExhibitionModel: ObservableObject {
         return try? await api.workspaceBenchSeatPolicy(in: state).etag
     }
     func withWorkspaceFurnishingAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
-        guard workspaceFurnishingIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive,
+        guard workspaceFurnishingIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive, !infoStandPreviewing,
               !placingArtwork, !architectureApplying, !pending, let api else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
@@ -1820,8 +2114,9 @@ final class ExhibitionModel: ObservableObject {
             return true
         }
     }
-    private func work(allowViewingPlanInput: Bool = false, allowViewingPointInput: Bool = false, _ body: () async throws -> Void) async {
-        guard !entrancePreviewActive, !busy, !placingArtwork, api != nil, session != nil else { return }
+    private func work(allowViewingPlanInput: Bool = false, allowViewingPointInput: Bool = false, allowInfoStandPreview: Bool = false, _ body: () async throws -> Void) async {
+        guard !entrancePreviewActive, !busy, !placingArtwork, api != nil, session != nil,
+              allowInfoStandPreview || !infoStandPreviewing else { return }
         guard allowViewingPointInput || viewingPointInput == nil else {
             notice = "감상 시점 입력을 추가하거나 취소한 뒤 진행하세요."
             return
@@ -3666,6 +3961,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func syncFields() {
+        clearInfoStandPreview()
         resetViewingPointInput()
         let selected = viewportSelection
         title = draft?.title ?? ""

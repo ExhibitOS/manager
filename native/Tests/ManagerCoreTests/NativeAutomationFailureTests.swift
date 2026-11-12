@@ -219,6 +219,12 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertEqual(status ?? current, current)
         XCTAssertNil(try NativeAutomationSession.replayResponse(for: "export-static-saved-head", prior: prior, matching: request))
         XCTAssertNil(try NativeAutomationSession.replayResponse(for: "workspace-info-stand-check", prior: prior, matching: request))
+        for operation in ["workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates",
+                          "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image",
+                          "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select",
+                          "workspace-furnishing-thumbnail-selected-image"] {
+            XCTAssertNil(try NativeAutomationSession.replayResponse(for: operation, prior: prior, matching: request))
+        }
         XCTAssertEqual(try NativeAutomationSession.replayResponse(for: "artwork-approve", prior: prior, matching: request), stale)
         XCTAssertThrowsError(try NativeAutomationSession.replayResponse(
             for: "artwork-approve", prior: prior, matching: Data("changed request".utf8))) {
