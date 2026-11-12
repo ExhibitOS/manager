@@ -15,11 +15,14 @@ final class AuthoringRuntimeSessionTests: XCTestCase {
         let script = directory.appendingPathComponent("server.mjs")
         let active = directory.appendingPathComponent("active-session")
         let delayed = directory.appendingPathComponent("delayed-session")
+        let holdArtists = directory.appendingPathComponent("hold-artists")
+        let waitingArtists = directory.appendingPathComponent("waiting-artists")
         try "a".write(to: active, atomically: true, encoding: .utf8)
+        try "hold".write(to: holdArtists, atomically: true, encoding: .utf8)
         try #"""
         import http from 'node:http';
-        import {readFileSync,writeFileSync} from 'node:fs';
-        const [tenant,user,artist,active,delayed]=process.argv.slice(2);
+        import {readFileSync,writeFileSync,existsSync} from 'node:fs';
+        const [tenant,user,artist,active,delayed,holdArtists,waitingArtists]=process.argv.slice(2);
         const prefix='/api/v1/tenants/'+tenant+'/cms';
         let oldConnections=0;
         const server=http.createServer((req,res)=>{
@@ -30,6 +33,11 @@ final class AuthoringRuntimeSessionTests: XCTestCase {
             const answer=()=>send(200,{tenantId:tenant,userId:user,role:'admin',csrfToken:csrf,expiresAt:'2099-01-01T00:00:00.000Z'});
             if(key==='a'&&++oldConnections===2){writeFileSync(delayed,'');setTimeout(answer,300);return;}
             return answer();
+          }
+          if(req.method==='GET'&&req.url===prefix+'/artists?limit=50&archived=false'&&existsSync(holdArtists)){
+            writeFileSync(waitingArtists,'');
+            const timer=setInterval(()=>{if(!existsSync(holdArtists)){clearInterval(timer);send(200,{items:[]});}},10);
+            return;
           }
           if(req.method==='GET'&&[prefix+'/artists?limit=50&archived=false',prefix+'/artworks?limit=20&archived=false&q='].includes(req.url))return send(200,{items:[]});
           if(req.method==='POST'&&req.url===prefix+'/artists'){
@@ -46,7 +54,7 @@ final class AuthoringRuntimeSessionTests: XCTestCase {
         let artist = UUID().uuidString.lowercased()
         let process = Process(), pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: node)
-        process.arguments = [script.path, tenant, user, artist, active.path, delayed.path]
+        process.arguments = [script.path, tenant, user, artist, active.path, delayed.path, holdArtists.path, waitingArtists.path]
         process.standardOutput = pipe
         try process.run()
         defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
@@ -71,7 +79,20 @@ final class AuthoringRuntimeSessionTests: XCTestCase {
         let model = AuthoringModel()
         let oldJob = UUID().uuidString, newJob = UUID().uuidString
         XCTAssertTrue(model.configure(config, ready: true, runtimeJobID: oldJob))
-        await model.connect(try credentials("a"))
+        var progress: [AuthoringModel.ConnectionStage] = []
+        let initialCredentials = try credentials("a")
+        let initialConnect = Task { await model.connect(initialCredentials) { progress.append($0) } }
+        let artistsDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !FileManager.default.fileExists(atPath: waitingArtists.path), ContinuousClock.now < artistsDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: waitingArtists.path))
+        XCTAssertEqual(progress.last, .loadingArtists)
+        XCTAssertFalse(progress.contains(.loadingArtworks))
+        XCTAssertTrue(model.busy)
+        try FileManager.default.removeItem(at: holdArtists)
+        await initialConnect.value
+        XCTAssertEqual(progress.last, .loadingArtworks)
         XCTAssertEqual(model.session?.userId, user)
         XCTAssertNil(model.failure)
         model.newArtwork()
@@ -81,7 +102,8 @@ final class AuthoringRuntimeSessionTests: XCTestCase {
         XCTAssertNotNil(model.session)
 
         let oldCredentials = try credentials("a")
-        let oldConnect = Task { await model.connect(oldCredentials) }
+        var staleProgress: [AuthoringModel.ConnectionStage] = []
+        let oldConnect = Task { await model.connect(oldCredentials) { staleProgress.append($0) } }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while !FileManager.default.fileExists(atPath: delayed.path), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
@@ -96,6 +118,7 @@ final class AuthoringRuntimeSessionTests: XCTestCase {
         let canConnect = await model.waitForConnectionTurn(runtimeJobID: newJob)
         XCTAssertTrue(canConnect)
         await oldConnect.value
+        XCTAssertEqual(staleProgress, [.authenticating])
         XCTAssertNil(model.session)
         await model.connect(try credentials("b"))
         XCTAssertEqual(model.session?.userId, user)
