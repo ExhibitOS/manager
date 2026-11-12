@@ -262,15 +262,18 @@ final class ViewportResourcePolicyTests: XCTestCase {
         let script = #"""
         const context = { userAgent: navigator.userAgent.slice(0, 512), scheme: location.protocol,
           secureContext: isSecureContext, visibility: document.visibilityState, contentWorld: 'page' };
-        let phase = 'wire';
+        let phase = 'wire', wireVerified = false, blobSize = null, bytes = null;
         try {
           const binary = atob(encoded);
           const png = Uint8Array.from(binary, c => c.charCodeAt(0));
+          bytes = png.length;
           let roundtrip = ''; for (const byte of png) roundtrip += String.fromCharCode(byte);
           if (png.length !== expectedLength || btoa(roundtrip) !== encoded) {
             return { context, decode: { status: 'wire-mismatch' } };
           }
+          wireVerified = true;
           const blob = new Blob([png], {type:'image/png'});
+          blobSize = blob.size;
           if (blob.size !== expectedLength) return { context, decode: { status: 'blob-size-mismatch' } };
           let expired = false, timer;
           phase = 'decode';
@@ -284,7 +287,8 @@ final class ViewportResourcePolicyTests: XCTestCase {
             width: bitmap.width, height: bitmap.height } }; } finally { bitmap.close(); }
         } catch (error) {
           const name = typeof error?.name === 'string' && /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : 'UnknownError';
-          return { context, decode: { status: phase === 'decode' ? 'decoder-error' : 'script-error', name } };
+          return { context, decode: { status: phase === 'decode' ? 'decoder-error' : 'script-error',
+            name, bytes, wireVerified, blobSize } };
         }
         """#
         let result: [String: Any] = await withCheckedContinuation { continuation in
@@ -307,8 +311,10 @@ final class ViewportResourcePolicyTests: XCTestCase {
             }
         }
         let status = (result["decode"] as? [String: Any])?["status"] as? String ?? "host-invalid-result"
+        let completed = status == "success" || status == "decoder-error"
         let report: [String: Any] = [
-            "diagnosticExecution": status.hasPrefix("host-") ? status : "completed", "result": result,
+            "diagnosticExecution": completed ? "completed" : status, "result": result,
+            "inputSHA256": expected, "inputBytes": png.count,
             "productQualification": false, "renderQualification": false,
             "os": ProcessInfo.processInfo.operatingSystemVersionString,
             "isolation": ["websiteDataStore": "nonPersistent", "javaScriptCanOpenWindowsAutomatically": false,
@@ -331,6 +337,7 @@ final class ViewportResourcePolicyTests: XCTestCase {
                 offset += count
             }
         }
+        XCTAssertTrue(completed, "Diagnostic capture did not complete: \(status)")
     }
     func testPrivateFloorAddsOnlyExactOakMapRulesWhenEnabled() throws {
         let origin = "http://127.0.0.1:13200"
