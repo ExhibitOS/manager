@@ -132,6 +132,37 @@ fn saved_document_digest(document: &super::installations::native_document::Docum
 }
 
 #[cfg(feature = "workspace-v5-owner-validation")]
+fn gpu_empty_document(
+    pair: (&str, &str), document: &super::installations::native_document::DocumentState,
+    owner: (&str, &str, &str),
+) -> bool {
+    FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. }))
+        && document.format == 1 && document.revision == 0
+        && document.draft.is_none() && document.etag.is_none()
+        && document.saved_edit_version.is_none() && document.pending.is_none()
+        && [owner.0, owner.1, owner.2].into_iter().all(installations::uuid)
+        && (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str()) == owner
+}
+
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn check_saved_transition_document(
+    pair: (&str, &str), document: &super::installations::native_document::DocumentState,
+    owner: (&str, &str, &str),
+) -> Result<()> {
+    // Library-only 049 still seals the exact scoped Native document digest.
+    // It needs no fabricated exhibition head; every other pair keeps its guards.
+    if gpu_empty_document(pair, document, owner) { return Ok(()); }
+    if FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. }))
+        && (document.pending.is_some() || document.saved_edit_version.is_none()
+            || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != document.saved_edit_version)
+    { return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED")); }
+    if document.draft.is_none() || document.etag.is_none() {
+        return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "workspace-v5-owner-validation")]
 fn catalog45_activation_saved_document(
     pair: (&str, &str), retained_recovery: bool, historical_startup: bool,
     expected: Option<&str>, document: &super::installations::native_document::DocumentState,
@@ -1229,7 +1260,14 @@ impl LifecycleService {
             {
                 return Err(invalid());
             }
-            if checkpoint.saved_document_sha256.is_some() {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            let empty_gpu_document = gpu_empty_document(
+                (&checkpoint.old_manifest, &checkpoint.new_manifest), document,
+                (&checkpoint.workspace_id, &checkpoint.tenant_id, &checkpoint.principal_id),
+            );
+            #[cfg(not(feature = "workspace-v5-owner-validation"))]
+            let empty_gpu_document = false;
+            if checkpoint.saved_document_sha256.is_some() && !empty_gpu_document {
                 session.verify_transition_studio(&authoring, document)?;
             }
             #[cfg(feature = "workspace-v5-owner-validation")]
@@ -1489,13 +1527,8 @@ impl InstallationController {
             if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
                 return Err(invalid());
             }
-            if FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. }))
-                && (document.pending.is_some() || document.saved_edit_version.is_none()
-                    || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != document.saved_edit_version)
-            { return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED")); }
-            if document.draft.is_none() || document.etag.is_none() {
-                return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
-            }
+            let owner = service.personal_identity()?;
+            check_saved_transition_document(pair, document, (&owner.0, &owner.1, &owner.2))?;
             if target.catalog45_recovery_validation() {
                 let generation = crate::native_runtime::catalog45_recovery_source_generation(
                     &service.root, crate::native_payload::catalog45_startup_recovery(pair),
@@ -1689,6 +1722,92 @@ impl InstallationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn gpu_library_empty_document() -> crate::installations::native_document::DocumentState {
+        crate::installations::native_document::DocumentState {
+            format: 1, revision: 0,
+            workspace_id: "10000000-0000-4000-8000-000000000001".into(),
+            tenant_id: "10000000-0000-4000-8000-000000000002".into(),
+            principal_id: "10000000-0000-4000-8000-000000000003".into(),
+            draft: None, etag: None, saved_edit_version: None, pending: None,
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn gpu_library_stage_accepts_only_exact_fresh_empty_document_and_owner() {
+        let pair = (crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET.2,
+            "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377");
+        let document = gpu_library_empty_document();
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        assert!(gpu_empty_document(pair, &document, owner));
+        check_saved_transition_document(pair, &document, owner).unwrap();
+        let mut changes = Vec::new();
+        let mut changed = document.clone(); changed.format = 2; changes.push(changed);
+        let mut changed = document.clone(); changed.revision = 1; changes.push(changed);
+        let mut changed = document.clone(); changed.draft = Some(serde_json::json!({"editVersion": 1})); changes.push(changed);
+        let mut changed = document.clone(); changed.etag = Some("\"studio-r1-unknown\"".into()); changes.push(changed);
+        let mut changed = document.clone(); changed.saved_edit_version = Some(0); changes.push(changed);
+        let mut changed = document.clone(); changed.pending = Some(serde_json::from_value(serde_json::json!({
+            "requestId": "10000000-0000-4000-8000-000000000004", "etag": null, "draft": {"editVersion": 1}
+        })).unwrap()); changes.push(changed);
+        for field in ["workspaceId", "tenantId", "principalId"] {
+            let mut value = serde_json::to_value(&document).unwrap();
+            value[field] = "10000000-0000-4000-8000-000000000005".into();
+            changes.push(serde_json::from_value(value).unwrap());
+        }
+        for changed in changes {
+            assert!(!gpu_empty_document(pair, &changed, owner));
+            assert_eq!(check_saved_transition_document(pair, &changed, owner).unwrap_err().code,
+                "NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED");
+        }
+        assert!(!gpu_empty_document(pair, &document, ("invalid", owner.1, owner.2)));
+        for other in [(pair.1, pair.0), (pair.0, pair.0), (OLD_MANIFEST, NEW_MANIFEST),
+            (pair.0, "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626")] {
+            assert!(!gpu_empty_document(other, &document, owner));
+            assert!(check_saved_transition_document(other, &document, owner).is_err());
+        }
+        // Saved-head behavior remains available for both 049 and 050.
+        let mut saved = document.clone();
+        saved.revision = 1; saved.draft = Some(serde_json::json!({"editVersion": 1}));
+        saved.etag = Some(format!("\"studio-r1-{}\"", "a".repeat(64))); saved.saved_edit_version = Some(1);
+        for target in [pair.1, "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626"] {
+            assert!(!gpu_empty_document((pair.0, target), &saved, owner));
+            check_saved_transition_document((pair.0, target), &saved, owner).unwrap();
+            let mut unsaved = saved.clone(); unsaved.saved_edit_version = Some(2);
+            assert!(check_saved_transition_document((pair.0, target), &unsaved, owner).is_err());
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn gpu_library_activation_retains_authenticated_document_digest_and_host_fences() {
+        let pair = (crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET.2,
+            "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377");
+        let document = gpu_library_empty_document();
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        let expected = saved_document_digest(&document).unwrap();
+        check_transition_host(pair, Some(&expected), true).unwrap();
+        assert!(check_transition_host(pair, None, true).is_err());
+        assert!(check_transition_host(pair, Some(&expected), false).is_err());
+        assert!(catalog45_activation_saved_document(pair, false, false, Some(&expected), &document).unwrap());
+        assert!(gpu_empty_document(pair, &document, owner));
+        for field in ["revision", "workspaceId", "tenantId", "principalId", "draft", "etag", "savedEditVersion", "pending"] {
+            let mut value = serde_json::to_value(&document).unwrap();
+            value[field] = match field {
+                "revision" | "savedEditVersion" => serde_json::json!(1),
+                "draft" => serde_json::json!({"editVersion": 1}),
+                "pending" => serde_json::json!({"requestId": "10000000-0000-4000-8000-000000000004", "etag": null, "draft": {"editVersion": 1}}),
+                _ => serde_json::json!("10000000-0000-4000-8000-000000000005"),
+            };
+            let changed = serde_json::from_value(value).unwrap();
+            assert_eq!(catalog45_activation_saved_document(pair, false, false, Some(&expected), &changed).unwrap_err().code,
+                "NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
+            assert!(!gpu_empty_document(pair, &changed, owner));
+        }
+        assert!(catalog45_activation_saved_document(pair, false, false, None, &document).is_err());
+    }
 
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[test]
