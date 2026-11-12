@@ -162,3 +162,20 @@ fn actual_packaged_runtime_bytes_are_admitted() {
     assert!(payload.node().is_file());
     assert!(payload.postgres().is_file());
 }
+
+#[test]
+fn admission_refuses_corruption_in_every_reader_lane_and_rechecks_each_open() {
+    let root = fixture();
+    for path in ["bin/node", "platform/scripts/local-runtime.mjs",
+                 "postgres/bin/postgres", "postgres/bin/initdb"] {
+        let full = root.join(path);
+        let original = fs::read(&full).unwrap();
+        let mut changed = original.clone();
+        changed[0] ^= 1; // Same length and mode; only fresh byte verification finds it.
+        fs::write(&full, changed).unwrap();
+        assert!(Payload::open(&root).is_err(), "accepted corrupted {path}");
+        fs::write(&full, &original).unwrap();
+        assert!(Payload::open(&root).is_ok(), "refused restored {path}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
