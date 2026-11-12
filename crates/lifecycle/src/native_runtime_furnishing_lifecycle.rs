@@ -229,7 +229,7 @@ impl Binding {
                             value != 0 && value.to_string() == proof.target_system_identifier
                         })
                 || proof.carried_provenance.as_ref().is_some_and(|provenance|
-                    !carried_restore || proof.provenance.is_some()
+                    !(carried_restore || thumbnail) || proof.provenance.is_some()
                         || !provenance.matches(&proof.archive_manifest_sha256, &proof.target_system_identifier))
                 || proof.provenance.as_ref().is_some_and(|provenance|
                     !(retained_restore || crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple))
@@ -1720,6 +1720,72 @@ mod tests {
             prior.restore.as_mut().unwrap().carried_provenance = None;
             assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn furnishing_thumbnail_carried_binding_preserves_original_proof_through_upgrade_and_reopen() {
+        let source = crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET;
+        let target = (
+            "55e8ad6c861eab44326ee8db60db2692e3f7baf7",
+            "02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5",
+            "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626",
+        );
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        let pin = |generation: &str, catalog, tuple: (&str, &str, &str)| {
+            let mut value = binding(generation);
+            value.catalog = catalog;
+            value.source_commit = tuple.0.into(); value.producer_sha256 = tuple.1.into();
+            value.payload_manifest_sha256 = tuple.2.into(); value
+        };
+        let mut prior = pin(GENERATION, 45, source);
+        prior.phase = Phase::Clean; prior.admission_kind = Admission::CleanReopen;
+        prior.previous_generation = Some("10000000-0000-4000-8000-000000000004".into());
+        let observation = serde_json::json!({
+            "version":1,"sourceHandoffSha256":"60ed3615a4072856a1cb1449fa532acd307d8c237a09095b356566db4ed90b88",
+            "priorRestoreProof":{
+                "restoreId":"10000000-0000-4000-8000-000000000007",
+                "backupId":"10000000-0000-4000-8000-000000000008",
+                "authenticatedManifestSha256":"c".repeat(64),
+                "sourceDatabaseSystemId":"110","sourceDatabaseOid":"16000",
+                "targetDatabaseSystemId":"220","targetDatabaseOid":"16002",
+                "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)
+            },
+            "archiveSourceDatabaseSystemId":"220","archiveSourceDatabaseOid":"16002",
+            "targetDatabaseSystemId":"330","targetDatabaseOid":"16004",
+            "provenanceRowCount":1,"provenanceTableSha256":"d".repeat(64)
+        });
+        prior.restore = Some(Restore {
+            id:"10000000-0000-4000-8000-000000000009".into(),
+            backup_id:"10000000-0000-4000-8000-000000000010".into(),
+            archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
+            target_system_identifier:"330".into(), provenance:None,
+            carried_provenance:Some(serde_json::from_value(observation).unwrap()),
+        });
+        let mut upgraded = pin(NEXT, 50, target);
+        upgraded.consume_furnishing_transition(&prior, transition).unwrap();
+        assert_eq!(upgraded.admission_kind, Admission::CatalogUpgrade045To050);
+        assert_eq!(upgraded.restore, prior.restore);
+        assert_eq!(upgraded.owner, prior.owner); assert_eq!(upgraded.physical, prior.physical);
+        upgraded.phase = Phase::Clean;
+        let mut reopened = pin(LATER, 50, target);
+        reopened.consume(&upgraded).unwrap();
+        assert_eq!(reopened.admission_kind, Admission::CleanReopen);
+        assert_eq!(reopened.restore, prior.restore);
+        let mut wrong_archive = reopened.clone();
+        wrong_archive.restore.as_mut().unwrap().archive_manifest_sha256 = "f".repeat(64);
+        assert!(wrong_archive.check().is_err());
+        let mut missing_carried = reopened.clone();
+        missing_carried.restore.as_mut().unwrap().carried_provenance = None;
+        assert!(missing_carried.check().is_err());
+        let mut wrong_manifest = reopened.clone();
+        wrong_manifest.payload_manifest_sha256 = "f".repeat(64);
+        assert!(wrong_manifest.check().is_err());
+        let mut new_root_restore = reopened.clone();
+        new_root_restore.phase = Phase::ActivatedRestore;
+        new_root_restore.admission_kind = Admission::VerifiedRestore;
+        new_root_restore.previous_generation = None;
+        assert!(new_root_restore.check().is_err());
     }
 
     #[test]
