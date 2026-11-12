@@ -259,6 +259,7 @@ final class ViewportResourcePolicyTests: XCTestCase {
         config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         let web = WKWebView(frame: .zero, configuration: config)
+        defer { web.stopLoading() }
         let script = #"""
         const context = { userAgent: navigator.userAgent.slice(0, 512), scheme: location.protocol,
           secureContext: isSecureContext, visibility: document.visibilityState, contentWorld: 'page' };
