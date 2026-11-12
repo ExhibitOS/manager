@@ -19,7 +19,7 @@ fn main() {
                 std::path::Path::new(&args[2]),std::path::Path::new(&args[3]),&bytes,&STOP));
         match result {
             Ok(receipt)=>{let _=writeln!(io::stdout().lock(),"{}",receipt);},
-            Err(error)=>{let _=writeln!(io::stdout().lock(),"{}",json!({"identityMode":"cluster-owner-observation","diagnosticComplete":false,"recoveryEligible":false,"admissionEligible":false,"logicalDatabaseIdentityQualified":false,"expectedDatabaseOid":null,"generationsState":"not-inspected","generations":null,"failureCode":error.code}));std::process::exit(1);}
+            Err(error)=>{let _=writeln!(io::stdout().lock(),"{}",json!({"identityMode":"cluster-owner-observation","diagnosticComplete":false,"recoveryEligible":false,"admissionEligible":false,"logicalDatabaseIdentityQualified":false,"expectedDatabaseOid":null,"databaseOidComparison":"not-performed-no-independent-prior","scope":"observed endpoint only; no continuity claim","hayesInspection":"not-inspected","generationsState":"not-inspected","generations":null,"failureCode":error.code}));std::process::exit(1);}
         }
         return;
     }

@@ -12,7 +12,7 @@ const SOURCE: (&str, &str, &str) = (
 );
 
 fn quiet(record: &Context) -> bool {
-    record.format == 1 && record.postgres_pid.is_none() && record.node_pid.is_none()
+    record.format == 1 && !record.log_truncated && record.postgres_pid.is_none() && record.node_pid.is_none()
         && record.auxiliary_pid.is_none() && !record.readiness.ready
         && record.readiness.version.is_none() && record.readiness.protocol_version.is_none()
         && record.readiness.error_code.is_none()
@@ -95,7 +95,7 @@ mod tests {
     }
     #[test]
     fn owner_inspection_source_rejects_ready_node_pid_exit_error_and_port_variants() {
-        for variant in 0..9 {
+        for variant in 0..10 {
             let (current,mut failed,predecessor,stopped,completion,owner,physical)=fixture();
             match variant {
                 0=>failed.readiness.ready=true,
@@ -106,7 +106,8 @@ mod tests {
                 5=>{failed.exits.insert("postgres".into(),0);},
                 6=>failed.failure_code=Some("OTHER".into()),
                 7=>failed.error_code=None,
-                _=>failed.ports.database+=1,
+                8=>failed.ports.database+=1,
+                _=>failed.log_truncated=true,
             }
             assert!(check_shape(&current,&failed,None,&predecessor,&stopped,&completion,&owner,physical,501).is_err(),"variant{variant}");
         }

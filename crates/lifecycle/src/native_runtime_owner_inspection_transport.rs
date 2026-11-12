@@ -38,7 +38,13 @@ impl Snapshot {
         let m=fs::symlink_metadata(root.join(name)).map_err(|_|err(ERROR))?;
         Ok(Self{root:root.into(),name:name.into(),hash,identity:(m.dev(),m.ino())})
     }
-    fn check(&self)->Result<()>{let next=Self::open(&self.root,&self.name,Some(&self.hash))?;
+    fn empty_log(root:&Path,name:&str)->Result<Self>{
+        let file=OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW|libc::O_NONBLOCK).open(root.join(name)).map_err(|_|err(ERROR))?;
+        let a=file.metadata().map_err(|_|err(ERROR))?;let b=fs::symlink_metadata(root.join(name)).map_err(|_|err(ERROR))?;
+        if !a.is_file()||b.is_symlink()||a.len()!=0||a.uid()!=unsafe{libc::geteuid()}||a.mode()&0o7777!=0o600||a.nlink()!=1||(a.dev(),a.ino())!=(b.dev(),b.ino()){return Err(err(ERROR));}
+        Ok(Self{root:root.into(),name:name.into(),hash:digest(b""),identity:(a.dev(),a.ino())})
+    }
+    fn check(&self)->Result<()>{let next=if self.name.ends_with("/process.log"){Self::empty_log(&self.root,&self.name)?}else{Self::open(&self.root,&self.name,Some(&self.hash))?};
         if next.identity!=self.identity{return Err(err(ERROR));}Ok(())}
 }
 struct Lease {
@@ -47,7 +53,9 @@ struct Lease {
 }
 impl Lease {
     fn check(&self)->Result<()>{for d in &self.directories{d.check()?;}for l in &self.locks{l.check()?;}
-        self.writer.identity()?;for s in &self.snapshots{s.check()?;}Ok(())}
+        self.writer.identity()?;
+        for marker in ["native-restore-current.json","native-target-preparation-current.json","native-legacy-migration-current.json",WORKSPACE_FURNISHING_INITIALIZATION]{if exists(&self.root.join(marker))?{return Err(err(ERROR));}}
+        for s in &self.snapshots{s.check()?;}Ok(())}
     fn ports_free(&self)->Result<Vec<TcpListener>>{
         [self.ports.web,self.ports.api,self.ports.database].iter().map(|p|TcpListener::bind(SocketAddr::from(([127,0,0,1],*p))).map_err(|_|err("NATIVE_OWNER_INSPECTION_PORT_BUSY"))).collect()
     }
@@ -65,28 +73,37 @@ impl Lease {
             Ok(())});}Ok(())
     }
 }
-struct Process { child:Option<Child>,lease:Arc<Lease>,group:i32 }
+struct Process { child:Option<Child>,lease:Arc<Lease>,group:i32,terminal:Option<std::process::ExitStatus> }
 impl Process {
     fn spawn(lease:Arc<Lease>,mut c:Command)->Result<Self>{lease.configure(&mut c)?;let child=c.spawn().map_err(|_|err(ERROR))?;
-        let group=child.id() as i32;Ok(Self{child:Some(child),lease,group})}
+        let group=child.id() as i32;Ok(Self{child:Some(child),lease,group,terminal:None})}
     fn group_absent(&self)->bool{(unsafe{libc::kill(-self.group,0)})==-1&&std::io::Error::last_os_error().raw_os_error()==Some(libc::ESRCH)}
+    fn poll(&mut self)->Result<Option<std::process::ExitStatus>>{
+        if self.terminal.is_none(){self.terminal=self.child.as_mut().ok_or_else(||err(ERROR))?.try_wait().map_err(|_|err(ERROR))?;}
+        Ok(self.terminal)
+    }
+    fn signal(&mut self)->Result<bool>{
+        // An unreaped child owns its PID. Once wait reports terminal status,
+        // numeric PID reuse is possible and no signal is allowed.
+        if self.poll()?.is_some(){return Ok(false);}
+        let result=unsafe{libc::kill(self.child.as_ref().unwrap().id() as i32,libc::SIGTERM)};
+        if result!=0&&std::io::Error::last_os_error().raw_os_error()!=Some(libc::ESRCH){return Err(err(ERROR));}Ok(result==0)
+    }
     fn stop(&mut self,deadline:Instant)->Result<i32>{
-        let child=self.child.as_mut().ok_or_else(||err(ERROR))?;
-        if child.try_wait().map_err(|_|err(ERROR))?.is_none(){
-            if unsafe{libc::kill(child.id() as i32,libc::SIGTERM)}!=0&&std::io::Error::last_os_error().raw_os_error()!=Some(libc::ESRCH){return Err(err(ERROR));}
-        }
-        loop{if let Some(status)=self.child.as_mut().unwrap().try_wait().map_err(|_|err(ERROR))?{
+        self.signal()?;
+        loop{if let Some(status)=self.poll()?{
             if self.group_absent(){if status.success(){self.child=None;}use std::os::unix::process::ExitStatusExt;return Ok(status.code().unwrap_or(-status.signal().unwrap_or(1)));}
         }if Instant::now()>=deadline{return Err(err("NATIVE_OWNER_INSPECTION_CLEANUP_UNCONFIRMED"));}thread::sleep(Duration::from_millis(20));}
     }
 }
 impl Drop for Process {
-    fn drop(&mut self){if let Some(mut child)=self.child.take(){
+    fn drop(&mut self){if self.child.is_some(){let _=self.signal();}
+        if let Some(mut child)=self.child.take(){
         // No forced kill or fence release while cleanup is unproved. On helper
         // loss, inherited OFDs continue to exclude ordinary writers until PG exits.
         let lease=self.lease.clone();let group=self.group;
-        let _=unsafe{libc::kill(child.id() as i32,libc::SIGTERM)};
-        thread::spawn(move||{loop{match child.try_wait(){Ok(Some(status))=>{
+        let mut terminal=self.terminal;
+        thread::spawn(move||{loop{let status=if let Some(status)=terminal{Ok(Some(status))}else{child.try_wait()};match status{Ok(Some(status))=>{terminal=Some(status);
             let absent=(unsafe{libc::kill(-group,0)})==-1&&std::io::Error::last_os_error().raw_os_error()==Some(libc::ESRCH);
             if absent&&status.success()&&lease.cold().is_ok(){return;}
             if absent{std::mem::forget(lease);return;}
@@ -105,7 +122,7 @@ fn collect(mut p:Process,input:&[u8],limit:usize,deadline:Instant,cancel:&Atomic
     loop{p.lease.check()?;if cancel.load(Ordering::SeqCst)||Instant::now()>=deadline{return Err(err("NATIVE_OWNER_INSPECTION_CANCELLED_OR_TIMEOUT"));}
         if let Some(s)=&mut stdin{match s.write(&input[offset..]){Ok(n)=>{offset+=n;if offset==input.len(){stdin=None;}},Err(e)if e.kind()==std::io::ErrorKind::WouldBlock=>{},_=>return Err(err(ERROR))}}
         let mut block=[0u8;4096];loop{match stdout.read(&mut block){Ok(0)=>{eof=true;break},Ok(n)=>{if output.len()+n>limit{return Err(err("NATIVE_OWNER_INSPECTION_OUTPUT_LIMIT"));}output.extend_from_slice(&block[..n]);},Err(e)if e.kind()==std::io::ErrorKind::WouldBlock=>break,_=>return Err(err(ERROR))}}
-        if let Some(status)=p.child.as_mut().unwrap().try_wait().map_err(|_|err(ERROR))?{if eof&&p.group_absent(){p.child=None;return Ok((status.code().unwrap_or(-1),output));}}
+        if let Some(status)=p.poll()?{if eof&&p.group_absent(){p.child=None;return Ok((status.code().unwrap_or(-1),output));}}
         thread::sleep(Duration::from_millis(20));
     }
 }
@@ -119,7 +136,7 @@ pub(super) fn run(profile:&Path,resources:&Path,bytes:&[u8],cancel:&AtomicBool)-
     if input.identity_mode!="cluster-owner-observation"||[&input.pointer_sha256,&input.failed_state_sha256,&input.predecessor_state_sha256].iter().any(|h|!hash_valid(h)){return Err(err(ERROR));}
     if !installations::uuid(&input.predecessor.generation){return Err(err(ERROR));}
     let root=profile.join("local-runtime");
-    let directories=profile.ancestors().chain([root.as_path(),root.join("native-database").as_path()]).map(crate::maintenance_source::DirectoryPin::open).collect::<Result<Vec<_>>>()?;
+    let mut directories=profile.ancestors().chain([root.as_path(),root.join("native-database").as_path()]).map(crate::maintenance_source::DirectoryPin::open).collect::<Result<Vec<_>>>()?;
     installations::private_directory(profile)?;installations::private_directory(&root)?;installations::private_directory(&root.join("native-database"))?;
     let locks=[profile.join("profile-session.lock"),profile.join("operation.lock"),root.join("operation.lock")].into_iter().map(Locked::open).collect::<Result<Vec<_>>>()?;
     let writer=furnishing_lifetime::WriterLifetime::acquire_existing(&root)?;
@@ -127,6 +144,10 @@ pub(super) fn run(profile:&Path,resources:&Path,bytes:&[u8],cancel:&AtomicBool)-
     let prepared=service.personal_prepared()?;let ports=prepared.ports;ports.validate()?;
     let mut snapshots=vec![Snapshot::open(&root,"native-current-run.json",Some(&input.pointer_sha256))?,Snapshot::open(&root,"native-personal.json",None)?,Snapshot::open(&root,"runtime.env",None)?,Snapshot::open(&root,"native-database/PG_VERSION",None)?];
     let current=current_run(&root)?.ok_or_else(||err(ERROR))?;
+    for path in [root.join("native-runs"),root.join("native-runs").join(&current.id),root.join("native-runs").join(&input.predecessor.generation)]{directories.push(crate::maintenance_source::DirectoryPin::open(&path)?);}
+    let log_name=format!("native-runs/{}/process.log",current.id);
+    let log=Snapshot::empty_log(&root,&log_name)?;
+    if log.hash!=digest(b""){return Err(err(ERROR));}snapshots.push(log);
     snapshots.push(Snapshot::open(&root,&format!("native-runs/{}/state.json",current.id),Some(&input.failed_state_sha256))?);
     snapshots.push(Snapshot::open(&root,&format!("native-runs/{}/state.json",input.predecessor.generation),Some(&input.predecessor_state_sha256))?);
     let (failed,failed_completion)=read_run(&root,&current.id)?;let(stopped,completion)=read_run(&root,&input.predecessor.generation)?;
@@ -148,7 +169,7 @@ pub(super) fn run(profile:&Path,resources:&Path,bytes:&[u8],cancel:&AtomicBool)-
     drop(reservations);let mut pg=Process::spawn(lease.clone(),pg)?;
     let attempt=(||{
         let ready_deadline=Instant::now()+Duration::from_secs(30);
-        loop{lease.check()?;if pg.child.as_mut().unwrap().try_wait().map_err(|_|err(ERROR))?.is_some(){return Err(err(ERROR));}
+        loop{lease.check()?;if pg.poll()?.is_some(){return Err(err(ERROR));}
             let mut ready=command(&tools.join("pg_isready"),&root);ready.args(["-h","127.0.0.1","-p",&ports.database.to_string(),"-U","exhibitos","-t","1"]).stdout(Stdio::piped());
             let(code,_)=collect(Process::spawn(lease.clone(),ready)?,&[],4096,(Instant::now()+Duration::from_secs(2)).min(ready_deadline),cancel)?;
             if code==0{break;}if Instant::now()>=ready_deadline{return Err(err(ERROR));}thread::sleep(Duration::from_millis(100));
@@ -185,6 +206,22 @@ pub(super) fn run(profile:&Path,resources:&Path,bytes:&[u8],cancel:&AtomicBool)-
         let mut p=Process::spawn(lease.clone(),c).unwrap();thread::sleep(Duration::from_millis(150));
         assert_eq!(p.stop(Instant::now()+Duration::from_secs(3)).unwrap(),0);assert!(p.group_absent());
         assert!(p.child.is_none());lease.cold().unwrap();drop((p,lease));fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]fn owner_inspection_transport_never_signals_reaped_nonzero_child(){
+        let(root,lease)=fixture();let mut c=command(Path::new("/bin/sh"),&root);c.args(["-c","exit 7"]);
+        let mut p=Process::spawn(lease.clone(),c).unwrap();let deadline=Instant::now()+Duration::from_secs(3);
+        loop{if p.poll().unwrap().is_some(){break;}assert!(Instant::now()<deadline);thread::sleep(Duration::from_millis(10));}
+        assert_eq!(p.terminal.unwrap().code(),Some(7));assert!(!p.signal().unwrap());
+        assert_eq!(p.stop(deadline).unwrap(),7);assert!(!p.signal().unwrap());
+        // Drop retains uncertain/nonzero custody but must never signal the reaped PID.
+        drop(p);drop(lease);fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]fn owner_inspection_transport_empty_log_custody_rejects_content_and_replacement(){use std::os::unix::fs::PermissionsExt;
+        let(root,lease)=fixture();fs::create_dir(root.join("run")).unwrap();let path=root.join("run/process.log");fs::write(&path,[]).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();
+        let pin=Snapshot::empty_log(&root,"run/process.log").unwrap();pin.check().unwrap();fs::write(&path,b"unexpected Node readiness").unwrap();assert!(pin.check().is_err());assert!(Snapshot::empty_log(&root,"run/process.log").is_err());
+        fs::write(&path,[]).unwrap();fs::rename(&path,root.join("old-log")).unwrap();fs::write(&path,[]).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();assert!(pin.check().is_err());drop(lease);fs::remove_dir_all(root).unwrap();
     }
 
 }
