@@ -178,6 +178,19 @@ fn validate_gpu_model_upgrade_result(bytes: &[u8], binding: &Binding) -> Result<
     Ok(())
 }
 
+
+fn ordinary_inherited_hayes(payload: &Payload, start: Option<FurnishingStart>) -> bool {
+    (payload.retained_furnishing_catalog().is_some()
+            && matches!(start, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
+            || (payload.ordinary_fresh_furnishing()
+                && matches!(start, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
+            || (crate::native_payload::catalog45_carried_restore_payload(&payload)
+                && start == Some(FurnishingStart::Reopen))
+            || (crate::native_payload::furnishing_thumbnail_host_matches((&payload.context().source_commit,
+                    payload.producer_sha256(), &payload.context().manifest_sha256))
+                && start == Some(FurnishingStart::Reopen))
+}
+
 fn native_port_bind_code(error: &std::io::Error) -> &'static str {
     match error.kind() {
         std::io::ErrorKind::AddrInUse => "NATIVE_PORT_IN_USE",
@@ -2722,15 +2735,7 @@ const { isDeepStrictEqual } = require('node:util');
             }
             Some(owner_channel::Setup::new()?)
         } else { None };
-        if (self.payload.retained_furnishing_catalog().is_some()
-            && matches!(furnishing, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
-            || (self.payload.ordinary_fresh_furnishing()
-                && matches!(furnishing, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
-            || (crate::native_payload::catalog45_carried_restore_payload(&self.payload)
-                && furnishing == Some(FurnishingStart::Reopen))
-            || (crate::native_payload::furnishing_thumbnail_host_matches((&self.payload.context().source_commit,
-                    self.payload.producer_sha256(), &self.payload.context().manifest_sha256))
-                && furnishing == Some(FurnishingStart::Reopen))
+        if ordinary_inherited_hayes(&self.payload, furnishing)
         {
             self.payload.recheck()?;
             let generation_id = Uuid::parse_str(generation).map_err(|_| err("HAYES_OPERATION_UNAVAILABLE"))?;
@@ -4959,5 +4964,26 @@ mod thumbnail_failed_helper_recovery_tests {
         assert!(trial.failed_thumbnail_helper_cold(&root,transition).is_err());
         assert_eq!(fs::read(target_run.join("state.json")).unwrap(),raw);
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+mod gpu049_ordinary_hayes_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires exact actual GPU049 payload; read-only, no workspace start"]
+    fn actual_gpu049_ordinary_reopen_requires_inherited_hayes_channel() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_GPU_MODEL049_RUNTIME").unwrap());
+        let payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(),
+            Some(WorkspaceFurnishingCatalog::GpuModelPreparation049));
+        // Node's ordinary full045-family bootstrap requires the inherited
+        // Hayes owner even though the helper-only049 upgrade does not.
+        assert!(ordinary_inherited_hayes(&payload, Some(FurnishingStart::Reopen)));
+        for start in [None, Some(FurnishingStart::Initialize),
+            Some(FurnishingStart::Upgrade045To049), Some(FurnishingStart::Upgrade045To050)] {
+            assert!(!ordinary_inherited_hayes(&payload, start));
+        }
     }
 }
