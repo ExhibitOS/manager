@@ -8,7 +8,7 @@ final class NativeSceneAdmissionTests: XCTestCase {
     func testDefault111OrdinaryEntryDoesNotEnableOptionalCatalogFamilies() {
         let runtime = "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84"
         XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: runtime))
-        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: runtime))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: runtime))
         XCTAssertFalse(AuthoringAPI.supportsLargeModelRuntime(manifest: runtime))
         XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: runtime))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: runtime, ready: true))
