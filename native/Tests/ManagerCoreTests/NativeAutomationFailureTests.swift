@@ -4,6 +4,14 @@ import Darwin
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testOrdinaryFreshCreationExcludesSelectedAndExistingModes() {
+        XCTAssertTrue(NativeAutomationSession.ordinaryFreshCreationEligible(selectedOEX: false, existingWorkspace: false, v5: false, v6: false, v7: false))
+        XCTAssertFalse(NativeAutomationSession.ordinaryFreshCreationEligible(selectedOEX: true, existingWorkspace: false, v5: false, v6: false, v7: false))
+        XCTAssertFalse(NativeAutomationSession.ordinaryFreshCreationEligible(selectedOEX: false, existingWorkspace: true, v5: false, v6: false, v7: false))
+        XCTAssertFalse(NativeAutomationSession.ordinaryFreshCreationEligible(selectedOEX: false, existingWorkspace: false, v5: true, v6: false, v7: false))
+        XCTAssertFalse(NativeAutomationSession.ordinaryFreshCreationEligible(selectedOEX: false, existingWorkspace: false, v5: false, v6: true, v7: false))
+        XCTAssertFalse(NativeAutomationSession.ordinaryFreshCreationEligible(selectedOEX: false, existingWorkspace: false, v5: false, v6: false, v7: true))
+    }
     func testInstalledReopenUsesVerifiedConfigurationAndRefusesScopeOrPortDrift() throws {
         let tenant = "10000000-0000-4000-8000-000000000001", manifest = String(repeating: "a", count: 64)
         func configuration(kind: String? = "personal", owner: String? = nil, sha: String? = nil,
@@ -34,6 +42,10 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertEqual(draft.candidate["title"], .string("Synthetic CLI scene"))
         XCTAssertTrue(draft.placements.isEmpty)
         var raw = request; raw["command"]["draft"] = draft.candidate
+        XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(raw, in: empty))
+        raw = request; raw["command"]["title"] = .string("  \n")
+        XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(raw, in: empty))
+        raw = request; raw["command"]["title"] = .string(String(repeating: "x", count: 201))
         XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(raw, in: empty))
         empty.draft = draft
         XCTAssertThrowsError(try NativeAutomationSession.emptyExhibitionDraft(request, in: empty))

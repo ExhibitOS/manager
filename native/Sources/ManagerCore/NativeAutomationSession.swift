@@ -50,6 +50,7 @@ public actor NativeAutomationSession {
     private let root: URL
     private let installedAuthoringCLI: Bool
     private let installedImageCLI: Bool
+    private var ordinaryFreshCreation = false
     private let installedExportRootIdentity: (dev_t, ino_t)?
     private let requiresReleaseImageRuntime: Bool
     private let inputs: [String: String]
@@ -141,6 +142,10 @@ public actor NativeAutomationSession {
                                   freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
                                   workspaceV7ValidationRuntime: workspaceV7ValidationRuntime)
+        // NativeBridge has already required a nonexistent profile for this fresh entry.
+        ordinaryFreshCreation = Self.ordinaryFreshCreationEligible(selectedOEX: selectedOEXFormat != nil,
+            existingWorkspace: existingWorkspaceV5 != nil, v5: workspaceV5ValidationRuntime != nil,
+            v6: workspaceV6ValidationRuntime != nil, v7: workspaceV7ValidationRuntime != nil)
     }
     /// The installed entry supplies its bundled helper and the default or
     /// explicitly selected managed profile.
@@ -1584,6 +1589,10 @@ public actor NativeAutomationSession {
             || session.advertisesRenderedArtworkThumbnail
     }
 
+    static func ordinaryFreshCreationEligible(selectedOEX: Bool, existingWorkspace: Bool, v5: Bool, v6: Bool, v7: Bool) -> Bool {
+        !selectedOEX && !existingWorkspace && !v5 && !v6 && !v7
+    }
+
     static func installedExportEntryAllowed(session: AuthoringSession?) -> Bool {
         guard let session else { return false }
         return session.nativeOexExportProfile == "bounded-file-v1"
@@ -1758,7 +1767,8 @@ public actor NativeAutomationSession {
         switch operation {
         case "exhibition-new":
             try checkedRevision(request, current)
-            guard installedAuthoringCLI, await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
+            guard installedAuthoringCLI || ordinaryFreshCreation,
+                  await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
             var next = current; next.draft = try Self.emptyExhibitionDraft(request, in: current, roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
             try Task.checkCancellation()
             result = try value(await bridge.saveDocumentState(context, state: next))
