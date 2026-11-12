@@ -4,6 +4,9 @@ import Foundation
 import ManagerCore
 import SwiftUI
 import WebKit
+#if DEBUG
+import OSLog
+#endif
 
 /// Owns a visible WK operation until the matching renderer confirms drain.
 /// An interrupted or failed cleanup never becomes a drain receipt.
@@ -191,7 +194,9 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
             }
             let shape = stage == .readyShape ? " accept=\(readyAccepted.map { $0 ? "true" : "false" } ?? "unknown") keys=\(readyKeys)" : ""
             let method = stage == .pageMethodWait ? " methodAvailable=\(lastMethodAvailable.map { $0 ? "true" : "false" } ?? "unknown")" : ""
-            NSLog("%@", "NativeGPUPreviewStartupFailure stage=\(stage.rawValue) error=\(failure) beginIssued=\(beginIssued) isLoading=\(web.isLoading) pageMatches=\(page != nil && web.url == page) visible=\(web.window?.isVisible == true && !web.isHiddenOrHasHiddenAncestor)\(method)\(shape)")
+            let detail = "stage=\(stage.rawValue) error=\(failure) beginIssued=\(beginIssued) isLoading=\(web.isLoading) pageMatches=\(page != nil && web.url == page) visible=\(web.window?.isVisible == true && !web.isHiddenOrHasHiddenAncestor)\(method)\(shape)"
+            Logger(subsystem: "org.exhibitos.manager.validation", category: "GPUCandidatePreviewStartup")
+                .error("NativeGPUPreviewStartupFailure \(detail, privacy: .public)")
             #endif
             invalidate("감상용 파일을 표시하지 못했습니다. 작업 상태를 확인하세요.")
             if beginIssued { await cancelAndDrain() } else { finishWithoutBegin() }
