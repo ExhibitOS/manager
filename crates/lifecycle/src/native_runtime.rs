@@ -38,6 +38,17 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_oex_materializer_protocol.rs"] mod oex_materializer_protocol;
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_owner_inspection_sql.rs"] mod owner_inspection_sql;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_owner_inspection_source.rs"] mod owner_inspection_source;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_owner_inspection_transport.rs"] mod owner_inspection_transport;
+/// Explicit cluster-owner diagnostic only; never admits an ordinary runtime or recovery.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+pub fn inspect_pre_node_owner(profile:&Path,resources:&Path,request:&[u8],cancelled:&AtomicBool)->Result<Value>{
+    owner_inspection_transport::run(profile,resources,request,cancelled)
+}
 #[path = "native_runtime_model_adoption.rs"]
 pub(crate) mod model_adoption;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
