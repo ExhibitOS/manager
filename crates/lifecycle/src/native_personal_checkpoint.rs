@@ -1247,10 +1247,7 @@ impl LifecycleService {
         if let Err(error) = qualified {
             if stop.state == "failed" {
                 checkpoint.drained_failure = stop.job_id;
-                crate::native_runtime::check_cold_transition_root(
-                    &self.root,
-                    checkpoint.drained_failure.as_deref(),
-                )?;
+                session.check_drained_transition_failure_root(checkpoint.drained_failure.as_deref())?;
                 let drained = seal(&checkpoint, key)?;
                 publish_pending(&self.root, &drained)?;
             }
