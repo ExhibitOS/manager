@@ -181,14 +181,17 @@ fn validate_gpu_model_upgrade_result(bytes: &[u8], binding: &Binding) -> Result<
 
 fn ordinary_inherited_hayes(payload: &Payload, start: Option<FurnishingStart>) -> bool {
     (payload.retained_furnishing_catalog().is_some()
-            && matches!(start, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
-            || (payload.ordinary_fresh_furnishing()
-                && matches!(start, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
-            || (crate::native_payload::catalog45_carried_restore_payload(&payload)
-                && start == Some(FurnishingStart::Reopen))
-            || (crate::native_payload::furnishing_thumbnail_host_matches((&payload.context().source_commit,
-                    payload.producer_sha256(), &payload.context().manifest_sha256))
-                && start == Some(FurnishingStart::Reopen))
+        && matches!(start, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
+        || (payload.ordinary_fresh_furnishing()
+            && matches!(start, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
+        || (crate::native_payload::catalog45_carried_restore_payload(payload)
+            && start == Some(FurnishingStart::Reopen))
+        || (crate::native_payload::furnishing_thumbnail_host_matches((&payload.context().source_commit,
+                payload.producer_sha256(), &payload.context().manifest_sha256))
+            && start == Some(FurnishingStart::Reopen))
+        || (crate::native_payload::gpu_model_host_matches((&payload.context().source_commit,
+                payload.producer_sha256(), &payload.context().manifest_sha256))
+            && start == Some(FurnishingStart::Reopen))
 }
 
 fn native_port_bind_code(error: &std::io::Error) -> &'static str {
