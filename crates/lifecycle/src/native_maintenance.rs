@@ -49,12 +49,16 @@ pub enum LocalPersonalTransition {
         #[serde(default)]
         retained_product_image: Option<RetainedProductImage>,
         #[serde(default)]
+        retained_gpu_variant: Option<RetainedGpuVariant>,
+        #[serde(default)]
         startup_cancellation_045: Option<StartupCancellation045>,
     },
     Activate {
         staging: PathBuf, key_file: PathBuf,
         #[serde(default)]
         retained_product_image: Option<RetainedProductImage>,
+        #[serde(default)]
+        retained_gpu_variant: Option<RetainedGpuVariant>,
         #[serde(default)]
         startup_cancellation_045: Option<StartupCancellation045>,
     },
@@ -64,6 +68,8 @@ pub enum LocalPersonalTransition {
         staging: PathBuf, key_file: PathBuf,
         #[serde(default)]
         retained_product_image: Option<RetainedProductImage>,
+        #[serde(default)]
+        retained_gpu_variant: Option<RetainedGpuVariant>,
     },
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
     InspectPreReadyGuard {
@@ -72,6 +78,43 @@ pub enum LocalPersonalTransition {
         failed_generation: String,
         recovery_receipt_sha256: String,
     },
+}
+
+/// Preserves an already-bound pending request, never business completion or
+/// retry authority. Only the exact corrective GPU transition admits this proof.
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetainedGpuVariant {
+    pub(crate) job_id: String,
+    pub(crate) transfer_sha256: String,
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Default)]
+pub(crate) enum TransitionRetention<'a> {
+    #[default]
+    None,
+    ProductImage(&'a RetainedProductImage),
+    GpuVariant(&'a RetainedGpuVariant),
+}
+
+#[cfg(debug_assertions)]
+impl<'a> TransitionRetention<'a> {
+    pub(crate) fn from_proofs(image: Option<&'a RetainedProductImage>, gpu: Option<&'a RetainedGpuVariant>) -> Result<Self> {
+        match (image, gpu) {
+            (None, None) => Ok(Self::None),
+            (Some(image), None) => Ok(Self::ProductImage(image)),
+            (None, Some(gpu)) => Ok(Self::GpuVariant(gpu)),
+            _ => Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")),
+        }
+    }
+    pub(crate) fn image(self) -> Option<&'a RetainedProductImage> {
+        if let Self::ProductImage(proof) = self { Some(proof) } else { None }
+    }
+    pub(crate) fn gpu(self) -> Option<&'a RetainedGpuVariant> {
+        if let Self::GpuVariant(proof) = self { Some(proof) } else { None }
+    }
 }
 
 /// Exact approved image preparation retained while the saved workspace changes payloads.

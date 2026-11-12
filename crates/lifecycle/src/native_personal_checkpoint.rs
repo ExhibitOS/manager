@@ -3,7 +3,7 @@
 //! Staged data remains plaintext in a private directory; only the inventory is sealed.
 //! Pending binding changes block normal startup until authenticated recovery.
 use super::*;
-use crate::installations::{InstallationController, native_maintenance::{RetainedProductImage, StartupCancellation045}};
+use crate::installations::{InstallationController, native_maintenance::{RetainedProductImage, RetainedGpuVariant, StartupCancellation045, TransitionRetention}};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload as CipherPayload, rand_core::RngCore},
@@ -117,6 +117,8 @@ struct Checkpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retained_product_image: Option<RetainedProductImage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_gpu_variant: Option<RetainedGpuVariant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     startup_cancellation_045: Option<StartupCancellation045>,
     #[cfg(feature = "workspace-v5-owner-validation")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,6 +186,28 @@ fn catalog45_activation_saved_document(
     Ok(true)
 }
 
+// A sealed journal digest preserves pending state. It is not a database job
+// receipt, readiness assertion, worker-drain receipt or retry authorization.
+fn gpu_retention_matches(
+    pair: (&str, &str), owner: (&str, &str, &str), document_sha256: Option<&str>,
+    proof: Option<&RetainedGpuVariant>,
+) -> bool {
+    let Some(proof) = proof else { return true; };
+    #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+    {
+        let document = crate::installations::native_document::DocumentState {
+            format: 1, revision: 0, workspace_id: owner.0.into(), tenant_id: owner.1.into(),
+            principal_id: owner.2.into(), draft: None, etag: None, saved_edit_version: None, pending: None,
+        };
+        crate::native_payload::gpu_model_wrapping_transition(pair)
+            && [owner.0, owner.1, owner.2, proof.job_id.as_str()].into_iter().all(installations::uuid)
+            && hash_valid(&proof.transfer_sha256)
+            && saved_document_digest(&document).ok().as_deref() == document_sha256
+    }
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", target_os = "macos")))]
+    { let _ = (pair, owner, document_sha256, proof); false }
+}
+
 fn check_transition_host(
     pair: (&str, &str),
     saved_document_sha256: Option<&str>,
@@ -216,15 +240,36 @@ impl Checkpoint {
         }
         if !retained_transition_proof_matches(pair, self.retained_product_image.as_ref())
             || !startup_cancellation_proof_matches(pair, self.retained_product_image.as_ref(), self.startup_cancellation_045.as_ref())
+            || !self.check_gpu_retention(saved_workspace_host)
         {
             return Err(invalid());
         }
         check_transition_host(pair, self.saved_document_sha256.as_deref(), saved_workspace_host)
     }
 
-    fn check_retained(&self, retained: Option<&RetainedProductImage>) -> Result<()> {
-        if self.retained_product_image.as_ref() != retained {
+    fn check_retained(&self, retained: TransitionRetention<'_>) -> Result<()> {
+        if self.retained_product_image.as_ref() != retained.image()
+            || self.retained_gpu_variant.as_ref() != retained.gpu() {
             return Err(invalid());
+        }
+        Ok(())
+    }
+
+    fn check_gpu_retention(&self, saved_workspace_host: bool) -> bool {
+        if self.retained_gpu_variant.is_some() && (!saved_workspace_host
+            || self.retained_product_image.is_some() || self.startup_cancellation_045.is_some()) {
+            return false;
+        }
+        gpu_retention_matches((self.old_manifest.as_str(), self.new_manifest.as_str()),
+            (&self.workspace_id, &self.tenant_id, &self.principal_id),
+            self.saved_document_sha256.as_deref(), self.retained_gpu_variant.as_ref())
+    }
+
+    fn check_retained_gpu_document(&self, document: Option<&crate::installations::native_document::DocumentState>) -> Result<()> {
+        if self.retained_gpu_variant.is_some()
+            && saved_document_digest(document.ok_or_else(invalid)?)?.as_str()
+                != self.saved_document_sha256.as_deref().ok_or_else(invalid)? {
+            return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
         }
         Ok(())
     }
@@ -1061,7 +1106,8 @@ impl LifecycleService {
         staging: &Path,
         key: &[u8; 32],
         saved_workspace_host: bool,
-        retained: Option<&RetainedProductImage>,
+        retained: TransitionRetention<'_>,
+        document: Option<&crate::installations::native_document::DocumentState>,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
@@ -1073,6 +1119,7 @@ impl LifecycleService {
         let mut checkpoint = self.transition_checkpoint(&envelope, key)?;
         checkpoint.check_host(saved_workspace_host)?;
         checkpoint.check_retained(retained)?;
+        checkpoint.check_retained_gpu_document(document)?;
         if checkpoint.staged != staging {
             return Err(invalid());
         }
@@ -1087,7 +1134,7 @@ impl LifecycleService {
         );
         #[cfg(feature = "workspace-v5-owner-validation")]
         if let (Some((trial, transition)), Some(writer)) = (furnishing, &writer) {
-            trial.check_recovery_root(&self.root, writer, transition, retained)?;
+            trial.check_recovery_root(&self.root, writer, transition, retained.image())?;
         } else {
             ordinary_cold_check()?;
         }
@@ -1140,7 +1187,7 @@ impl LifecycleService {
         staging: &Path,
         key: &[u8; 32],
         saved_workspace_host: bool,
-        retained: Option<&RetainedProductImage>,
+        retained: TransitionRetention<'_>,
         document: Option<&super::installations::native_document::DocumentState>,
     ) -> Result<(
         crate::native_runtime::Session,
@@ -1166,6 +1213,7 @@ impl LifecycleService {
         let mut checkpoint = self.transition_checkpoint(envelope, key)?;
         checkpoint.check_host(saved_workspace_host)?;
         checkpoint.check_retained(retained)?;
+        checkpoint.check_retained_gpu_document(document)?;
         if checkpoint.new_manifest != target_context.manifest_sha256
             || checkpoint.trial || checkpoint.staged != staging {
             return Err(invalid());
@@ -1227,7 +1275,7 @@ impl LifecycleService {
         key: &[u8; 32],
         saved_workspace_host: bool,
         document: &super::installations::native_document::DocumentState,
-        retained: Option<&RetainedProductImage>,
+        retained: TransitionRetention<'_>,
         #[cfg(feature = "workspace-v5-owner-validation")]
         selected: Option<(crate::native_runtime::oex_retained_cleanup::Selected045, PathBuf)>,
     ) -> Result<()> {
@@ -1239,7 +1287,7 @@ impl LifecycleService {
             Ok::<_, LifecycleError>(prefix)
         }).transpose()?;
         #[cfg(feature = "workspace-v5-owner-validation")]
-        if let Some(proof) = retained {
+        if let Some(proof) = retained.image() {
             session.arm_retained_product_image(proof.clone())?;
         }
         #[cfg(feature = "workspace-v5-owner-validation")]
@@ -1272,7 +1320,7 @@ impl LifecycleService {
                 session.verify_transition_studio(&authoring, document)?;
             }
             #[cfg(feature = "workspace-v5-owner-validation")]
-            if let Some(proof) = retained {
+            if let Some(proof) = retained.image() {
                 let receipt = session.verify_retained_product_image(&authoring)?;
                 checkpoint.verify_retained_product_image_files(proof, &receipt)?;
             }
@@ -1293,7 +1341,7 @@ impl LifecycleService {
             }
             return Err(error);
         }
-        if let Some(proof) = retained {
+        if let Some(proof) = retained.image() {
             proof.check_replacement_attempt(document)?;
         }
         crate::native_runtime::check_cold_checkpoint_root(&self.root)?;
@@ -1335,7 +1383,7 @@ impl LifecycleService {
         staging: &Path,
         key: &[u8; 32],
         saved_document_sha256: Option<String>,
-        retained_product_image: Option<&RetainedProductImage>,
+        retained: TransitionRetention<'_>,
         startup_cancellation_045: Option<&StartupCancellation045>,
     ) -> Result<()> {
         let guard = self.lock()?;
@@ -1365,6 +1413,13 @@ impl LifecycleService {
         let staging_pin = crate::maintenance_source::DirectoryPin::open(staging)?;
         check_cold_transition_source(&self.root, (&source.manifest_sha256, &target.manifest_sha256))?;
         let record = read(self)?;
+        if (retained.gpu().is_some() && startup_cancellation_045.is_some())
+            || !gpu_retention_matches((&source.manifest_sha256, &target.manifest_sha256),
+                (&record.workspace_id, &record.tenant_id, &record.principal_id),
+                saved_document_sha256.as_deref(), retained.gpu())
+        {
+            return Err(invalid());
+        }
         let mut fields = self.personal_environment(source_payload, record.ports)?;
         for value in fields.values_mut() {
             std::mem::take(value).into_bytes().fill(0);
@@ -1436,7 +1491,8 @@ impl LifecycleService {
             new_manifest: target.manifest_sha256,
             files,
             saved_document_sha256,
-            retained_product_image: retained_product_image.cloned(),
+            retained_product_image: retained.image().cloned(),
+            retained_gpu_variant: retained.gpu().cloned(),
             startup_cancellation_045: startup_cancellation_045.cloned(),
             #[cfg(feature = "workspace-v5-owner-validation")]
             furnishing,
@@ -1471,7 +1527,7 @@ impl InstallationController {
         token: &str,
         key_path: &Path,
         staging: &Path,
-        retained: Option<&RetainedProductImage>,
+        retained: TransitionRetention<'_>,
         task: impl FnOnce(&LifecycleService, &Path, &super::installations::native_document::DocumentState, &[u8; 32]) -> Result<T>,
     ) -> Result<T> {
         if key_path.starts_with(staging) {
@@ -1494,9 +1550,9 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, None, |service, _, _, key| {
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, |service, _, _, key| {
             if !present(staging, ENVELOPE)? {
-                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, None)?;
+                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, TransitionRetention::None, None)?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
@@ -1510,14 +1566,15 @@ impl InstallationController {
         target: &Payload,
         staging: &Path,
         key_path: &Path,
-        retained: Option<&RetainedProductImage>,
+        retained: TransitionRetention<'_>,
         startup_cancellation_045: Option<&StartupCancellation045>,
     ) -> Result<()> {
         let source_manifest = source.context().manifest_sha256;
         let target_manifest = target.context().manifest_sha256;
         let pair = (source_manifest.as_str(), target_manifest.as_str());
-        if !saved_workspace_transition_supported(pair) || !retained_transition_proof_matches(pair, retained)
-            || !startup_cancellation_proof_matches(pair, retained, startup_cancellation_045)
+        if !saved_workspace_transition_supported(pair) || !retained_transition_proof_matches(pair, retained.image())
+            || !startup_cancellation_proof_matches(pair, retained.image(), startup_cancellation_045)
+            || (retained.gpu().is_some() && startup_cancellation_045.is_some())
         {
             return Err(invalid());
         }
@@ -1527,6 +1584,11 @@ impl InstallationController {
             }
             let owner = service.personal_identity()?;
             check_saved_transition_document(pair, document, (&owner.0, &owner.1, &owner.2))?;
+            if retained.gpu().is_some()
+                && (!crate::native_payload::gpu_model_wrapping_transition(pair)
+                    || !gpu_empty_document(pair, document, (&owner.0, &owner.1, &owner.2))) {
+                return Err(invalid());
+            }
             if target.catalog45_recovery_validation() {
                 let generation = crate::native_runtime::catalog45_recovery_source_generation(
                     &service.root, crate::native_payload::catalog45_startup_recovery(pair),
@@ -1538,7 +1600,7 @@ impl InstallationController {
                     {
                         return Err(err("FURNISHING_RECOVERY_UNAVAILABLE"));
                     }
-                } else if let Some(proof) = retained.filter(|proof| proof.recovery.is_some()) {
+                } else if let Some(proof) = retained.image().filter(|proof| proof.recovery.is_some()) {
                     check_retained_recovery_generation(proof, &generation)?;
                 } else if pair.0 != pair.1 && crate::native_payload::catalog45_startup_recovery(pair)
                     != Some(crate::native_payload::Catalog45StartupRecovery::PreReadyPreservation) {
@@ -1549,6 +1611,7 @@ impl InstallationController {
             if present(staging, ENVELOPE)? {
                 let envelope = installation_backup::source_bytes(staging, ENVELOPE, ENVELOPE_LIMIT as u64, true)?;
                 let checkpoint = service.transition_checkpoint(&envelope, key)?;
+                checkpoint.check_host(true)?;
                 checkpoint.check_retained(retained)?;
                 if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str())
                     || checkpoint.startup_cancellation_045.as_ref() != startup_cancellation_045
@@ -1573,8 +1636,8 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, None, |service, _, _, key| {
-            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, None)
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, |service, _, _, key| {
+            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, TransitionRetention::None, None)
         })
     }
 
@@ -1587,7 +1650,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, None, |service, _, _, key| {
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, |service, _, _, key| {
             service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
     }
@@ -1599,11 +1662,12 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
         saved_workspace_host: bool,
-        retained: Option<&RetainedProductImage>,
+        retained: TransitionRetention<'_>,
         startup_cancellation_045: Option<&StartupCancellation045>,
     ) -> Result<()> {
         #[cfg(not(feature = "workspace-v5-owner-validation"))]
         if startup_cancellation_045.is_some() { return Err(invalid()); }
+        if retained.gpu().is_some() && startup_cancellation_045.is_some() { return Err(invalid()); }
         self.with_transition_key(token, key_path, staging, retained, |service, _, document, key| {
             #[cfg(feature = "workspace-v5-owner-validation")]
             if target.catalog45_recovery_validation() {
@@ -1675,7 +1739,7 @@ impl InstallationController {
         if !target.catalog45_selected_recovery_validation() {
             return Err(invalid());
         }
-        self.with_transition_key(token, key_path, staging, None, |service, profile, document, key| {
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, |service, profile, document, key| {
             let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
             let oex = oex_retained_cleanup::Selection::new(&selection.oex_job_id, &selection.oex_import_runtime_generation)?;
             let prefix = Path::new("blobs").join(&checkpoint.tenant_id).join("oex-staging").join(&selection.oex_job_id);
@@ -1698,7 +1762,7 @@ impl InstallationController {
             let selected = oex_retained_cleanup::Selected045::new(
                 oex, &selection.hayes_job_id, &selection.hayes_completion_frame_sha256, retired, absent_chunks, settled_only,
             )?;
-            service.activate_local_personal_runtime_transition(target, staging, key, true, document, None, Some((selected, prefix)))
+            service.activate_local_personal_runtime_transition(target, staging, key, true, document, TransitionRetention::None, Some((selected, prefix)))
         })
     }
 
@@ -1708,10 +1772,10 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
         saved_workspace_host: bool,
-        retained: Option<&RetainedProductImage>,
+        retained: TransitionRetention<'_>,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, retained, |service, _, _, key| {
-            service.recover_local_personal_runtime_transition(staging, key, saved_workspace_host, retained)
+        self.with_transition_key(token, key_path, staging, retained, |service, _, document, key| {
+            service.recover_local_personal_runtime_transition(staging, key, saved_workspace_host, retained, Some(document))
         })
     }
 
@@ -1798,6 +1862,70 @@ mod tests {
         changed = document.clone(); changed.saved_edit_version = Some(1);
         assert!(!gpu_empty_document((old, new), &changed, owner));
         assert_ne!(digest, saved_document_digest(&changed).unwrap());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn gpu_retention_checkpoint_seals_exact_proof_empty_document_and_forward_pair() {
+        let document = gpu_library_empty_document();
+        let old = crate::native_payload::GPU_MODEL_LEGACY_TARGET.2;
+        let new = crate::native_payload::GPU_MODEL_WRAPPING_TARGET.2;
+        let proof = RetainedGpuVariant { job_id: Uuid::new_v4().to_string(), transfer_sha256: "a".repeat(64) };
+        let value = serde_json::json!({
+            "source":"/synthetic/source", "staged":"/synthetic/staged",
+            "sourceIdentity":[1,2], "stagedIdentity":[1,3],
+            "workspaceId":document.workspace_id, "tenantId":document.tenant_id, "principalId":document.principal_id,
+            "ownerUid":501, "oldManifest":old, "newManifest":new, "files":{},
+            "savedDocumentSha256":saved_document_digest(&document).unwrap(), "retainedGpuVariant":proof,
+            "trial":false, "drainedFailure":null, "restore":null
+        });
+        let checkpoint: Checkpoint = serde_json::from_value(value.clone()).unwrap();
+        // This synthetic fixture tests sealed GPU state only. Full check_host
+        // additionally requires a captured furnishing/physical trial.
+        assert!(checkpoint.check_gpu_retention(true));
+        assert!(!checkpoint.check_gpu_retention(false));
+        check_transition_host((old, new), checkpoint.saved_document_sha256.as_deref(), true).unwrap();
+        assert!(check_transition_host((old, new), checkpoint.saved_document_sha256.as_deref(), false).is_err());
+        checkpoint.check_retained(TransitionRetention::GpuVariant(&proof)).unwrap();
+        assert!(checkpoint.check_retained(TransitionRetention::None).is_err());
+        checkpoint.check_retained_gpu_document(Some(&document)).unwrap();
+        assert!(checkpoint.check_retained_gpu_document(None).is_err());
+        let mut changed = document.clone(); changed.revision = 1;
+        assert_eq!(checkpoint.check_retained_gpu_document(Some(&changed)).unwrap_err().code,
+            "NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
+        let mut changed = proof.clone(); changed.transfer_sha256 = "b".repeat(64);
+        assert!(checkpoint.check_retained(TransitionRetention::GpuVariant(&changed)).is_err());
+        let key = [7; 32];
+        let sealed = seal(&checkpoint, &key).unwrap();
+        open(&sealed, &key).unwrap().check_retained(TransitionRetention::GpuVariant(&proof)).unwrap();
+        assert!(open(&sealed, &[8; 32]).is_err());
+        for pair in [(new, old), (old, old), (new, new), ("unknown", new)] {
+            let mut bad = value.clone(); bad["oldManifest"] = pair.0.into(); bad["newManifest"] = pair.1.into();
+            assert!(!serde_json::from_value::<Checkpoint>(bad).unwrap().check_gpu_retention(true));
+        }
+        for field in ["workspaceId", "tenantId", "principalId", "savedDocumentSha256"] {
+            let mut bad = value.clone(); bad[field] = "different".into();
+            assert!(!serde_json::from_value::<Checkpoint>(bad).unwrap().check_gpu_retention(true));
+        }
+        let image: RetainedProductImage = serde_json::from_value(serde_json::json!({
+            "jobId":proof.job_id, "artworkId":proof.job_id, "artworkRevision":1,
+            "uploadIdempotencyKey":"synthetic", "sourceSha256":"a".repeat(64), "sourceBytes":1,
+            "receiptSha256":"b".repeat(64), "transferSha256":"c".repeat(64),
+            "replacementRequestId":proof.job_id, "replacementAttemptPath":"/synthetic/attempt",
+            "replacementAttemptSha256":"d".repeat(64), "savedEtag":"synthetic"
+        })).unwrap();
+        assert!(TransitionRetention::from_proofs(Some(&image), Some(&proof)).is_err());
+        let mut mixed = value.clone(); mixed["retainedProductImage"] = serde_json::to_value(&image).unwrap();
+        assert!(!serde_json::from_value::<Checkpoint>(mixed).unwrap().check_gpu_retention(true));
+        let mut mixed = value.clone(); mixed["startupCancellation045"] = serde_json::json!({
+            "failedGeneration":proof.job_id, "hayesJobId":proof.job_id,
+            "hayesCompletionFrameSha256":"a".repeat(64), "savedEtag":"synthetic", "transferSha256":"b".repeat(64)
+        });
+        assert!(!serde_json::from_value::<Checkpoint>(mixed).unwrap().check_gpu_retention(true));
+        let mut legacy = value; legacy.as_object_mut().unwrap().remove("retainedGpuVariant");
+        let legacy: Checkpoint = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.retained_gpu_variant.is_none());
+        legacy.check_retained(TransitionRetention::None).unwrap();
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2007,7 +2135,7 @@ mod tests {
         let target = Arc::new(Payload::open(&path("EXHIBITOS_TEST_TARGET_PAYLOAD")).unwrap());
         let service = LifecycleService::bound_existing(root.clone()).unwrap();
         let (mut session, checkpoint, binding, _) = service
-            .trial_local_personal_runtime(target, &staging, key.0.as_slice().try_into().unwrap(), false, None, None)
+            .trial_local_personal_runtime(target, &staging, key.0.as_slice().try_into().unwrap(), false, TransitionRetention::None, None)
             .unwrap();
         assert_eq!(session.start().unwrap().state, "ready");
         let authoring = session.authoring_session().unwrap();
@@ -2332,7 +2460,7 @@ mod tests {
             }
             assert!(
                 controller
-                    .recover_local_personal_runtime_transition(token, &staged, &wrong_key_path, false, None)
+                    .recover_local_personal_runtime_transition(token, &staged, &wrong_key_path, false, TransitionRetention::None)
                     .is_err()
             );
             assert!(
@@ -2351,7 +2479,7 @@ mod tests {
                 assert!(inventory_with_limit(&root, false, original_bytes + pending_bytes).is_ok());
             }
             controller
-                .recover_local_personal_runtime_transition(token, &staged, &key_path, false, None)
+                .recover_local_personal_runtime_transition(token, &staged, &key_path, false, TransitionRetention::None)
                 .unwrap();
             assert_eq!(inventory(&root, false).unwrap(), checkpoint.files);
             assert!(service.personal_environment(&old, ports).is_ok());

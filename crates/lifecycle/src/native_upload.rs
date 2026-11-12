@@ -341,6 +341,12 @@ pub struct Transfer {
 }
 #[cfg(all(target_os = "macos", debug_assertions))]
 impl Transfer {
+    pub(super) fn matches_retained_gpu_variant(&self, proof: &super::native_maintenance::RetainedGpuVariant, journal: &[u8]) -> bool {
+        self.intent.is_none() && self.job_id.is_none() && self.file_name.is_none()
+            && self.compact_variant.is_none() && uuid(&proof.job_id) && hash_valid(&proof.transfer_sha256)
+            && digest(journal) == proof.transfer_sha256
+            && self.gpu_variant.as_ref().is_some_and(|gpu| gpu.job_id.as_deref() == Some(proof.job_id.as_str()))
+    }
     pub(super) fn matches_retained_product_image(&self, proof: &super::native_maintenance::RetainedProductImage) -> bool {
         let Some(intent) = &self.intent else { return false };
         let Some(preparation) = &intent.product_image_preparation else { return false };
@@ -962,6 +968,38 @@ mod tests {
 #[cfg(test)]
 mod gpu_variant_tests {
     use super::*;
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    #[test]
+    fn gpu_retention_preserves_bound_request_and_exact_whole_journal_bytes() {
+        let mut pending = state();
+        let job = Uuid::new_v4().to_string();
+        pending.gpu_variant.as_mut().unwrap().job_id = Some(job.clone());
+        validate(&pending).unwrap();
+        let bytes = serde_json::to_vec(&pending).unwrap();
+        let proof = super::super::native_maintenance::RetainedGpuVariant {
+            job_id: job, transfer_sha256: digest(&bytes),
+        };
+        assert!(pending.matches_retained_gpu_variant(&proof, &bytes));
+        // Even semantically equivalent reserialization changes the pinned journal.
+        let pretty = serde_json::to_vec_pretty(&pending).unwrap();
+        assert!(!pending.matches_retained_gpu_variant(&proof, &pretty));
+        let mut changed = pending.clone(); changed.revision += 1;
+        assert!(!changed.matches_retained_gpu_variant(&proof, &serde_json::to_vec(&changed).unwrap()));
+        let mut changed = pending.clone(); changed.gpu_variant.as_mut().unwrap().job_id = None;
+        assert!(!changed.matches_retained_gpu_variant(&proof, &bytes));
+        let mut changed = pending.clone(); changed.gpu_variant.as_mut().unwrap().job_id = Some(Uuid::new_v4().to_string());
+        assert!(!changed.matches_retained_gpu_variant(&proof, &bytes));
+        let mut changed = pending.clone(); changed.file_name = Some("source.glb".into());
+        assert!(!changed.matches_retained_gpu_variant(&proof, &bytes));
+        let mut changed = proof.clone(); changed.transfer_sha256 = "invalid".into();
+        assert!(!pending.matches_retained_gpu_variant(&changed, &bytes));
+        let mut changed = proof.clone(); changed.job_id = "invalid".into();
+        assert!(!pending.matches_retained_gpu_variant(&changed, &bytes));
+        for extra in ["workerDrained", "retry", "ready"] {
+            let mut value = serde_json::to_value(&proof).unwrap(); value[extra] = true.into();
+            assert!(serde_json::from_value::<super::super::native_maintenance::RetainedGpuVariant>(value).is_err());
+        }
+    }
     fn state() -> Transfer {
         let workspace = Uuid::new_v4().to_string();
         let tenant = Uuid::new_v4().to_string();
