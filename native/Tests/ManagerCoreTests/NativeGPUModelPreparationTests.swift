@@ -246,7 +246,7 @@ final class NativeGPUModelPreparationTests: XCTestCase {
     }
 
     @MainActor
-    func testOptInGPUPreviewPolicyPNGBlobResourceComparison() async throws {
+    func testOptInGPUPreviewPolicyPNGCurrentPolicyDecode() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let input = env["EXHIBITOS_WK_PNG_PATH"], let expected = env["EXHIBITOS_WK_PNG_SHA256"],
               let outputDirectory = env["EXHIBITOS_WK_PNG_OUTPUT_DIR"],
@@ -294,14 +294,6 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         let review = try NativeGPUModelReview(.object(["artworkId": .string(artwork), "revision": .integer(2), "jobId": .string(self.job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": .null]), artworkId: artwork, request: req, job: job)
         let preview = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review, epoch: owner, sequence: 1, requestId: UUID().uuidString.lowercased())
         let gpuRules = try NativeGPUCandidatePreviewPolicy.encodedRules(origin: "http://127.0.0.1:13200", request: preview, verifiedAssets: ["assets/index-123.js"])
-        let baseRules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(gpuRules.utf8)) as? [[String: Any]])
-        func variantRules(resourceType: String?) throws -> String {
-            var variant = baseRules
-            var trigger: [String: Any] = ["url-filter": "^blob:"]
-            if let resourceType { trigger["resource-type"] = [resourceType] }
-            variant.append(["trigger": trigger, "action": ["type": "ignore-previous-rules"]])
-            return String(decoding: try JSONSerialization.data(withJSONObject: variant, options: [.sortedKeys]), as: UTF8.self)
-        }
         let script = #"""
         const context = {userAgent:navigator.userAgent.slice(0,512),scheme:location.protocol,
           secureContext:isSecureContext,visibility:document.visibilityState,contentWorld:'page'};
@@ -324,8 +316,7 @@ final class NativeGPUModelPreparationTests: XCTestCase {
           return {context,decode:{status:phase==='decode'?'decoder-error':'script-error',name,bytes,wireVerified,blobSize}};
         }
         """#
-        let cases: [(String, String?)] = [("gpu-plus-blob-raw", try variantRules(resourceType: "raw")),
-                                          ("gpu-plus-blob-untyped", try variantRules(resourceType: nil))]
+        let cases: [(String, String?)] = [("production-gpu-rules", gpuRules)]
         var records: [[String: Any]] = []
         for (name, rules) in cases {
             let rulesSHA = SHA256.hash(data: Data((rules ?? "[]").utf8)).map { String(format: "%02x", $0) }.joined()
@@ -373,11 +364,15 @@ final class NativeGPUModelPreparationTests: XCTestCase {
             if records[index]["context"] == nil { records[index]["context"] = ["status":"unavailable"] }
         }
         let statuses = records.map { (($0["decode"] as? [String: Any])?["status"] as? String) ?? "host-invalid-result" }
-        let captured = statuses.count == 2 && statuses.allSatisfy { $0 == "success" || $0 == "decoder-error" }
+        let captured = statuses.count == 1 && statuses.allSatisfy { $0 == "success" || $0 == "decoder-error" }
         let report: [String: Any] = ["diagnosticCaptured":captured,
+            "productionPolicyDecodeSucceeded": captured && statuses == ["success"],
             "priorComparison": ["resultSHA256":"2e5a3be0153c2c9aa10f5c617aa891cc0b6d30e26d7910ab0ae4837d796e71e3",
                                 "diagnosticSHA256":"36fc2fcbb36d6ab676f08a8e8f69c0ef6e7cb233b3d2022f95723368f3ffa74f",
                                 "noRules":"success", "gpuRules":"InvalidStateError", "gpuPlusBlobImage":"InvalidStateError"],
+            "priorBlobVariants": ["resultSHA256":"2d51822c20a1e3661427c2f4cd50a32a3313380c212badf6e0d8202882017244",
+                                  "diagnosticSHA256":"0e679633d3e4a4ba8f5f0c44d17bb0abaefec7f67b084601071027d1b020a8f9",
+                                  "raw":"success", "untyped":"success"],
             "productQualification":false, "renderQualification":false, "inputSHA256":expected, "inputBytes":png.count,
             "os":ProcessInfo.processInfo.operatingSystemVersionString, "cases":records,
             "isolation":["websiteDataStore":"nonPersistent", "javaScriptCanOpenWindowsAutomatically":false,
@@ -411,6 +406,21 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         let origin = "http://127.0.0.1:13200"
         let rules = try NativeGPUCandidatePreviewPolicy.encodedRules(origin: origin, request: preview, verifiedAssets: ["assets/index-123.js"])
         let items = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(rules.utf8)) as? [[String: Any]])
+        let first = try XCTUnwrap(items.first)
+        XCTAssertEqual((first["trigger"] as? [String: Any])?["url-filter"] as? String, ".*")
+        XCTAssertEqual((first["action"] as? [String: Any])?["type"] as? String, "block")
+        let exceptions = try items.dropFirst().map { rule -> (String, [String]?) in
+            let trigger = try XCTUnwrap(rule["trigger"] as? [String: Any])
+            XCTAssertEqual((rule["action"] as? [String: Any])?["type"] as? String, "ignore-previous-rules")
+            return (try XCTUnwrap(trigger["url-filter"] as? String), trigger["resource-type"] as? [String])
+        }
+        let blobs = exceptions.filter { $0.0 == "^blob:" }
+        XCTAssertEqual(blobs.count, 1)
+        XCTAssertEqual(blobs.first?.1, ["raw"])
+        for (pattern, types) in exceptions where pattern != "^blob:" {
+            XCTAssertTrue(pattern.hasPrefix("^http://127\\.0\\.0\\.1:13200/"))
+            XCTAssertNil(types)
+        }
         let filters = try items.dropFirst().map { try XCTUnwrap(($0["trigger"] as? [String: Any])?["url-filter"] as? String) }
         func allows(_ path: String) -> Bool { filters.contains { (origin + path).range(of: $0, options: .regularExpression) != nil } }
         let prefix = "/api/v1/tenants/\(owner)/cms/artworks/\(artwork)/gpu-preparations/\(self.job)"

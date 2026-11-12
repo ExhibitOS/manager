@@ -68,6 +68,8 @@ public enum NativeGPUCandidatePreviewPolicy {
         for pattern in patterns {
             rules.append(["trigger": ["url-filter": pattern, "url-filter-is-case-sensitive": true], "action": ["type": "ignore-previous-rules"]])
         }
+        // WebKit's PNG Blob decoder reads through its raw resource class.
+        rules.append(["trigger": ["url-filter": "^blob:", "resource-type": ["raw"]], "action": ["type": "ignore-previous-rules"]])
         return String(decoding: try JSONSerialization.data(withJSONObject: rules), as: UTF8.self)
     }
 }
