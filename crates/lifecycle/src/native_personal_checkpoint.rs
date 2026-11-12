@@ -72,6 +72,10 @@ const CATALOG45_NATIVE_PUBLICATION_CHECKPOINT_MAX_BYTES: u64 = 4 * 1024 * 1024 *
 // Current saved demo data exceeds 5 GiB; inventory and copies remain streamed.
 // Only already admitted catalog45 handoffs use this bound and space checks remain.
 const CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES: u64 = 6 * 1024 * 1024 * 1024;
+// The already retained current carried profile exceeds the old 6 GiB bound.
+// Only its exact clean selected-PNG successor receives this bounded capacity.
+#[cfg(feature = "workspace-v5-owner-validation")]
+const CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024 * 1024;
 const DATA_DIRECTORIES: &[&str] = &["native-database", "blobs", "config"];
 const MEMBERS: &[&str] = &["native-database", "blobs", "config", "runtime.env", RECORD];
@@ -329,6 +333,12 @@ fn startup_cancellation_proof_matches(
 }
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if pair == (crate::native_payload::CATALOG45_SELECTED_PNG_READ_SOURCE.2,
+                crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2) && proof.is_none() {
+        return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
+    }
+
     #[cfg(feature = "workspace-v5-owner-validation")]
     if crate::native_payload::catalog45_adoption_handoff(pair)
         || FurnishingTransition::from_manifests(pair).is_some_and(|transition| matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. })) {
@@ -1955,6 +1965,21 @@ mod tests {
             assert!(!gpu_empty_document(pair, &changed, owner));
         }
         assert!(catalog45_activation_saved_document(pair, false, false, None, &document).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn selected_png_checkpoint_capacity_is_only_for_exact_clean_carried_pair() {
+        let source = crate::native_payload::CATALOG45_SELECTED_PNG_READ_SOURCE.2;
+        let target = crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), 8 * 1024 * 1024 * 1024);
+        for pair in [(target, source), (source, source), (target, target),
+                     (crate::native_payload::CATALOG45_DEFAULT_1_11_TARGET.2, target)] {
+            assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+        }
+        let old = (crate::native_payload::CATALOG45_FIXTURE_AUTHORING_TARGET.2,
+                   crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET.2);
+        assert_eq!(checkpoint_inventory_limit(old, None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]

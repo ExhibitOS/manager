@@ -5,6 +5,30 @@ import XCTest
 
 @MainActor
 final class NativeSceneAdmissionTests: XCTestCase {
+    func testSelectedPNGReadManifestIsExactAndDoesNotAdmitOtherRuntimeFamilies() throws {
+        let pin = "1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238"
+        XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: pin))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: pin))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: pin))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: pin))
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: pin))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: pin, ready: true))
+        for denied in [nil, "ac2248e1184ad4514f386ab6ee11b6ddd8bf2ca71792f4ec9eb9242e189724d7",
+                       "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84", String(repeating: "f", count: 64)] {
+            XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: denied))
+        }
+    }
+
+    func testDefault111OrdinaryEntryDoesNotEnableOptionalCatalogFamilies() {
+        let runtime = "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84"
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: runtime))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: runtime))
+        XCTAssertFalse(AuthoringAPI.supportsLargeModelRuntime(manifest: runtime))
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: runtime))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: runtime, ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: String(runtime.dropLast()) + "5"))
+    }
+
     private let owner = "10000000-0000-4000-8000-000000000001"
     private let manifest = "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
 

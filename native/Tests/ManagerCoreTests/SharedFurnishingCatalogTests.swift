@@ -21,6 +21,26 @@ final class SharedFurnishingCatalogTests: XCTestCase {
         XCTAssertThrowsError(try SharedFurnishingCommand(host: .bench, hostId: light, pose: command.pose, catalogId: "museum-wallwasher"))
         form.catalogId = "unknown"; XCTAssertThrowsError(try form.command())
     }
+    func testRecessedDownlightUsesOriginalAndSourceAperturePose() throws {
+        let light = "11111111-1111-4111-8111-111111111111"
+        var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
+        candidate["lights"] = .array([.object(["id": .string(light)])])
+        try draft.replaceCandidate(candidate)
+        var form = try SharedFurnishingFormBuffer(draft: draft, host: .light, hostId: light)
+        form.selected = true; form.catalogId = "recessed-downlight"; form.scale = "0.95"
+        let command = try form.command(locale: Locale(identifier: "en_US"))
+        let pose = try XCTUnwrap(command.pose)
+        XCTAssertEqual(pose.position[0], 0); XCTAssertEqual(pose.position[1], 0.0076, accuracy: 1e-12)
+        XCTAssertEqual(pose.position[2], 0); XCTAssertEqual(pose.yaw, 0)
+        let descriptor = try SharedFurnishingCatalog.descriptor(command.catalogId)
+        XCTAssertEqual(descriptor["functional"]["aim"], .vector([0, -1, 0]))
+        let asset = try SharedFurnishingCatalog.asset(catalogId: command.catalogId, id: light)
+        XCTAssertEqual(asset["sha256"], .string("041c6c2c340a039f1eb82f70d925c1ecbe913276deaba5b447e540d67fc2e7bf"))
+        XCTAssertEqual(asset["bytes"], .integer(86480))
+        XCTAssertEqual(asset["provenance"]["recipe"], .string("original-v1"))
+        XCTAssertEqual(asset["rights"]["notice"]["sha256"], .string("b878f7873013dd45d32bfd7d8003dfb7f57d5680d69e3ed3f24d461692bf7b8e"))
+        XCTAssertThrowsError(try SharedFurnishingCommand(host: .bench, hostId: light, pose: pose, catalogId: command.catalogId))
+    }
     func testConstrainedHostScaleDerivesPoseAndRetainsInvalidRawInput() throws {
         let light = "11111111-1111-4111-8111-111111111111", opening = "22222222-2222-4222-8222-222222222222"
         var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
@@ -43,11 +63,12 @@ final class SharedFurnishingCatalogTests: XCTestCase {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/shared-furnishing-catalog-fixture.json")
         var value = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: fixture))
         let rows = try SharedFurnishingCatalog.checkedCatalog(value)
-        XCTAssertEqual(Set(rows.compactMap { $0["catalogId"].string }), ["backless-oak-bench", "museum-track-spot", "museum-wallwasher", "gallery-open-portal", "rectangular-plinth"])
-        value["items"] = .array(Array(rows.reversed())); XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(value).count, 5)
+        XCTAssertEqual(Set(rows.compactMap { $0["catalogId"].string }), ["backless-oak-bench", "sculpture-bench-refined", "museum-track-spot", "recessed-downlight", "museum-wallwasher", "museum-wallwasher-rear-relief", "gallery-open-portal", "rectangular-plinth"])
+        value["items"] = .array(Array(rows.reversed())); XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(value).count, 8)
         var changed = rows; changed[0]["rights"]["licenseId"] = .string("unknown")
         value["items"] = .array(changed); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
-        value["items"] = .array([rows[0], rows[0], rows[2], rows[3], rows[4]]); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
+        var duplicate = rows; duplicate[1] = rows[0]
+        value["items"] = .array(duplicate); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
         value["items"] = .array(rows); value["extra"] = .bool(true); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
         let id = "33333333-3333-4333-8333-333333333333"
         let asset = try SharedFurnishingCatalog.asset(catalogId: "backless-oak-bench", id: id)
