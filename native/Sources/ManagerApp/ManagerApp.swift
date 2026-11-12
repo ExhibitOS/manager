@@ -221,10 +221,17 @@ final class ManagerModel: ObservableObject {
             } else {
                 invalidateRetainedAuthoring()
                 let generation = retainedAuthoringGeneration
+                authoringConnectionStatus = "작업 공간 연결을 준비하고 있습니다…"
                 credentials = try await bridge.authoringSession(context)
                 guard !quitting, generation == retainedAuthoringGeneration,
                       self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
-                await authoring.connect(credentials)
+                await authoring.connect(credentials) { [weak self] stage in
+                    guard let self, !self.quitting, generation == self.retainedAuthoringGeneration,
+                          self.context?.selectionToken == context.selectionToken,
+                          self.context?.activeId == context.activeId,
+                          self.native?.runtime?.jobId == runtimeJobID else { return }
+                    self.authoringConnectionStatus = stage.message
+                }
                 let checked = try await bridge.nativeStatus(context)
                 guard !quitting, generation == retainedAuthoringGeneration,
                       self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
