@@ -484,6 +484,8 @@ public actor AuthoringAPI {
         "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
     private static let fixtureAuthoringRuntimeManifestPin =
         "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"
+    private static let default111RuntimeManifestPin =
+        "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84"
     private static let default17RuntimeManifestPin =
         "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
     // Exact assembled parent045 +050 candidate. Dedicated adoption/preparation
@@ -3250,6 +3252,7 @@ public actor AuthoringAPI {
             || manifest == completeStaticRuntimeManifestPin
             || manifest == fixtureAuthoringRuntimeManifestPin
             || manifest == default17RuntimeManifestPin
+            || manifest == default111RuntimeManifestPin
             || manifest == furnishingThumbnail050RuntimeManifestPin
         #else
         false

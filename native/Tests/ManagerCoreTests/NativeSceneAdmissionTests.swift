@@ -5,6 +5,16 @@ import XCTest
 
 @MainActor
 final class NativeSceneAdmissionTests: XCTestCase {
+    func testDefault111OrdinaryEntryDoesNotEnableOptionalCatalogFamilies() {
+        let runtime = "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84"
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: runtime))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: runtime))
+        XCTAssertFalse(AuthoringAPI.supportsLargeModelRuntime(manifest: runtime))
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: runtime))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: runtime, ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: String(runtime.dropLast()) + "5"))
+    }
+
     private let owner = "10000000-0000-4000-8000-000000000001"
     private let manifest = "d6f8eb6a9abca42685de3b8d2671a63ab12795a45387129d76e4343874aa985f"
 
