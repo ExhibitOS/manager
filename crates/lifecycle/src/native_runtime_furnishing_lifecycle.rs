@@ -1762,16 +1762,42 @@ mod tests {
             target_system_identifier:"330".into(), provenance:None,
             carried_provenance:Some(serde_json::from_value(observation).unwrap()),
         });
+        let assert_carried_exchange = |value: &Binding| {
+            let exchange = Exchange::new(value, b"synthetic-050-writer-lease-transcript").unwrap();
+            let key = [0x55; 32];
+            let restore = value.restore.as_ref().unwrap();
+            for kind in [Kind::Admission, Kind::AdmissionAck, Kind::Stop, Kind::Drained] {
+                let bytes = exchange.signed(&key, kind)
+                    .expect("Binding-validated carried050 must sign every v4 exchange frame");
+                assert!(bytes.len() < LIMIT);
+                exchange.check_frame(&key, kind, &bytes).unwrap();
+                assert!(exchange.check_frame(&[0x56; 32], kind, &bytes).is_err());
+                let mut frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(frame["version"], 4);
+                assert_eq!(frame["admissionKind"], serde_json::to_value(value.admission_kind).unwrap());
+                assert!(frame.get("restoreProof").is_none());
+                assert!(frame.get("previousRuntimeGeneration").is_none());
+                assert_eq!(frame["carriedRestoreProof"]["restoreId"], restore.id);
+                assert_eq!(frame["carriedRestoreProof"]["backupId"], restore.backup_id);
+                assert_eq!(frame["carriedRestoreProof"]["authenticatedManifestSha256"], restore.archive_manifest_sha256);
+                assert_eq!(frame["carriedRestoreProof"]["observation"],
+                    serde_json::to_value(restore.carried_provenance.as_ref().unwrap()).unwrap());
+                frame["carriedRestoreProof"]["observation"]["provenanceTableSha256"] = "e".repeat(64).into();
+                assert!(exchange.check_frame(&key, kind, &serde_json::to_vec(&frame).unwrap()).is_err());
+            }
+        };
         let mut upgraded = pin(NEXT, 50, target);
         upgraded.consume_furnishing_transition(&prior, transition).unwrap();
         assert_eq!(upgraded.admission_kind, Admission::CatalogUpgrade045To050);
         assert_eq!(upgraded.restore, prior.restore);
         assert_eq!(upgraded.owner, prior.owner); assert_eq!(upgraded.physical, prior.physical);
+        assert_carried_exchange(&upgraded);
         upgraded.phase = Phase::Clean;
         let mut reopened = pin(LATER, 50, target);
         reopened.consume(&upgraded).unwrap();
         assert_eq!(reopened.admission_kind, Admission::CleanReopen);
         assert_eq!(reopened.restore, prior.restore);
+        assert_carried_exchange(&reopened);
         let mut wrong_archive = reopened.clone();
         wrong_archive.restore.as_mut().unwrap().archive_manifest_sha256 = "f".repeat(64);
         assert!(wrong_archive.check().is_err());
