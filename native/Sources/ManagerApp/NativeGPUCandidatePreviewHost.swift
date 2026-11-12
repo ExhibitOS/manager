@@ -33,6 +33,7 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
     private var task: Task<Void, Never>?
 
     #if DEBUG
+    private var decodeObservations = NativeGPUDecodeObservationLimiter()
     private enum StartupStage: String {
         case setup, ruleCompilation, cookie, pageMethodWait, capability, visibility
         case currentBefore, beginCall, readyShape, currentAfter, approvalAuthority
@@ -240,6 +241,9 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
         NotificationCenter.default.removeObserver(self)
         web?.stopLoading(); web?.navigationDelegate = nil
         web?.configuration.userContentController.removeScriptMessageHandler(forName: "exhibitosViewport")
+        #if DEBUG
+        web?.configuration.userContentController.removeScriptMessageHandler(forName: "exhibitosGPUDecodeObservation")
+        #endif
         web?.configuration.userContentController.removeAllContentRuleLists()
         web = nil; page = nil; message = "미리보기가 종료됐습니다."
     }
@@ -259,6 +263,20 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        #if DEBUG
+        if message.name == "exhibitosGPUDecodeObservation" {
+            guard let web, let page, message.webView === web, message.frameInfo.isMainFrame,
+                  message.frameInfo.request.url == page, web.url == page,
+                  message.frameInfo.securityOrigin.protocol == page.scheme,
+                  message.frameInfo.securityOrigin.host == page.host,
+                  message.frameInfo.securityOrigin.port == (page.port ?? (page.scheme == "https" ? 443 : 80)),
+                  let observation = decodeObservations.accept(message.body) else { return }
+            let visible = web.window?.isVisible == true && !web.isHiddenOrHasHiddenAncestor
+            Logger(subsystem: "org.exhibitos.manager.validation", category: "GPUCandidatePreviewStartup")
+                .notice("GPUDecodeObservation controller=\(self.id.uuidString, privacy: .public) receiptPageMatches=\(web.url == page, privacy: .public) receiptIsLoading=\(web.isLoading, privacy: .public) receiptWindowVisible=\(visible, privacy: .public) receiptBeginIssued=\(self.beginIssued, privacy: .public) receiptCancelled=\(self.cancelled, privacy: .public) receiptDrained=\(self.drained, privacy: .public) event=\(observation, privacy: .public)")
+            return
+        }
+        #endif
         guard message.name == "exhibitosViewport", message.frameInfo.isMainFrame, message.webView === web,
               let value = try? Self.value(message.body),
               lifecycle.acceptEnded(value) else { return }
@@ -291,6 +309,9 @@ struct NativeGPUCandidatePreviewView: NSViewRepresentable {
         let config = WKWebViewConfiguration(); config.websiteDataStore = .nonPersistent()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.userContentController.add(controller, name: "exhibitosViewport")
+        #if DEBUG
+        config.userContentController.add(controller, name: "exhibitosGPUDecodeObservation")
+        #endif
         let web = WKWebView(frame: .zero, configuration: config)
         web.setAccessibilityLabel("감상용 3D 파일 미리보기")
         controller.attach(web)
