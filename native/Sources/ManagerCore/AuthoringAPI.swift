@@ -1921,7 +1921,7 @@ public actor AuthoringAPI {
     }
     /// The independently verified B049 payload; discovery is not admission.
     public nonisolated static func supportsGPUModelPreparationRuntime(manifestSHA256: String?, ready: Bool) -> Bool {
-        ready && manifestSHA256 == "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377"
+        ready && manifestSHA256 == "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e"
     }
 
     public var admitsGPUModelPreparation: Bool {

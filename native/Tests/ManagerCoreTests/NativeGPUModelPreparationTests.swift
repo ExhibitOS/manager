@@ -5,8 +5,9 @@ import CryptoKit
 
 final class NativeGPUModelPreparationTests: XCTestCase {
     func testRuntimeQualificationRequiresExactVerifiedManifestAndReady() {
-        let manifest = "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377"
+        let manifest = "0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e"
         XCTAssertTrue(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377", ready: true))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: false))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: nil, ready: true))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: String(repeating: "a", count: 64), ready: true))
