@@ -140,7 +140,10 @@ public struct LightCommand: Equatable, Sendable {
             guard case .object = candidate["extensions"][template], case .bool = candidate["extensions"][template]["modified"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
             candidate["extensions"][template]["modified"] = .bool(true)
         }
-        if usesLightDetails {
+        let automatic = RoomBaseLightIntent.hasPlacementMarker(in: draft.candidate)
+            ? try NativeLightFixture.bindings(in: draft.candidate).first(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() })?["basePlacement"] == .string("auto")
+            : false
+        if usesLightDetails || automatic {
             candidate = try NativeLightFixture.applying(settings: detailsSettings(in: draft), to: candidate, base: draft, lightId: lightId)
         }
         guard try JSONEncoder().encode(candidate).count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
@@ -181,6 +184,8 @@ public struct LightCommand: Equatable, Sendable {
 /// No draft mutation while typing, including invalid or incomplete numbers.
 public struct LightFormBuffer: Equatable, Sendable {
     public let lightId: String
+    public let isRoomBaseLight: Bool
+    public let basePlacement: RoomBaseLightPlacement?
     public var type: NativeLightType
     public var red: String, green: String, blue: String
     public var colorMode: NativeLightColorMode
@@ -231,6 +236,8 @@ public struct LightFormBuffer: Equatable, Sendable {
         width = type == .area ? try text(row["dimensions"]["width"]) : "1.0"
         height = type == .area ? try text(row["dimensions"]["height"]) : "1.0"
         let settings = try? NativeLightFixture.settings(in: draft, lightId: selectedLightId)
+        isRoomBaseLight = settings?["purpose"] == .string("room-base")
+        basePlacement = settings?["basePlacement"].string.flatMap(RoomBaseLightPlacement.init(rawValue:))
         originalTemperature = settings?["temperatureKelvin"].double
         originalColor = try color.map { value in
             guard let n = value.double, n.isFinite else { throw LightCommand.invalid() }; return n

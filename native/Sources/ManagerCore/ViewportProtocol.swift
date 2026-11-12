@@ -7,7 +7,7 @@ public struct ViewportSelection: Codable, Equatable, Sendable {
     public let id: String
     public init(kind: String, id: String) { self.kind = kind; self.id = id }
     public func belongs(to draft: NativeExhibitionDraft) -> Bool {
-        let collection = ["room":"rooms", "surface":"surfaces", "opening":"openings", "placement":"placements"]
+        let collection = ["room":"rooms", "surface":"surfaces", "opening":"openings", "placement":"placements", "light":"lights"]
         guard let key = collection[kind], UUID(uuidString: id) != nil else { return false }
         return draft.candidate[key].items?.contains(where: { $0["id"].string == id }) == true
     }
@@ -80,7 +80,8 @@ public enum RoomBaseLightAction: Sendable {
                                "unit": .string("candela"), "castsShadow": .bool(false)]))
         var bindings = try NativeLightFixture.bindings(in: candidate)
         bindings.append(.object(["lightId": .string(lightId), "fixture": .string("none"),
-                                 "range": .number(min(50, max(0.1, width, depth, height))), "purpose": .string("room-base")]))
+                                 "range": .number(try RoomBaseLightIntent.range(width: width, height: height, depth: depth)),
+                                 "purpose": .string("room-base"), "basePlacement": .string("auto")]))
         let details: DocumentValue = .object(["version": .integer(1), "lights": .array(bindings)])
         guard bindings.count <= 32, try JSONEncoder().encode(details).count <= 16_384 else {
             throw AuthoringFailure("LIGHT_FIELDS_INVALID")
@@ -184,6 +185,10 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsPlinthEnvelopeAlign: Bool { accepted && capabilities?.contains("plinth-envelope-align-v1") == true }
     public var supportsSpaceSettings: Bool { accepted && capabilities?.contains("space-settings-v1") == true }
     public var supportsLightInspector: Bool { accepted && capabilities?.contains("light-inspector-v1") == true }
+    public var supportsLightObject: Bool {
+        accepted && boundedReadOnly == false && editingCapability == nil
+            && capabilities?.contains(LightObjectAuthoring.capability) == true
+    }
     public var supportsRoomBaseLight: Bool {
         accepted && boundedReadOnly == false && editingCapability == nil && capabilities?.contains(RoomBaseLightAction.profile) == true
     }

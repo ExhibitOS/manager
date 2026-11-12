@@ -65,6 +65,7 @@ public enum ArchitectureCommand: Equatable, Sendable {
         var expected = base.candidate
         var rows = expected[collection].items!
         rows[index] = row; expected[collection] = .array(rows)
+        if case .room(let id, _, _, _, _, _) = self { expected = try RoomBaseLightIntent.reflow(expected, roomId: id) }
         // Existing Platform applyGeometryCommand marks this exact provenance
         // flag after every command. No other extension change is permitted.
         let template = "org.exhibitos.studio/template"

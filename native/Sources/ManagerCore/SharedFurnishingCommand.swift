@@ -5,12 +5,15 @@ import Foundation
 public struct SharedFurnishingCommand: Equatable, Sendable {
     public enum Host: String, Sendable { case pedestal, bench, light, opening }
     public let host: Host, hostId: String, pose: FurnishingPose?
-    public var catalogId: String {
+    public let catalogId: String
+    private static func defaultCatalogId(_ host: Host) -> String {
         switch host { case .pedestal: "rectangular-plinth"; case .bench: "backless-oak-bench"; case .light: "museum-track-spot"; case .opening: "gallery-open-portal" }
     }
-    public init(host: Host, hostId: String, pose: FurnishingPose?) throws {
-        guard UUID(uuidString: hostId) != nil else { throw AuthoringFailure("FURNISHING_INVALID") }
-        self.host = host; self.hostId = hostId; self.pose = pose
+    public init(host: Host, hostId: String, pose: FurnishingPose?, catalogId: String? = nil) throws {
+        let catalog = catalogId ?? Self.defaultCatalogId(host)
+        guard UUID(uuidString: hostId) != nil,
+              try SharedFurnishingCatalog.descriptor(catalog)["hostKinds"].items == [.string(host.rawValue)] else { throw AuthoringFailure("FURNISHING_INVALID") }
+        self.host = host; self.hostId = hostId; self.pose = pose; self.catalogId = catalog
     }
     public var value: DocumentValue {
         var fields: [String: DocumentValue] = ["type": .string(pose == nil ? "remove-furnishing-visual" : "set-furnishing-visual"), "hostKind": .string(host.rawValue), "hostId": .string(hostId)]
@@ -58,8 +61,8 @@ public struct SharedFurnishingPreview: Equatable, Sendable {
                   let host = binding["hostId"].string, UUID(uuidString: host) != nil, let assetId = binding["assetId"].string,
                   let asset = assets.first(where: { same($0["id"].string, assetId) }),
                   try hostExists(kind, id: host, draft: draft), hosts.insert(rawKind + ":" + host.lowercased()).inserted else { throw AuthoringFailure("FURNISHING_INVALID") }
-            let check = try SharedFurnishingCommand(host: kind, hostId: host, pose: nil)
-            guard asset["catalogId"].string == check.catalogId else { throw AuthoringFailure("FURNISHING_INVALID") }
+            guard let catalog = asset["catalogId"].string else { throw AuthoringFailure("FURNISHING_INVALID") }
+            _ = try SharedFurnishingCommand(host: kind, hostId: host, pose: nil, catalogId: catalog)
             _ = try FurnishingPose(binding["pose"]); used.insert(assetId.lowercased())
         }
         guard used == ids else { throw AuthoringFailure("FURNISHING_INVALID") }
@@ -69,6 +72,12 @@ public struct SharedFurnishingPreview: Equatable, Sendable {
         guard try hostExists(host, id: id, draft: draft) else { throw AuthoringFailure("FURNISHING_INVALID") }
         let meta = try metadata(draft)
         return try meta.bindings.first(where: { $0["hostKind"] == .string(host.rawValue) && same($0["hostId"].string, id) }).map { try FurnishingPose($0["pose"]) }
+    }
+    public static func catalogId(in draft: NativeExhibitionDraft, host: SharedFurnishingCommand.Host, id: String) throws -> String? {
+        guard try hostExists(host, id: id, draft: draft) else { throw AuthoringFailure("FURNISHING_INVALID") }
+        let meta = try metadata(draft)
+        guard let binding = meta.bindings.first(where: { $0["hostKind"] == .string(host.rawValue) && same($0["hostId"].string, id) }) else { return nil }
+        return meta.assets.first(where: { same($0["id"].string, binding["assetId"].string) })?["catalogId"].string
     }
     public init(candidate: DocumentValue, base: NativeExhibitionDraft, command: SharedFurnishingCommand) throws {
         guard try JSONEncoder().encode(candidate).count <= 1_048_576,
@@ -148,12 +157,15 @@ public struct SharedFurnishingPreview: Equatable, Sendable {
 public struct SharedFurnishingFormBuffer: Equatable, Sendable {
     public let host: SharedFurnishingCommand.Host, hostId: String
     public var selected: Bool
+    public var catalogId: String
     public var x: String, y: String, z: String, yawDegrees: String, scale: String
     private let initialPose: FurnishingPose?, initialYaw: String
     private let openingOffset: [Double]?
     public init(draft: NativeExhibitionDraft, host: SharedFurnishingCommand.Host, hostId: String) throws {
         let pose = try SharedFurnishingPreview.pose(in: draft, host: host, id: hostId)
         self.host = host; self.hostId = hostId; selected = pose != nil; initialPose = pose
+        catalogId = try SharedFurnishingPreview.catalogId(in: draft, host: host, id: hostId)
+            ?? SharedFurnishingCommand(host: host, hostId: hostId, pose: nil).catalogId
         if host == .opening, let row = draft.candidate["openings"].items?.first(where: { $0["id"].string == hostId }),
            let values = row["offset"].items, values.count == 2, values.allSatisfy({ $0.double?.isFinite == true }) {
             openingOffset = values.compactMap(\.double)
@@ -178,7 +190,7 @@ public struct SharedFurnishingFormBuffer: Equatable, Sendable {
         initialYaw = yawDegrees
     }
     public func command(locale: Locale = .current) throws -> SharedFurnishingCommand {
-        if !selected { return try .init(host: host, hostId: hostId, pose: nil) }
+        if !selected { return try .init(host: host, hostId: hostId, pose: nil, catalogId: catalogId) }
         func number(_ raw: String) throws -> Double {
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: locale.decimalSeparator ?? ".", with: ".")
             guard let value = Double(text), value.isFinite else { throw AuthoringFailure("FURNISHING_FIELDS_INVALID") }
@@ -188,7 +200,7 @@ public struct SharedFurnishingFormBuffer: Equatable, Sendable {
         let position: [Double], yaw: Double
         switch host {
         case .light:
-            let aperture = try SharedFurnishingCatalog.descriptor("museum-track-spot")["functional"]["apertureCentre"].items?.compactMap(\.double)
+            let aperture = try SharedFurnishingCatalog.descriptor(catalogId)["functional"]["apertureCentre"].items?.compactMap(\.double)
             guard let aperture, aperture.count == 3 else { throw AuthoringFailure("FURNISHING_INVALID") }
             position = aperture.map { -$0 * factor }; yaw = 0
         case .opening:
@@ -199,6 +211,6 @@ public struct SharedFurnishingFormBuffer: Equatable, Sendable {
             position = try [number(x), number(y), number(z)]
             yaw = yawDegrees == initialYaw && initialPose != nil ? initialPose!.yaw : try number(yawDegrees) * .pi / 180
         }
-        return try .init(host: host, hostId: hostId, pose: FurnishingPose(position: position, yaw: yaw, scale: factor))
+        return try .init(host: host, hostId: hostId, pose: FurnishingPose(position: position, yaw: yaw, scale: factor), catalogId: catalogId)
     }
 }

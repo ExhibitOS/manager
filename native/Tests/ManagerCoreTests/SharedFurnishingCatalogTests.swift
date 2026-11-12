@@ -3,6 +3,24 @@ import XCTest
 @testable import ManagerCore
 
 final class SharedFurnishingCatalogTests: XCTestCase {
+    func testExplicitLightCatalogSelectionBindsPreparedSourceAndCurrentNotice() throws {
+        let light = "11111111-1111-4111-8111-111111111111"
+        var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
+        candidate["lights"] = .array([.object(["id": .string(light)])])
+        try draft.replaceCandidate(candidate)
+        var form = try SharedFurnishingFormBuffer(draft: draft, host: .light, hostId: light)
+        form.selected = true; form.catalogId = "museum-wallwasher"
+        let command = try form.command()
+        XCTAssertEqual(command.catalogId, "museum-wallwasher")
+        XCTAssertEqual(command.value["catalogId"], .string("museum-wallwasher"))
+        let asset = try SharedFurnishingCatalog.asset(catalogId: command.catalogId, id: light)
+        XCTAssertEqual(asset["sha256"], .string("a4b66294c77e206a574905e12680148129f914d368add947f1c8831c64bf3f4d"))
+        XCTAssertEqual(asset["provenance"]["sourceSha256"], .string("d85d9d1823c49bef412a23a59e238104f5b8ad342d8e8149efaf8d1110dc3290"))
+        XCTAssertEqual(asset["provenance"]["recipe"], .string("omit-unused-tangent-v1"))
+        XCTAssertEqual(asset["rights"]["notice"]["sha256"], .string("b40713d9c089649c71aeed2c8fced9d9274612ef376b77d19ab5f6becd5b0cf3"))
+        XCTAssertThrowsError(try SharedFurnishingCommand(host: .bench, hostId: light, pose: command.pose, catalogId: "museum-wallwasher"))
+        form.catalogId = "unknown"; XCTAssertThrowsError(try form.command())
+    }
     func testConstrainedHostScaleDerivesPoseAndRetainsInvalidRawInput() throws {
         let light = "11111111-1111-4111-8111-111111111111", opening = "22222222-2222-4222-8222-222222222222"
         var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
@@ -25,11 +43,11 @@ final class SharedFurnishingCatalogTests: XCTestCase {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/shared-furnishing-catalog-fixture.json")
         var value = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: fixture))
         let rows = try SharedFurnishingCatalog.checkedCatalog(value)
-        XCTAssertEqual(Set(rows.compactMap { $0["catalogId"].string }), ["backless-oak-bench", "museum-track-spot", "gallery-open-portal", "rectangular-plinth"])
-        value["items"] = .array(Array(rows.reversed())); XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(value).count, 4)
+        XCTAssertEqual(Set(rows.compactMap { $0["catalogId"].string }), ["backless-oak-bench", "museum-track-spot", "museum-wallwasher", "gallery-open-portal", "rectangular-plinth"])
+        value["items"] = .array(Array(rows.reversed())); XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(value).count, 5)
         var changed = rows; changed[0]["rights"]["licenseId"] = .string("unknown")
         value["items"] = .array(changed); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
-        value["items"] = .array([rows[0], rows[0], rows[2], rows[3]]); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
+        value["items"] = .array([rows[0], rows[0], rows[2], rows[3], rows[4]]); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
         value["items"] = .array(rows); value["extra"] = .bool(true); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
         let id = "33333333-3333-4333-8333-333333333333"
         let asset = try SharedFurnishingCatalog.asset(catalogId: "backless-oak-bench", id: id)

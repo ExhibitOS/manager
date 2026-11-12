@@ -28,6 +28,7 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
         for row in rows {
             guard case .object = row, let id = row["lightId"].string, UUID(uuidString: id) != nil,
                   seen.insert(id.lowercased()).inserted else { throw invalid() }
+            try RoomBaseLightIntent.checkMarker(row)
         }
         return rows
     }
@@ -39,9 +40,10 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
             return .object(["fixture": .string(Self.none.rawValue)])
         }
         guard case .object(var fields) = row,
-              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose"]),
+              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement"]),
               fields["purpose"].map({ $0 == .string("room-base") }) ?? true,
               row["fixture"].string.flatMap(Self.init(rawValue:)) != nil else { throw invalid() }
+        try RoomBaseLightIntent.checkMarker(row)
         fields.removeValue(forKey: "lightId")
         return .object(fields)
     }
@@ -55,7 +57,15 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
         try Self.applying(settings: settings(in: base, lightId: lightId, type: type), to: candidate, base: base, lightId: lightId)
     }
     static func applying(settings input: DocumentValue, to candidate: DocumentValue, base: NativeExhibitionDraft, lightId: String) throws -> DocumentValue {
-        var settings = input
+        guard let light = candidate["lights"].items?.first(where: { $0["id"].string?.lowercased() == lightId.lowercased() }) else { throw Self.invalid() }
+        var settings: DocumentValue
+        if let original = base.candidate["lights"].items?.first(where: { $0["id"].string?.lowercased() == lightId.lowercased() }) {
+            settings = try RoomBaseLightIntent.settingsForEdit(input, light: light, original: original, base: base.candidate)
+        } else {
+            // The existing admitted light-addition path has no previous intent.
+            // It must not borrow metadata from another light or infer placement.
+            try RoomBaseLightIntent.checkMarker(input); settings = input
+        }
         settings["lightId"] = .string(lightId)
         var rows = try Self.bindings(in: base.candidate)
         if let index = rows.firstIndex(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() }) { rows[index] = settings }
