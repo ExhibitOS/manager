@@ -10,7 +10,7 @@ public actor NativeAutomationSession {
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
-        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check", "workspace-bench-visual-check",
+        "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check", "workspace-bench-visual-check", "shared-furnishing-catalog-read",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
         "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
         "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
@@ -470,6 +470,16 @@ public actor NativeAutomationSession {
     }
     private func checkedRevision(_ request: DocumentValue, _ state: NativeDocumentState) throws {
         try Self.checkDocumentRevision(request, state)
+    }
+    static func sharedBenchCommand(_ value: DocumentValue) throws -> SharedFurnishingCommand {
+        guard case .object(let fields) = value,
+              Set(fields.keys) == ["hostId", "pose"] || Set(fields.keys) == ["hostId", "pose", "catalogId"],
+              let hostId = value["hostId"].string,
+              fields["catalogId"] == nil || fields["catalogId"]?.string != nil else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        return try SharedFurnishingCommand(host: .bench, hostId: hostId, pose: FurnishingPose(value["pose"]),
+                                           catalogId: value["catalogId"].string)
     }
     private static func checkDocumentRevision(_ request: DocumentValue, _ state: NativeDocumentState) throws {
         guard case .object(let fields) = request, fields["expectedRevision"] != nil, fields["expectedEditVersion"] != nil,
@@ -1672,6 +1682,10 @@ public actor NativeAutomationSession {
             let extra: Set<String> = operation == "shared-bench-prepare" ? ["command", "outputPath"] : ["proposalId", "inputPath"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
+        if operation == "shared-furnishing-catalog-read" {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId"]
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
         if ["workspace-bench-seat-attach", "workspace-default-seat-reconcile",
             "workspace-bench-visual-check", "workspace-bench-visual-replace"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
@@ -1861,6 +1875,8 @@ public actor NativeAutomationSession {
         case "thumbnail-prepare", "thumbnail-status", "thumbnail-select":
             result = try await thumbnailCandidate(request, id: id, context: context, api: api, current: current)
         case "read": result = try await statusValue()
+        case "shared-furnishing-catalog-read":
+            result = .object(["version": .integer(1), "items": .array(try await api.sharedFurnishings())])
         case "artwork-finish-reviewed":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId", "artworkRevision"])
@@ -2874,20 +2890,18 @@ public actor NativeAutomationSession {
         case "shared-bench-prepare":
             try checkedRevision(request, current)
             try await checkSavedEditPolicy(current, api: api)
-            let fields = try NativeAutomationArtworkRules.command(request, keys: ["hostId", "pose"])
             guard current.pending == nil, let draft = current.draft, let etag = current.etag,
-                  let hostId = fields["hostId"].string, let path = request["outputPath"].string,
+                  let path = request["outputPath"].string,
                   request["inputPath"] == .null else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let pose = try FurnishingPose(fields["pose"])
-            let command = try SharedFurnishingCommand(host: .bench, hostId: hostId, pose: pose)
+            let command = try Self.sharedBenchCommand(request["command"])
             let catalog = try await api.sharedFurnishings()
-            guard catalog.contains(where: { $0["catalogId"] == .string("backless-oak-bench") && $0["catalogVersion"] == .integer(1) }) else {
+            guard catalog.contains(where: { $0["catalogId"] == .string(command.catalogId) && $0["catalogVersion"] == .integer(1) }) else {
                 throw BridgeFailure("FURNISHING_CATALOG_INVALID")
             }
             let frame = ViewportFrame(epoch: capability, sequence: 1, tenantId: current.tenantId, principalId: current.principalId,
                 draft: draft, selection: nil, mode: "translate", view: "isometric", disabled: false,
                 workspaceId: current.workspaceId, baseETag: etag)
-            let proposal = try SharedFurnishingViewportRequest(frame: frame, command: command, selectedInspectorId: hostId)
+            let proposal = try SharedFurnishingViewportRequest(frame: frame, command: command, selectedInspectorId: command.hostId)
             result = try write(.object(["version": .integer(1), "operation": .string("shared-furnishing-proposal"),
                 "frame": try value(frame), "request": proposal.value]), to: path)
             sharedBenchProposals[id] = proposal

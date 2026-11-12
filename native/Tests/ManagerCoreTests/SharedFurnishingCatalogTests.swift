@@ -3,6 +3,26 @@ import XCTest
 @testable import ManagerCore
 
 final class SharedFurnishingCatalogTests: XCTestCase {
+    func testAutomationBenchCommandUsesClosedOptionalCatalogSelection() throws {
+        let id = "11111111-1111-4111-8111-111111111111"
+        let pose = try FurnishingPose(position: [0, 0, 0], yaw: 0, scale: 1)
+        let legacy: DocumentValue = .object(["hostId": .string(id), "pose": pose.value])
+        let omitted = try NativeAutomationSession.sharedBenchCommand(legacy)
+        XCTAssertEqual(omitted.catalogId, "backless-oak-bench")
+        var explicit = legacy; explicit["catalogId"] = .string("backless-oak-bench")
+        XCTAssertEqual(try NativeAutomationSession.sharedBenchCommand(explicit), omitted)
+        for invalid in [DocumentValue.string("museum-wallwasher"), .string("unknown"), .null, .integer(1)] {
+            var command = legacy; command["catalogId"] = invalid
+            XCTAssertThrowsError(try NativeAutomationSession.sharedBenchCommand(command))
+        }
+        var extra = legacy; extra["draft"] = .null
+        XCTAssertThrowsError(try NativeAutomationSession.sharedBenchCommand(extra))
+        var missing = legacy
+        if case .object(var fields) = missing { fields.removeValue(forKey: "pose"); missing = .object(fields) }
+        XCTAssertThrowsError(try NativeAutomationSession.sharedBenchCommand(missing))
+        let request = Data("catalog-read".utf8)
+        XCTAssertNil(try NativeAutomationSession.replayResponse(for: "shared-furnishing-catalog-read", prior: (request, .null), matching: request))
+    }
     func testExplicitLightCatalogSelectionBindsPreparedSourceAndCurrentNotice() throws {
         let light = "11111111-1111-4111-8111-111111111111"
         var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
