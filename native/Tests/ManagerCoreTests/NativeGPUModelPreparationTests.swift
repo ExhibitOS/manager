@@ -246,7 +246,7 @@ final class NativeGPUModelPreparationTests: XCTestCase {
     }
 
     @MainActor
-    func testOptInGPUPreviewPolicyPNGDecodeComparison() async throws {
+    func testOptInGPUPreviewPolicyPNGBlobResourceComparison() async throws {
         let env = ProcessInfo.processInfo.environment
         guard let input = env["EXHIBITOS_WK_PNG_PATH"], let expected = env["EXHIBITOS_WK_PNG_SHA256"],
               let outputDirectory = env["EXHIBITOS_WK_PNG_OUTPUT_DIR"],
@@ -294,9 +294,14 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         let review = try NativeGPUModelReview(.object(["artworkId": .string(artwork), "revision": .integer(2), "jobId": .string(self.job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": .null]), artworkId: artwork, request: req, job: job)
         let preview = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review, epoch: owner, sequence: 1, requestId: UUID().uuidString.lowercased())
         let gpuRules = try NativeGPUCandidatePreviewPolicy.encodedRules(origin: "http://127.0.0.1:13200", request: preview, verifiedAssets: ["assets/index-123.js"])
-        var variant = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(gpuRules.utf8)) as? [[String: Any]])
-        variant.append(["trigger": ["url-filter": "^blob:", "resource-type": ["image"]], "action": ["type": "ignore-previous-rules"]])
-        let variantRules = String(decoding: try JSONSerialization.data(withJSONObject: variant, options: [.sortedKeys]), as: UTF8.self)
+        let baseRules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(gpuRules.utf8)) as? [[String: Any]])
+        func variantRules(resourceType: String?) throws -> String {
+            var variant = baseRules
+            var trigger: [String: Any] = ["url-filter": "^blob:"]
+            if let resourceType { trigger["resource-type"] = [resourceType] }
+            variant.append(["trigger": trigger, "action": ["type": "ignore-previous-rules"]])
+            return String(decoding: try JSONSerialization.data(withJSONObject: variant, options: [.sortedKeys]), as: UTF8.self)
+        }
         let script = #"""
         const context = {userAgent:navigator.userAgent.slice(0,512),scheme:location.protocol,
           secureContext:isSecureContext,visibility:document.visibilityState,contentWorld:'page'};
@@ -319,7 +324,8 @@ final class NativeGPUModelPreparationTests: XCTestCase {
           return {context,decode:{status:phase==='decode'?'decoder-error':'script-error',name,bytes,wireVerified,blobSize}};
         }
         """#
-        let cases: [(String, String?)] = [("no-rules", nil), ("gpu-rules", gpuRules), ("gpu-plus-blob-image", variantRules)]
+        let cases: [(String, String?)] = [("gpu-plus-blob-raw", try variantRules(resourceType: "raw")),
+                                          ("gpu-plus-blob-untyped", try variantRules(resourceType: nil))]
         var records: [[String: Any]] = []
         for (name, rules) in cases {
             let rulesSHA = SHA256.hash(data: Data((rules ?? "[]").utf8)).map { String(format: "%02x", $0) }.joined()
@@ -367,9 +373,11 @@ final class NativeGPUModelPreparationTests: XCTestCase {
             if records[index]["context"] == nil { records[index]["context"] = ["status":"unavailable"] }
         }
         let statuses = records.map { (($0["decode"] as? [String: Any])?["status"] as? String) ?? "host-invalid-result" }
-        let captured = statuses.count == 3 && statuses.allSatisfy { $0 == "success" || $0 == "decoder-error" }
-        let reproduced = captured && statuses == ["success", "decoder-error", "success"]
-        let report: [String: Any] = ["diagnosticCaptured":captured, "policyInteractionReproduced":reproduced,
+        let captured = statuses.count == 2 && statuses.allSatisfy { $0 == "success" || $0 == "decoder-error" }
+        let report: [String: Any] = ["diagnosticCaptured":captured,
+            "priorComparison": ["resultSHA256":"2e5a3be0153c2c9aa10f5c617aa891cc0b6d30e26d7910ab0ae4837d796e71e3",
+                                "diagnosticSHA256":"36fc2fcbb36d6ab676f08a8e8f69c0ef6e7cb233b3d2022f95723368f3ffa74f",
+                                "noRules":"success", "gpuRules":"InvalidStateError", "gpuPlusBlobImage":"InvalidStateError"],
             "productQualification":false, "renderQualification":false, "inputSHA256":expected, "inputBytes":png.count,
             "os":ProcessInfo.processInfo.operatingSystemVersionString, "cases":records,
             "isolation":["websiteDataStore":"nonPersistent", "javaScriptCanOpenWindowsAutomatically":false,
