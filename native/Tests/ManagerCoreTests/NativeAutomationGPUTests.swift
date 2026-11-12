@@ -31,6 +31,49 @@ final class NativeAutomationGPUTests: XCTestCase {
         XCTAssertFalse(admitted)
     }
 
+    func testAdmissionRequiresNativeSessionExactManifestAndProfile() async throws {
+        let tenant = UUID().uuidString.lowercased(), user = UUID().uuidString.lowercased()
+        let manifest = "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377"
+        let credentials = LocalAuthoringSession(tenantId: tenant, principalId: user, origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43))
+        for (pin, profile, expected) in [(manifest, NativeGPUModelPreparation.profile, true),
+                                         (manifest, "wrong-profile", false),
+                                         (manifest, nil, false),
+                                         (String(repeating: "a", count: 64), NativeGPUModelPreparation.profile, false),
+                                         (nil, NativeGPUModelPreparation.profile, false)] as [(String?, String?, Bool)] {
+            var fields: [String: Any] = ["tenantId": tenant, "userId": user, "role": "admin", "csrfToken": "synthetic", "expiresAt": "2099-01-01T00:00:00Z"]
+            if let profile { fields["nativeGpuModelPreparationProfile"] = profile }
+            let session = try JSONSerialization.data(withJSONObject: fields)
+            GPUMockProtocol.configure { request in
+                if request.url?.path == "/api/v1/auth/session" { return (200, session) }
+                if request.url?.path == "/api/v1/auth/logout" { return (200, Data("{\"loggedOut\":true}".utf8)) }
+                return (403, Data("{}".utf8))
+            }
+            let api = try AuthoringAPI(port: 18091, tenantId: tenant, nativeRuntimeManifestSHA256: pin, protocolClasses: [GPUMockProtocol.self])
+            let before = await api.admitsGPUModelPreparation
+            XCTAssertFalse(before)
+            _ = try await api.connect(credentials)
+            let connected = await api.admitsGPUModelPreparation
+            XCTAssertEqual(connected, expected)
+            try await api.logout()
+            let after = await api.admitsGPUModelPreparation
+            XCTAssertFalse(after)
+        }
+        GPUMockProtocol.configure(nil)
+    }
+
+    func testPasswordSessionDoesNotGainNativeAdmission() async throws {
+        let tenant = UUID().uuidString.lowercased(), user = UUID().uuidString.lowercased()
+        let session = try JSONSerialization.data(withJSONObject: ["tenantId": tenant, "userId": user, "role": "admin", "csrfToken": "synthetic", "expiresAt": "2099-01-01T00:00:00Z", "nativeGpuModelPreparationProfile": NativeGPUModelPreparation.profile])
+        GPUMockProtocol.configure { request in
+            request.url?.path == "/api/v1/auth/login" ? (200, Data("{\"authenticated\":true}".utf8)) : (200, session)
+        }
+        defer { GPUMockProtocol.configure(nil) }
+        let api = try AuthoringAPI(port: 18091, tenantId: tenant, nativeRuntimeManifestSHA256: "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377", protocolClasses: [GPUMockProtocol.self])
+        _ = try await api.login(subject: "synthetic", password: "synthetic")
+        let admitted = await api.admitsGPUModelPreparation
+        XCTAssertFalse(admitted)
+    }
+
     func testOwnedCancelDoesNotRequireCapabilityOrStatusPreflight() async throws {
         let tenant = UUID().uuidString.lowercased(), user = UUID().uuidString.lowercased()
         let artwork = UUID().uuidString.lowercased(), asset = UUID().uuidString.lowercased(), job = UUID().uuidString.lowercased()

@@ -87,8 +87,10 @@ final class AuthoringModel: ObservableObject {
     @Published private(set) var gpuJob: NativeGPUModelPreparationJob?
     @Published private(set) var gpuPreview: NativeGPUCandidatePreviewController?
     var gpuTransfer: NativeGPUModelPreparationTransfer? { transfer?.gpuVariant }
-    // Closed until the parent admits the exact matching runtime family.
-    private var gpuRuntimeQualified: Bool { false }
+    private var gpuRuntimeQualified: Bool {
+        AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: runtimeManifestSHA256,
+                                                        ready: available && runtimeJobID != nil)
+    }
     var canPrepareGPUModel: Bool {
         gpuRuntimeQualified && session?.nativeGpuModelPreparationProfile == NativeGPUModelPreparation.profile
             && transfer != nil && transfer?.intent == nil && transfer?.jobId == nil && compactTransfer == nil
@@ -1258,7 +1260,8 @@ extension AuthoringModel {
                   self.runtimeManifestSHA256 == manifest, self.gpuPreview == nil else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
             let request = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review,
                 epoch: UUID().uuidString.lowercased(), sequence: 1, requestId: UUID().uuidString.lowercased())
-            gpuPreview = NativeGPUCandidatePreviewController(credentials: credentials, assets: assets, request: request) { [weak self] in
+            gpuPreview = NativeGPUCandidatePreviewController(credentials: credentials, assets: assets, request: request,
+                                                              transfer: transfer, session: session, manifest: manifest) { [weak self] in
                 guard let self, self.api === api, self.gpuTransfer == transfer, self.selected?.id == transfer.artworkId,
                       self.session?.userId == session.userId, self.session?.tenantId == session.tenantId,
                       self.session?.role == session.role, self.session?.csrfToken == session.csrfToken, self.session?.expiresAt == session.expiresAt,
@@ -1277,6 +1280,44 @@ extension AuthoringModel {
     func releaseGPUPreview() {
         guard gpuPreview?.drained == true else { return }
         gpuPreview = nil
+    }
+
+    func approveGPUPreview(_ preview: NativeGPUCandidatePreviewController) async {
+        await action {
+            guard gpuPreview === preview, let api, let transfer = gpuTransfer,
+                  selected?.id == transfer.artworkId, !metadataDirty,
+                  let authority = preview.claimApproval() else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+            do {
+                _ = try await api.approveGPUModelPreparation(transfer: transfer, authority: authority)
+                guard self.api === api, gpuTransfer == transfer else { throw AuthoringFailure("GPU_APPROVAL_OUTCOME_UNKNOWN") }
+                let artwork = try await api.artwork(transfer.artworkId)
+                guard self.api === api, gpuTransfer == transfer, selected?.id == transfer.artworkId,
+                      artwork.approvedRevision == transfer.request.revision + 1,
+                      artwork.approvedAssetId?.lowercased() == transfer.request.assetId.lowercased() else { throw AuthoringFailure("GPU_APPROVAL_OUTCOME_UNKNOWN") }
+                selected = artwork; preview.approvalFinished(verified: true, uncertain: false)
+                notice = "원본 모델을 유지하고 감상용 파일을 승인했습니다."
+            } catch {
+                guard self.api === api, gpuTransfer == transfer else { throw error }
+                if authority.wasDispatched {
+                    let confirmed = (try? await api.reconcileGPUModelApproval(transfer: transfer)) == true
+                    guard self.api === api, gpuTransfer == transfer else { throw AuthoringFailure("GPU_APPROVAL_OUTCOME_UNKNOWN") }
+                    if confirmed {
+                        let artwork = try await api.artwork(transfer.artworkId)
+                        guard self.api === api, gpuTransfer == transfer, selected?.id == transfer.artworkId,
+                              artwork.approvedRevision == transfer.request.revision + 1,
+                              artwork.approvedAssetId?.lowercased() == transfer.request.assetId.lowercased() else { throw AuthoringFailure("GPU_APPROVAL_OUTCOME_UNKNOWN") }
+                        selected = artwork; preview.approvalFinished(verified: true, uncertain: false)
+                        notice = "원본 모델을 유지하고 감상용 파일이 승인된 것을 확인했습니다."
+                    } else {
+                        preview.approvalFinished(verified: false, uncertain: true)
+                        notice = "승인 결과가 불확실합니다. 저장한 작업을 유지하고 상태를 다시 확인하세요."
+                    }
+                } else {
+                    preview.approvalFinished(verified: false, uncertain: false)
+                    throw error
+                }
+            }
+        }
     }
 
     var gpuPreviewPending: Bool { gpuPreview != nil && gpuPreview?.drained != true }

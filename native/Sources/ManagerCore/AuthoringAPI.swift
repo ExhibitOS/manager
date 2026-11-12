@@ -706,7 +706,7 @@ public actor AuthoringAPI {
         }
     }
 
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil, requiresNativeReadCSRF: Bool = false) async throws -> T {
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil, requiresNativeReadCSRF: Bool = false, gpuApprovalFence: (generation: UInt64, authority: NativeGPUPreviewApprovalAuthority)? = nil) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -747,6 +747,10 @@ public actor AuthoringAPI {
         }
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
+        if let fence = gpuApprovalFence {
+            guard method == "POST", generation == fence.generation, admitsGPUModelPreparation,
+                  fence.authority.beginDispatch() else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+        }
         do { (bytes, response) = try await transport.bytes(for: request) }
         catch {
             catalogThumbnail?.stage.recordTransportFailure(error)
@@ -1915,10 +1919,16 @@ public actor AuthoringAPI {
               response.previewUrl == prefix + "/artworks/" + id + "/preview" else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
         return response
     }
-    /// Remains closed until the exact Native runtime family is independently admitted.
-    public var admitsGPUModelPreparation: Bool { false }
-    /// Must be replaced with an actual candidate-bound presented-frame witness.
-    private var hasGPUModelCandidatePresentation: Bool { false }
+    /// The independently verified B049 payload; discovery is not admission.
+    public nonisolated static func supportsGPUModelPreparationRuntime(manifestSHA256: String?, ready: Bool) -> Bool {
+        ready && manifestSHA256 == "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377"
+    }
+
+    public var admitsGPUModelPreparation: Bool {
+        nativeSession && !authenticationBusy
+            && Self.supportsGPUModelPreparationRuntime(manifestSHA256: nativeRuntimeManifestSHA256, ready: true)
+            && session?.nativeGpuModelPreparationProfile == NativeGPUModelPreparation.profile
+    }
 
     private var canObserveOwnedGPUModelPreparation: Bool {
         nativeSession && !authenticationBusy && session != nil
@@ -2081,28 +2091,52 @@ public actor AuthoringAPI {
         return NativeGPUModelCandidate(artworkId: artworkId, jobId: id, receiptSHA256: receipt, candidateSHA256: hash, data: data)
     }
 
-    /// Caller must separately establish that the user reviewed the exact candidate.
-    public func approveGPUModelPreparation(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest,
-                                           candidate: NativeGPUModelCandidate) async throws -> NativeGPUModelApprovalResult {
-        guard admitsGPUModelPreparation, hasGPUModelCandidatePresentation, candidate.artworkId == artworkId, candidate.jobId == id,
-              nativeImportSHA256(candidate.data) == candidate.candidateSHA256 else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+    /// The package-only authority is minted by the currently visible preview
+    /// after a verified draw. It cannot be reconstructed from a CLI or JSON.
+    package func approveGPUModelPreparation(transfer: NativeGPUModelPreparationTransfer,
+        authority: NativeGPUPreviewApprovalAuthority) async throws -> NativeGPUModelApprovalResult {
+        defer { authority.finish() }
+        guard admitsGPUModelPreparation, let session, let id = transfer.jobId,
+              let manifest = nativeRuntimeManifestSHA256 else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
         let current = generation
-        let job = try await gpuModelPreparationJob(id, artworkId: artworkId, input: input)
-        let review = try await reviewGPUModelPreparation(id, artworkId: artworkId, input: input)
-        let approval = try NativeGPUModelApprovalRequest(review: review, request: input)
-        guard generation == current, admitsGPUModelPreparation, approval.receiptSHA256 == candidate.receiptSHA256,
-              approval.candidateSHA256 == candidate.candidateSHA256 else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
-        let raw: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(artworkId)) + "/gpu-preparations/approve",
-                                                   method: "POST", body: encoded(approval))
+        let job = try await gpuModelPreparationJob(id, artworkId: transfer.artworkId, input: transfer.request)
+        let review = try await reviewGPUModelPreparation(id, artworkId: transfer.artworkId, input: transfer.request)
+        let approval = try NativeGPUModelApprovalRequest(review: review, request: transfer.request)
+        guard generation == current, admitsGPUModelPreparation, let live = self.session,
+              live.userId == session.userId, live.tenantId == session.tenantId, live.role == session.role,
+              live.csrfToken == session.csrfToken, live.expiresAt == session.expiresAt,
+              authority.matches(transfer: transfer, session: live, manifest: manifest, review: review) else {
+            throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
+        }
+        do {
+            let raw: DocumentValue = try await request(prefix + "/artworks/" + (try identifier(transfer.artworkId)) + "/gpu-preparations/approve",
+                method: "POST", body: encoded(approval), gpuApprovalFence: (current, authority))
+            guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            let result = try NativeGPUModelApprovalResult(raw, artworkId: transfer.artworkId, job: job, request: transfer.request)
+            let readback = try await gpuModelSelection(artworkId: transfer.artworkId)
+            guard generation == current, readback.selection == result.selection,
+                  transfer.permitsClearingSelected(job, selection: readback.selection) else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let full = try await artwork(transfer.artworkId)
+            guard generation == current, full.approvedRevision == transfer.request.revision + 1,
+                  full.approvedAssetId?.lowercased() == transfer.request.assetId.lowercased() else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            return result
+        } catch {
+            if authority.wasDispatched { throw AuthoringFailure("GPU_APPROVAL_OUTCOME_UNKNOWN") }
+            throw error
+        }
+    }
+
+    /// Readback after a lost response never dispatches another mutation.
+    package func reconcileGPUModelApproval(transfer: NativeGPUModelPreparationTransfer) async throws -> Bool {
+        guard let id = transfer.jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+        let current = generation
+        let job = try await gpuModelPreparationJob(id, artworkId: transfer.artworkId, input: transfer.request)
+        let selection = try await gpuModelSelection(artworkId: transfer.artworkId)
+        guard generation == current, transfer.permitsClearingSelected(job, selection: selection.selection) else { return false }
+        let full = try await artwork(transfer.artworkId)
         guard generation == current else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        let result = try NativeGPUModelApprovalResult(raw, artworkId: artworkId, job: job, request: input)
-        let readback = try await gpuModelSelection(artworkId: artworkId)
-        guard generation == current, readback.selection == result.selection,
-              readback.selection?.matchesCandidate(job: job, request: input) == true else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
-        let full = try await artwork(artworkId)
-        guard generation == current, full.approvedRevision == input.revision + 1,
-              full.approvedAssetId?.lowercased() == input.assetId.lowercased() else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
-        return result
+        return full.approvedRevision == transfer.request.revision + 1
+            && full.approvedAssetId?.lowercased() == transfer.request.assetId.lowercased()
     }
 
     public var admitsCompactModelVariant: Bool {

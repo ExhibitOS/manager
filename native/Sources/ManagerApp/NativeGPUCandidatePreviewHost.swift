@@ -12,10 +12,15 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
     let id = UUID()
     @Published private(set) var presented = false
     @Published private(set) var drained = false
+    @Published private(set) var approvalAvailable = false
     @Published private(set) var message = "감상용 파일을 준비하고 있습니다."
     private let credentials: LocalAuthoringSession
     private let assets: Set<String>
     private let checkCurrent: @MainActor () async throws -> Void
+    private let transfer: NativeGPUModelPreparationTransfer
+    private let session: AuthoringSession
+    private let manifest: String
+    private var approvalAuthority: NativeGPUPreviewApprovalAuthority?
     private var lifecycle: NativeGPUCandidatePreviewLifecycle
     private var web: WKWebView?
     private var page: URL?
@@ -25,8 +30,10 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
     private var task: Task<Void, Never>?
 
     init(credentials: LocalAuthoringSession, assets: Set<String>, request: NativeGPUCandidatePreviewRequest,
+         transfer: NativeGPUModelPreparationTransfer, session: AuthoringSession, manifest: String,
          checkCurrent: @escaping @MainActor () async throws -> Void) {
         self.credentials = credentials; self.assets = assets; lifecycle = .init(request: request); self.checkCurrent = checkCurrent
+        self.transfer = transfer; self.session = session; self.manifest = manifest
     }
 
     func attach(_ web: WKWebView) {
@@ -46,6 +53,7 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
     }
 
     private func invalidate(_ text: String) {
+        approvalAuthority?.revoke(); approvalAvailable = false
         lifecycle.invalidate(); presented = false; message = text
     }
 
@@ -95,12 +103,29 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
             guard !cancelled, lifecycle.request.acceptsReady(ready), web.window?.isVisible == true, !web.isHiddenOrHasHiddenAncestor else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             try await checkCurrent()
             guard !cancelled, web.window?.isVisible == true, !web.isHiddenOrHasHiddenAncestor, lifecycle.acceptReady(ready) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-            presented = true; message = "감상용 파일을 표시했습니다."
+            approvalAuthority = try NativeGPUPreviewApprovalAuthority(lifecycle: lifecycle, transfer: transfer, manifest: manifest, session: session)
+            presented = true; approvalAvailable = lifecycle.request.reviewRevision == Int64(transfer.request.revision)
+            message = "감상용 파일을 표시했습니다."
         } catch {
             if cancelled { return }
             invalidate("감상용 파일을 표시하지 못했습니다. 작업 상태를 확인하세요.")
             if beginIssued { await cancelAndDrain() } else { finishWithoutBegin() }
         }
+    }
+
+    func claimApproval() -> NativeGPUPreviewApprovalAuthority? {
+        guard approvalAvailable, presented, !cancelled, !drained, lifecycle.rendered,
+              let web, web.window?.isVisible == true, !web.isHiddenOrHasHiddenAncestor,
+              let authority = approvalAuthority, authority.claim() else { return nil }
+        approvalAvailable = false; message = "승인 결과를 확인하고 있습니다."
+        return authority
+    }
+
+    func approvalFinished(verified: Bool, uncertain: Bool) {
+        approvalAvailable = false
+        message = verified ? "감상용 파일을 승인했습니다." : uncertain
+            ? "승인 결과를 확인하지 못했습니다. 작업을 보존하고 상태를 다시 확인하세요."
+            : "승인하지 못했습니다. 미리보기를 다시 열어 확인하세요."
     }
 
     func requestClose() {
@@ -145,7 +170,7 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
         guard message.name == "exhibitosViewport", message.frameInfo.isMainFrame, message.webView === web,
               let value = try? Self.value(message.body),
               lifecycle.acceptEnded(value) else { return }
-        presented = false
+        approvalAuthority?.revoke(); approvalAvailable = false; presented = false
         if lifecycle.drained { finishDrained() }
         else { self.message = "미리보기 종료를 확인하고 있습니다." }
     }
@@ -189,6 +214,7 @@ struct NativeGPUCandidatePreviewView: NSViewRepresentable {
 
 struct NativeGPUCandidatePreviewSheet: View {
     @ObservedObject var controller: NativeGPUCandidatePreviewController
+    let approve: () -> Void
     let dismiss: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -198,6 +224,7 @@ struct NativeGPUCandidatePreviewSheet: View {
             Text(controller.message).foregroundStyle(.secondary)
             HStack {
                 Spacer()
+                if controller.approvalAvailable { Button("감상용 파일 승인", action: approve).buttonStyle(.borderedProminent) }
                 if controller.drained {
                     Button("닫기", action: dismiss)
                 } else {

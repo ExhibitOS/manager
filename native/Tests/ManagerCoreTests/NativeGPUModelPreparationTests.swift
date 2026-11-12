@@ -4,6 +4,14 @@ import CryptoKit
 @testable import ManagerCore
 
 final class NativeGPUModelPreparationTests: XCTestCase {
+    func testRuntimeQualificationRequiresExactVerifiedManifestAndReady() {
+        let manifest = "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377"
+        XCTAssertTrue(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: false))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: nil, ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: String(repeating: "a", count: 64), ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest.uppercased(), ready: true))
+    }
     let asset = "aaaaaaaa-0000-4000-8000-000000000001"
     let output = "bbbbbbbb-0000-4000-8000-000000000002"
     let artwork = "cccccccc-0000-4000-8000-000000000003"
@@ -170,6 +178,11 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         let n = jobValue["gpuPreparation"]
         let review = try NativeGPUModelReview(.object(["artworkId": .string(artwork), "revision": .integer(2), "jobId": .string(self.job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": .null]), artworkId: artwork, request: req, job: job)
         let request = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review, epoch: owner, sequence: 3, requestId: UUID().uuidString.lowercased())
+        let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(request.value))
+        XCTAssertEqual(encoded["source"], review.value["source"])
+        XCTAssertEqual(encoded["candidate"], review.value["candidate"])
+        XCTAssertEqual(encoded["source"]["assetId"], .string(asset))
+        XCTAssertEqual(encoded["candidate"]["assetId"], .string(output))
         guard case .object(var result) = request.value, case .object(var cancel) = request.cancel else { return XCTFail("invalid fixture") }
         result.removeValue(forKey: "phase"); result["capability"] = .string(NativeGPUCandidatePreviewRequest.capability)
         result["reviewRevision"] = .integer(2); result["rendered"] = .bool(true); result["drawGeneration"] = .integer(1); result["targetFormat"] = .string("astc-4x4")
@@ -214,6 +227,80 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         XCTAssertThrowsError(try decode(Array(fixed.dropFirst())).checked(expectedManifestSHA256: manifest))
         XCTAssertThrowsError(try decode(fixed + ["api/v1/auth/session"]).checked(expectedManifestSHA256: manifest))
     }
+
+    func testApprovalAuthorityRejectsStaleRevokedAndDuplicateDispatch() throws {
+        let (jobValue, receipt) = try ready(), req = try request(), owner = UUID().uuidString.lowercased()
+        let job = try NativeGPUModelPreparationJob(jobValue, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt)
+        let transfer = try NativeGPUModelPreparationTransfer(workspaceId: owner, tenantId: owner, principalId: owner, artworkId: artwork, request: req, jobId: self.job)
+        let n = jobValue["gpuPreparation"]
+        let review = try NativeGPUModelReview(.object(["artworkId": .string(artwork), "revision": .integer(2), "jobId": .string(self.job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": .null]), artworkId: artwork, request: req, job: job)
+        let request = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review, epoch: owner, sequence: 1, requestId: UUID().uuidString.lowercased())
+        var session = AuthoringSession(userId: owner, tenantId: owner, role: "admin", csrfToken: "synthetic", expiresAt: "2099-01-01T00:00:00Z")
+        session.nativeGpuModelPreparationProfile = NativeGPUModelPreparation.profile
+        var lifecycle = NativeGPUCandidatePreviewLifecycle(request: request)
+        XCTAssertThrowsError(try NativeGPUPreviewApprovalAuthority(lifecycle: lifecycle, transfer: transfer, manifest: fixtureDigest, session: session))
+        guard case .object(var fields) = request.value else { return XCTFail("missing request") }
+        fields.removeValue(forKey: "phase"); fields["capability"] = .string(NativeGPUCandidatePreviewRequest.capability)
+        fields["reviewRevision"] = .integer(2); fields["rendered"] = .bool(true); fields["drawGeneration"] = .integer(1); fields["targetFormat"] = .string("bc7")
+        XCTAssertTrue(lifecycle.acceptReady(.object(fields)))
+        let authority = try NativeGPUPreviewApprovalAuthority(lifecycle: lifecycle, transfer: transfer, manifest: fixtureDigest, session: session)
+        XCTAssertTrue(authority.claim()); XCTAssertFalse(authority.claim())
+        XCTAssertTrue(authority.matches(transfer: transfer, session: session, manifest: fixtureDigest, review: review))
+        let changed = AuthoringSession(userId: owner, tenantId: owner, role: "admin", csrfToken: "changed", expiresAt: session.expiresAt)
+        XCTAssertFalse(authority.matches(transfer: transfer, session: changed, manifest: fixtureDigest, review: review))
+        XCTAssertFalse(authority.matches(transfer: transfer, session: session, manifest: String(repeating: "b", count: 64), review: review))
+        let different = try NativeGPUModelPreparationTransfer(workspaceId: owner, tenantId: owner, principalId: owner, artworkId: artwork, request: req, jobId: UUID().uuidString.lowercased())
+        XCTAssertFalse(authority.matches(transfer: different, session: session, manifest: fixtureDigest, review: review))
+        authority.revoke(); XCTAssertFalse(authority.beginDispatch()); XCTAssertFalse(authority.wasDispatched)
+        let once = try NativeGPUPreviewApprovalAuthority(lifecycle: lifecycle, transfer: transfer, manifest: fixtureDigest, session: session)
+        XCTAssertTrue(once.claim()); XCTAssertTrue(once.beginDispatch()); XCTAssertTrue(once.wasDispatched)
+        once.revoke(); XCTAssertFalse(once.beginDispatch()); XCTAssertTrue(once.wasDispatched)
+        once.finish(); XCTAssertFalse(once.claim())
+    }
+
+    func testUnknownApprovalReconcilesOnlyExactServerSelection() async throws {
+        let (jobValue, receipt) = try ready(), req = try request(), owner = UUID().uuidString.lowercased()
+        let session = try JSONSerialization.data(withJSONObject: ["tenantId": owner, "userId": owner, "role": "admin", "csrfToken": "synthetic", "expiresAt": "2099-01-01T00:00:00Z"])
+        let transfer = try NativeGPUModelPreparationTransfer(workspaceId: owner, tenantId: owner, principalId: owner, artworkId: artwork, request: req, jobId: job)
+        let selection: DocumentValue = .object(["version": .integer(1), "profile": .string(NativeGPUModelPreparation.profile), "jobId": .string(job), "sourceAssetId": .string(asset), "candidateAssetId": .string(output), "candidateSHA256": .string(fixtureDigest), "receiptSHA256": .string(receipt), "approvedRevision": .integer(3)])
+        let n = jobValue["gpuPreparation"]
+        let review: DocumentValue = .object(["artworkId": .string(artwork), "revision": .integer(3), "jobId": .string(job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": selection])
+        let selected: DocumentValue = .object(["artworkId": .string(artwork), "revision": .integer(3), "selection": selection])
+        let source = NativeArtwork(id: artwork, artistId: owner, revision: 3, approvedRevision: 3, approvedAssetId: asset, metadata: nil,
+            assets: [.init(id: asset, mime: "model/gltf-binary", state: "approved", sha256: fixtureDigest, bytes: 1024)], archived: false)
+        let jobData = try JSONEncoder().encode(jobValue), reviewData = try JSONEncoder().encode(review)
+        let selectedData = try JSONEncoder().encode(selected), artworkData = try JSONEncoder().encode(source)
+        let jobId = job, artId = artwork
+        GPUApprovalMockProtocol.configure { request in
+            switch request.url?.path {
+            case "/api/v1/auth/session": return (200, session)
+            case "/api/v1/tenants/\(owner)/imports/\(jobId)": return (200, jobData)
+            case "/api/v1/tenants/\(owner)/cms/artworks/\(artId)/gpu-preparations/\(jobId)/review": return (200, reviewData)
+            case "/api/v1/tenants/\(owner)/cms/artworks/\(artId)/gpu-preparations/selection": return (200, selectedData)
+            case "/api/v1/tenants/\(owner)/cms/artworks/\(artId)": return (200, artworkData)
+            default: return (500, Data("{}".utf8))
+            }
+        }
+        defer { GPUApprovalMockProtocol.configure(nil) }
+        let api = try AuthoringAPI(port: 18091, tenantId: owner, protocolClasses: [GPUApprovalMockProtocol.self])
+        _ = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner, origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+        let reconciled = try await api.reconcileGPUModelApproval(transfer: transfer)
+        XCTAssertTrue(reconciled)
+        XCTAssertFalse(GPUApprovalMockProtocol.methods().contains("POST"))
+        var other = selected; other["selection"]["jobId"] = .string(UUID().uuidString.lowercased())
+        let otherData = try JSONEncoder().encode(other)
+        GPUApprovalMockProtocol.configure { request in
+            switch request.url?.path {
+            case "/api/v1/tenants/\(owner)/imports/\(jobId)": return (200, jobData)
+            case "/api/v1/tenants/\(owner)/cms/artworks/\(artId)/gpu-preparations/\(jobId)/review": return (200, reviewData)
+            case "/api/v1/tenants/\(owner)/cms/artworks/\(artId)/gpu-preparations/selection": return (200, otherData)
+            default: return (500, Data("{}".utf8))
+            }
+        }
+        let unrelated = try await api.reconcileGPUModelApproval(transfer: transfer)
+        XCTAssertFalse(unrelated)
+        XCTAssertFalse(GPUApprovalMockProtocol.methods().contains("POST"))
+    }
     func testRequestLimitsAndScopeBinding() throws {
         XCTAssertThrowsError(try NativeGPUModelPreparationRequest(revision: 0, assetId: asset, sha256: fixtureDigest, bytes: 10, idempotencyKey: "", generation: "x"))
         for suffix in ["\n", "\r\n", "\u{2028}"] {
@@ -231,4 +318,28 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         object["profile"] = NativeGPUModelPreparation.profile; object["unexpected"] = true
         XCTAssertThrowsError(try JSONDecoder().decode(NativeGPUModelPreparationRequest.self, from: JSONSerialization.data(withJSONObject: object)))
     }
+}
+
+private final class GPUApprovalMockProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var handler: (@Sendable (URLRequest) -> (Int, Data))?
+    nonisolated(unsafe) private static var seen: [String] = []
+    static func configure(_ value: (@Sendable (URLRequest) -> (Int, Data))?) {
+        lock.lock(); defer { lock.unlock() }; handler = value; seen = []
+    }
+    static func methods() -> [String] { lock.lock(); defer { lock.unlock() }; return seen }
+    private static func response(_ request: URLRequest) -> (Int, Data)? {
+        lock.lock(); defer { lock.unlock() }; seen.append(request.httpMethod ?? ""); return handler?(request)
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        guard let url = request.url, let (status, data) = Self.response(request),
+              let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"]) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse)); return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

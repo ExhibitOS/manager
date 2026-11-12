@@ -243,7 +243,7 @@ struct NativeImportControls: View {
         .onChange(of: model.assetId) { _, _ in model.approvalAcknowledged = false }
         .sheet(isPresented: $showingGPUPreview) {
             if let preview = model.gpuPreview {
-                NativeGPUCandidatePreviewSheet(controller: preview) {
+                NativeGPUCandidatePreviewSheet(controller: preview, approve: { Task { await model.approveGPUPreview(preview) } }) {
                     showingGPUPreview = false
                     model.releaseGPUPreview()
                 }
