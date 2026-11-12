@@ -813,6 +813,40 @@ public actor AuthoringAPI {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/furnishings")
         return try SharedFurnishingCatalog.checkedCatalog(value)
     }
+    public struct SharedFurnishingResourceCheck: Encodable, Sendable {
+        public let role: String, mime: String, bytes: Int, sha256: String
+    }
+    /// Checks only the fixed, catalog-bound refined bench pair; no bytes leave this API.
+    public func sharedFurnishingsWithRefinedBenchChecks() async throws -> (items: [DocumentValue], checks: [SharedFurnishingResourceCheck]) {
+        guard nativeSession, !authenticationBusy, let original = session else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
+        let heldGeneration = generation
+        func requireHeldSession() throws {
+            guard generation == heldGeneration, nativeSession, !authenticationBusy, let held = session,
+                  held.userId == original.userId, held.tenantId == original.tenantId,
+                  held.role == original.role, held.csrfToken == original.csrfToken, held.expiresAt == original.expiresAt else {
+                throw AuthoringFailure("ACCOUNT_CHANGED")
+            }
+        }
+        let items = try await sharedFurnishings()
+        try requireHeldSession()
+        let catalogId = "sculpture-bench-refined"
+        guard items.contains(where: { $0["catalogId"] == .string(catalogId) && $0["catalogVersion"] == .integer(1) }) else {
+            throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
+        }
+        let asset = try SharedFurnishingCatalog.asset(catalogId: catalogId, id: "11111111-1111-4111-8111-111111111111")
+        let specs: [(String, String, DocumentValue)] = [("model", "model/gltf-binary", asset), ("notice", "text/plain", asset["rights"]["notice"])]
+        var checks: [SharedFurnishingResourceCheck] = []
+        for (role, mime, spec) in specs {
+            guard let size = spec["bytes"].integer, let count = Int(exactly: size), count > 0,
+                  let hash = spec["sha256"].string, nativeImportDigest(hash) else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            let path = "/api/v1/tenants/\(tenant)/studio/furnishings/\(catalogId)/1/\(role)"
+            _ = try await readPreviewBytes(path: path, expectedBytes: count, sha256: hash, mime: mime,
+                                           invalidCode: "FURNISHING_RESPONSE_INVALID", requireDigestHeader: false)
+            try requireHeldSession()
+            checks.append(.init(role: role, mime: mime, bytes: count, sha256: hash))
+        }
+        return (items, checks)
+    }
     public func surfaceMaterials() async throws -> NativeSurfaceMaterialCatalog {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/materials")
         return try NativeSurfaceMaterialCatalog(value: value, tenantId: tenant)

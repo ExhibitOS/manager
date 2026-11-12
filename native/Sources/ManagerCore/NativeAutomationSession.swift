@@ -1876,7 +1876,8 @@ public actor NativeAutomationSession {
             result = try await thumbnailCandidate(request, id: id, context: context, api: api, current: current)
         case "read": result = try await statusValue()
         case "shared-furnishing-catalog-read":
-            result = .object(["version": .integer(1), "items": .array(try await api.sharedFurnishings())])
+            let verified = try await api.sharedFurnishingsWithRefinedBenchChecks()
+            result = .object(["version": .integer(1), "items": .array(verified.items), "resourceChecks": try value(verified.checks)])
         case "artwork-finish-reviewed":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId", "jobId", "artworkRevision"])
