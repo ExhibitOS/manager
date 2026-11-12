@@ -368,6 +368,13 @@ public actor NativeBridge {
         let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state))
         return try request("save_upload_state", fields: ["selection_token": context.selectionToken, "transfer": object])
     }
+    public func furnishingThumbnailState(_ context: Context) throws -> NativeFurnishingThumbnailState {
+        try request("furnishing_thumbnail_state", fields: ["selection_token": context.selectionToken])
+    }
+    public func saveFurnishingThumbnailState(_ context: Context, state: NativeFurnishingThumbnailState) throws -> NativeFurnishingThumbnailState {
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state))
+        return try request("save_furnishing_thumbnail_state", fields: ["selection_token": context.selectionToken, "thumbnail": object])
+    }
     public func nativeStatus(_ context: Context) throws -> NativeHostStatus {
         try request("native_status", fields: ["selection_token": context.selectionToken])
     }

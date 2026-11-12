@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class WorkspaceFurnishingThumbnailAPITests: XCTestCase {
-    private let manifest = "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
+    private let manifest = "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626"
     private let png = "iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAABFUlEQVR4nO3BMQEAAADCoPVP7WsIoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAeAMBPAABPO1TCQAAAABJRU5ErkJggg=="
     private struct Fixture: Sendable {
         let document: NativeDocumentState, furnishing: WorkspaceFurnishing, submission: WorkspaceFurnishingThumbnailSubmission
@@ -53,8 +53,8 @@ final class WorkspaceFurnishingThumbnailAPITests: XCTestCase {
         return try ThumbnailAPIProtocol.Plan(session: JSONSerialization.data(withJSONObject: session), descriptors: [f.descriptor], candidate: JSONEncoder().encode(f.candidate),
             page: JSONEncoder().encode(page), selections: [JSONEncoder().encode(f.selection(0, selected: false))], recorded: JSONEncoder().encode(f.selection(1, selected: true)), image: f.bytes)
     }
-    private func connect(_ f: Fixture) async throws -> AuthoringAPI {
-        let api = try AuthoringAPI(port: 18091, tenantId: f.document.tenantId, nativeRuntimeManifestSHA256: manifest, protocolClasses: [ThumbnailAPIProtocol.self])
+    private func connect(_ f: Fixture, manifest selectedManifest: String? = nil) async throws -> AuthoringAPI {
+        let api = try AuthoringAPI(port: 18091, tenantId: f.document.tenantId, nativeRuntimeManifestSHA256: selectedManifest ?? manifest, protocolClasses: [ThumbnailAPIProtocol.self])
         _ = try await api.connect(LocalAuthoringSession(tenantId: f.document.tenantId, principalId: f.document.principalId,
             origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
         return api
@@ -64,6 +64,36 @@ final class WorkspaceFurnishingThumbnailAPITests: XCTestCase {
             XCTAssertEqual(request.origin, "http://127.0.0.1:18091", request.path)
             XCTAssertEqual(request.csrf, "synthetic-csrf", request.path)
         }
+    }
+
+    func testThumbnailAdmissionRequiresActual050PinEvenWithLiveMarker() async throws {
+        let f = try fixture()
+        XCTAssertTrue(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: manifest))
+        for denied in ["1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738", String(repeating: "f", count: 64)] {
+            XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: denied))
+            ThumbnailAPIProtocol.configure(try plan(f))
+            let api = try await connect(f, manifest: denied)
+            let admitted = await api.admitsWorkspaceFurnishingThumbnails
+            XCTAssertFalse(admitted)
+            do { _ = try await api.workspaceFurnishingThumbnailSelection(f.id, version: 1, in: f.document); XCTFail("unpinned runtime admitted spoofed profile") } catch { }
+            XCTAssertEqual(ThumbnailAPIProtocol.requests().map(\.path), ["/api/v1/auth/session"])
+        }
+    }
+
+    func test050RetainedCurrentDataFamilyDoesNotWidenDedicatedPreparationFamilies() throws {
+        let api = try AuthoringAPI(port: 18091, tenantId: UUID().uuidString.lowercased(), nativeRuntimeManifestSHA256: manifest)
+        XCTAssertTrue(api.workspaceMaterialRuntimeQualified)
+        XCTAssertTrue(api.workspaceWallMaterialRuntimeQualified)
+        XCTAssertTrue(api.workspaceMaterialMultimapRuntimeQualified)
+        XCTAssertTrue(api.workspaceFurnishingRuntimeQualified)
+        XCTAssertTrue(api.workspacePortalFinishRuntimeQualified)
+        XCTAssertFalse(api.workspaceInfoStandPreparationRuntimeQualified)
+        XCTAssertFalse(api.workspaceFramePreparationRuntimeQualified)
+        XCTAssertFalse(api.largeModelRuntimeQualified)
+        XCTAssertFalse(api.productImageRuntimeQualified)
+        XCTAssertFalse(AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsFreshImageRuntime(manifest: manifest))
     }
 
     func testMarkerAndOwnerDenialPrecedeThumbnailHTTP() async throws {
@@ -133,6 +163,37 @@ final class WorkspaceFurnishingThumbnailAPITests: XCTestCase {
             XCTFail("Out-of-contract selection version admitted")
         } catch { }
         XCTAssertEqual(ThumbnailAPIProtocol.requests().count, 1)
+    }
+
+    func testPreparationOnlyOriginalPOSTCanReturnDefinitiveRejection() async throws {
+        let f = try fixture(), failure = Data("{\"code\":\"FURNISHING_THUMBNAIL_CONFLICT\"}".utf8)
+        for status in [400, 403, 404, 409, 422] {
+            var p = try plan(f); p.candidatePostStatus = status; p.candidate = failure
+            ThumbnailAPIProtocol.configure(p); let api = try await connect(f)
+            do { _ = try await api.prepareWorkspaceFurnishingThumbnail(f.submission, in: f.document); XCTFail("Rejected capture POST acknowledged") }
+            catch let rejected as WorkspaceFurnishingThumbnailPreparationRejection {
+                XCTAssertEqual(rejected.requestId, f.submission.request.requestId); XCTAssertEqual(rejected.failure.status, status)
+            }
+            XCTAssertEqual(ThumbnailAPIProtocol.requests().filter { $0.path.hasSuffix("/thumbnail-candidates") }.map(\.method), ["POST"])
+        }
+        var p = try plan(f); p.descriptorStatuses = [200, 409]; p.descriptors = [f.descriptor, failure]
+        ThumbnailAPIProtocol.configure(p); let api = try await connect(f)
+        do { _ = try await api.prepareWorkspaceFurnishingThumbnail(f.submission, in: f.document); XCTFail("Post-commit descriptor failure accepted") }
+        catch is WorkspaceFurnishingThumbnailPreparationRejection { XCTFail("A later GET cannot disprove capture commit") }
+        catch let error as AuthoringFailure { XCTAssertEqual(error.status, 409) }
+        XCTAssertEqual(ThumbnailAPIProtocol.requests().filter { $0.path.hasSuffix("/thumbnail-candidates") }.map(\.method), ["POST"])
+        p = try plan(f)
+        var invalidCandidate = f.candidate; invalidCandidate["receipt"]["requestId"] = .string(UUID().uuidString.lowercased())
+        p.candidate = try JSONEncoder().encode(invalidCandidate)
+        ThumbnailAPIProtocol.configure(p); let invalid = try await connect(f)
+        do { _ = try await invalid.prepareWorkspaceFurnishingThumbnail(f.submission, in: f.document); XCTFail("Invalid capture acknowledgement accepted") }
+        catch is WorkspaceFurnishingThumbnailPreparationRejection { XCTFail("Acknowledgement validation cannot disprove capture commit") }
+        catch let error as AuthoringFailure { XCTAssertEqual(error.code, "CATALOG_PREVIEW_INVALID") }
+        p = try plan(f); p.candidatePostStatus = 503; p.candidate = failure
+        ThumbnailAPIProtocol.configure(p); let unavailable = try await connect(f)
+        do { _ = try await unavailable.prepareWorkspaceFurnishingThumbnail(f.submission, in: f.document); XCTFail("Unavailable capture accepted") }
+        catch is WorkspaceFurnishingThumbnailPreparationRejection { XCTFail("Unavailable outcome is not definitive") }
+        catch let error as AuthoringFailure { XCTAssertEqual(error.status, 503) }
     }
 
     func testOnlyDefinitivePOSTRejectionIsDistinguishedFromPostCommitReadbackFailure() async throws {
@@ -229,6 +290,8 @@ private final class ThumbnailAPIProtocol: URLProtocol, @unchecked Sendable {
         var session: Data, descriptors: [Data], candidate: Data, page: Data, selections: [Data], recorded: Data, image: Data
         var imageStatus = 200
         var selectionPostStatus = 200, selectionGetStatus = 200
+        var candidatePostStatus = 200
+        var descriptorStatuses: [Int] = []
         var holdCandidate = false
     }
     struct Observation: Sendable {
@@ -261,8 +324,10 @@ private final class ThumbnailAPIProtocol: URLProtocol, @unchecked Sendable {
         Self.observed.append(Observation(method: method, path: path, origin: request.value(forHTTPHeaderField: "Origin"), csrf: request.value(forHTTPHeaderField: "x-csrf-token"), body: body))
         if path == "/api/v1/auth/session" { return (200, "application/json", p.session) }
         if path.hasSuffix("/versions/1") {
-            let result = p.descriptors[min(Self.descriptorIndex, p.descriptors.count - 1)]; Self.descriptorIndex += 1
-            return (200, "application/json", result)
+            let index = Self.descriptorIndex
+            let result = p.descriptors[min(index, p.descriptors.count - 1)]; Self.descriptorIndex += 1
+            let status = p.descriptorStatuses.isEmpty ? 200 : p.descriptorStatuses[min(index, p.descriptorStatuses.count - 1)]
+            return (status, "application/json", result)
         }
         if path.hasSuffix("/thumbnail-selection") {
             if method == "POST" { return (p.selectionPostStatus, "application/json", p.recorded) }
@@ -270,7 +335,7 @@ private final class ThumbnailAPIProtocol: URLProtocol, @unchecked Sendable {
             return (p.selectionGetStatus, "application/json", result)
         }
         if path.hasSuffix("/image") { return (p.imageStatus, "image/png", p.image) }
-        if path.hasSuffix("/thumbnail-candidates") { return (200, "application/json", method == "POST" ? p.candidate : p.page) }
+        if path.hasSuffix("/thumbnail-candidates") { return (method == "POST" ? p.candidatePostStatus : 200, "application/json", method == "POST" ? p.candidate : p.page) }
         if path.contains("/thumbnail-candidates/") {
             if p.holdCandidate { Self.held = (self, 200, "application/json", p.candidate); return nil }
             return (200, "application/json", p.candidate)

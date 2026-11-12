@@ -99,11 +99,12 @@ final class ExhibitionModel: ObservableObject {
     private let furnishingThumbnailReviews = FurnishingThumbnailReviewSessions()
     var durableFurnishingThumbnailsAvailable: Bool {
         workspaceFurnishingIntakeAvailable && session?.workspaceFurnishingThumbnailProfile == WorkspaceFurnishingThumbnailSubmission.kind
-            && !infoStandPreviewing
+            && !infoStandPreviewing && readThumbnailCheckpoint != nil && writeThumbnailCheckpoint != nil
     }
     func makeFurnishingThumbnailReview(_ summary: WorkspaceFurnishingSummary) -> FurnishingThumbnailReviewModel? {
         guard durableFurnishingThumbnailsAvailable, !busy, summary.rightsAvailability.display,
-              let api, let owner = state else { return nil }
+              let api, let owner = state, let readCheckpoint = readThumbnailCheckpoint,
+              let writeCheckpoint = writeThumbnailCheckpoint else { return nil }
         let access = viewportAccessID
         let document: () -> NativeDocumentState? = { [weak self] in
             guard let self, self.api === api, self.viewportAccessID == access, !self.infoStandPreviewing,
@@ -133,11 +134,13 @@ final class ExhibitionModel: ObservableObject {
         }
         let key = FurnishingThumbnailReviewSessions.Key(owner: owner, furnishingId: summary.id)
         if let retained = furnishingThumbnailReviews.existing(key) {
-            guard retained.rebind(name: summary.name, api: api, document: document, capture: capture, refreshed: refreshed) else { return nil }
+            guard retained.rebind(name: summary.name, api: api, document: document, capture: capture, refreshed: refreshed,
+                readCheckpoint: readCheckpoint, writeCheckpoint: writeCheckpoint) else { return nil }
             return retained
         }
         let review = FurnishingThumbnailReviewModel(name: summary.name, furnishingId: summary.id, owner: owner, api: api,
-            document: document, capture: capture, refreshed: refreshed)
+            document: document, capture: capture, refreshed: refreshed,
+                readCheckpoint: readCheckpoint, writeCheckpoint: writeCheckpoint)
         guard furnishingThumbnailReviews.retain(review, for: key) else {
             notice = "확인 중인 이미지 요청을 먼저 마친 뒤 다른 이미지를 준비하세요."; return nil
         }
@@ -1240,6 +1243,8 @@ final class ExhibitionModel: ObservableObject {
     var canRedo: Bool { !entrancePreviewActive && (!immutable || boundedPlacementReady) && !future.isEmpty && !pending && !busy && !formDirty && !positionDirty && !architectureDirty && !architectureApplying && !placingArtwork }
     private var api: AuthoringAPI?
     private var session: AuthoringSession?
+    private var readThumbnailCheckpoint: (() async throws -> NativeFurnishingThumbnailState)?
+    private var writeThumbnailCheckpoint: ((NativeFurnishingThumbnailState) async throws -> NativeFurnishingThumbnailState)?
     private var read: (() async throws -> NativeDocumentState)?
     private var write: ((NativeDocumentState) async throws -> NativeDocumentState)?
     var draft: NativeExhibitionDraft? { state?.draft }
@@ -1436,7 +1441,7 @@ final class ExhibitionModel: ObservableObject {
         }
         return true
     }
-    func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, selectedBoundedPolicy: Bool = false, ordinaryBoundedRuntime: Bool = false, boundedRuntimeQualified: Bool = false, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState) async {
+    func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, selectedBoundedPolicy: Bool = false, ordinaryBoundedRuntime: Bool = false, boundedRuntimeQualified: Bool = false, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState, readThumbnailCheckpoint: (() async throws -> NativeFurnishingThumbnailState)? = nil, writeThumbnailCheckpoint: ((NativeFurnishingThumbnailState) async throws -> NativeFurnishingThumbnailState)? = nil) async {
         // Explicit reconnect during a preview has a separate acknowledgement
         // boundary. Never run the ordinary access-change reset on this path.
         if entrancePreviewActive {
@@ -1479,6 +1484,7 @@ final class ExhibitionModel: ObservableObject {
             clearPrivateFloorCatalog()
         }
         self.read = read; self.write = write
+        self.readThumbnailCheckpoint = readThumbnailCheckpoint; self.writeThumbnailCheckpoint = writeThumbnailCheckpoint
         viewingPlanPreview = nil; viewingPlanPreviewAccessID = nil; viewingPlanPreviewContext = nil; viewingPlanPreviewHostEpoch = nil; viewingPlanPreviewSequence = nil
         clearViewingPointPreview()
         // Reconnecting may replace the native store closures even for the same

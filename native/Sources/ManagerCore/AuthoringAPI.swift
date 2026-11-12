@@ -117,6 +117,12 @@ public struct WorkspaceFurnishingThumbnailSelectionResult: Sendable {
     public let recorded: WorkspaceFurnishingThumbnailSelection
     public let current: WorkspaceFurnishingThumbnailSelection
 }
+/// This capture POST was definitively rejected on this attempt. A prior
+/// uncertain use of the same capture request ID still requires reconciliation.
+public struct WorkspaceFurnishingThumbnailPreparationRejection: Error, Sendable {
+    public let requestId: String
+    public let failure: AuthoringFailure
+}
 /// This HTTP POST was rejected before acknowledgement. It does not disprove
 /// an earlier uncertain attempt with the same request ID.
 public struct WorkspaceFurnishingThumbnailSelectionRejection: Error, Sendable {
@@ -473,6 +479,10 @@ public actor AuthoringAPI {
         "5b3aadfe5332bdaf084741f2b9a20b0e9c6733c44be36cec7f4d1ddb8ba338f2"
     private static let default17RuntimeManifestPin =
         "1a0333bcb3f880878348911c6f7e3dfde81044506b3b887609740e4dc06c1738"
+    // Exact assembled parent045 +050 candidate. Dedicated adoption/preparation
+    // families remain closed and no default runtime selection changes here.
+    private static let furnishingThumbnail050RuntimeManifestPin =
+        "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626"
     private static let completeStaticRuntimeManifestPin =
         "21de5a4cdc00d01f51f4ae0746c8abc08bc062e71c2d73778f706d2f4e8d6088"
     private static let thumbnailFreshnessRuntimeManifestPin =
@@ -587,6 +597,7 @@ public actor AuthoringAPI {
             || manifest == Self.completeStaticRuntimeManifestPin
             || manifest == Self.fixtureAuthoringRuntimeManifestPin
             || manifest == Self.default17RuntimeManifestPin
+            || manifest == Self.furnishingThumbnail050RuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
@@ -2530,7 +2541,9 @@ public actor AuthoringAPI {
     }
 
     public var admitsWorkspaceFurnishingThumbnails: Bool {
-        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil && admitsWorkspaceFurnishings
+        nativeSession && !authenticationBusy
+            && Self.supportsWorkspaceFurnishingThumbnailRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && admitsWorkspaceFurnishings
             && session?.workspaceFurnishingThumbnailProfile == WorkspaceFurnishingThumbnailSubmission.kind
     }
 
@@ -2569,7 +2582,12 @@ public actor AuthoringAPI {
         // A capture can outlive unrelated scene edits, but never a source change.
         _ = try WorkspaceFurnishingThumbnailSubmission.checkedRenderRequest(submission.value["renderRequest"], document: document, furnishing: item)
         let path = try workspaceFurnishingVersionPath(item.id, version: item.version) + "/thumbnail-candidates"
-        let raw: DocumentValue = try await request(path, method: "POST", body: submission.body)
+        let raw: DocumentValue
+        do {
+            raw = try await request(path, method: "POST", body: submission.body)
+        } catch let failure as AuthoringFailure where [400, 403, 404, 409, 422].contains(failure.status) {
+            throw WorkspaceFurnishingThumbnailPreparationRejection(requestId: submission.request.requestId, failure: failure)
+        }
         try checkFurnishingThumbnailScope(document, generation: held)
         let candidate = try WorkspaceFurnishingThumbnailCandidate(value: raw, document: document, furnishing: item, submission: submission)
         try await recheckThumbnailFurnishing(item, document: document, generation: held)
@@ -2979,6 +2997,14 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsWorkspaceFurnishingThumbnailRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == furnishingThumbnail050RuntimeManifestPin
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsOrdinaryNativePublicationRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == nativePublicationCapacityManifestPin
@@ -2993,6 +3019,7 @@ public actor AuthoringAPI {
             || manifest == completeStaticRuntimeManifestPin
             || manifest == fixtureAuthoringRuntimeManifestPin
             || manifest == default17RuntimeManifestPin
+            || manifest == furnishingThumbnail050RuntimeManifestPin
         #else
         false
         #endif

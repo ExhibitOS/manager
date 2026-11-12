@@ -13,6 +13,7 @@ public struct WorkspaceFurnishingThumbnailSubmission: Sendable {
     /// Exact POST payload. It contains the PNG; avoid logging this value/body.
     public let value: DocumentValue
     public let body: Data
+    public let captureMetadata: DocumentValue
 
     private static var invalid: AuthoringFailure { AuthoringFailure("CATALOG_PREVIEW_INVALID") }
     private static let requestKeys: Set<String> = ["version", "epoch", "sequence", "tenantId", "principalId", "requestId",
@@ -66,6 +67,9 @@ public struct WorkspaceFurnishingThumbnailSubmission: Sendable {
         self.workspaceId = document.workspaceId; self.request = request
         self.pngData = bytes; self.pngSha256 = hash; self.value = value
         self.body = try encoder.encode(value)
+        var metadata = root, metadataPNG = png
+        metadataPNG.removeValue(forKey: "base64"); metadata["png"] = .object(metadataPNG)
+        self.captureMetadata = .object(metadata)
     }
 
     static func checkedRenderRequest(_ raw: DocumentValue, document: NativeDocumentState,

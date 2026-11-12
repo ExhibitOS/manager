@@ -275,6 +275,7 @@ fn journal(source: &Path, logical: &str) -> Result<String> {
         WORKSPACE_COMPLETION_ARCHIVE_NAME => return Ok(workspace_completion_name(source)),
         "document.json" => "document",
         "upload.json" => "upload",
+        "furnishing-thumbnail.json" => "furnishing-thumbnail",
         "oex-import.json" => "oex-import",
         "publication.json" => "publication",
         "static-export.json" => "static-export",
@@ -340,6 +341,10 @@ fn journal_value(logical: &str, bytes: &[u8]) -> Result<Value> {
         }
         "upload.json" => {
             native_upload::validate(&serde_json::from_slice(bytes).map_err(|_| bad())?)?
+        }
+        "furnishing-thumbnail.json" => {
+            if bytes.len() as u64 > native_furnishing_thumbnail::LIMIT { return Err(bad()); }
+            native_furnishing_thumbnail::validate(&serde_json::from_slice(bytes).map_err(|_| bad())?)?
         }
         "publication.json" => {
             native_publication::validate(&serde_json::from_slice(bytes).map_err(|_| bad())?)?
@@ -473,11 +478,12 @@ fn rebound_journal(logical: &str, bytes: &[u8], fields: &Fields) -> Result<Vec<u
 }
 fn validate_source(source: &SourceMap, owner: &str, payload: &str, target: &Path) -> Result<bool> {
     let imported = source.journal_names.contains_key(WORKSPACE_COMPLETION_ARCHIVE_NAME);
+    let thumbnail = source.journal_names.contains_key("furnishing-thumbnail.json");
     if source.format != 1 || source.owner_kind != owner || source.manifest_sha256 != payload
         || !source.source_root.is_absolute() || source.source_root == target
         || source.source_root.components().any(|p| matches!(p, Component::ParentDir))
-        || source.journal_names.len() > if imported { 5 } else { 4 }
-        || (imported && owner != "personal")
+        || source.journal_names.len() > 4 + usize::from(imported) + usize::from(thumbnail)
+        || ((imported || thumbnail) && owner != "personal")
     {
         return Err(bad());
     }
@@ -679,6 +685,7 @@ impl InstallationController {
             for logical in [
                 "document.json",
                 "upload.json",
+                "furnishing-thumbnail.json",
                 "oex-import.json",
                 "publication.json",
                 "static-export.json",
@@ -1335,6 +1342,48 @@ mod tests {
         assert!(rebound_identity("personal", &old, &changed).is_err());
         assert!(rebound_identity("legacy_account", &old, &changed).is_err());
     }
+    #[test]
+    fn furnishing_thumbnail_backup_source_is_optional_and_keeps_legacy_four_journals() {
+        let source_root = PathBuf::from("/synthetic/source");
+        let target = PathBuf::from("/synthetic/target");
+        let mut source = SourceMap { format:1, source_root:source_root.clone(), owner_kind:"personal".into(),
+            manifest_sha256:"a".repeat(64), journal_names:BTreeMap::new() };
+        for logical in ["document.json", "upload.json", "publication.json", "static-export.json"] {
+            source.journal_names.insert(logical.into(), journal(&source_root, logical).unwrap());
+        }
+        assert!(!validate_source(&source, "personal", &"a".repeat(64), &target).unwrap());
+        source.journal_names.insert("furnishing-thumbnail.json".into(), journal(&source_root, "furnishing-thumbnail.json").unwrap());
+        assert!(!validate_source(&source, "personal", &"a".repeat(64), &target).unwrap());
+        source.owner_kind="legacy_account".into();
+        assert!(validate_source(&source, "legacy_account", &"a".repeat(64), &target).is_err());
+        source.owner_kind="personal".into();source.journal_names.insert("unknown.json".into(), "unexpected".into());
+        assert!(validate_source(&source, "personal", &"a".repeat(64), &target).is_err());
+    }
+
+    #[test]
+    fn furnishing_thumbnail_restore_keeps_original_selection_nonce_and_raw_bytes() {
+        let f=fields();let source=PathBuf::from("/synthetic/source");let target=PathBuf::from("/synthetic/target");
+        let rendering=Uuid::new_v4().to_string();let mutation=Uuid::new_v4().to_string();let furnishing=Uuid::new_v4().to_string();let candidate_id=Uuid::new_v4().to_string();
+        let request=serde_json::json!({"version":1,"epoch":Uuid::new_v4().to_string(),"sequence":1,
+            "tenantId":f.0["TENANT_ID"],"principalId":f.0["PRINCIPAL_ID"],"requestId":rendering,
+            "furnishingId":furnishing,"furnishingVersion":1,"modelSha256":"a".repeat(64),"modelBytes":28,
+            "recipeId":"furnishing-glb-card-256-v1","toolId":"exhibitos-three-0.186.1-thumbnail-v1"});
+        let src=serde_json::json!({"furnishingId":furnishing,"furnishingVersion":1,"modelSha256":"a".repeat(64),"modelBytes":28,"descriptorSha256":"b".repeat(64),"rightsSha256":"c".repeat(64)});
+        let png=serde_json::json!({"mime":"image/png","width":256,"height":256,"sha256":"d".repeat(64),"bytes":33});
+        let candidate=serde_json::json!({"candidateId":candidate_id,"state":"ready","source":src,"thumbnail":png,"receiptSha256":"e".repeat(64),
+            "receipt":{"version":1,"purpose":"registered-furnishing-thumbnail","profile":"workspace-furnishing-thumbnail-v1",
+                "workspaceId":f.0["WORKSPACE_ID"],"candidateId":candidate_id,"requestId":rendering,"source":src,"renderRequest":request,"png":png}});
+        let state=serde_json::json!({"format":1,"revision":7,"workspaceId":f.0["WORKSPACE_ID"],"tenantId":f.0["TENANT_ID"],"principalId":f.0["PRINCIPAL_ID"],
+            "pending":{"kind":"selection","furnishingId":furnishing,"furnishingVersion":1,"requestId":mutation,"candidate":candidate,"expectedSelectionVersion":3}});
+        let raw=serde_json::to_vec_pretty(&state).unwrap();
+        let rebound=rebound_journal("furnishing-thumbnail.json",&raw,&f).unwrap();assert_eq!(rebound,raw);
+        let restored:Value=serde_json::from_slice(&rebound).unwrap();assert_eq!(restored["pending"]["requestId"],mutation);
+        assert_ne!(restored["pending"]["requestId"],restored["pending"]["candidate"]["receipt"]["requestId"]);
+        assert_ne!(journal(&source,"furnishing-thumbnail.json").unwrap(),journal(&target,"furnishing-thumbnail.json").unwrap());
+        let mut other=Fields(f.0.clone());other.0.insert("PRINCIPAL_ID".into(),Uuid::new_v4().to_string());
+        assert!(rebound_journal("furnishing-thumbnail.json",&raw,&other).is_err());
+    }
+
     #[test]
     fn journal_rebind_keeps_request_bytes_and_refuses_cross_owner_or_arbitrary_names() {
         let f = fields();

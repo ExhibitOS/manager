@@ -1369,9 +1369,11 @@ operation with preserved failure evidence and the existing safe API trace.
 The optional `workspaceFurnishingThumbnailProfile` session value
 `workspace-furnishing-thumbnail-v1` adds reviewed thumbnail candidates and a
 separate representative-image selection. The Native 050 consumer source keeps
-its target manifest allowlist empty until the frozen Server payload has actually
-been assembled and its exact tuple reviewed. These interfaces alone do not
-qualify a runtime or authorize a workspace transition.
+one exact local-validation tuple: source `55e8ad6c861eab44326ee8db60db2692e3f7baf7`,
+producer `02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5`,
+manifest `2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626`.
+The assembled payload and reader delta have independent review. This does not
+qualify an official runtime or authorize a workspace transition.
 
 The scoped authoring adapter exposes `workspace-furnishing-thumbnail-prepare`,
 `-candidates`, `-candidate`, `-image`, `-selection`, `-select`, and
@@ -1404,10 +1406,18 @@ preview; Apply stages one checked candidate, and exhibition Save remains a
 separate action. The saved-scene snapshot guard is unchanged. Physical fit and
 ordinary GUI acceptance require actual target-camera checks before applying.
 
-Unresolved GUI thumbnail requests retain their original capture or selection
-nonce/CAS in owner-scoped session state across sheet dismissal and reopening.
-Reconnecting the same owner refreshes API authority without replacing that
-intent; other owners cannot borrow it. A first definitively rejected POST may
-refresh selection, while an uncertain replay keeps the original request.
-Unresolved-intent recovery across application termination is not qualified by
-these session-lifecycle checks.
+Before dispatching a GUI thumbnail mutation, the existing Native owner store
+persists one bounded private intent per personal workspace. It retains the
+original capture metadata and canonical PNG, or the issued candidate and original
+selection nonce/CAS. The journal uses its own revision and does not change the
+exhibition document. Reopening the sheet or app reads that intent and refreshes
+registered descriptor and display authority before continuing the same request.
+A ready capture can be reconciled by its original renderer request ID; an
+uncertain selection replays its original mutation nonce. A known result whose
+local acknowledgement failed only retries the local journal completion.
+
+The journal is optional in existing backups and is restored byte-for-byte only
+for the same owner; absent legacy journals stay absent. Pending intent blocks
+personal-runtime transition. These source paths and focused tests do not claim
+actual application-termination, current-data transition or backup/restore
+qualification against the assembled runtime.

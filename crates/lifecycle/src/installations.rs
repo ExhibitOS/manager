@@ -15,6 +15,9 @@ pub mod native_document;
 #[path = "native_upload.rs"]
 pub mod native_upload;
 #[cfg(target_os = "macos")]
+#[path = "native_furnishing_thumbnail.rs"]
+pub mod native_furnishing_thumbnail;
+#[cfg(target_os = "macos")]
 #[path = "native_oex_import.rs"]
 pub mod native_oex_import;
 #[cfg(target_os = "macos")]
@@ -417,6 +420,9 @@ impl InstallationController {
             if self.oex_import_unlocked(service)?.1.intent.is_some() {
                 return Err(err("NATIVE_OEX_IMPORT_PENDING"));
             }
+            if self.furnishing_thumbnail_unlocked(service)?.1.pending.is_some() {
+                return Err(err("NATIVE_FURNISHING_THUMBNAIL_PENDING"));
+            }
             let document = self.document_unlocked(service)?.1;
             let version = document.draft.as_ref().and_then(|v| v.get("editVersion")).and_then(Value::as_u64);
             if document.pending.is_some() || (document.draft.is_some() && version != document.saved_edit_version)
@@ -443,12 +449,20 @@ impl InstallationController {
 
     #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
     pub(crate) fn personal_transition_journal_digests(&self, service: &LifecycleService, profile: &Path) -> Result<Vec<Option<String>>> {
-        let journals = [
+        let mut journals = vec![
             (self.document_unlocked(service)?.0, 2_200_000),
             (self.upload_unlocked(service)?.0, native_upload::LIMIT),
             (self.publication_unlocked(service)?.0, 2_200_000),
             (self.oex_import_unlocked(service)?.0, 65_536),
         ];
+        let thumbnail = self.furnishing_thumbnail_unlocked(service)?.0;
+        // Preserve the legacy four-entry digest vector when no new journal has
+        // ever existed. Neither reading nor checkpointing materializes it.
+        match fs::symlink_metadata(profile.join(&thumbnail)) {
+            Ok(_) => journals.push((thumbnail, native_furnishing_thumbnail::LIMIT)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(_) => return Err(err("STATE_UNAVAILABLE")),
+        }
         journals.iter().map(|(name, limit)| {
             match fs::symlink_metadata(profile.join(name)) {
                 Ok(_) => Ok(Some(digest(&installation_backup::source_bytes(profile, name, *limit, true)?))),

@@ -186,6 +186,10 @@ pub enum Command {
         document: Box<super::native_document::DocumentState>,
     },
     #[cfg(target_os = "macos")]
+    FurnishingThumbnailState { selection_token: String },
+    #[cfg(target_os = "macos")]
+    SaveFurnishingThumbnailState { selection_token: String, thumbnail: Box<super::native_furnishing_thumbnail::State> },
+    #[cfg(target_os = "macos")]
     UploadState {
         selection_token: String,
     },
@@ -260,6 +264,8 @@ struct WireRequest {
     #[cfg(target_os = "macos")]
     transfer: Option<super::native_upload::Transfer>,
     #[cfg(target_os = "macos")]
+    thumbnail: Option<super::native_furnishing_thumbnail::State>,
+    #[cfg(target_os = "macos")]
     oex_import: Option<super::native_oex_import::Transfer>,
     #[cfg(target_os = "macos")]
     document: Option<super::native_document::DocumentState>,
@@ -285,6 +291,27 @@ struct WireRequest {
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
     fn try_from(wire: WireRequest) -> std::result::Result<Self, Self::Error> {
+        #[cfg(target_os = "macos")]
+        if matches!(wire.command.as_str(), "furnishing_thumbnail_state" | "save_furnishing_thumbnail_state") {
+            if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
+                || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some()
+                || wire.hosting.is_some() || wire.maintenance.is_some() || wire.oex_save.is_some() || wire.adoption.is_some()
+            { return Err("NATIVE_PROTOCOL_INVALID"); }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            if wire.hayes_execute.is_some() || wire.hayes_job_id.is_some() || wire.hayes_current_artwork_revision.is_some()
+                || wire.hayes_finished_artwork_id.is_some() || wire.hayes_finished_display_sha256.is_some()
+            { return Err("NATIVE_PROTOCOL_INVALID"); }
+            let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let command = match (wire.command.as_str(), wire.thumbnail) {
+                ("furnishing_thumbnail_state", None) => Command::FurnishingThumbnailState { selection_token },
+                ("save_furnishing_thumbnail_state", Some(thumbnail)) => Command::SaveFurnishingThumbnailState { selection_token, thumbnail: Box::new(thumbnail) },
+                _ => return Err("NATIVE_PROTOCOL_INVALID"),
+            };
+            return Ok(Self { version: wire.version, id: wire.id, command });
+        }
+        #[cfg(target_os = "macos")]
+        if wire.thumbnail.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
+
         #[cfg(target_os = "macos")]
         if wire.command == "native_model_adoption" {
             if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
@@ -682,6 +709,10 @@ impl Request {
                 serde_json::to_value(controller.save_native_document(&selection_token, *document)?)
             }
             #[cfg(target_os = "macos")]
+            Command::FurnishingThumbnailState { selection_token } => serde_json::to_value(controller.native_furnishing_thumbnail(&selection_token)?),
+            #[cfg(target_os = "macos")]
+            Command::SaveFurnishingThumbnailState { selection_token, thumbnail } => serde_json::to_value(controller.save_native_furnishing_thumbnail(&selection_token, *thumbnail)?),
+            #[cfg(target_os = "macos")]
             Command::UploadState { selection_token } => {
                 serde_json::to_value(controller.native_upload(&selection_token)?)
             }
@@ -718,5 +749,34 @@ impl Request {
             | Command::NativeStop { .. } => return Err(err("NATIVE_HOST_REQUIRED")),
         };
         result.map_err(|_| err("STATE_INVALID"))
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod furnishing_thumbnail_wire_tests {
+    use super::*;
+    fn state() -> Value {
+        serde_json::json!({"format":1,"revision":0,"workspaceId":"10000000-0000-4000-8000-000000000001",
+            "tenantId":"10000000-0000-4000-8000-000000000002","principalId":"10000000-0000-4000-8000-000000000003","pending":null})
+    }
+    #[test]
+    fn furnishing_thumbnail_wire_is_closed_and_rejects_payload_on_every_other_command() {
+        let token=Uuid::new_v4().to_string();
+        for command in ["context","document_state","save_document_state","upload_state","save_upload_state","native_stop","native_prepare","presentation"] {
+            let value=serde_json::json!({"version":1,"id":1,"command":command,"selection_token":token,"thumbnail":state()});
+            assert!(serde_json::from_value::<Request>(value).is_err());
+        }
+        let read=serde_json::json!({"version":1,"id":1,"command":"furnishing_thumbnail_state","selection_token":token});
+        assert!(serde_json::from_value::<Request>(read.clone()).is_ok());
+        let mut forbidden=read;forbidden["thumbnail"]=state();assert!(serde_json::from_value::<Request>(forbidden).is_err());
+    }
+    #[test]
+    fn furnishing_thumbnail_save_requires_exact_named_state_and_selection_token() {
+        let token=Uuid::new_v4().to_string();
+        let save=serde_json::json!({"version":1,"id":1,"command":"save_furnishing_thumbnail_state","selection_token":token,"thumbnail":state()});
+        assert!(serde_json::from_value::<Request>(save.clone()).is_ok());
+        let mut absent=save.clone();absent.as_object_mut().unwrap().remove("selection_token");assert!(serde_json::from_value::<Request>(absent).is_err());
+        let mut other=save;other["document"]=serde_json::json!({"format":1,"revision":0,"workspaceId":Uuid::new_v4().to_string(),"tenantId":Uuid::new_v4().to_string(),"principalId":Uuid::new_v4().to_string(),"draft":null,"etag":null,"savedEditVersion":null,"pending":null});
+        assert!(serde_json::from_value::<Request>(other).is_err());
     }
 }

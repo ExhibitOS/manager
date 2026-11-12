@@ -266,7 +266,9 @@ final class ManagerModel: ObservableObject {
                 await exhibitions.connect(api: api, session: session, credentials: credentials,
                     selectedBoundedPolicy: selected, ordinaryBoundedRuntime: boundedWorkspace && !selected,
                     boundedRuntimeQualified: gate.oex027Qualified == true,
-                    read: { try await bridge.documentState(context) }, write: { state in try await bridge.saveDocumentState(context, state: state) })
+                    read: { try await bridge.documentState(context) }, write: { state in try await bridge.saveDocumentState(context, state: state) },
+                    readThumbnailCheckpoint: { try await bridge.furnishingThumbnailState(context) },
+                    writeThumbnailCheckpoint: { state in try await bridge.saveFurnishingThumbnailState(context, state: state) })
                 guard !quitting, connectionGeneration == retainedAuthoringGeneration,
                       self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId,
                       authoring.exhibitionAPI === api, let current = authoring.session, Self.sameSession(current, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }

@@ -369,10 +369,14 @@ const FURNISHING_THUMBNAIL_CAPABILITY: (&str, u64, &str) = (
     273,
     "3c3e6a6cea3f0d83c55996cab5a4e98d48d92cce28ea090fe6b969a7764014f5",
 );
-// The producer source is frozen, but no complete candidate has been assembled
-// or admitted. A source/marker match cannot populate this manifest allowlist.
+// One assembled, inventory-verified local candidate. This full tuple does not
+// establish a successful schema transition, runtime startup, or release.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const FURNISHING_THUMBNAIL_TARGETS: &[RuntimeTuple] = &[];
+const FURNISHING_THUMBNAIL_TARGETS: &[RuntimeTuple] = &[(
+    "55e8ad6c861eab44326ee8db60db2692e3f7baf7",
+    "02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5",
+    "2c29a8ffe2a56395dd1cdc1b0acd93e4a1623e8aac8b0e10aca30369e60b4626",
+)];
 
 pub(crate) fn furnishing_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -1980,7 +1984,7 @@ mod normal_oex_release_declaration_tests {
     }
 
     #[test]
-    fn furnishing_thumbnail_source_and_marker_do_not_admit_an_unassembled_runtime() {
+    fn furnishing_thumbnail_source_and_marker_do_not_admit_an_unpinned_manifest() {
         let tuple = ("55e8ad6c861eab44326ee8db60db2692e3f7baf7",
             "02a2e7eb9630eedad593edc04e6365ab263ee9f637d1aff994ba7dc093c356c5",
             "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
@@ -3431,6 +3435,52 @@ mod normal_oex_release_declaration_tests {
         assert!(!payload.normal_oex_selected_input().unwrap());
         assert!(payload.static_export_resources(false).is_ok());
         assert!(payload.static_detail_export_resources(false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact assembled furnishing-thumbnail050 runtime; read-only opener only"]
+    fn opens_actual_furnishing_thumbnail050_payload_without_starting_a_workspace() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FURNISHING_THUMBNAIL050_RUNTIME")
+            .expect("explicit exact thumbnail050 runtime path required"));
+        let mut payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let tuple = FURNISHING_THUMBNAIL_TARGETS[0];
+        assert_eq!(FURNISHING_THUMBNAIL_TARGETS.len(), 1);
+        assert_eq!(payload.context().source_commit, tuple.0);
+        assert_eq!(payload.producer_sha256(), tuple.1);
+        assert_eq!(payload.context().manifest_sha256, tuple.2);
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::FurnishingThumbnail050));
+        let ledger = payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::FurnishingThumbnail050).unwrap();
+        assert_eq!(ledger.lines().count(), 46);
+        assert_eq!(ledger.lines().last().unwrap(), format!("050_workspace_furnishing_thumbnail.sql|{}", FURNISHING_THUMBNAIL_SCHEMA.2));
+        assert_eq!(payload.catalog50_upgrade_source_ledger().unwrap().lines().count(), 45);
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045).is_err());
+        assert!(payload.retained_furnishing_catalog().is_none());
+        assert!(!payload.workspace_v5_selected_input());
+        assert!(payload.native_model_adoption_root().unwrap().is_none());
+        assert!(payload.manifest.files.iter().all(|file| {
+            !file.path.starts_with(LARGE_MODEL_PREPARATION_DIRECTORY)
+                && !file.path.starts_with(FRESH_IMAGE_PREPARATION_DIRECTORY)
+                && !file.path.starts_with(INFO_STAND_PREPARATION_DIRECTORY)
+                && file.path != "platform/scripts/native-model-adoption-capability-v1.json"
+                && file.path != "platform/scripts/native-model-adoption-carried-target-capability-v1.json"
+                && !(file.path.starts_with("platform/database/")
+                    && file.path.ends_with(".sql")
+                    && file.path.rsplit('/').next().and_then(|name| name.split_once('_'))
+                        .and_then(|(number, _)| number.parse::<u32>().ok()).is_some_and(|number| (46..=49).contains(&number)))
+        }));
+        assert_eq!(payload.furnishing_thumbnail_upgrade_script().unwrap(), root.join("platform/scripts/local-runtime.mjs"));
+        let step = FurnishingTransition::from_manifests((CATALOG45_DEFAULT_1_7_TARGET.2, tuple.2)).unwrap();
+        assert!(matches!(step, FurnishingTransition::Upgrade50 { .. }));
+        assert_eq!(step.source(), CATALOG45_DEFAULT_1_7_TARGET);
+        assert_eq!(step.target(), tuple);
+        assert_eq!(step.source_catalog(), WorkspaceFurnishingCatalog::RequiredModelPreparation045);
+        assert_eq!(step.target_catalog(), WorkspaceFurnishingCatalog::FurnishingThumbnail050);
+        assert!(saved_workspace_transition_target(tuple.2));
+        assert!(FurnishingTransition::from_manifests((tuple.2, CATALOG45_DEFAULT_1_7_TARGET.2)).is_none());
+        payload.manifest_sha256 = "e".repeat(64);
+        assert!(payload.workspace_furnishing_catalog().is_err());
+        assert!(payload.furnishing_thumbnail_upgrade_script().is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

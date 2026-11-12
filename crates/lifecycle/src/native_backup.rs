@@ -447,7 +447,9 @@ impl InstallationController {
                 let config_directory = ConfigurationDirectory::capture(&config)?;
                 capture(&config, "freeze-signing-key.json", 65536, "freeze-signing-key.json", true, false)?;
                 let suffix = digest(service.root.as_os_str().as_encoded_bytes());
-                for (name, limit) in [("document",2_200_000),("upload",128*1024),("publication",2_200_000),("static-export",65536)] {
+                if prepared.kind == "personal" { self.furnishing_thumbnail_unlocked(service)?; }
+                for (name, limit) in [("document",2_200_000),("upload",128*1024),("publication",2_200_000),("static-export",65536),
+                    ("furnishing-thumbnail", native_furnishing_thumbnail::LIMIT)] {
                     capture(&profile.root, &format!("native-{name}-{suffix}.json"), limit, &format!("{name}.json"), false, true)?;
                 }
                 if let Some(bytes) = &completion {

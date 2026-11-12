@@ -601,7 +601,8 @@ public actor NativeAutomationSession {
             let item = try await api.workspaceFurnishing(id, version: 1)
             let submission = try WorkspaceFurnishingThumbnailSubmission(capture: command["capture"], pngData: png.data,
                                                                         document: current, furnishing: item)
-            result = try await api.prepareWorkspaceFurnishingThumbnail(submission, in: current).value
+            do { result = try await api.prepareWorkspaceFurnishingThumbnail(submission, in: current).value }
+            catch let rejected as WorkspaceFurnishingThumbnailPreparationRejection { throw rejected.failure }
         } else {
             let keys: Set<String>
             switch operation {
