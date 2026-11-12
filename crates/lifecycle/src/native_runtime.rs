@@ -836,6 +836,7 @@ impl FurnishingTransitionTrial {
             return Ok(());
         }
         if self.failed_thumbnail_helper_cold(root, transition)? { return Ok(()); }
+        if self.committed_gpu_ordinary_failure_cold(root, transition)? { return Ok(()); }
         if ((matches!(transition, FurnishingTransition::Upgrade50 { .. })
                 && thumbnail_upgrade_completion(root, binding).is_ok())
             || (matches!(transition, FurnishingTransition::Upgrade49 { .. })
