@@ -5,7 +5,7 @@ import Foundation
 /// particular, a ready-looking envelope here does not authorize its receipt.
 public struct NativeGPUModelJobIdentity: Sendable {
     public let jobId: String
-    init(_ value: DocumentValue, input: NativeGPUModelPreparationRequest) throws {
+    init(_ value: DocumentValue, input: NativeGPUModelPreparationRequest, observesHistoricalFailed: Bool = false) throws {
         let n = value["gpuPreparation"], source = n["source"]
         guard case .object(let top) = value, case .object(let nested) = n,
               Set(top.keys).subtracting(["assetId"]) == ["id", "state", "progress", "attempts", "errorCode", "retryAt", "gpuPreparation"],
@@ -13,7 +13,13 @@ public struct NativeGPUModelJobIdentity: Sendable {
               input.valid, let jobId = value["id"].string, NativeGPUModelPreparation.id(jobId),
               ["queued", "processing", "approved", "failed", "cancelled"].contains(value["state"].string ?? ""),
               n["version"] == .integer(1), n["purpose"] == .string(NativeGPUModelPreparation.purpose),
-              n["profile"] == .string(NativeGPUModelPreparation.profile), n["recipeSHA256"] == .string(NativeGPUModelPreparation.recipe),
+              n["profile"] == .string(NativeGPUModelPreparation.profile),
+              n["recipeSHA256"] == .string(NativeGPUModelPreparation.recipe)
+                || (observesHistoricalFailed
+                    && n["recipeSHA256"] == .string(NativeGPUModelPreparation.historicalSignedRecipe)
+                    && value["state"] == .string("failed") && n["status"] == .string("failed")
+                    && n["workerDrained"] == .bool(true) && nested["candidate"] == nil
+                    && nested["serverReceipt"] == nil && top["assetId"] == nil),
               n["operationID"] == .string(input.idempotencyKey), n["generation"] == .string(input.generation),
               n["artworkRevision"] == .integer(Int64(input.revision)), NativeGPUModelPreparation.source(source),
               NativeGPUModelPreparation.sameID(source["assetId"].string, input.assetId),

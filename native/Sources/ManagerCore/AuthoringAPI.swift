@@ -2008,7 +2008,7 @@ public actor AuthoringAPI {
               raw["operationID"] == .string(input.idempotencyKey), raw["generation"] == .string(input.generation) else {
             throw NativeGPUModelPreparation.invalid()
         }
-        return raw["job"] == .null ? nil : try NativeGPUModelJobIdentity(raw["job"], input: input)
+        return raw["job"] == .null ? nil : try NativeGPUModelJobIdentity(raw["job"], input: input, observesHistoricalFailed: true)
     }
 
     public func gpuModelPreparationJob(_ id: String, artworkId: String, input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {

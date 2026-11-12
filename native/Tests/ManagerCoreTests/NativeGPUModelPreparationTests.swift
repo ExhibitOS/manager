@@ -65,6 +65,44 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         producer["ktx"]["imageIndex"] = .integer(0)
         XCTAssertFalse(NativeGPUModelPreparation.producer(producer))
     }
+    func testHistoricalSignedRecipeAllowsOnlyDrainedFailureWithoutCandidate() throws {
+        let req = try request()
+        var failed = pending()
+        failed["state"] = .string("failed")
+        failed["attempts"] = .integer(1)
+        failed["errorCode"] = .string("GPU_MODEL_ENCODER_FAILED")
+        failed["gpuPreparation"]["status"] = .string("failed")
+        failed["gpuPreparation"]["workerDrained"] = .bool(true)
+        failed["gpuPreparation"]["recipeSHA256"] = .string(NativeGPUModelPreparation.historicalSignedRecipe)
+        let job = try NativeGPUModelPreparationJob(failed, artworkId: artwork, request: req)
+        XCTAssertEqual(job.request, req)
+        XCTAssertEqual(job.value, failed)
+        var bad = failed
+        bad["gpuPreparation"]["workerDrained"] = .bool(false)
+        XCTAssertThrowsError(try NativeGPUModelPreparationJob(bad, artworkId: artwork, request: req))
+        for (state, phase) in [("queued", "pending"), ("processing", "processing"), ("cancelled", "cancelled")] {
+            bad = failed; bad["state"] = .string(state); bad["gpuPreparation"]["status"] = .string(phase)
+            XCTAssertThrowsError(try NativeGPUModelPreparationJob(bad, artworkId: artwork, request: req))
+        }
+        bad = failed; bad["gpuPreparation"]["candidate"] = candidate()
+        XCTAssertThrowsError(try NativeGPUModelPreparationJob(bad, artworkId: artwork, request: req))
+        bad = failed; bad["gpuPreparation"]["serverReceipt"] = .null
+        XCTAssertThrowsError(try NativeGPUModelPreparationJob(bad, artworkId: artwork, request: req))
+        bad = failed; bad["gpuPreparation"]["recipeSHA256"] = .string(fixtureDigest)
+        XCTAssertThrowsError(try NativeGPUModelPreparationJob(bad, artworkId: artwork, request: req))
+        let (readyValue, receipt) = try ready()
+        var oldReady = readyValue
+        oldReady["gpuPreparation"]["recipeSHA256"] = .string(NativeGPUModelPreparation.historicalSignedRecipe)
+        XCTAssertThrowsError(try NativeGPUModelPreparationJob(oldReady, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt))
+        XCTAssertThrowsError(try NativeGPUModelJobIdentity(failed, input: req))
+        XCTAssertNoThrow(try NativeGPUModelJobIdentity(failed, input: req, observesHistoricalFailed: true))
+        bad = failed; bad["gpuPreparation"]["workerDrained"] = .bool(false)
+        XCTAssertThrowsError(try NativeGPUModelJobIdentity(bad, input: req, observesHistoricalFailed: true))
+        bad = failed; bad["gpuPreparation"]["candidate"] = candidate()
+        XCTAssertThrowsError(try NativeGPUModelJobIdentity(bad, input: req, observesHistoricalFailed: true))
+        bad = failed; bad["state"] = .string("queued"); bad["gpuPreparation"]["status"] = .string("pending")
+        XCTAssertThrowsError(try NativeGPUModelJobIdentity(bad, input: req, observesHistoricalFailed: true))
+    }
     func testHistoricalVendorRecipeIsRejected() throws {
         let req = try request()
         var queued = pending()

@@ -9,7 +9,10 @@ public enum NativeGPUModelPreparation {
     public static let purpose = "approved-display-gpu-derivative"
     // Retained for identifying historical vendor receipts; never active acceptance.
     static let historicalVendorRecipe = "6739a173b5a3af38f3fb02b250a2fa4d3315972f62ea8592f1c5695ab5848d98"
-    public static let recipe = "886e3815a386a46462e46d35ccb640498ebefcc853cefba61f76560b62cae4bc"
+    // The signed v2 recipe used an unregistered upstream CLI spelling. Only
+    // drained failures may be read so an existing job can explicitly retry.
+    static let historicalSignedRecipe = "886e3815a386a46462e46d35ccb640498ebefcc853cefba61f76560b62cae4bc"
+    public static let recipe = "82a7dd855788e590ba6698f1c3c5fc51b7638edd24c891391b20c20c09ac1fdf"
     public static let encoderSHA256 = "4ec0c7fa5f123e91f8e2adb21c1b94e7119a0f396f11cc8fd747459b2a51620c"
     public static let encoderLibrarySHA256 = "e2f8115a77cf2c1e375210d3687f487a4e54f0cde803060cb1c4085427f3d393"
     public static let geometryAlgorithm = "glb-source-preservation-v1"
@@ -124,12 +127,16 @@ public struct NativeGPUModelPreparationJob: Sendable, Equatable {
         guard case .object(let nf) = n,
               Set(nf.keys).subtracting(["candidate", "serverReceipt"]) == ["version", "purpose", "profile", "recipeSHA256", "operationID", "generation", "artworkRevision", "status", "workerDrained", "source"],
               n["version"] == .integer(1), n["purpose"] == .string(NativeGPUModelPreparation.purpose), n["profile"] == .string(NativeGPUModelPreparation.profile),
-              n["recipeSHA256"] == .string(NativeGPUModelPreparation.recipe), n["operationID"] == .string(request.idempotencyKey), n["generation"] == .string(request.generation),
+              n["operationID"] == .string(request.idempotencyKey), n["generation"] == .string(request.generation),
               n["artworkRevision"] == .integer(Int64(request.revision)), NativeGPUModelPreparation.source(n["source"]),
               NativeGPUModelPreparation.sameID(n["source"]["assetId"].string, request.assetId), n["source"]["sha256"] == .string(request.sha256), n["source"]["bytes"] == .integer(Int64(request.bytes)),
               case .bool(let drained) = n["workerDrained"], let phase = n["status"].string else { throw NativeGPUModelPreparation.invalid() }
         let allowed = (state == "queued" && phase == "pending") || (state == "processing" && phase == "processing") || (state == "approved" && !drained && phase == "processing") || (state == "approved" && drained && phase == "ready") || (state == "failed" && phase == "failed") || (state == "cancelled" && phase == "cancelled")
         guard allowed else { throw NativeGPUModelPreparation.invalid() }
+        let currentRecipe = n["recipeSHA256"] == .string(NativeGPUModelPreparation.recipe)
+        let historicalFailedRecipe = n["recipeSHA256"] == .string(NativeGPUModelPreparation.historicalSignedRecipe)
+            && state == "failed" && phase == "failed" && drained
+        guard currentRecipe || historicalFailedRecipe else { throw NativeGPUModelPreparation.invalid() }
         if phase == "ready" {
             let c = n["candidate"], r = n["serverReceipt"]
             guard v["progress"] == .integer(100), NativeGPUModelPreparation.candidate(c),
