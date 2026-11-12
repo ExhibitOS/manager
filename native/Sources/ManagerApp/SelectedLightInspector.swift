@@ -49,13 +49,24 @@ struct SelectedLightInspector: View {
     @State private var positionDetails = false
     @State private var colorDetails = false
     @State private var aimDetails = false
+    @State private var mountDetails = false
+    private var detailsSupported: Bool { controller.lightFixtureSupported || controller.lightObjectSupported }
     private var editable: Bool {
-        ready && controller.connected && controller.lightInspectorSupported && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.furnishingDirty && !model.spaceLightingDirty && !model.architectureApplying
+        ready && controller.connected && (controller.lightInspectorSupported || controller.lightObjectSupported) && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.furnishingDirty && !model.spaceLightingDirty && !model.architectureApplying
     }
     private var selected: DocumentValue? {
         model.draft?.candidate["lights"].items?.first { $0["id"].string == model.selectedLightId }
     }
     private struct AimTarget: Identifiable { let id: String, title: String }
+    private var mountSurfaces: [AimTarget] {
+        guard let selected else { return [] }
+        return (model.draft?.candidate["surfaces"].items ?? []).filter {
+            $0["type"] == .string("ceiling") && $0["roomId"] == selected["roomId"]
+        }.compactMap { surface in
+            guard let id = surface["id"].string else { return nil }
+            return AimTarget(id: id, title: surface["name"].string ?? "천장")
+        }
+    }
     private var aimTargets: [AimTarget] {
         guard let draft = model.draft, let selected else { return [] }
         return draft.placements.filter { $0["roomId"] == selected["roomId"] }.compactMap { placement in
@@ -114,6 +125,21 @@ struct SelectedLightInspector: View {
                     let room = model.draft?.rooms.first { $0["id"] == row["roomId"] }?["name"].string ?? "공간"
                     Text(room).font(.title3.weight(.semibold))
                     if let fields = model.light {
+                        if fields.isRoomBaseLight {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("공간 기본 조명").font(.headline)
+                                Text(fields.basePlacement == .auto ? "자동 배치 · 공간 크기에 맞춤" : fields.basePlacement == .manual ? "직접 배치" : "배치 기록 없음 · 기존 위치 유지")
+                                    .foregroundStyle(.secondary)
+                                Text("밝기와 색상은 배치 방식과 별개입니다. 밝기 0도 그대로 유지됩니다.").font(.caption).foregroundStyle(.secondary)
+                                HStack {
+                                    Button("자동 배치 미리보기") { Task { await model.previewRoomBaseLightPlacement(.auto) } }
+                                        .disabled(!ready || !model.canPreviewRoomBaseLightPlacement || row["type"] != .string("point"))
+                                    Button("직접 배치로 전환") { Task { await model.previewRoomBaseLightPlacement(.manual) } }
+                                        .disabled(!ready || !model.canPreviewRoomBaseLightPlacement || fields.basePlacement == .manual)
+                                }
+                                Text("자동 배치는 점광원의 위치와 범위를 공간에 맞추고 천장 부착·비출 대상을 해제합니다. 확인 후 조명 적용을 누르세요.").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                         VStack(alignment: .leading, spacing: 12) {
                             Picker("빛의 종류", selection: Binding(get: { fields.type }, set: { value in
                                 guard var next = model.light else { return }; next.changeType(value); model.light = next
@@ -126,12 +152,12 @@ struct SelectedLightInspector: View {
                                     ForEach(NativeLightFixture.allCases, id: \.self) { fixture in
                                         Text(fixture.title).tag(fixture).disabled(!fixture.supports(fields.type))
                                     }
-                                }.disabled(!controller.lightFixtureSupported)
+                                }.disabled(!detailsSupported)
                             } else {
                                 LabeledContent("조명 기구", value: "기존 설정 유지")
                                 }
                             Text("기구 외형은 빛의 종류와 별개입니다. 스폿 캔은 스폿, 원형은 점광원, 패널은 면광원과 함께 사용합니다. 공간 안에 맞는지 미리보기에서 확인하세요.").font(.caption).foregroundStyle(.secondary)
-                            if !controller.lightFixtureSupported || !fields.fixtureEditable {
+                            if !detailsSupported || !fields.fixtureEditable {
                                 Text("현재 연결이나 저장된 정보에서는 기구를 바꿀 수 없습니다. 기존 설정은 유지됩니다.").font(.caption).foregroundStyle(.secondary)
                             }
                             Picker("색상 입력", selection: Binding(get: { fields.colorMode }, set: { value in
@@ -139,10 +165,10 @@ struct SelectedLightInspector: View {
                             })) {
                                 Text("직접 색상").tag(NativeLightColorMode.direct)
                                 Text("색온도").tag(NativeLightColorMode.temperature)
-                            }.disabled(!controller.lightFixtureSupported || !fields.fixtureEditable)
+                            }.disabled(!detailsSupported || !fields.fixtureEditable)
                             if fields.colorMode == .temperature {
                                 TextField("색온도 · K", text: field(\.kelvin))
-                                    .disabled(!controller.lightFixtureSupported || !fields.fixtureEditable)
+                                    .disabled(!detailsSupported || !fields.fixtureEditable)
                                 Text("1000–20000 K의 화면용 근사입니다. 값을 바꾸고 미리보기하면 색상과 함께 적용됩니다. 저장된 전시를 열 때는 색상을 다시 계산하지 않습니다.").font(.caption).foregroundStyle(.secondary)
                             }
                             ColorPicker("빛 색상", selection: color, supportsOpacity: false).disabled(fields.colorMode == .temperature)
@@ -185,7 +211,7 @@ struct SelectedLightInspector: View {
                                             Text("그림자의 부드러움과는 다른 설정입니다. 비우면 기본값을 사용합니다.").font(.caption).foregroundStyle(.secondary)
                                         }
                                     }.padding(.top, 6)
-                                }.disabled(!controller.lightFixtureSupported)
+                                }.disabled(!detailsSupported)
                             }
                             DisclosureGroup("색상 수치", isExpanded: $colorDetails) { colorFields.padding(.top, 6).disabled(fields.colorMode == .temperature) }
                         }.textFieldStyle(.roundedBorder).disabled(!editable)
@@ -196,9 +222,33 @@ struct SelectedLightInspector: View {
                             Button("조명 적용") { Task { await model.applyLight() } }.disabled(!ready || !model.canApplyLight)
                             Button("조명 입력 취소") { model.discardLight() }.disabled(!model.lightDirty || model.busy || model.pending || model.architectureApplying)
                         }
+                        if controller.lightObjectSupported {
+                            DisclosureGroup("천장 부착 위치", isExpanded: $mountDetails) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Picker("천장 표면", selection: $model.lightMountSurfaceId) {
+                                        Text("같은 공간의 천장을 선택하세요").tag("")
+                                        ForEach(mountSurfaces) { surface in
+                                            Text(surface.title).tag(surface.id)
+                                        }
+                                    }
+                                    TextField("표면 중심 기준 X · m", text: $model.lightMountAnchorX)
+                                    TextField("표면 중심 기준 Y · m", text: $model.lightMountAnchorY)
+                                    TextField("표면에서 간격 · 0.01–1 m", text: $model.lightMountGap)
+                                    Button("부착 위치 미리보기") { Task { await model.previewLightMount() } }
+                                    Button("부착 해제 미리보기") { Task { await model.previewLightMount(detach: true) } }
+                                    Text("부착 해제는 현재 위치와 조명 설정을 유지합니다.").font(.caption).foregroundStyle(.secondary)
+                                }.textFieldStyle(.roundedBorder).padding(.top, 6)
+                            }.disabled(!ready || !model.canPreviewLightObjectAction)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Button("기구를 숨기고 빛만 유지") { Task { await model.previewLightObjectAction("set-light-fixture") } }
+                                Button("조명 복제 미리보기") { Task { await model.previewLightObjectAction("duplicate-light-object") } }
+                                Button("조명 삭제 미리보기", role: .destructive) { Task { await model.previewLightObjectAction("remove-light-object") } }
+                            }.disabled(!ready || !model.canPreviewLightObjectAction)
+                            Text("기구 숨기기는 빛을 유지합니다. 복제·삭제는 기구와 부착 정보를 함께 처리하며, 미리보기 후 조명 적용을 선택하세요.").font(.caption).foregroundStyle(.secondary)
+                        }
                         if model.lightDirty && !model.lightPreviewing { Text("미리보기 후 적용하세요. 적용 전 입력은 아직 보관되지 않았습니다.").font(.caption).foregroundStyle(.secondary) }
                     }
-                    if !controller.lightInspectorSupported { Text("현재 연결에서는 조명을 확인할 수 있습니다. 편집 가능한 제작 서비스에 다시 연결하세요.").font(.caption).foregroundStyle(.secondary) }
+                    if !controller.lightInspectorSupported && !controller.lightObjectSupported { Text("현재 연결에서는 조명을 확인할 수 있습니다. 편집 가능한 제작 서비스에 다시 연결하세요.").font(.caption).foregroundStyle(.secondary) }
                 } else { Text("조명 목록에서 대상을 선택하세요.").foregroundStyle(.secondary) }
                 if !model.lightStatus.isEmpty { Text(model.lightStatus).foregroundStyle(.secondary) }
                 SharedFurnishingCatalogView(model: model, viewport: controller, ready: ready)

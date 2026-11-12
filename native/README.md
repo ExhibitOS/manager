@@ -1363,3 +1363,85 @@ registered furnishing intake/thumbnail/replacement, the corrected painting
 lighting output or public viewing. The previously failed export remains failed;
 a later observed export of its already frozen publication is a distinct scoped
 operation with preserved failure evidence and the existing safe API trace.
+
+## Coupled light-object source correspondence
+
+The source negotiates `nativeLightObjectAuthoringProposalProfile:
+saved-head-light-object-v1` alongside the existing saved-head scene profile and
+the editable viewport capability `light-object-v1`. Older receivers retain the
+existing light-list inspector. A `{kind: "light", id}` viewport selection opens
+that same inspector; generic transform controls are not used for light objects.
+
+The closed shared commands are `set-light-object` (whole light/settings and an
+optional attachment), `set-light-fixture` (a known catalogue visual or explicit
+null), `duplicate-light-object`, and `remove-light-object`. Bindings use the
+existing flattened six-field request envelope. Replies contain those exact six
+fields plus the complete candidate and the authoritative `lightId`; clone IDs
+come from the server. The consumer checks the whole graph delta, retained order,
+shared assets, no-ops and unrelated metadata before accepting a candidate.
+Changing a procedural `fixture` setting to `none` does not remove an existing
+GLB visual. Explicit `set-light-fixture` with null is the invisible-light action.
+
+The installed authoring SDK source adds `light-object-prepare`,
+`light-object-apply`, and `light-object-cancel`, using the existing proposal
+cache, expiry, saved-head comparison and revision checks. Preparation and GUI
+preview require a clean saved head. Apply stages one complete local edit with
+ordinary undo; exhibition Save remains explicit. GUI clone/delete, numerical
+mount/detach and catalogue selection use this same bounded proposal path.
+No aim/fit optimizer, automatic relocation or contextual artwork fitting is
+included in this unit.
+
+The exact five-record catalogue snapshot is generated from Platform source
+`48daa7b5033c20b2b3aaa0df09a08c45df68c985`. The washer retains original source
+`d85d9d1823c49bef412a23a59e238104f5b8ad342d8e8149efaf8d1110dc3290`,
+independently produced model
+`a4b66294c77e206a574905e12680148129f914d368add947f1c8831c64bf3f4d`,
+and the current distribution notice. Public provenance uses the existing
+`omit-unused-tangent-v1` omission recipe; the immutable producer receipt retains
+the stricter preparation policy and tool/source/output binding. Existing four
+catalogue/asset records are unchanged. Explicit catalogue IDs distinguish the
+washer from the track spot and reject an unknown or wrong-host descriptor.
+
+This source slice does not update the default 1.7 runtime admission above or
+establish a matched 1.8 runtime, actual GUI application, physical aperture/mount
+fit, Save/reopen/export or Viewer qualification. Those require their own exact
+runtime and observed consumer evidence.
+
+
+## Room base-light placement intent (source consumer)
+
+The optional `basePlacement` light-details field records `auto` or `manual`
+only on an existing `purpose: "room-base"` binding. Its absence remains
+unknown and is never inferred from position, brightness or colour. New
+canonical creation and the explicit placement action require the authenticated
+`roomBaseLightPlacementProfile: "room-base-light-placement-v1"` marker in
+addition to the existing room-base profile; this source adds no runtime pins.
+
+The installed authoring CLI reuses `light-object-prepare`, `light-object-apply`
+and `light-object-cancel`. Its closed `command` is
+`{"type":"set-room-base-light-placement","lightId":"UUID","basePlacement":"auto"}`
+(or `manual`), inside the existing owner/revision envelope. Preparation is not
+Apply or Save. Automatic restoration clears that light's surface attachment,
+aim and placement target, and uses the room-local point recipe. Brightness,
+including zero, colour, identity and unrelated graph fields remain exact.
+Manual or unknown lights and missing/removed base lights are not reflowed by
+ordinary room edits. No per-room copy or new generic room-edit CLI is added.
+
+The native inspector shows automatic, manual or unrecorded placement separately
+from brightness and colour. Placement changes use the existing transient
+light-object preview, explicit Apply, Undo and separate exhibition Save. The
+ordinary room-row editor checks the exact automatic-light reflow alongside its
+existing geometry correspondence; the six-surface envelope operation remains a
+separate shared command.
+
+Range is the existing50m-capped shared recipe
+`min(50,max(0.1,Math.hypot(width/2,depth/2,height*0.9)))`. Source tests pin
+Node24.21.0 golden values, using scaled compensated summation in Swift.
+Quaternion representation equivalence follows the shared semantic helper:
+exact position/scale and normalized quaternion sign equivalence within1e-12;
+no tolerance applies to the returned candidate or other fields.
+
+This is source correspondence only. Native compilation, tests, matching runtime
+admission, GUI lifecycle/Undo, Save/reopen and output qualification must be
+reported from their actual runs. No existing profile, database or runtime is
+migrated by opening a document with this field.

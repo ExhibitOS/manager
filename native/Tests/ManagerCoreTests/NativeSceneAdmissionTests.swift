@@ -96,6 +96,40 @@ final class NativeSceneAdmissionTests: XCTestCase {
         SceneAdmissionProtocol.reset()
     }
 
+    func testLightObjectRequiresDistinctLiveProfileAndSceneAuthorityBeforeHTTP() async throws {
+        let scene = ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
+        let object = ["nativeLightObjectAuthoringProposalProfile": LightObjectAuthoring.profile]
+        let admitted = scene.merging(object) { _, value in value }
+        for operation in LightObjectAuthoring.commands.sorted() {
+            for markers in [[:], scene, object,
+                            scene.merging(["nativeLightObjectAuthoringProposalProfile": "unknown"]) { _, value in value }] {
+                let reply = try await attempt(operation: operation, markers: markers, runtime: manifest)
+                XCTAssertEqual(reply.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+                XCTAssertEqual(reply.1, ["GET"])
+            }
+            let active = operation == "set-room-base-light-placement"
+                ? admitted.merging(["roomBaseLightProfile": RoomBaseLightAction.profile, "roomBaseLightPlacementProfile": RoomBaseLightPlacement.profile]) { _, value in value }
+                : admitted
+            let reply = try await attempt(operation: operation, markers: active, runtime: manifest)
+            XCTAssertEqual(reply.0, "AUTHORING_PROPOSAL_INVALID")
+            XCTAssertEqual(reply.1, ["GET", "POST"])
+        }
+        let unknown = try await attempt(operation: "set-any-light-object", markers: admitted, runtime: manifest)
+        XCTAssertEqual(unknown.1, ["GET"])
+    }
+
+    func testRoomBasePlacementRequiresItsNewMarkerBeforeHTTP() async throws {
+        let base = ["nativeSceneAuthoringProposalProfile": "saved-head-scene-v1",
+                    "nativeLightObjectAuthoringProposalProfile": LightObjectAuthoring.profile,
+                    "roomBaseLightProfile": RoomBaseLightAction.profile]
+        for marker in [nil, "unknown", RoomBaseLightPlacement.profile] as [String?] {
+            var markers = base; markers["roomBaseLightPlacementProfile"] = marker
+            let result = try await attempt(operation: "set-room-base-light-placement", markers: markers, runtime: manifest)
+            XCTAssertEqual(result.0, marker == RoomBaseLightPlacement.profile ? "AUTHORING_PROPOSAL_INVALID" : "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+            XCTAssertEqual(result.1, marker == RoomBaseLightPlacement.profile ? ["GET", "POST"] : ["GET"])
+        }
+    }
+
     func testInstalledExportEntryUsesExportCapabilitiesWithoutImagePreparation() throws {
         let examples: [([String: String], Bool)] = [
             ([:], false),
