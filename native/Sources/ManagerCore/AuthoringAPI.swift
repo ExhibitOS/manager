@@ -1919,6 +1919,25 @@ public actor AuthoringAPI {
         nativeSession && !authenticationBusy && session != nil
     }
 
+    /// Shares the already-authenticated cookie only with an admitted, freshly
+    /// reviewed GPU preview; never requests or rotates a second local session.
+    public func gpuPreviewCredentials(for expected: AuthoringSession, transfer: NativeGPUModelPreparationTransfer) async throws -> LocalAuthoringSession {
+        guard admitsGPUModelPreparation, let current = session, let id = transfer.jobId,
+              current.userId == expected.userId, current.tenantId == expected.tenantId,
+              current.role == expected.role, current.csrfToken == expected.csrfToken, current.expiresAt == expected.expiresAt,
+              transfer.tenantId.lowercased() == current.tenantId.lowercased(), transfer.principalId.lowercased() == current.userId.lowercased(),
+              let credentials = localRendererCredentials, credentials.tenantId.lowercased() == current.tenantId.lowercased(),
+              credentials.principalId.lowercased() == current.userId.lowercased(), credentials.origin == base.absoluteString else {
+            throw AuthoringFailure("GPU_MODEL_PREPARATION_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        _ = try await reviewGPUModelPreparation(id, artworkId: transfer.artworkId, input: transfer.request)
+        guard generation == heldGeneration, admitsGPUModelPreparation, let held = session,
+              held.userId == current.userId, held.tenantId == current.tenantId, held.role == current.role,
+              held.csrfToken == current.csrfToken, held.expiresAt == current.expiresAt else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return credentials
+    }
+
     private func checkedGPUJob(_ raw: DocumentValue, artworkId: String,
                                input: NativeGPUModelPreparationRequest) async throws -> NativeGPUModelPreparationJob {
         let current = generation

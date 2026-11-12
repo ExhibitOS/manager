@@ -39,7 +39,7 @@ final class ManagerModel: ObservableObject {
     @Published var accountSubject = ""
     @Published var accountPassword = ""
     @Published private(set) var quitting = false {
-        didSet { if quitting { statusGeneration = UUID(); invalidateRetainedAuthoring() } }
+        didSet { if quitting { statusGeneration = UUID(); invalidateRetainedAuthoring(); authoring.invalidateGPUPreview() } }
     }
     @Published private(set) var jobs: [Job] = []
     @Published private(set) var busy = false {
@@ -57,7 +57,7 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var maintenanceProgress: String?
     @Published private(set) var backupLocation: URL?
     var pendingRestoration: Bool { native?.restoration.map { $0.state != "activated" } == true }
-    var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !authoring.modelWorkerPending && !exhibitions.busy && !exhibitions.oexImport.busy && !exhibitions.oexImport.hasPendingWork && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
+    var canMaintain: Bool { !busy && !runtimeBusy && !quitting && !hasUnsavedAuthoring && !authoring.busy && !authoring.modelWorkerPending && !authoring.gpuPreviewPending && !exhibitions.busy && !exhibitions.oexImport.busy && !exhibitions.oexImport.hasPendingWork && !publication.busy && !staticExport.running && !hosting.running && !hosting.busy && context != nil }
     var hasUnsavedAuthoring: Bool { authoring.dirty || authoring.hasWaitingIntake || exhibitions.dirty || exhibitions.oexImport.hasFile }
     private var bridge: NativeBridge?
     private var pollTask: Task<Void, Never>?
@@ -190,6 +190,7 @@ final class ManagerModel: ObservableObject {
                 return
             }
             authoring.bindImportStore(read: { try await bridge.uploadState(context) }, save: { state in try await bridge.saveUploadState(context, state: state) })
+            authoring.bindGPUPreviewResources(read: { manifest in try await bridge.gpuPreviewResources(context, expectedManifestSHA256: manifest) })
             let status = try await bridge.nativeStatus(context)
             guard status.runtime?.jobId == runtimeJobID else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
             authoring.bindHayesOriginal(ready: status.hayesOriginalReady == true, execute: { job, artwork, revision in
@@ -335,6 +336,7 @@ final class ManagerModel: ObservableObject {
         invalidateRetainedAuthoring()
         busy = true; failure = nil; startAfterPrepare = false
         defer { busy = false }
+        guard await authoring.closeGPUPreviewAndWait() else { failure = BridgeFailure("GPU_PREVIEW_DRAIN_PENDING"); return }
         await authoring.cancelImportAndWait()
         do { native = try await bridge.stop(context); schedulePoll() }
         catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED") }
@@ -355,6 +357,7 @@ final class ManagerModel: ObservableObject {
     private func stopForMaintenance(_ bridge: NativeBridge, _ context: Context) async throws {
         invalidateRetainedAuthoring()
         startAfterPrepare = false
+        guard await authoring.closeGPUPreviewAndWait() else { throw BridgeFailure("GPU_PREVIEW_DRAIN_PENDING") }
         native = try await bridge.stop(context)
         try await waitForMaintenanceIdle(bridge, context)
         guard native?.runtime?.hasOwnedProcesses != true else { throw BridgeFailure("NATIVE_STOP_PENDING") }
@@ -504,6 +507,7 @@ final class ManagerModel: ObservableObject {
         quitting = true; startAfterPrepare = false
         defer { quitting = false }
         while busy || exhibitions.oexImport.busy { try? await Task.sleep(for: .milliseconds(100)) }
+        guard await authoring.closeGPUPreviewAndWait() else { failure = BridgeFailure("GPU_PREVIEW_DRAIN_PENDING"); return false }
         await authoring.cancelImportAndWait()
         await presentationSave?.value
         guard !presentationPending else {
@@ -607,7 +611,7 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate {
     weak var model: ManagerModel?
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.mayHaveServices || model.hasUnsavedAuthoring || model.presentationPending else { return .terminateNow }
+        guard let model, model.mayHaveServices || model.hasUnsavedAuthoring || model.presentationPending || model.authoring.gpuPreviewPending else { return .terminateNow }
         if model.quitting { return .terminateCancel }
         if model.mayHaveServices || model.hasUnsavedAuthoring {
         let alert = NSAlert()

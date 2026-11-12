@@ -9,6 +9,7 @@ struct NativeImportControls: View {
     let mode: Mode
     let openArtwork: (String) -> Void
     @State private var submittingFile = false
+    @State private var showingGPUPreview = false
     private var belongs: Bool { model.transfer?.intent == nil || model.transfer?.intent?.artworkId == model.selected?.id }
     private var approvedAssets: [NativeArtwork.Asset] { model.selected?.assets.filter { $0.state == "approved" } ?? [] }
     private var needsNewRevision: Bool {
@@ -240,6 +241,16 @@ struct NativeImportControls: View {
           }
         }.formStyle(.grouped).fixedSize(horizontal: false, vertical: true)
         .onChange(of: model.assetId) { _, _ in model.approvalAcknowledged = false }
+        .sheet(isPresented: $showingGPUPreview) {
+            if let preview = model.gpuPreview {
+                NativeGPUCandidatePreviewSheet(controller: preview) {
+                    showingGPUPreview = false
+                    model.releaseGPUPreview()
+                }
+                .interactiveDismissDisabled(true)
+                .onDisappear { preview.requestClose() }
+            }
+        }
     }
 
     private func submitFile() async {
@@ -289,6 +300,12 @@ struct NativeImportControls: View {
                 Button("중단한 작업 정리") { Task { await model.clearCancelledGPUModel() } }.disabled(model.busy)
             }
             if phase == "ready" {
+                Button(model.gpuPreview == nil ? "감상용 파일 미리보기" : "미리보기 확인") {
+                    Task {
+                        if model.gpuPreview == nil { await model.prepareGPUPreview() }
+                        if model.gpuPreview != nil { showingGPUPreview = true }
+                    }
+                }.disabled(model.busy)
                 Button("승인된 작업 확인 후 정리") { Task { await model.clearSelectedGPUModel() } }.disabled(model.busy)
             }
         } else if transfer.jobId != nil {

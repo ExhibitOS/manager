@@ -357,6 +357,10 @@ public actor NativeBridge {
     public func uploadState(_ context: Context) throws -> NativeUploadState {
         try request("upload_state", fields: ["selection_token": context.selectionToken])
     }
+    public func gpuPreviewResources(_ context: Context, expectedManifestSHA256: String) throws -> Set<String> {
+        let resources: NativeGPUPreviewResources = try request("native_gpu_preview_resources", fields: ["selection_token": context.selectionToken])
+        return try resources.checked(expectedManifestSHA256: expectedManifestSHA256)
+    }
     public func oexImportState(_ context: Context) throws -> NativeOEXImportState {
         try request("oex_import_state", fields: ["selection_token": context.selectionToken])
     }

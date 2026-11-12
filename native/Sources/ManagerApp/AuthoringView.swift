@@ -85,6 +85,7 @@ final class AuthoringModel: ObservableObject {
     }
     @Published private(set) var compactJob: NativeCompactModelVariantJob?
     @Published private(set) var gpuJob: NativeGPUModelPreparationJob?
+    @Published private(set) var gpuPreview: NativeGPUCandidatePreviewController?
     var gpuTransfer: NativeGPUModelPreparationTransfer? { transfer?.gpuVariant }
     // Closed until the parent admits the exact matching runtime family.
     private var gpuRuntimeQualified: Bool { false }
@@ -116,6 +117,7 @@ final class AuthoringModel: ObservableObject {
     @Published var assetId = ""
     private var readTransfer: (() async throws -> NativeUploadState)?
     private var writeTransfer: ((NativeUploadState) async throws -> NativeUploadState)?
+    private var readGPUPreviewResources: ((String) async throws -> Set<String>)?
     @Published private var hayesSessionReady = false
     @Published private(set) var hayesReceipt: NativeHayesReceipt?
     private var executeHayes: ((String, String, Int) async throws -> NativeHayesReceipt)?
@@ -210,6 +212,7 @@ final class AuthoringModel: ObservableObject {
             configuration.tenantId.map { "\($0):\(configuration.ports.web):\(configuration.manifestSha256)" }
         }
         if !ready || requestedScope != scope || self.runtimeJobID != runtimeJobID {
+            gpuPreview?.requestClose()
             catalogCreation = nil
         }
         if modelWorkerPending, requestedScope != scope {
@@ -247,7 +250,7 @@ final class AuthoringModel: ObservableObject {
         importPoll?.cancel(); importPoll = nil; importPollID = nil
         transfer = nil; importJob = nil; importFile = nil; compactJob = nil; modelOriginalInspection = nil; provisionalHeight = nil; assetId = ""
         intakeRows = []; activeIntakeID = nil; intakeTarget = nil; intakeWritesAvailable = false; intakeWorkspaceCheck = nil
-        readTransfer = nil; writeTransfer = nil
+        readTransfer = nil; writeTransfer = nil; readGPUPreviewResources = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
         subject = configuration.subject ?? ""
         do { api = try AuthoringAPI(port: configuration.ports.web, tenantId: tenant, nativeRuntimeManifestSHA256: configuration.manifestSha256) }
@@ -265,10 +268,11 @@ final class AuthoringModel: ObservableObject {
         }
         catch {
             failure = error as? AuthoringFailure ?? AuthoringFailure((error as? BridgeFailure)?.code ?? "CONNECTION_FAILED")
-            if failure?.status == 401 { session = nil }
+            if failure?.status == 401 { gpuPreview?.requestClose(); session = nil }
         }
     }
     func connect(_ credentials: LocalAuthoringSession) async {
+        gpuPreview?.requestClose()
         await action {
             guard let api else { return }
             let jobID = runtimeJobID
@@ -290,6 +294,7 @@ final class AuthoringModel: ObservableObject {
         return available && self.runtimeJobID == runtimeJobID && !Task.isCancelled
     }
     func login() async {
+        gpuPreview?.requestClose()
         await action {
             guard let api else { return }
             defer { password = "" }
@@ -319,6 +324,7 @@ final class AuthoringModel: ObservableObject {
         }
     }
     func open(_ id: String) async {
+        if selected?.id != id { gpuPreview?.requestClose() }
         await action {
             guard let api else { return }
             let value = try await api.artwork(id)
@@ -335,6 +341,7 @@ final class AuthoringModel: ObservableObject {
         }
     }
     func newArtwork(catalogRequestID: UUID? = nil) {
+        gpuPreview?.requestClose()
         catalogCreation = catalogRequestID.map { (requestID: $0, artworkID: nil) }
         assetId = ""; if transfer?.intent == nil { importFile = nil }; modelOriginalInspection = nil; provisionalHeight = nil; approvalAcknowledged = false; editingUser = session?.userId; creationYearText = ""; selected = nil; draft = ArtworkMetadata(); original = draft; artistId = artists.first(where: { !$0.archived })?.id ?? ""; editing = true; failure = nil; notice = ""
     }
@@ -436,6 +443,7 @@ extension AuthoringModel {
     func bindImportStore(read: @escaping () async throws -> NativeUploadState, save: @escaping (NativeUploadState) async throws -> NativeUploadState) {
         readTransfer = read; writeTransfer = save
     }
+    func bindGPUPreviewResources(read: @escaping (String) async throws -> Set<String>) { readGPUPreviewResources = read }
     func bindHayesOriginal(ready: Bool, execute: @escaping (String, String, Int) async throws -> NativeHayesReceipt,
                            recover: @escaping (String, Int) async throws -> NativeHayesReceipt) {
         hayesSessionReady = ready
@@ -1236,7 +1244,57 @@ extension AuthoringModel {
         }
     }
 
+    func prepareGPUPreview() async {
+        await action {
+            guard gpuPreview == nil, let api, let session, let transfer = gpuTransfer, let id = transfer.jobId,
+                  let manifest = runtimeManifestSHA256, let readGPUPreviewResources,
+                  selected?.id == transfer.artworkId, !metadataDirty else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let job = try await api.gpuModelPreparationJob(id, artworkId: transfer.artworkId, input: transfer.request)
+            let review = try await api.reviewGPUModelPreparation(id, artworkId: transfer.artworkId, input: transfer.request)
+            let credentials = try await api.gpuPreviewCredentials(for: session, transfer: transfer)
+            let assets = try await readGPUPreviewResources(manifest)
+            guard self.api === api, self.gpuTransfer == transfer, self.selected?.id == transfer.artworkId,
+                  self.session?.userId == session.userId, self.session?.tenantId == session.tenantId,
+                  self.runtimeManifestSHA256 == manifest, self.gpuPreview == nil else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            let request = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review,
+                epoch: UUID().uuidString.lowercased(), sequence: 1, requestId: UUID().uuidString.lowercased())
+            gpuPreview = NativeGPUCandidatePreviewController(credentials: credentials, assets: assets, request: request) { [weak self] in
+                guard let self, self.api === api, self.gpuTransfer == transfer, self.selected?.id == transfer.artworkId,
+                      self.session?.userId == session.userId, self.session?.tenantId == session.tenantId,
+                      self.session?.role == session.role, self.session?.csrfToken == session.csrfToken, self.session?.expiresAt == session.expiresAt,
+                      self.runtimeManifestSHA256 == manifest else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+                let fresh = try await api.reviewGPUModelPreparation(id, artworkId: transfer.artworkId, input: transfer.request)
+                guard self.api === api, self.gpuTransfer == transfer, self.selected?.id == transfer.artworkId,
+                      self.session?.userId == session.userId, self.session?.tenantId == session.tenantId,
+                      self.session?.role == session.role, self.session?.csrfToken == session.csrfToken, self.session?.expiresAt == session.expiresAt,
+                      self.runtimeManifestSHA256 == manifest, fresh.value["receiptSHA256"] == request.value["receiptSHA256"],
+                      fresh.value["source"] == request.value["source"], fresh.value["candidate"] == request.value["candidate"],
+                      fresh.value["revision"] == .integer(request.reviewRevision) else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
+            }
+        }
+    }
+
+    func releaseGPUPreview() {
+        guard gpuPreview?.drained == true else { return }
+        gpuPreview = nil
+    }
+
+    var gpuPreviewPending: Bool { gpuPreview != nil && gpuPreview?.drained != true }
+    func invalidateGPUPreview() { gpuPreview?.requestClose() }
+    func closeGPUPreviewAndWait() async -> Bool {
+        guard let preview = gpuPreview else { return true }
+        preview.requestClose()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+        while !preview.drained, ContinuousClock.now < deadline {
+            do { try await Task.sleep(for: .milliseconds(100)) } catch { return false }
+        }
+        guard preview.drained else { return false }
+        if gpuPreview === preview { gpuPreview = nil }
+        return true
+    }
+
     func cancelGPUModel() async {
+        gpuPreview?.requestClose()
         await action {
             guard let api, let gpu = gpuTransfer, let id = gpu.jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
             let job = try await api.cancelGPUModelPreparation(id, artworkId: gpu.artworkId, input: gpu.request)
@@ -1246,6 +1304,7 @@ extension AuthoringModel {
     }
 
     func retryGPUModel() async {
+        gpuPreview?.requestClose()
         await action {
             guard let api, let gpu = gpuTransfer, let id = gpu.jobId else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
             let job = try await api.retryGPUModelPreparation(id, artworkId: gpu.artworkId, input: gpu.request)
@@ -1256,6 +1315,7 @@ extension AuthoringModel {
 
     func clearCancelledGPUModel() async {
         await action {
+            guard gpuPreview == nil || gpuPreview?.drained == true else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
             guard let api, let gpu = gpuTransfer, let id = gpu.jobId, var state = transfer else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
             let job = try await api.cancelGPUModelPreparation(id, artworkId: gpu.artworkId, input: gpu.request)
             guard self.api === api, transfer?.revision == state.revision, gpuTransfer == gpu,
@@ -1270,6 +1330,7 @@ extension AuthoringModel {
 
     func clearSelectedGPUModel() async {
         await action {
+            guard gpuPreview == nil || gpuPreview?.drained == true else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
             guard let api, let gpu = gpuTransfer, let id = gpu.jobId, var state = transfer else { throw AuthoringFailure("GPU_MODEL_PREPARATION_CONTEXT_CHANGED") }
             let job = try await api.gpuModelPreparationJob(id, artworkId: gpu.artworkId, input: gpu.request)
             let selected = try await api.gpuModelSelection(artworkId: gpu.artworkId)
@@ -1438,7 +1499,7 @@ extension AuthoringModel {
         } catch {
             guard current() else { return }
             failure = error as? AuthoringFailure ?? AuthoringFailure((error as? BridgeFailure)?.code ?? "CONNECTION_FAILED")
-            if failure?.status == 401 { self.session = nil }
+            if failure?.status == 401 { self.gpuPreview?.requestClose(); self.session = nil }
         }
     }
     private var shouldPollImport: Bool {

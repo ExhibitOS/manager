@@ -135,6 +135,85 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         let selected = try NativeGPUModelSelection(.object(["version": .integer(1), "profile": .string(NativeGPUModelPreparation.profile), "jobId": .string(job), "sourceAssetId": .string(asset), "candidateAssetId": .string(output), "candidateSHA256": .string(fixtureDigest), "receiptSHA256": .string(receipt), "approvedRevision": .integer(3)]))
         XCTAssertTrue(transfer.permitsClearingSelected(readyJob, selection: selected))
     }
+
+    func testPreviewReadyInvalidationAndDrainCannotResurrect() throws {
+        let (jobValue, receipt) = try ready(), req = try request(), owner = UUID().uuidString.lowercased()
+        let job = try NativeGPUModelPreparationJob(jobValue, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt)
+        let transfer = try NativeGPUModelPreparationTransfer(workspaceId: owner, tenantId: owner, principalId: owner, artworkId: artwork, request: req, jobId: self.job)
+        let n = jobValue["gpuPreparation"]
+        let reviewValue: DocumentValue = .object(["artworkId": .string(artwork), "revision": .integer(2), "jobId": .string(self.job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": .null])
+        let review = try NativeGPUModelReview(reviewValue, artworkId: artwork, request: req, job: job)
+        let request = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review, epoch: owner, sequence: 1, requestId: UUID().uuidString.lowercased())
+        guard case .object(var reply) = request.value else { return XCTFail("missing request") }
+        reply.removeValue(forKey: "phase")
+        reply["capability"] = .string(NativeGPUCandidatePreviewRequest.capability); reply["reviewRevision"] = .integer(2)
+        reply["rendered"] = .bool(true); reply["drawGeneration"] = .integer(1); reply["targetFormat"] = .string("bc7")
+        let ready = DocumentValue.object(reply)
+        var lifecycle = NativeGPUCandidatePreviewLifecycle(request: request)
+        XCTAssertTrue(lifecycle.acceptReady(ready)); XCTAssertTrue(lifecycle.rendered)
+        let v = request.value
+        var ended: DocumentValue = .object(["version": .integer(1), "epoch": v["epoch"], "sequence": v["sequence"], "type": .string("gpu-candidate-preview-ended"), "body": .object(["requestId": v["requestId"], "workspaceId": v["workspaceId"], "tenantId": v["tenantId"], "principalId": v["principalId"], "artworkId": v["artworkId"], "artworkRevision": v["artworkRevision"], "jobId": v["jobId"], "generation": v["generation"], "receiptSHA256": v["receiptSHA256"], "candidateSHA256": v["candidate"]["sha256"], "reason": .string("hidden"), "drained": .bool(false)])])
+        XCTAssertTrue(lifecycle.acceptEnded(ended)); XCTAssertFalse(lifecycle.rendered); XCTAssertFalse(lifecycle.drained)
+        XCTAssertFalse(lifecycle.acceptReady(ready))
+        ended["body"]["drained"] = .bool(true)
+        XCTAssertTrue(lifecycle.acceptEnded(ended)); XCTAssertTrue(lifecycle.drained)
+        ended["body"]["drained"] = .bool(false)
+        XCTAssertTrue(lifecycle.acceptEnded(ended)); XCTAssertTrue(lifecycle.drained)
+        ended["body"]["jobId"] = .string(UUID().uuidString.lowercased())
+        XCTAssertFalse(lifecycle.acceptEnded(ended))
+    }
+
+    func testPreviewReadyAndCancelRequireExactIdentityAndFormat() throws {
+        let (jobValue, receipt) = try ready(), req = try request(), owner = UUID().uuidString.lowercased()
+        let job = try NativeGPUModelPreparationJob(jobValue, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt)
+        let transfer = try NativeGPUModelPreparationTransfer(workspaceId: owner, tenantId: owner, principalId: owner, artworkId: artwork, request: req, jobId: self.job)
+        let n = jobValue["gpuPreparation"]
+        let review = try NativeGPUModelReview(.object(["artworkId": .string(artwork), "revision": .integer(2), "jobId": .string(self.job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": .null]), artworkId: artwork, request: req, job: job)
+        let request = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review, epoch: owner, sequence: 3, requestId: UUID().uuidString.lowercased())
+        guard case .object(var result) = request.value, case .object(var cancel) = request.cancel else { return XCTFail("invalid fixture") }
+        result.removeValue(forKey: "phase"); result["capability"] = .string(NativeGPUCandidatePreviewRequest.capability)
+        result["reviewRevision"] = .integer(2); result["rendered"] = .bool(true); result["drawGeneration"] = .integer(1); result["targetFormat"] = .string("astc-4x4")
+        XCTAssertTrue(request.acceptsReady(.object(result)))
+        result["targetFormat"] = .string("png"); XCTAssertFalse(request.acceptsReady(.object(result)))
+        result["targetFormat"] = .string("bc7"); result["requestId"] = .string(UUID().uuidString.lowercased()); XCTAssertFalse(request.acceptsReady(.object(result)))
+        cancel.removeValue(forKey: "phase"); cancel["cancelled"] = .bool(true); cancel["drained"] = .bool(true)
+        XCTAssertTrue(request.acceptsCancelled(.object(cancel)))
+        cancel["drained"] = .bool(false); XCTAssertFalse(request.acceptsCancelled(.object(cancel)))
+    }
+
+    func testPrivatePreviewPolicyIsBoundToOneCandidateAndExactAssets() throws {
+        let (jobValue, receipt) = try ready(), req = try request(), owner = UUID().uuidString.lowercased()
+        let job = try NativeGPUModelPreparationJob(jobValue, artworkId: artwork, request: req, verifiedReceiptSHA256: receipt)
+        let transfer = try NativeGPUModelPreparationTransfer(workspaceId: owner, tenantId: owner, principalId: owner, artworkId: artwork, request: req, jobId: self.job)
+        let n = jobValue["gpuPreparation"]
+        let review = try NativeGPUModelReview(.object(["artworkId": .string(artwork), "revision": .integer(2), "jobId": .string(self.job), "receiptSHA256": .string(receipt), "source": n["source"], "candidate": n["candidate"], "serverReceipt": n["serverReceipt"], "selection": .null]), artworkId: artwork, request: req, job: job)
+        let preview = try NativeGPUCandidatePreviewRequest(transfer: transfer, job: job, review: review, epoch: owner, sequence: 1, requestId: UUID().uuidString.lowercased())
+        let origin = "http://127.0.0.1:13200"
+        let rules = try NativeGPUCandidatePreviewPolicy.encodedRules(origin: origin, request: preview, verifiedAssets: ["assets/index-123.js"])
+        let items = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(rules.utf8)) as? [[String: Any]])
+        let filters = try items.dropFirst().map { try XCTUnwrap(($0["trigger"] as? [String: Any])?["url-filter"] as? String) }
+        func allows(_ path: String) -> Bool { filters.contains { (origin + path).range(of: $0, options: .regularExpression) != nil } }
+        let prefix = "/api/v1/tenants/\(owner)/cms/artworks/\(artwork)/gpu-preparations/\(self.job)"
+        let model = prefix + "/model?receiptSHA256=\(receipt)&candidateSHA256=\(fixtureDigest)"
+        XCTAssertTrue(allows(model)); XCTAssertTrue(allows(prefix + "/review")); XCTAssertTrue(allows("/assets/index-123.js"))
+        XCTAssertTrue(allows("/basis/basis_transcoder.wasm"))
+        XCTAssertFalse(allows(model + "&extra=1")); XCTAssertFalse(allows(prefix + "/approve")); XCTAssertFalse(allows("/assets/other.js"))
+        XCTAssertFalse(allows(prefix.replacingOccurrences(of: self.job, with: UUID().uuidString.lowercased()) + "/review"))
+        XCTAssertThrowsError(try NativeGPUCandidatePreviewPolicy.encodedRules(origin: origin, request: preview, verifiedAssets: ["assets/../other.js"]))
+    }
+
+    func testPreviewResourcesRequireExactOwnedManifestAndClosure() throws {
+        let manifest = String(repeating: "a", count: 64)
+        let fixed = ["native-viewport.html", "basis/basis_transcoder.js", "basis/basis_transcoder.wasm", "basis/exhibitos-basis-worker.js", "assets/index-123.js"]
+        func decode(_ paths: [String], _ digest: String = manifest) throws -> NativeGPUPreviewResources {
+            try JSONDecoder().decode(NativeGPUPreviewResources.self, from: JSONSerialization.data(withJSONObject: ["format": 1, "payloadManifestSha256": digest, "paths": paths]))
+        }
+        XCTAssertEqual(try decode(fixed).checked(expectedManifestSHA256: manifest), ["assets/index-123.js"])
+        XCTAssertThrowsError(try decode(fixed).checked(expectedManifestSHA256: String(repeating: "b", count: 64)))
+        XCTAssertThrowsError(try decode(fixed + [fixed[0]]).checked(expectedManifestSHA256: manifest))
+        XCTAssertThrowsError(try decode(Array(fixed.dropFirst())).checked(expectedManifestSHA256: manifest))
+        XCTAssertThrowsError(try decode(fixed + ["api/v1/auth/session"]).checked(expectedManifestSHA256: manifest))
+    }
     func testRequestLimitsAndScopeBinding() throws {
         XCTAssertThrowsError(try NativeGPUModelPreparationRequest(revision: 0, assetId: asset, sha256: fixtureDigest, bytes: 10, idempotencyKey: "", generation: "x"))
         for suffix in ["\n", "\r\n", "\u{2028}"] {
