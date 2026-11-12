@@ -9,6 +9,13 @@ final class NativeGPUModelPreparationTests: XCTestCase {
         XCTAssertTrue(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: true))
         let diagnostic = "291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309"
         XCTAssertTrue(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: diagnostic, ready: true))
+        let observation = "5cfa7f1c713920ceb7a834585f59470bf8e5998b29dc45654f533d2095001196"
+        XCTAssertTrue(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: observation, ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: observation, ready: false))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: observation.uppercased(), ready: true))
+        XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: observation))
+        XCTAssertFalse(AuthoringAPI.supportsDefaultSeatRuntime(manifest: observation))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: observation))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: diagnostic, ready: false))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: "3ee986e7d6601240db6b16f311235bb3a3d43cd2fef00688a740a6c9e91cd377", ready: true))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: manifest, ready: false))

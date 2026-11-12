@@ -1973,7 +1973,8 @@ public actor AuthoringAPI {
     public nonisolated static func supportsGPUModelPreparationRuntime(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let manifestSHA256 else { return false }
         return ["0b56a5e6701f2f4f6eccf08ba89d552dea9fac9a28bc3513b92a09418cb51b8e",
-                "291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309"].contains(manifestSHA256)
+                "291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309",
+                "5cfa7f1c713920ceb7a834585f59470bf8e5998b29dc45654f533d2095001196"].contains(manifestSHA256)
     }
 
     public var admitsGPUModelPreparation: Bool {

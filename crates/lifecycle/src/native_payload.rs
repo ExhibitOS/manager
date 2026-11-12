@@ -447,7 +447,13 @@ pub(crate) const GPU_MODEL_CHILD_DIAGNOSTIC_TARGET: RuntimeTuple = (
     "291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const GPU_MODEL_TARGETS: &[RuntimeTuple] = &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET];
+pub(crate) const GPU_MODEL_PNG_OBSERVATION_TARGET: RuntimeTuple = (
+    "0dfd2aebcb842802867a78bd63e0ed7a0e1ea1b7",
+    "25c54300f528e9d53e338e7f9cd3093ebffef0cda69775a2ce703cc28103732e",
+    "5cfa7f1c713920ceb7a834585f59470bf8e5998b29dc45654f533d2095001196",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const GPU_MODEL_TARGETS: &[RuntimeTuple] = &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET, GPU_MODEL_PNG_OBSERVATION_TARGET];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const GPU_MODEL_HELPER_FILES: Option<&[(&str, u64, &str)]> = Some(&[
     ("platform/scripts/native-gpu-model-preparation-bootstrap.mjs", 5119, "fc1d1444b7578ff55486b3b32edc111f45eb174eaef11efbf7c5ffd2860337e3"),
@@ -1454,9 +1460,17 @@ impl FurnishingTransition {
                 catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049,
             });
         }
+        if pair == (GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2, GPU_MODEL_PNG_OBSERVATION_TARGET.2) && gpu_model_wrapping_transition(pair) {
+            return Some(Self::SameCatalog {
+                source: GPU_MODEL_CHILD_DIAGNOSTIC_TARGET,
+                target: GPU_MODEL_PNG_OBSERVATION_TARGET,
+                catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049,
+            });
+        }
         if pair.0 == CATALOG45_DEFAULT_1_7_TARGET.2
             && let Some(&target) = GPU_MODEL_TARGETS.iter().find(|target|
-                **target != GPU_MODEL_CHILD_DIAGNOSTIC_TARGET && target.2 == pair.1 && gpu_model_host_matches(**target))
+                **target != GPU_MODEL_CHILD_DIAGNOSTIC_TARGET && **target != GPU_MODEL_PNG_OBSERVATION_TARGET
+                    && target.2 == pair.1 && gpu_model_host_matches(**target))
         {
             return Some(Self::Upgrade49 { source: CATALOG45_DEFAULT_1_7_TARGET, target });
         }
@@ -1701,7 +1715,8 @@ impl FurnishingTransition {
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn gpu_model_wrapping_transition(pair: (&str, &str)) -> bool {
-    [(GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET), (GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET)]
+    [(GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET), (GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET),
+     (GPU_MODEL_CHILD_DIAGNOSTIC_TARGET, GPU_MODEL_PNG_OBSERVATION_TARGET)]
         .into_iter().any(|(source, target)| pair == (source.2, target.2)
             && gpu_model_host_matches(source) && gpu_model_host_matches(target))
 }
@@ -2231,7 +2246,7 @@ mod normal_oex_release_declaration_tests {
     #[test]
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn gpu_model_runtime_admission_requires_the_exact_assembled_tuple() {
-        assert_eq!(GPU_MODEL_TARGETS, &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET]);
+        assert_eq!(GPU_MODEL_TARGETS, &[GPU_MODEL_LEGACY_TARGET, GPU_MODEL_WRAPPING_TARGET, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET, GPU_MODEL_PNG_OBSERVATION_TARGET]);
         let source = CATALOG45_DEFAULT_1_7_TARGET;
         for &actual in GPU_MODEL_TARGETS {
             assert!(gpu_model_host_matches(actual));
@@ -2270,6 +2285,63 @@ mod normal_oex_release_declaration_tests {
         assert!(!gpu_model_host_matches((source.0, target.1, target.2)));
         assert!(!gpu_model_host_matches((target.0, target.1, source.2)));
         assert!(!gpu_model_host_matches((target.0, "unknown", target.2)));
+    }
+
+    #[test]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn gpu_png_observation_accepts_only_exact_291_predecessor() {
+        let source = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET;
+        let target = GPU_MODEL_PNG_OBSERVATION_TARGET;
+        assert!(gpu_model_host_matches(target));
+        assert_eq!(FurnishingTransition::from_manifests((source.2, target.2)),
+            Some(FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::GpuModelPreparation049 }));
+        for pair in [(target.2, source.2), (target.2, target.2), (GPU_MODEL_WRAPPING_TARGET.2, target.2),
+            (CATALOG45_DEFAULT_1_7_TARGET.2, target.2), (CATALOG45_REFINED_BENCH_TARGET.2, target.2),
+            (CATALOG45_BENCH_MODEL_FORWARD_TARGET.2, target.2)] {
+            assert!(!gpu_model_wrapping_transition(pair));
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        assert!(!gpu_model_host_matches((source.0, target.1, target.2)));
+        assert!(!gpu_model_host_matches((target.0, source.1, target.2)));
+        assert!(!gpu_model_host_matches((target.0, target.1, source.2)));
+    }
+
+    #[test]
+    #[ignore = "Requires explicitly supplied exact isolated B049 composed runtime"]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn opens_exact_gpu_png_observation_composed_runtime() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_GPU_PNG_OBSERVATION_RUNTIME").unwrap());
+        let bytes = fs::read(root.join("manifest.json")).unwrap();
+        assert_eq!(digest(&bytes), GPU_MODEL_PNG_OBSERVATION_TARGET.2);
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        assert!(composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        assert!(!composition_admitted(&manifest, GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.2));
+        manifest.source_commit = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.0.into();
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        manifest.source_commit = GPU_MODEL_PNG_OBSERVATION_TARGET.0.into();
+        manifest.producer_sha256 = GPU_MODEL_CHILD_DIAGNOSTIC_TARGET.1.into();
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        manifest.producer_sha256 = GPU_MODEL_PNG_OBSERVATION_TARGET.1.into();
+        manifest.mode = "release".into();
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        manifest.mode = "local-validation".into();
+        let original_sha = manifest.files.iter().position(|f| f.sha256.is_some()).unwrap();
+        manifest.files[original_sha].sha256 = Some("0".repeat(64));
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        manifest.files.pop();
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        manifest.composition.as_mut().unwrap().web.ordinary.files += 1;
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        let mut manifest: Manifest = serde_json::from_slice(&bytes).unwrap();
+        manifest.composition = None;
+        assert!(!composition_admitted(&manifest, GPU_MODEL_PNG_OBSERVATION_TARGET.2));
+        let payload = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        assert_eq!(payload.context().manifest_sha256, GPU_MODEL_PNG_OBSERVATION_TARGET.2);
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::GpuModelPreparation049));
+        assert!(payload.native_gpu_preview_resources().is_ok());
+        assert!(Payload::static_refresh_inventory(&bytes, GPU_MODEL_PNG_OBSERVATION_TARGET).is_ok());
     }
 
     #[test]
@@ -4386,7 +4458,7 @@ fn composition_group_digests(files: &[Item]) -> Result<[(u64, String); 4]> {
     Ok(std::array::from_fn(|i| (counts[i], format!("{:x}", hashers[i].clone().finalize()))))
 }
 
-#[allow(dead_code)] // Staged only: no composed runtime tuple is admitted yet.
+#[allow(dead_code)] // Composed payloads are unavailable outside the local owner-validation build.
 fn composition_matches_recipe(manifest: &Manifest) -> bool {
     let Some(composition) = &manifest.composition else { return false; };
     let Ok(expected) = serde_json::from_str::<LocalWebComposition>(LOCAL_WEB_COMPOSITION_RECIPE) else { return false; };
@@ -4398,6 +4470,17 @@ fn composition_matches_recipe(manifest: &Manifest) -> bool {
         (composition.web.static_web.files, composition.web.static_web.entry_digest.clone()),
         (composition.cover.files, composition.cover.entry_digest.clone()),
     ])
+}
+
+fn composition_admitted(manifest: &Manifest, manifest_sha256: &str) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    {
+        let tuple = (manifest.source_commit.as_str(), manifest.producer_sha256.as_str(), manifest_sha256);
+        if manifest.composition.is_none() { return tuple != GPU_MODEL_PNG_OBSERVATION_TARGET; }
+        tuple == GPU_MODEL_PNG_OBSERVATION_TARGET && composition_matches_recipe(manifest)
+    }
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = manifest_sha256; manifest.composition.is_none() }
 }
 
 fn composition_groups_match(files: &[Item], expected: &[(u64, String); 4]) -> bool {
@@ -4709,8 +4792,7 @@ impl Payload {
         {
             return Err(invalid());
         }
-        // No composed source/producer/manifest tuple is qualified yet.
-        if manifest.composition.is_some() { return Err(invalid()); }
+        if !composition_admitted(&manifest, &digest(&bytes)) { return Err(invalid()); }
         // A local validation copy is not accepted by a production build.
         if manifest.mode == "local-validation" {
             if !cfg!(debug_assertions)
@@ -5672,7 +5754,7 @@ impl Payload {
             return Err(reject());
         }
         let manifest: Manifest = serde_json::from_slice(bytes).map_err(|_| reject())?;
-        if manifest.composition.is_some() || manifest.source_commit != expected.0 || manifest.producer_sha256 != expected.1
+        if !composition_admitted(&manifest, &digest(bytes)) || manifest.source_commit != expected.0 || manifest.producer_sha256 != expected.1
             || manifest.files.is_empty() || manifest.files.len() > 50_000 {
             return Err(reject());
         }
