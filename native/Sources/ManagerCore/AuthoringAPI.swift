@@ -50,6 +50,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceInfoStandPreparationProfile: String? = nil
     public var workspaceInfoStandReplacementProfile: String? = nil
     public var workspaceBenchVisualReplacementProfile: String? = nil
+    public var workspaceBenchModelForwardProfile: String? = nil
     public var workspaceFurnishingThumbnailProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
@@ -3051,6 +3052,43 @@ public actor AuthoringAPI {
 
     public var admitsWorkspaceBenchVisualReplacement: Bool {
         admitsWorkspaceFurnishings && session?.advertisesWorkspaceBenchVisualReplacement == true
+    }
+
+    public var admitsWorkspaceBenchModelForward: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && ["admin", "artist", "curator"].contains(session?.role ?? "")
+            && session?.advertisesWorkspaceFurnishingRoomVisual == true
+            && session?.workspaceBenchModelForwardProfile == WorkspaceBenchModelForward.profile
+    }
+
+    public func prepareWorkspaceBenchModelForward(_ command: WorkspaceBenchModelForward,
+                                                  in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspaceBenchModelForward, document.pending == nil, !document.dirty,
+              document.tenantId == tenant, session?.userId == document.principalId,
+              let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("BENCH_MODEL_FORWARD_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let policy = try await nativeViewportPolicy(draft.id)
+        try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: document)
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let next = try command.applying(to: draft)
+        let path = "/api/v1/tenants/\(tenant)/workspace/furnishings/\(try identifier(command.furnishingId))/versions/1"
+        let furnishing: WorkspaceFurnishing = try await request(path)
+        let descriptor = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(furnishing))
+        guard furnishing.id.lowercased() == command.furnishingId.lowercased(), furnishing.version == 1,
+              furnishing.details.isValid, furnishing.details.kind == .bench, furnishing.details.model.sha256 == command.modelSha256,
+              draft.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["furnishings"].items?
+                .filter({ $0["id"].string?.lowercased() == command.furnishingId.lowercased() }) == [descriptor] else {
+            throw AuthoringFailure("BENCH_MODEL_FORWARD_REFERENCE")
+        }
+        _ = try await readPreviewBytes(path: path + "/model", expectedBytes: furnishing.details.model.bytes,
+                                       sha256: command.modelSha256, mime: furnishing.details.model.mime,
+                                       invalidCode: "FURNISHING_RESPONSE_INVALID", requireDigestHeader: true)
+        try await validateNativeViewportEdit(next ?? draft, etag: etag)
+        guard generation == heldGeneration, admitsWorkspaceBenchModelForward else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
     }
 
     public func prepareWorkspaceBenchVisualReplacement(_ replacement: WorkspaceBenchVisualReplacement,
