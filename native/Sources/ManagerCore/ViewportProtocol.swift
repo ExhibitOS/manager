@@ -80,7 +80,8 @@ public enum RoomBaseLightAction: Sendable {
                                "unit": .string("candela"), "castsShadow": .bool(false)]))
         var bindings = try NativeLightFixture.bindings(in: candidate)
         bindings.append(.object(["lightId": .string(lightId), "fixture": .string("none"),
-                                 "range": .number(min(50, max(0.1, width, depth, height))), "purpose": .string("room-base")]))
+                                 "range": .number(try RoomBaseLightIntent.range(width: width, height: height, depth: depth)),
+                                 "purpose": .string("room-base"), "basePlacement": .string("auto")]))
         let details: DocumentValue = .object(["version": .integer(1), "lights": .array(bindings)])
         guard bindings.count <= 32, try JSONEncoder().encode(details).count <= 16_384 else {
             throw AuthoringFailure("LIGHT_FIELDS_INVALID")

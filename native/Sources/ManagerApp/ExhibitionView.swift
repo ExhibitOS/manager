@@ -1850,7 +1850,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     var canUseRoomBaseLight: Bool {
-        session?.advertisesRoomBaseLight == true && viewportController.roomBaseLightSupported
+        session?.advertisesRoomBaseLightPlacement == true && viewportController.roomBaseLightSupported
             && viewportController.connected && viewportController.editingContextActive
             && !ordinaryBoundedRuntime && boundedPlacementCapability == nil && !immutable
     }
@@ -2472,7 +2472,7 @@ final class ExhibitionModel: ObservableObject {
         if let preview = lightObjectPreview {
             let access = viewportAccessID
             await work {
-                guard lightObjectAuthorityAvailable, lightObjectPreviewAccessID == access, viewportAccessID == access,
+                guard lightObjectAuthorityAvailable, roomBaseCommandAvailable(preview.command), lightObjectPreviewAccessID == access, viewportAccessID == access,
                       let api, await api.admitsNativeLightObjectAuthoringProposal,
                       let base = draft, preview.base == base, let etag = state?.etag,
                       let display = lightObjectDisplayDraft, !editingLocked(acknowledging: display) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
@@ -2502,6 +2502,17 @@ final class ExhibitionModel: ObservableObject {
             notice = "조명 변경을 이 Mac에 보관했습니다. 되돌리기로 취소할 수 있으며 전시 저장은 별도로 진행합니다."
         }
     }
+    var canPreviewRoomBaseLightPlacement: Bool {
+        canPreviewLightObjectAction && session?.advertisesRoomBaseLightPlacement == true && light?.isRoomBaseLight == true
+    }
+    func previewRoomBaseLightPlacement(_ placement: RoomBaseLightPlacement) async {
+        guard canPreviewRoomBaseLightPlacement else { return }
+        await previewLightObject(.object(["type": .string("set-room-base-light-placement"),
+            "lightId": .string(selectedLightId), "basePlacement": .string(placement.rawValue)]))
+    }
+    private func roomBaseCommandAvailable(_ command: DocumentValue) -> Bool {
+        command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true
+    }
     func previewLightObjectAction(_ type: String) async {
         guard canPreviewLightObjectAction,
               ["duplicate-light-object", "remove-light-object", "set-light-fixture"].contains(type) else { return }
@@ -2528,7 +2539,7 @@ final class ExhibitionModel: ObservableObject {
     }
     private func previewLightObject(_ command: DocumentValue, allowingFormInput: Bool = false, sharedForm: SharedFurnishingFormBuffer? = nil) async {
         guard lightObjectContext(allowingShared: sharedForm != nil), lightObjectAuthorityAvailable, !lightPreviewing,
-              allowingFormInput || !lightDirty, command["lightId"] == .string(selectedLightId),
+              allowingFormInput || !lightDirty, roomBaseCommandAvailable(command), command["lightId"] == .string(selectedLightId),
               let api, let base = draft, let etag = state?.etag else { return }
         let access = viewportAccessID, selected = selectedLightId, fields = light
         architectureApplying = true
@@ -2538,7 +2549,7 @@ final class ExhibitionModel: ObservableObject {
             let saved = try await api.exhibition(base.id)
             guard saved.draft == base, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
             let preview = try await viewportController.lightObject(command)
-            guard lightObjectAuthorityAvailable, viewportAccessID == access, draft == base, state?.etag == etag,
+            guard lightObjectAuthorityAvailable, roomBaseCommandAvailable(command), viewportAccessID == access, draft == base, state?.etag == etag,
                   selectedLightId == selected, light == fields, preview.base == base,
                   sharedForm == nil || sharedFurnishing == sharedForm else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             let display = try preview.apply(to: base)
@@ -2918,7 +2929,7 @@ final class ExhibitionModel: ObservableObject {
             openingStage = .creating
             defer { openingStage = nil }
             guard !ordinaryBoundedRuntime, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLight == true)
+            value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLightPlacement == true)
             value.etag = nil; value.savedEditVersion = nil
             try await persist(value); storedImmutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "새 전시를 이 Mac에 보관했습니다. 공간과 작품을 구성한 뒤 전시를 저장하세요."

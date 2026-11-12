@@ -7,6 +7,6 @@ public enum LightObjectAuthoring {
     public static let profile = "saved-head-light-object-v1"
     public static let capability = "light-object-v1"
     public static let commands: Set<String> = [
-        "set-light-object", "set-light-fixture", "duplicate-light-object", "remove-light-object"
+        "set-light-object", "set-room-base-light-placement", "set-light-fixture", "duplicate-light-object", "remove-light-object"
     ]
 }

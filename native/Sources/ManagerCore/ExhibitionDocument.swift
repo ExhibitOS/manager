@@ -121,7 +121,14 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
     public mutating func updateRoom(_ id: String, name: String, width: Double, height: Double, depth: Double) throws {
         guard !name.isEmpty, name.count <= 512, [width, height, depth].allSatisfy({ $0.isFinite && $0 > 0 && $0 <= 1_000_000 }), var rows = candidate["rooms"].items, let i = rows.firstIndex(where: { $0["id"].string == id }) else { throw AuthoringFailure("ROOM_INVALID") }
         rows[i]["name"] = .string(name); rows[i]["dimensions"] = .object(["width": .number(width), "height": .number(height), "depth": .number(depth)])
-        var c = candidate; c["rooms"] = .array(rows); try change(c)
+        var c = candidate; c["rooms"] = .array(rows)
+        c = try RoomBaseLightIntent.reflow(c, roomId: id)
+        let template = "org.exhibitos.studio/template"
+        if c["extensions"][template] != .null {
+            guard case .object = c["extensions"][template], case .bool = c["extensions"][template]["modified"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+            c["extensions"][template]["modified"] = .bool(true)
+        }
+        try change(c)
     }
     public mutating func addApprovedArtwork(_ artwork: DocumentValue, roomId: String, position: [Double]) throws {
         var pose = Self.identity; pose["position"] = .vector(position)

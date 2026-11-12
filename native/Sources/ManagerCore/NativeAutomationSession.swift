@@ -1432,7 +1432,7 @@ public actor NativeAutomationSession {
               configuration.ports.database == ports.database else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
     }
 
-    static func emptyExhibitionDraft(_ request: DocumentValue, in current: NativeDocumentState) throws -> NativeExhibitionDraft {
+    static func emptyExhibitionDraft(_ request: DocumentValue, in current: NativeDocumentState, roomBaseLight: Bool = false) throws -> NativeExhibitionDraft {
         guard current.draft == nil, current.etag == nil, current.pending == nil, current.savedEditVersion == nil else {
             throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE")
         }
@@ -1441,7 +1441,7 @@ public actor NativeAutomationSession {
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 200 else {
             throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
         }
-        return try NativeExhibitionDraft.new(title: title)
+        return try NativeExhibitionDraft.new(title: title, roomBaseLight: roomBaseLight)
     }
 
     static func checkPendingSaveRequest(_ request: DocumentValue, _ current: NativeDocumentState,
@@ -1571,7 +1571,7 @@ public actor NativeAutomationSession {
         case "exhibition-new":
             try checkedRevision(request, current)
             guard installedAuthoringCLI, await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
-            var next = current; next.draft = try Self.emptyExhibitionDraft(request, in: current)
+            var next = current; next.draft = try Self.emptyExhibitionDraft(request, in: current, roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
             try Task.checkCancellation()
             result = try value(await bridge.saveDocumentState(context, state: next))
         case "required-model-original-discover", "required-model-original-status", "required-model-original-approve":
@@ -1605,6 +1605,9 @@ public actor NativeAutomationSession {
             let candidate: DocumentValue
             if operation == "light-object-prepare" {
                 guard await api.admitsNativeLightObjectAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                guard request["command"]["type"] != .string("set-room-base-light-placement") || authoringSession?.advertisesRoomBaseLightPlacement == true else {
+                    throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+                }
                 let proposal = try LightObjectRequest(command: request["command"], frame: frame)
                 let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
                 let checked = try proposal.checkedReply(reply)
@@ -1622,7 +1625,7 @@ public actor NativeAutomationSession {
                     preview = .scene(checked); candidate = checked.candidate
                 }
             } else if operation == "light-prepare", request["command"]["type"] == .string("ensure-room-base-light") {
-                guard authoringSession?.advertisesRoomBaseLight == true,
+                guard authoringSession?.advertisesRoomBaseLightPlacement == true,
                       authoringSession?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1" else {
                     throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
                 }

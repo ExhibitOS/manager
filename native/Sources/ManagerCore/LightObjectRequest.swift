@@ -73,7 +73,12 @@ public struct LightObjectRequest: Sendable {
             try Self.checkSettings(command["settings"])
             let old = try Self.rows(frame.draft.candidate, namespace: Self.details).first { Self.same($0["lightId"].string, actualId) }
             if let purpose = settings["purpose"] { guard purpose == (old?["purpose"] ?? .null) else { throw Self.invalid } }
+            if let placement = settings["basePlacement"] { guard placement == (old?["basePlacement"] ?? .null) else { throw Self.invalid } }
             if let attachment = fields["attachment"], attachment != .null { try Self.checkAttachment(attachment) }
+        case "set-room-base-light-placement":
+            guard Set(fields.keys) == ["type", "lightId", "basePlacement"],
+                  let value = command["basePlacement"].string, let placement = RoomBaseLightPlacement(rawValue: value) else { throw Self.invalid }
+            _ = try RoomBaseLightIntent.setPlacement(placement, lightId: actualId, in: frame.draft.candidate)
         case "set-light-fixture":
             guard Set(fields.keys) == ["type", "lightId", "visual"] else { throw Self.invalid }
             if command["visual"] != .null {
@@ -124,16 +129,18 @@ public struct LightObjectRequest: Sendable {
         switch command["type"].string {
         case "set-light-object":
             var row = command["light"]; row["id"] = original["id"]; lights[index] = row; next["lights"] = .array(lights)
-            var settings = command["settings"]
-            if let old = try Self.rows(base, namespace: Self.details).first(where: { Self.same($0["lightId"].string, sourceLightId) }), old["purpose"] != .null {
-                settings["purpose"] = old["purpose"]
-            }
+            let mounted: Bool
+            if case .object(let fields) = command { mounted = fields["attachment"].map { $0 != .null } ?? false } else { mounted = false }
+            var settings = try RoomBaseLightIntent.settingsForEdit(command["settings"], light: row, original: original, base: base, mounted: mounted)
             settings["lightId"] = original["id"]
             try Self.upsert(settings, id: sourceLightId, namespace: Self.details, in: &next)
             if case .object(let fields) = command, let attachment = fields["attachment"] {
                 if attachment == .null { try Self.removeRow(sourceLightId, namespace: Self.attachments, in: &next) }
                 else { var row = attachment; row["lightId"] = original["id"]; try Self.upsert(row, id: sourceLightId, namespace: Self.attachments, in: &next) }
             }
+        case "set-room-base-light-placement":
+            guard let raw = command["basePlacement"].string, let placement = RoomBaseLightPlacement(rawValue: raw) else { throw Self.changed }
+            next = try RoomBaseLightIntent.setPlacement(placement, lightId: sourceLightId, in: next)
         case "set-light-fixture":
             let visual = command["visual"]
             var settings = try NativeLightFixture.settings(in: frame.draft, lightId: sourceLightId)
@@ -253,9 +260,12 @@ public struct LightObjectRequest: Sendable {
     }
     private static func checkSettings(_ value: DocumentValue) throws {
         guard case .object(let fields) = value, fields["fixture"] != nil,
-              Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose"]),
+              Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement"]),
               let fixture = value["fixture"].string, NativeLightFixture(rawValue: fixture) != nil,
               fields["purpose"].map({ $0 == .string("room-base") }) ?? true else { throw invalid }
+        if let placement = fields["basePlacement"] {
+            guard let raw = placement.string, RoomBaseLightPlacement(rawValue: raw) != nil else { throw invalid }
+        }
         if let aim = fields["aim"] {
             guard case .object(let keys) = aim, let kind = aim["kind"].string,
                   ((kind == "rotation" || kind == "placement-center") && Set(keys.keys) == ["kind"])

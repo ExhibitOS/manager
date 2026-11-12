@@ -1398,3 +1398,42 @@ This source slice does not update the default 1.7 runtime admission above or
 establish a matched 1.8 runtime, actual GUI application, physical aperture/mount
 fit, Save/reopen/export or Viewer qualification. Those require their own exact
 runtime and observed consumer evidence.
+
+
+## Room base-light placement intent (source consumer)
+
+The optional `basePlacement` light-details field records `auto` or `manual`
+only on an existing `purpose: "room-base"` binding. Its absence remains
+unknown and is never inferred from position, brightness or colour. New
+canonical creation and the explicit placement action require the authenticated
+`roomBaseLightPlacementProfile: "room-base-light-placement-v1"` marker in
+addition to the existing room-base profile; this source adds no runtime pins.
+
+The installed authoring CLI reuses `light-object-prepare`, `light-object-apply`
+and `light-object-cancel`. Its closed `command` is
+`{"type":"set-room-base-light-placement","lightId":"UUID","basePlacement":"auto"}`
+(or `manual`), inside the existing owner/revision envelope. Preparation is not
+Apply or Save. Automatic restoration clears that light's surface attachment,
+aim and placement target, and uses the room-local point recipe. Brightness,
+including zero, colour, identity and unrelated graph fields remain exact.
+Manual or unknown lights and missing/removed base lights are not reflowed by
+ordinary room edits. No per-room copy or new generic room-edit CLI is added.
+
+The native inspector shows automatic, manual or unrecorded placement separately
+from brightness and colour. Placement changes use the existing transient
+light-object preview, explicit Apply, Undo and separate exhibition Save. The
+ordinary room-row editor checks the exact automatic-light reflow alongside its
+existing geometry correspondence; the six-surface envelope operation remains a
+separate shared command.
+
+Range is the existing50m-capped shared recipe
+`min(50,max(0.1,Math.hypot(width/2,depth/2,height*0.9)))`. Source tests pin
+Node24.21.0 golden values, using scaled compensated summation in Swift.
+Quaternion representation equivalence follows the shared semantic helper:
+exact position/scale and normalized quaternion sign equivalence within1e-12;
+no tolerance applies to the returned candidate or other fields.
+
+This is source correspondence only. Native compilation, tests, matching runtime
+admission, GUI lifecycle/Undo, Save/reopen and output qualification must be
+reported from their actual runs. No existing profile, database or runtime is
+migrated by opening a document with this field.

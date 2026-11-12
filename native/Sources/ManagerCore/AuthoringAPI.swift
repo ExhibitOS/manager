@@ -50,12 +50,16 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
+    public var roomBaseLightPlacementProfile: String? = nil
 
     public var advertisesFurnishingWalkingCollision: Bool {
         nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile
     }
 
     public var advertisesRoomBaseLight: Bool { roomBaseLightProfile == RoomBaseLightAction.profile }
+    public var advertisesRoomBaseLightPlacement: Bool {
+        advertisesRoomBaseLight && roomBaseLightPlacementProfile == RoomBaseLightPlacement.profile
+    }
     public var advertisesRenderedArtworkThumbnail: Bool {
         nativeRenderedArtworkThumbnailProfile == ViewportRenderedThumbnail.profile
     }
@@ -2827,7 +2831,7 @@ public actor AuthoringAPI {
             && session?.nativeFixtureAuthoringProposalProfile == "saved-head-fixture-v1"
     }
 
-    var admitsNativeLightObjectAuthoringProposal: Bool {
+    public var admitsNativeLightObjectAuthoringProposal: Bool {
         nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
             && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             && session?.nativeLightObjectAuthoringProposalProfile == LightObjectAuthoring.profile
@@ -2844,7 +2848,8 @@ public actor AuthoringAPI {
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
         guard admitted,
-              let session else {
+              let session,
+              operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
