@@ -24,9 +24,66 @@ struct Manifest {
     producer_sha256: String,
     entry: Entries,
     files: Vec<Item>,
+    #[serde(default, deserialize_with = "deserialize_composition")]
+    composition: Option<LocalWebComposition>,
     redistribution_qualified: bool,
     official_signed: bool,
     remaining: String,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalWebComposition {
+    format: String,
+    #[serde(rename = "recipeSHA256")]
+    recipe_sha256: String,
+    base: CompositionBase,
+    web: CompositionWeb,
+    cover: CompositionCover,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompositionBase {
+    source_commit: String,
+    source_tree: String,
+    #[serde(rename = "producerSHA256")]
+    producer_sha256: String,
+    #[serde(rename = "manifestSHA256")]
+    manifest_sha256: String,
+    files: u64,
+    entry_digest: String,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompositionWeb {
+    source_commit: String,
+    source_tree: String,
+    #[serde(rename = "handoffSHA256")]
+    handoff_sha256: String,
+    ordinary: CompositionGroup,
+    #[serde(rename = "static")]
+    static_web: CompositionGroup,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompositionCover {
+    source_commit: String,
+    source_tree: String,
+    #[serde(rename = "inventorySHA256")]
+    inventory_sha256: String,
+    files: u64,
+    entry_digest: String,
+}
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompositionGroup {
+    #[serde(rename = "inventorySHA256")]
+    inventory_sha256: String,
+    files: u64,
+    entry_digest: String,
+}
+fn deserialize_composition<'de, D: serde::Deserializer<'de>>(deserializer: D)
+    -> std::result::Result<Option<LocalWebComposition>, D::Error> {
+    LocalWebComposition::deserialize(deserializer).map(Some)
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -4284,6 +4341,119 @@ fn relative_name(name: &str) -> bool {
             .components()
             .all(|c| matches!(c, Component::Normal(_)))
 }
+
+// Fixed reviewed local-validation recipe. It does not itself authorize any
+// assembled runtime tuple; the future tuple requires a separately reviewed pin.
+const LOCAL_WEB_COMPOSITION_RECIPE: &str = r#"{
+ "format":"exhibitos-local-web-composition-v1",
+ "recipeSHA256":"2b8e6c705d4de669782f6bfbe0269432da58c74358206ce95a00bc414c88a24a",
+ "base":{"sourceCommit":"6784659cf5fe3b1f4c925a6ac0a0f5554cb8a4fe","sourceTree":"72e198f82b8916828a463dcf8dc8cc34232ce7f0","producerSHA256":"09e8c2212145423f277c86e2f16584ebb58bf4d5253a9f94bd7761f094c77634","manifestSHA256":"291a26daf7b46955488e63358ad2dd868cc94f8a7db44e05092245422a5f7309","files":16579,"entryDigest":"43417729c25ff7a9f74f9d6ff0c0d6031f85c929ea9d1565235d1aeaca38b752"},
+ "web":{"sourceCommit":"dc310e80c27026c21b9a42eec128f523b8afef4b","sourceTree":"a76c58c6c38c77383193511db03b83ab016f2bfc","handoffSHA256":"39b40c6728e2883887b7569f64f9fc4533c67cc57c0ee617fb3f00e98994c928",
+ "ordinary":{"inventorySHA256":"3d3adba0a8f010e4523a89c7d54611233d957ff9fd5f413890a04dbbd73d5923","files":74,"entryDigest":"8c8ada43fa773f3d75481c74010724b050a3695fc0bbe06f0655815c87ee8df2"},
+ "static":{"inventorySHA256":"632311218c7f966d6bb8aa429331ec5ab6bc77b8dcd5329408f06e6940a9072d","files":79,"entryDigest":"1ea837282414c2010520910ce6dff539164b72c0e4e758bb8ad98f4d3fb9d7fe"}},
+ "cover":{"sourceCommit":"c392991de152188e4e2d47c09a7e115bde1fc36b","sourceTree":"60442385712799511b25cabe428193e18c15ee1a","inventorySHA256":"36c59ccc8ffcfc4de8bce4569695429a4df70337ff3cd7f9b2cea939be340790","files":1,"entryDigest":"e5e0c87082b591b86eb78bb09b10148977dfc2bf9394460069884c069cb9f68c"}}
+"#;
+
+fn composition_group(path: &str) -> usize {
+    if path.starts_with("platform/apps/web/dist/") { 1 }
+    else if path.starts_with("platform/apps/web/dist-static/") { 2 }
+    else if path.starts_with("platform/apps/web/dist-cover-shell/") { 3 }
+    else { 0 }
+}
+
+fn composition_group_digests(files: &[Item]) -> Result<[(u64, String); 4]> {
+    let mut ordered: Vec<&Item> = files.iter().collect();
+    ordered.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    let mut names = BTreeSet::new();
+    let mut hashers = [Sha256::new(), Sha256::new(), Sha256::new(), Sha256::new()];
+    let mut counts = [0u64; 4];
+    for item in ordered {
+        if !relative_name(&item.path) || item.path == "manifest.json" || !names.insert(&item.path) {
+            return Err(invalid());
+        }
+        let group = composition_group(&item.path);
+        let record = match (&item.link, item.bytes, &item.sha256, item.executable) {
+            (None, Some(bytes), Some(hash), Some(executable)) if hash_valid(hash) =>
+                format!("file\0{}\0{}\0{}\0{}\n", item.path, bytes, hash, executable),
+            (Some(link), None, None, None) if !link.is_empty() && link.len() <= 2048
+                && !link.contains(['\\', '\0', '\r', '\n']) && !Path::new(link).is_absolute() =>
+                format!("link\0{}\0{}\n", item.path, link),
+            _ => return Err(invalid()),
+        };
+        hashers[group].update(record.as_bytes());
+        counts[group] += 1;
+    }
+    Ok(std::array::from_fn(|i| (counts[i], format!("{:x}", hashers[i].clone().finalize()))))
+}
+
+#[allow(dead_code)] // Staged only: no composed runtime tuple is admitted yet.
+fn composition_matches_recipe(manifest: &Manifest) -> bool {
+    let Some(composition) = &manifest.composition else { return false; };
+    let Ok(expected) = serde_json::from_str::<LocalWebComposition>(LOCAL_WEB_COMPOSITION_RECIPE) else { return false; };
+    if manifest.mode != "local-validation" || manifest.redistribution_qualified || manifest.official_signed
+        || *composition != expected { return false; }
+    composition_groups_match(&manifest.files, &[
+        (composition.base.files, composition.base.entry_digest.clone()),
+        (composition.web.ordinary.files, composition.web.ordinary.entry_digest.clone()),
+        (composition.web.static_web.files, composition.web.static_web.entry_digest.clone()),
+        (composition.cover.files, composition.cover.entry_digest.clone()),
+    ])
+}
+
+fn composition_groups_match(files: &[Item], expected: &[(u64, String); 4]) -> bool {
+    composition_group_digests(files).is_ok_and(|groups| &groups == expected)
+}
+
+#[cfg(test)]
+mod local_web_composition_tests {
+    use super::*;
+
+    fn item(value: serde_json::Value) -> Item { serde_json::from_value(value).unwrap() }
+
+    #[test]
+    fn strict_recipe_shape_rejects_unknown_null_and_bad_fields() {
+        let original: serde_json::Value = serde_json::from_str(LOCAL_WEB_COMPOSITION_RECIPE).unwrap();
+        for (path, value) in [
+            ("format", serde_json::json!(1)), ("recipeSHA256", serde_json::Value::Null),
+            ("unexpected", serde_json::json!(true)),
+        ] {
+            let mut changed = original.clone(); changed[path] = value;
+            assert!(serde_json::from_value::<LocalWebComposition>(changed).is_err());
+        }
+        let mut changed = original.clone(); changed["base"]["extra"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<LocalWebComposition>(changed).is_err());
+        let mut changed = original; changed["web"]["ordinary"]["files"] = serde_json::json!(-1);
+        assert!(serde_json::from_value::<LocalWebComposition>(changed).is_err());
+    }
+
+    #[test]
+    fn group_digest_is_sorted_exhaustive_and_uses_manifest_link() {
+        let hash = "a".repeat(64);
+        let files = vec![
+            item(serde_json::json!({"path":"platform/apps/web/dist/a","bytes":2,"sha256":hash,"executable":false})),
+            item(serde_json::json!({"path":"bin/alias","link":"../lib/actual"})),
+            item(serde_json::json!({"path":"platform/apps/web/dist-static/b","bytes":0,"sha256":"b".repeat(64),"executable":true})),
+            item(serde_json::json!({"path":"platform/apps/web/dist-cover-shell/c","bytes":1,"sha256":"c".repeat(64),"executable":false})),
+            item(serde_json::json!({"path":"bin/node","bytes":1,"sha256":"d".repeat(64),"executable":true})),
+        ];
+        let groups = composition_group_digests(&files).unwrap();
+        assert!(composition_groups_match(&files, &groups));
+        assert_eq!(groups[0], (2, digest(format!("link\0bin/alias\0../lib/actual\nfile\0bin/node\0{}\0{}\0true\n", 1, "d".repeat(64)).as_bytes())));
+        assert_eq!(groups[1], (1, digest(format!("file\0platform/apps/web/dist/a\0{}\0{}\0false\n", 2, "a".repeat(64)).as_bytes())));
+        assert_eq!(groups[2].0, 1); assert_eq!(groups[3].0, 1);
+        let mut changed = files;
+        changed[0].bytes = Some(3);
+        assert!(!composition_groups_match(&changed, &groups));
+        assert_ne!(composition_group_digests(&changed).unwrap()[1].1, groups[1].1);
+        changed.remove(0);
+        assert!(!composition_groups_match(&changed, &groups));
+        assert_eq!(composition_group_digests(&changed).unwrap()[1].0, 0);
+        let mut duplicate = changed; duplicate.push(item(serde_json::json!({"path":"bin/node","bytes":1,"sha256":"d".repeat(64),"executable":true})));
+        assert!(composition_group_digests(&duplicate).is_err());
+        assert_eq!(composition_group("platform/apps/web/dist-other/a"), 0);
+    }
+
+}
 const GPU_PREVIEW_WEB_PREFIX: &str = "platform/apps/web/dist/";
 const GPU_PREVIEW_FIXED: [&str; 4] = [
     "native-viewport.html", "basis/basis_transcoder.js", "basis/basis_transcoder.wasm",
@@ -4539,6 +4709,8 @@ impl Payload {
         {
             return Err(invalid());
         }
+        // No composed source/producer/manifest tuple is qualified yet.
+        if manifest.composition.is_some() { return Err(invalid()); }
         // A local validation copy is not accepted by a production build.
         if manifest.mode == "local-validation" {
             if !cfg!(debug_assertions)
@@ -5500,7 +5672,7 @@ impl Payload {
             return Err(reject());
         }
         let manifest: Manifest = serde_json::from_slice(bytes).map_err(|_| reject())?;
-        if manifest.source_commit != expected.0 || manifest.producer_sha256 != expected.1
+        if manifest.composition.is_some() || manifest.source_commit != expected.0 || manifest.producer_sha256 != expected.1
             || manifest.files.is_empty() || manifest.files.len() > 50_000 {
             return Err(reject());
         }
