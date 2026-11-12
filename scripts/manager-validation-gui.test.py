@@ -58,6 +58,8 @@ class ManagerValidationGuiTests(unittest.TestCase):
                 file = app / path
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_bytes(b"fixture")
+                if path == launcher.HELPER:
+                    file.chmod(0o555)
             (app / launcher.INFO).write_bytes(plistlib.dumps(dict(CFBundleIdentifier=launcher.BUNDLE_ID,
                                                                   CFBundleExecutable=launcher.GUI.name)))
             with patch.object(launcher, "APP", app), patch.object(launcher, "output", return_value="Signature=adhoc") as run, \
@@ -108,6 +110,70 @@ class ManagerValidationGuiTests(unittest.TestCase):
             with self.assertRaisesRegex(launcher.ValidationError, "already open"):
                 launcher.launch(launcher.APP, Path("/fixed-profile"), {})
             run.assert_not_called()
+
+    def test_launch_rejects_readonly_and_redirected_helper_before_open(self):
+        for redirected in (False, True):
+            with self.subTest(redirected=redirected), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                app, profile = root / launcher.APP.name, root / "profile"
+                profile.mkdir()
+                for path in (launcher.GUI, launcher.HELPER, launcher.MANIFEST):
+                    file = app / path
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_bytes(b"fixture")
+                (app / launcher.INFO).write_bytes(plistlib.dumps(dict(
+                    CFBundleIdentifier=launcher.BUNDLE_ID, CFBundleExecutable=launcher.GUI.name)))
+                helper = app / launcher.HELPER
+                helper.chmod(0o444)
+                if redirected:
+                    helper.chmod(0o555)
+                    outside = root / "outside-helpers"
+                    helper.parent.rename(outside)
+                    helper.parent.symlink_to(outside, target_is_directory=True)
+                with patch.object(launcher, "APP", app), patch.object(launcher, "output") as run, \
+                     patch.object(launcher, "verify_signature") as signature:
+                    with self.assertRaisesRegex(launcher.ValidationError, "not executable"):
+                        launcher.launch(app, profile, {})
+                    run.assert_not_called()
+                    signature.assert_not_called()
+
+    def test_canonical_executable_helper_passes_bundle_preflight(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            app, profile = root / launcher.APP.name, root / "profile"
+            profile.mkdir()
+            for path in (launcher.GUI, launcher.HELPER, launcher.MANIFEST):
+                file = app / path
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(b"fixture")
+            (app / launcher.HELPER).chmod(0o555)
+            pins = dict(runtimeManifest=launcher.sha(app / launcher.MANIFEST))
+            (app / launcher.INFO).write_bytes(plistlib.dumps(dict(
+                CFBundleIdentifier=launcher.BUNDLE_ID, CFBundleExecutable=launcher.GUI.name,
+                ExhibitOSValidationInputs=pins, ExhibitOSValidationProfile=str(profile))))
+            with patch.object(launcher, "APP", app), patch.object(launcher, "output") as run, \
+                 patch.object(launcher, "verify_signature") as signature:
+                launcher.preflight(app, profile, pins)
+                self.assertEqual(signature.call_count, 2)
+                run.assert_not_called()
+
+    def test_prepare_rejects_readonly_input_before_assembly(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            app, profile, binary, runtime = (root / name for name in (
+                launcher.APP.name, "profile", "binary", "runtime"))
+            profile.mkdir()
+            binary.write_bytes(b"readonly reviewed artifact")
+            binary.chmod(0o444)
+            runtime.mkdir()
+            (runtime / "manifest.json").write_bytes(b"fixture")
+            with patch.object(launcher, "APP", app), patch.object(launcher, "output") as run, \
+                 patch.object(launcher, "pids", return_value=set()), \
+                 patch.object(launcher, "launch_services_has_app", return_value=False):
+                with self.assertRaisesRegex(launcher.ValidationError, "not executable"):
+                    launcher.prepare(profile, {}, binary, binary, runtime)
+                self.assertFalse(app.exists())
+                run.assert_not_called()
 
     def test_prepare_and_preflight_bind_only_inventoried_legal_resources(self):
         with tempfile.TemporaryDirectory() as temp:
