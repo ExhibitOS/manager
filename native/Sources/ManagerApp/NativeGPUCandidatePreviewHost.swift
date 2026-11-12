@@ -70,6 +70,8 @@ final class NativeGPUCandidatePreviewController: NSObject, ObservableObject, Ide
     private func start() async {
         guard let web else { return }
         #if DEBUG
+        Logger(subsystem: "org.exhibitos.manager.validation", category: "GPUCandidatePreviewStartup")
+            .notice("NativeGPUPreviewStartupObservationReady")
         var stage = StartupStage.setup
         var readyAccepted: Bool?
         var readyKeys = "unavailable"
