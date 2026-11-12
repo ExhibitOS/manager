@@ -5,6 +5,20 @@ import XCTest
 
 @MainActor
 final class NativeSceneAdmissionTests: XCTestCase {
+    func testSelectedPNGReadManifestIsExactAndDoesNotAdmitOtherRuntimeFamilies() throws {
+        let pin = "1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238"
+        XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: pin))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: pin))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: pin))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: pin))
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: pin))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: pin, ready: true))
+        for denied in [nil, "ac2248e1184ad4514f386ab6ee11b6ddd8bf2ca71792f4ec9eb9242e189724d7",
+                       "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84", String(repeating: "f", count: 64)] {
+            XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: denied))
+        }
+    }
+
     func testDefault111OrdinaryEntryDoesNotEnableOptionalCatalogFamilies() {
         let runtime = "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84"
         XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: runtime))

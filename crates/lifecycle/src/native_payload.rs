@@ -964,10 +964,35 @@ pub(crate) const CATALOG45_DEFAULT_1_11_TARGET: RuntimeTuple = (
     "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84",
 );
 
+// Exact current carried profile source and its single clean read-route successor.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_SELECTED_PNG_READ_SOURCE: RuntimeTuple = (
+    "5ed3aa9166d5f3858a86f8d97f1cf1ca9e3cc2ca",
+    "6b133c8f1372b8d886d08c894b43a17d8300fc7577db4b430874d8568557bbec",
+    "ac2248e1184ad4514f386ab6ee11b6ddd8bf2ca71792f4ec9eb9242e189724d7",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CATALOG45_SELECTED_PNG_READ_TARGET: RuntimeTuple = (
+    "7fa626c674056a361b37a59ff10fc351b80222c6",
+    "e662b20c775c2852521dca75cdcea1d631d4aa11d1cd157db272848d09afceaf",
+    "1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238",
+);
+
+// These normal runtime families intentionally contain neither model-adoption
+// marker. Their ordinary start/clean carried-receipt authority is independent
+// of an adoption operation channel.
+fn catalog45_markerless_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return [CATALOG45_DEFAULT_1_11_TARGET, CATALOG45_SELECTED_PNG_READ_TARGET].contains(&tuple);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 fn catalog45_model_adoption_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return [CATALOG45_MODEL_ADOPTION_VALIDATION, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
-        CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_11_TARGET].contains(&tuple);
+        CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_11_TARGET, CATALOG45_SELECTED_PNG_READ_SOURCE, CATALOG45_SELECTED_PNG_READ_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1032,7 +1057,7 @@ pub(crate) fn catalog45_carried_restore_payload(payload: &Payload) -> bool {
 /// after the separately authorized clean adoption handoff.
 pub(crate) fn catalog45_adoption_carried_receipt_payload(tuple: (&str, &str, &str)) -> Option<&'static str> {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET]
+    return [CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_SELECTED_PNG_READ_SOURCE, CATALOG45_SELECTED_PNG_READ_TARGET]
         .contains(&tuple).then_some(CATALOG45_CARRIED_RESTORE_BASE.2);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; None }
@@ -1056,6 +1081,7 @@ fn catalog45_adoption_transition(pair: (&str, &str)) -> Option<(RuntimeTuple, Ru
         (CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET),
         (CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET),
         (CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET),
+        (CATALOG45_SELECTED_PNG_READ_SOURCE, CATALOG45_SELECTED_PNG_READ_TARGET),
     ].into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -1288,6 +1314,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_COMPLETE_STATIC_TARGET.2 == manifest
         || CATALOG45_FIXTURE_AUTHORING_TARGET.2 == manifest
         || CATALOG45_DEFAULT_1_7_TARGET.2 == manifest
+        || CATALOG45_SELECTED_PNG_READ_TARGET.2 == manifest
         || CATALOG45_PRODUCT_IMAGE_FIT_WHEAT_TARGET.2 == manifest
         || CATALOG45_RECOVERY_TARGET.2 == manifest
         || CATALOG45_SELECTED_RECOVERY_TARGET.2 == manifest
@@ -1333,7 +1360,7 @@ impl FurnishingTransition {
 
     pub(crate) fn retains_catalog45_adoption_carried_restore(self) -> bool {
         matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::RequiredModelPreparation045 }
-            if [CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET].contains(&source)
+            if [CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET, CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_SELECTED_PNG_READ_SOURCE].contains(&source)
                 && catalog45_adoption_transition((source.2, target.2)) == Some((source, target)))
     }
 
@@ -3070,6 +3097,58 @@ mod normal_oex_release_declaration_tests {
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn selected_png_read_admits_only_exact_clean_carried_source_successor() {
+        let source = CATALOG45_SELECTED_PNG_READ_SOURCE;
+        let target = CATALOG45_SELECTED_PNG_READ_TARGET;
+        assert!(catalog45_markerless_ordinary_host_matches(target));
+        assert!(catalog45_markerless_ordinary_host_matches(CATALOG45_DEFAULT_1_11_TARGET));
+        assert!(!catalog45_markerless_ordinary_host_matches(source));
+        assert!(!catalog45_markerless_ordinary_host_matches((source.0, target.1, target.2)));
+        assert!(!catalog45_markerless_ordinary_host_matches((target.0, source.1, target.2)));
+        assert!(!catalog45_markerless_ordinary_host_matches((target.0, target.1, source.2)));
+        let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        assert_eq!(transition.source(), source);
+        assert_eq!(transition.target(), target);
+        assert!(transition.retains_catalog45_adoption_carried_restore());
+        assert!(!transition.allows_catalog45_adoption_without_restore());
+        assert!(transition.startup_recovery().is_none());
+        for tuple in [source, target] {
+            assert!(catalog45_model_adoption_host_matches(tuple));
+            assert_eq!(catalog45_adoption_carried_receipt_payload(tuple), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+            assert!(!catalog45_carried_restore_host_matches(tuple));
+            assert!(!catalog45_same_version_restore_host_matches(tuple));
+            assert!(!catalog45_recovery_host_matches(tuple));
+            assert!(!gpu_model_host_matches(tuple));
+            assert!(!large_model_host_matches(tuple));
+            assert!(!furnishing_thumbnail_host_matches(tuple));
+        }
+        for pair in [(target.2, source.2), (target.2, target.2), (source.2, source.2),
+                     (CATALOG45_DEFAULT_1_7_TARGET.2, target.2), (CATALOG45_DEFAULT_1_11_TARGET.2, target.2)] {
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        for mixed in [(source.0, target.1, target.2), (target.0, source.1, target.2), (target.0, target.1, source.2)] {
+            assert!(!catalog45_model_adoption_host_matches(mixed));
+        }
+        assert!(saved_workspace_transition_target(target.2));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the separately qualified immutable PR675 runtime"]
+    fn opens_exact_selected_png_read_target_payload() {
+        let root = std::env::var_os("EXHIBITOS_TEST_SELECTED_PNG_READ_RUNTIME").expect("qualified runtime path");
+        let payload = Payload::open_workspace_v5_validation(Path::new(&root), false).unwrap();
+        let context = payload.context();
+        assert_eq!((context.source_commit.as_str(), payload.producer_sha256(), context.manifest_sha256.as_str()), CATALOG45_SELECTED_PNG_READ_TARGET);
+        assert!(payload.native_model_adoption_original_target());
+        assert!(payload.native_model_adoption_root().unwrap().is_none());
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::RequiredModelPreparation045));
+        assert!(!payload.large_model_recovery_validation());
+        assert!(!payload.fresh_image_recovery_enabled());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn default_1_11_is_exact_ordinary_catalog45_without_transition_or_recovery() {
         let target = CATALOG45_DEFAULT_1_11_TARGET;
         assert!(ordinary_fresh_catalog45_host_matches(target));
@@ -4433,7 +4512,7 @@ impl Payload {
             CATALOG45_MUSEUM_CAPTION_TRANSITION_SOURCE, CATALOG45_SAVED_HEAD_MUSEUM_CAPTIONS,
             CATALOG45_PREPARED_SIGN_AUDIO, CATALOG45_PLACED_EXIT_DOORS, CATALOG45_BACKED_BENCH,
             CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
-            CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_11_TARGET,
+            CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_11_TARGET, CATALOG45_SELECTED_PNG_READ_SOURCE, CATALOG45_SELECTED_PNG_READ_TARGET,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
         let retained_catalog = furnishing_thumbnail_host_matches((&context.source_commit,
             payload.producer_sha256(), &context.manifest_sha256))
@@ -4589,7 +4668,7 @@ impl Payload {
 
     pub(crate) fn native_model_adoption_original_target(&self) -> bool {
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        return [CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_11_TARGET]
+        return [CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_11_TARGET, CATALOG45_SELECTED_PNG_READ_SOURCE, CATALOG45_SELECTED_PNG_READ_TARGET]
             .contains(&(&self.manifest.source_commit[..], self.producer_sha256(), &self.manifest_sha256[..]));
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
         false
@@ -4599,8 +4678,8 @@ impl Payload {
         let tuple = (
             self.manifest.source_commit.as_str(), self.manifest.producer_sha256.as_str(), self.manifest_sha256.as_str(),
         );
-        let pinned = catalog45_model_adoption_host_matches(tuple);
-        let carried = catalog45_adoption_carried_receipt_payload(tuple).is_some();
+        let pinned = catalog45_model_adoption_host_matches(tuple) && !catalog45_markerless_ordinary_host_matches(tuple);
+        let carried = pinned && catalog45_adoption_carried_receipt_payload(tuple).is_some();
         let declarations: [(&str, &[u8], &str, bool); 2] = [
             (
                 "platform/scripts/native-model-adoption-capability-v1.json",
