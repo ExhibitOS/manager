@@ -4204,7 +4204,7 @@ fn verify_manifest_files<const READERS: usize>(root: &Path, items: &[Item]) -> R
                                         .join(link),
                                 )
                                 .map_err(|_| invalid())?;
-                                if expected != path || !expected.starts_with(&root) {
+                                if expected != path || !expected.starts_with(root) {
                                     return Err(invalid());
                                 }
                             }
