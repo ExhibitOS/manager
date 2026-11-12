@@ -292,9 +292,9 @@ final class ViewportResourcePolicyTests: XCTestCase {
             name, bytes, wireVerified, blobSize } };
         }
         """#
-        let result: [String: Any] = await withCheckedContinuation { continuation in
+        let resultData: Data = await withCheckedContinuation { continuation in
             var completed = false
-            func finish(_ value: [String: Any]) {
+            func finish(_ value: Data) {
                 guard !completed else { return }
                 completed = true
                 continuation.resume(returning: value)
@@ -304,13 +304,19 @@ final class ViewportResourcePolicyTests: XCTestCase {
                     let value = try await web.callAsyncJavaScript(script,
                         arguments: ["encoded": png.base64EncodedString(), "expectedLength": png.count],
                         in: nil, contentWorld: .page)
-                    finish((value as? [String: Any]) ?? ["decode": ["status": "host-invalid-result"]])
-                } catch { finish(["decode": ["status": "host-failure"]]) }
+                    if let value = value as? [String: Any], JSONSerialization.isValidJSONObject(value),
+                       let snapshot = try? JSONSerialization.data(withJSONObject: value) {
+                        finish(snapshot)
+                    } else {
+                        finish(Data(#"{"decode":{"status":"host-invalid-result"}}"#.utf8))
+                    }
+                } catch { finish(Data(#"{"decode":{"status":"host-failure"}}"#.utf8)) }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
-                finish(["decode": ["status": "host-timeout"]])
+                finish(Data(#"{"decode":{"status":"host-timeout"}}"#.utf8))
             }
         }
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: resultData) as? [String: Any])
         let status = (result["decode"] as? [String: Any])?["status"] as? String ?? "host-invalid-result"
         let completed = status == "success" || status == "decoder-error"
         let report: [String: Any] = [
