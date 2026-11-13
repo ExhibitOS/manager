@@ -14,7 +14,7 @@ final class NativeProceduralFrameClearAPITests: XCTestCase {
         try draft.replaceCandidate(candidate)
         try draft.setInstallation(.init(frame: .init(kind: .flat)), for: placement)
         let state = NativeDocumentState(format: 1, revision: 7, workspaceId: owner, tenantId: owner,
-            principalId: owner, draft: draft, etag: "\"studio-r1-synthetic\"",
+            principalId: owner, draft: draft, etag: "\"studio-r1-" + String(repeating: "a", count: 64) + "\"",
             savedEditVersion: draft.document["editVersion"].integer, pending: nil)
         return (state, try .init(command: .init(.object(["placementId": .string(placement)])), draft: draft))
     }
