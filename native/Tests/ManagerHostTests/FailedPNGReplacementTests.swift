@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import XCTest
 import Foundation
-import ManagerCore
+@testable import ManagerCore
 @testable import ManagerApp
 
 @MainActor
