@@ -86,6 +86,45 @@ final class ContinuityControlsTests: XCTestCase {
         XCTAssertThrowsError(try request.checkedReply(response))
         XCTAssertThrowsError(try command.proposedCandidate(in: draft, selectedSurfaceId: floor))
     }
+    func testTwentyWallFinishesRoundTripAndSelectedUpdatePreservesOtherContent() throws {
+        var draft = try fixture(), candidate = draft.candidate
+        let ids = (1...21).map { String(format: "00000000-0000-4000-8000-%012d", $0) }
+        candidate["surfaces"] = .array(ids.map { .object(["id": .string($0), "roomId": draft.rooms[0]["id"], "type": .string("wall")]) })
+        try draft.replaceCandidate(candidate)
+        for id in ids.prefix(20) {
+            let settings = try WallFinishSettings(surfaceId: id, depth: 0.12, preset: "plain", trimWidth: 0.02, baseboardHeight: 0.04, ceilingBand: false)
+            let command = try WallFinishCommand(surfaceId: id, settings: settings)
+            try draft.replaceCandidate(command.proposedCandidate(in: draft, selectedSurfaceId: id))
+        }
+        let reopened = try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(draft))
+        XCTAssertEqual(try WallFinishSettings.rows(in: reopened).count, 20)
+        let before = draft.candidate
+        let updated = try WallFinishSettings(surfaceId: ids[0], depth: 0.14, preset: "dark-edge", trimWidth: 0.02, baseboardHeight: 0.04, ceilingBand: false)
+        let next = try WallFinishCommand(surfaceId: ids[0], settings: updated).proposedCandidate(in: reopened, selectedSurfaceId: ids[0])
+        XCTAssertEqual(next["extensions"][WallFinishSettings.namespace]["walls"].items?.dropFirst(), before["extensions"][WallFinishSettings.namespace]["walls"].items?.dropFirst())
+        for key in ["surfaces", "rooms", "placements", "artworks", "lights"] { XCTAssertEqual(next[key], before[key]) }
+        XCTAssertEqual(next["extensions"]["org.example/opaque"], before["extensions"]["org.example/opaque"])
+        let extra = try WallFinishSettings(surfaceId: ids[20], depth: 0.12, preset: "plain", trimWidth: 0.02, baseboardHeight: 0.04, ceilingBand: false)
+        XCTAssertThrowsError(try WallFinishCommand(surfaceId: ids[20], settings: extra).proposedCandidate(in: reopened, selectedSurfaceId: ids[20]))
+        XCTAssertEqual(draft.candidate, before)
+        var forged = before
+        forged["extensions"][WallFinishSettings.namespace]["walls"] = .array(before["extensions"][WallFinishSettings.namespace]["walls"].items! + [extra.value])
+        try draft.replaceCandidate(forged)
+        XCTAssertThrowsError(try WallFinishSettings.read(in: draft, surfaceId: ids[0]))
+    }
+    func testTwentyWallAdmissionRetainsDuplicateAndClosedSchemaGuards() throws {
+        var draft = try fixture()
+        let settings = try WallFinishSettings(surfaceId: wall, depth: 0.12, preset: "plain", trimWidth: 0.02, baseboardHeight: 0.04, ceilingBand: false)
+        var candidate = draft.candidate
+        candidate["extensions"][WallFinishSettings.namespace] = .object(["version": .integer(1), "walls": .array([settings.value, settings.value])])
+        try draft.replaceCandidate(candidate)
+        XCTAssertThrowsError(try WallFinishSettings.read(in: draft, surfaceId: wall))
+        candidate["extensions"][WallFinishSettings.namespace]["walls"] = .array([settings.value])
+        candidate["extensions"][WallFinishSettings.namespace]["future"] = .bool(true)
+        try draft.replaceCandidate(candidate)
+        XCTAssertThrowsError(try WallFinishSettings.read(in: draft, surfaceId: wall))
+        XCTAssertThrowsError(try WallFinishSettings(surfaceId: wall, depth: 0.201, preset: "plain", trimWidth: 0.02, baseboardHeight: 0.04, ceilingBand: false))
+    }
     func testWallRemovalPreservesOtherBindingsAndUnsupportedInputRefuses() throws {
         var draft = try fixture(); var fields = try WallFinishFormBuffer(draft: draft, surfaceId: wall)
         fields.enabled = true; fields.depth = "-"

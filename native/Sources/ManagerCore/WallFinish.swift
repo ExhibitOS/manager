@@ -31,7 +31,7 @@ public struct WallFinishSettings: Equatable, Sendable {
         let value = draft.candidate["extensions"][namespace]
         if value == .null { return [] }
         guard case .object(let fields) = value, Set(fields.keys) == ["version", "walls"], value["version"] == .integer(1),
-              let rows = value["walls"].items, rows.count <= 8, try JSONEncoder().encode(value).count <= 8192 else { throw invalid() }
+              let rows = value["walls"].items, rows.count <= 20, try JSONEncoder().encode(value).count <= 8192 else { throw invalid() }
         var seen = Set<String>()
         for row in rows {
             let settings = try Self(row)
@@ -64,7 +64,7 @@ public struct WallFinishCommand: Equatable, Sendable {
         if let settings { if let index { rows[index] = settings.value } else { rows.append(settings.value) } }
         else { guard let index else { throw WallFinishSettings.invalid() }; rows.remove(at: index) }
         let value: DocumentValue = .object(["version": .integer(1), "walls": .array(rows)])
-        guard rows.count <= 8, try JSONEncoder().encode(value).count <= 8192 else { throw WallFinishSettings.invalid() }
+        guard rows.count <= 20, try JSONEncoder().encode(value).count <= 8192 else { throw WallFinishSettings.invalid() }
         var candidate = draft.candidate
         if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
         guard case .object = candidate["extensions"] else { throw WallFinishSettings.invalid() }
