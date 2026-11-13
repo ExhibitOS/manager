@@ -967,7 +967,9 @@ public actor AuthoringAPI {
     private nonisolated static let selectedArtworkThumbnailRuntimePin = "1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238"
     public nonisolated static func supportsSelectedArtworkThumbnailRuntime(manifest: String?) -> Bool {
         #if DEBUG
-        manifest == selectedArtworkThumbnailRuntimePin
+        [selectedArtworkThumbnailRuntimePin,
+         // Qualified area051 payload retains the existing selected-image/header contract.
+         "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f"].contains(manifest ?? "")
         #else
         false
         #endif

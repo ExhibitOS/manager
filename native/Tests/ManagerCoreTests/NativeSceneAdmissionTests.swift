@@ -10,13 +10,20 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: pin))
         XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: pin))
         XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: pin))
-        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: pin))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: pin))
         XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: pin))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: pin, ready: true))
         for denied in [nil, "ac2248e1184ad4514f386ab6ee11b6ddd8bf2ca71792f4ec9eb9242e189724d7",
                        "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84", String(repeating: "f", count: 64)] {
             XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: denied))
         }
+    }
+
+    func testAreaSelectedReadAdmissionDoesNotEnableUnqualifiedNeighborOrFurnishingThumbnail() {
+        let area = "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f"
+        XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: area))
+        XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: String(area.dropLast()) + "0"))
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: area))
     }
 
     func testDefault111OrdinaryEntryDoesNotEnableOptionalCatalogFamilies() {
