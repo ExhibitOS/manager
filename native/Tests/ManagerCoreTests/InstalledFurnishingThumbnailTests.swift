@@ -144,7 +144,7 @@ final class InstalledFurnishingThumbnailTests: XCTestCase {
             switch mode { case 0: p.digest = nil; case 1: p.digest = String(repeating: "f", count: 64)
             case 2: p.mime = "image/jpeg"; default: p.image[p.image.startIndex + 20] ^= 1 }
             InstalledCardProtocol.configure(p); let api = try await connect(f)
-            do { _ = try await api.installedWorkspaceFurnishingThumbnail(f.summary, in: f.document); XCTFail("invalid image returned") } catch { }
+            do { _ = try await api.installedWorkspaceFurnishingThumbnail(f.summary, in: f.document); XCTFail("invalid image returned for mode \(mode)") } catch { }
         }
     }
     func testSessionGenerationChangeWhileReadingImageIsRejected() async throws {
