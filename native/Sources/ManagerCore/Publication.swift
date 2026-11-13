@@ -110,6 +110,38 @@ public struct NativePublicationCompleted: Codable, Equatable, Sendable {
         throw AuthoringFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
     }
 }
+/// A separate output attempt for an already published native original, never a publication retry.
+struct NativeOriginalPublicationOutputCommand: Sendable {
+    let etag: String, publicationId: String, revisionSha256: String
+    let originalPublishRequestId: String, cancelledDetailJobId: String, planBindingSha256: String
+
+    init(_ value: DocumentValue) throws {
+        guard case .object(let fields) = value,
+              Set(fields.keys) == ["etag", "publicationId", "revisionSha256", "originalPublishRequestId", "cancelledDetailJobId", "planBindingSha256"],
+              let etag = value["etag"].string, !etag.isEmpty,
+              let publicationId = value["publicationId"].string,
+              let revision = value["revisionSha256"].string, nativeImportDigest(revision),
+              let original = value["originalPublishRequestId"].string,
+              let cancelled = value["cancelledDetailJobId"].string,
+              let plan = value["planBindingSha256"].string, nativeImportDigest(plan),
+              [publicationId, original, cancelled].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }) else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        self.etag = etag; self.publicationId = publicationId; revisionSha256 = revision
+        originalPublishRequestId = original; cancelledDetailJobId = cancelled; planBindingSha256 = plan
+    }
+
+    func requireCancelledOutput(_ status: NativeStaticExportStatus?, owner: NativeDocumentState, path: String) throws {
+        guard let status, status.format == 1, status.privateEditor == true,
+              status.workspaceId == owner.workspaceId, status.tenantId == owner.tenantId,
+              status.principalId == owner.principalId, status.revisionSha256 == revisionSha256,
+              status.confirmsDetailTerminal(jobId: cancelledDetailJobId, publicationId: publicationId, output: path),
+              status.state == "cancelled", status.errorCode == "NATIVE_STATIC_CANCELLED", status.receipt == nil else {
+            throw BridgeFailure("NATIVE_DETAIL_OUTPUT_CHANGED")
+        }
+    }
+}
+
 struct NativeOriginalExportAttempt: Codable, Equatable, Sendable {
     let planBindingSha256: String
     var exportClaimed: Bool
@@ -122,6 +154,25 @@ public struct NativePublicationState: Codable, Equatable, Sendable {
     public var pending: NativePublicationPending?
     public var completed: NativePublicationCompleted?
     var nativeOriginalAttempts: [String: NativeOriginalExportAttempt]? = nil
+
+    /// Reads the existing claimed purpose without clearing or staging any publication intent.
+    func nativeOriginalPublicationForOutput(_ command: NativeOriginalPublicationOutputCommand,
+                                            in document: NativeDocumentState) throws -> NativePublication {
+        guard !document.dirty, document.pending == nil, let draft = document.draft,
+              pending == nil, workspaceId == document.workspaceId, tenantId == document.tenantId,
+              principalId == document.principalId, let completed,
+              completed.mode == "native-original-v1", completed.sourceExhibitionId == draft.id,
+              completed.snapshotExhibitionId == draft.id, document.etag == command.etag,
+              completed.sourceEtag == command.etag, completed.publishRequestId == command.originalPublishRequestId,
+              completed.planBindingSha256 == command.planBindingSha256,
+              let attempt = nativeOriginalAttempts?[command.originalPublishRequestId], attempt.exportClaimed,
+              attempt.planBindingSha256 == command.planBindingSha256,
+              completed.publication.publicationId == command.publicationId,
+              completed.publication.revisionSha256 == command.revisionSha256, completed.publication.status == "published" else {
+            throw BridgeFailure("NATIVE_DETAIL_OUTPUT_CHANGED")
+        }
+        return try completed.publication.validated()
+    }
 
     mutating func stageNativeOriginal(_ intent: NativePublicationPending) throws {
         guard intent.mode == "native-original-v1", let plan = intent.planBindingSha256,

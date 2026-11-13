@@ -11,7 +11,7 @@ public actor NativeAutomationSession {
         "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
-        "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
+        "workspace-frame-lineage-prepare", "export-static-native-original-publication", "export-static-native-original", "export-static-saved-head", "export-static-status",
         "current-image-thumbnail-status", "current-image-thumbnail-selection", "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
         "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
     ]
@@ -1911,7 +1911,7 @@ public actor NativeAutomationSession {
                                         "expectedRevision", "expectedEditVersion"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
-        if operation == "export-static-saved-head" {
+        if ["export-static-saved-head", "export-static-native-original-publication"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "outputPath", "command"]
             guard Set(fields.keys) == expected, id == UUID(uuidString: id)?.uuidString.lowercased() else {
@@ -3323,6 +3323,42 @@ public actor NativeAutomationSession {
                 publicationProfile: authoringSession?.nativePublicationProfile, policy: policy)
         case "export-static-saved-head":
             result = try value(await exportSavedHead(request, id: id, context: context, current: current, api: api))
+        case "export-static-native-original-publication":
+            try checkedRevision(request, current)
+            guard let owner = existingWorkspaceV5, selectedOEXFormat == nil, !installedImageCLI,
+                  owner.manifestSHA256 == runtimeManifest, owner.workspaceId == current.workspaceId,
+                  owner.tenantId == current.tenantId, owner.principalId == current.principalId,
+                  authoringSession?.userId == owner.principalId,
+                  authoringSession?.nativePublicationProfile == "bounded-local-v1",
+                  let draft = current.draft, let path = request["outputPath"].string else {
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
+            let command = try NativeOriginalPublicationOutputCommand(request["command"])
+            guard id != command.originalPublishRequestId, id != command.cancelledDetailJobId else {
+                throw BridgeFailure("AUTOMATION_REQUEST_CHANGED")
+            }
+            let destination = try output(path)
+            let publication = try await bridge.publicationState(context)
+            let frozen = try publication.nativeOriginalPublicationForOutput(command, in: current)
+            try command.requireCancelledOutput(await bridge.staticExportStatus(context), owner: current, path: path)
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == command.etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let matches = try await api.publications(exhibitionId: draft.id).filter { $0.publicationId == frozen.publicationId }
+            guard matches == [frozen] else { throw BridgeFailure("PUBLICATION_SCOPE_CHANGED") }
+            try saved.requireSameComparison(await api.exhibition(draft.id))
+            let (_, _, refreshed) = try await checked(request)
+            let latestPublication = try await bridge.publicationState(context)
+            guard try value(refreshed) == value(current), try value(latestPublication) == value(publication) else {
+                throw BridgeFailure("NATIVE_DETAIL_OUTPUT_CHANGED")
+            }
+            try command.requireCancelledOutput(await bridge.staticExportStatus(context), owner: current, path: path)
+            // Existing helper authority/rights and output guards remain authoritative.
+            // It allocates a NEW detail job; this never resumes the cancelled child.
+            let started = try await bridge.startStaticExport(context, publicationId: frozen.publicationId,
+                output: destination, privateEditor: true, nativeOriginalDetail: true,
+                outputParentIdentity: installedExportRootIdentity)
+            result = try value(await waitForStaticExport(context, publication: frozen, path: path,
+                nativeOriginal: true, detailJobId: started.jobId))
         case "export-static", "export-static-native-original":
             try checkedRevision(request, current)
             if installedExportRootIdentity != nil && authoringSession?.nativePublicationProfile != "bounded-local-v1" {
