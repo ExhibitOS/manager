@@ -152,7 +152,7 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
             .applying(to: withPortal, furnishing: nil, supportedExtensionVersion: 9))
         XCTAssertEqual(detached.candidate["extensions"][ns]["version"], .integer(7))
         XCTAssertEqual(detached.candidate["extensions"][ns]["openingAttachments"], withPortal.candidate["extensions"][ns]["openingAttachments"])
-        var pedestalWire = try registered()["furnishing"]; pedestalWire["id"] = .string(requestId)
+        var pedestalWire = try registered()["furnishing"]; pedestalWire["id"] = .string("10000000-0000-4000-8000-000000000007")
         let distinctPedestal = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(pedestalWire))
         XCTAssertEqual(pedestal.details, distinctPedestal.details)
         let place = WorkspaceFurnishingPlacement(id: "10000000-0000-4000-8000-000000000006", roomId: room,
