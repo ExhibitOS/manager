@@ -344,7 +344,7 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
-        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || transition.is_current_image_thumbnail_refresh() {
+        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || transition.is_current_image_thumbnail_refresh() || transition.is_combined_thumbnail_runtime_refresh() {
             return if self.admission_kind == Admission::CleanReopen
                 && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
             { Ok(self.restore.as_ref()) } else { Err(err(ERROR)) };
@@ -1549,13 +1549,15 @@ mod tests {
 
     #[test]
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    fn terminal_adoption_transition_preserves_none_or_exact_carried_restore() {
-        let source = crate::native_payload::CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET;
-        let target = crate::native_payload::CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET;
+    fn combined_thumbnail_and_terminal_adoption_preserve_none_or_exact_carried_restore() {
+        for (source, target) in [
+            (crate::native_payload::CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, crate::native_payload::CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET),
+            (crate::native_payload::COMBINED_THUMBNAIL_TARGET, crate::native_payload::STATIC_DETAIL_PHASE_TARGET),
+        ] {
         let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
         let pin = |generation: &str, tuple: (&str, &str, &str)| {
             let mut value = binding(generation);
-            value.catalog = 45;
+            value.catalog = transition.target_catalog().version();
             value.source_commit = tuple.0.into();
             value.producer_sha256 = tuple.1.into();
             value.payload_manifest_sha256 = tuple.2.into();
@@ -1612,6 +1614,7 @@ mod tests {
         assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
         prior.restore.as_mut().unwrap().carried_provenance = None;
         assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
+        }
     }
 
     #[test]

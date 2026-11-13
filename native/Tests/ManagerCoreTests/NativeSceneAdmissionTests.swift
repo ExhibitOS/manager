@@ -29,26 +29,28 @@ final class NativeSceneAdmissionTests: XCTestCase {
     }
 
     func testCombinedThumbnailAdmissionPreservesSelectedReadsAndPurposeBoundaries() {
-        let target = "84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975"
-        XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: target))
-        XCTAssertTrue(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: target))
-        XCTAssertTrue(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: target))
-        XCTAssertTrue(AuthoringAPI.supportsStraightMiterFrameRuntime(manifest: target))
-        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: target))
-        XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: target))
-        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: target))
-        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: target, ready: true))
-        let retired = "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41"
-        XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: retired))
-        XCTAssertFalse(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: retired))
-        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: retired))
-        XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: retired))
-        XCTAssertFalse(AuthoringAPI.supportsStraightMiterFrameRuntime(manifest: retired))
-        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: retired))
-        let neighbor = String(target.dropLast()) + "0"
-        XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: neighbor))
-        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: neighbor))
-        XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: neighbor))
+        for target in ["84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
+                       "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902"] {
+            XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: target))
+            XCTAssertTrue(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: target))
+            XCTAssertTrue(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: target))
+            XCTAssertTrue(AuthoringAPI.supportsStraightMiterFrameRuntime(manifest: target))
+            XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: target))
+            XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: target))
+            XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: target))
+            XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: target, ready: true))
+            let retired = "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41"
+            XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: retired))
+            XCTAssertFalse(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: retired))
+            XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: retired))
+            XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: retired))
+            XCTAssertFalse(AuthoringAPI.supportsStraightMiterFrameRuntime(manifest: retired))
+            XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: retired))
+            let neighbor = String(target.dropLast()) + "0"
+            XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: neighbor))
+            XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: neighbor))
+            XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: neighbor))
+        }
     }
 
     func testDefault111OrdinaryEntryDoesNotEnableOptionalCatalogFamilies() {

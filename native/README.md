@@ -5,6 +5,10 @@ with twenty wall-finish rows and the unchanged 8192-byte namespace budget. It
 supersedes the unconsumed cap8 target; no intermediate adoption is needed. The
 existing source51 → target52 maintenance mode, exact 13-key receipt, source46
 and target47 SQL ledgers, and sole existing050 migration remain unchanged.
+The separately pinned runtime-only successor preserves catalog52 and its exact
+47-row ledger. Its directed clean saved-workspace handoff retains the original
+model and carried proof and runs no 050/051 migration. Only the detail runner's
+bounded preparation/settlement timing changes; API, Web and Spec32 stay fixed.
 Runtime admission still requires the exact source/producer/manifest tuple;
 selected reads and authoring purpose boundaries remain separate from startup
 drain, GPU and ordinary publication aliases.
