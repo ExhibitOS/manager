@@ -5,6 +5,77 @@ import XCTest
 @testable import ManagerApp
 
 final class BundledWorkspaceFurnishingsTests: XCTestCase {
+    private func catalog111Fixture() throws -> (source: URL, root: URL) {
+        guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_111_FIXTURE"] else {
+            throw XCTSkip("Set EXHIBITOS_DEFAULT_111_FIXTURE to the exact default 1.11.0 source checkout")
+        }
+        let source = URL(fileURLWithPath: input, isDirectory: true)
+        let files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directory = "assets/furnishings/exhibitos-authored-20261109/portal-pale-mineral"
+        try files.createDirectory(at: root.appendingPathComponent(directory), withIntermediateDirectories: true)
+        do {
+            try files.copyItem(at: source.appendingPathComponent("manifest.json"),
+                               to: root.appendingPathComponent("assets/furnishings/default-manifest.json"))
+            for name in ["model.glb", "LICENSE-NOTICE.txt"] {
+                let relative = directory + "/" + name
+                try files.copyItem(at: source.appendingPathComponent(relative), to: root.appendingPathComponent(relative))
+            }
+        } catch {
+            try? files.removeItem(at: root)
+            throw error
+        }
+        return (source, root)
+    }
+
+    func testExactCatalog111LoadsExistingPortal() async throws {
+        let fixture = try catalog111Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: fixture.root)
+        XCTAssertEqual(catalog.version, "1.11.0")
+        XCTAssertEqual(catalog.items.count, 9)
+        let portal = try XCTUnwrap(catalog.items.first { $0.id == "portal-pale-mineral" })
+        XCTAssertEqual(portal.kind, .portalFinish)
+        let model = try await BundledWorkspaceFurnishings.load(portal.id, from: catalog)
+        XCTAssertEqual(model.data.count, 2_468)
+        XCTAssertEqual(model.sha256, "62fd3bc49e0e77ffde26f60dee7ddfbbac0939347d68ea53a94700de0695f1ae")
+        do {
+            _ = try await BundledWorkspaceFurnishings.load("unknown-id", from: catalog)
+            XCTFail("Unknown item accepted")
+        } catch let error as AuthoringFailure { XCTAssertEqual(error.code, "FURNISHING_CATALOG_INVALID") }
+    }
+
+    func testCatalog111RejectsChangedAndMissingFiles() async throws {
+        let fixture = try catalog111Fixture(), files = FileManager.default
+        defer { try? files.removeItem(at: fixture.root) }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: fixture.root)
+        let portal = try XCTUnwrap(catalog.items.first { $0.id == "portal-pale-mineral" })
+        for relative in [portal.model.path, portal.rights.notice.path] {
+            let target = fixture.root.appendingPathComponent(relative)
+            var changed = try Data(contentsOf: target)
+            changed[changed.startIndex] ^= 1
+            try changed.write(to: target)
+            do {
+                _ = try await BundledWorkspaceFurnishings.load(portal.id, from: catalog)
+                XCTFail("Changed file accepted: \(relative)")
+            } catch { }
+            try files.removeItem(at: target)
+            do {
+                _ = try await BundledWorkspaceFurnishings.load(portal.id, from: catalog)
+                XCTFail("Missing file accepted: \(relative)")
+            } catch { }
+            try files.copyItem(at: fixture.source.appendingPathComponent(relative), to: target)
+        }
+        let manifest = fixture.root.appendingPathComponent("assets/furnishings/default-manifest.json")
+        var bytes = try Data(contentsOf: manifest)
+        bytes[bytes.startIndex] ^= 1
+        try bytes.write(to: manifest)
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: fixture.root))
+        bytes.append(0)
+        try bytes.write(to: manifest)
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: fixture.root))
+    }
+
     private func catalog17Root() throws -> URL {
         guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_17_PLATFORM_FIXTURE"] else {
             throw XCTSkip("Set EXHIBITOS_DEFAULT_17_PLATFORM_FIXTURE to the exact default1.7 assembly platform root")

@@ -54,16 +54,17 @@ enum BundledWorkspaceFurnishings {
         10119: (version: "1.5.0", digest: "c62c8e910e7f2920e989b2d1d76d37ab959d04c2c443dc5631d4478ed5056b0f"),
         11855: (version: "1.6.0", digest: "3c9dc8c1a32d9f2a59d7e62ed8da62a700cfcd6c87ab473987a1980ab1e75864"),
         12743: (version: "1.7.0", digest: "eeffc547ee6ffa4d7d6db5656c09703b8dadda00699da6d89b483d5cc7ebecb6"),
+        16322: (version: "1.11.0", digest: "827048c2722f7ed6ecf4c77ec7a3d13f944e9987c2cdc0b36ae01b9d2175c9bd"),
     ]
     private static func supportedItems(version: String) -> [String: WorkspaceFurnishingKind] {
         switch version {
         case "1.2.0": return allowed
         case "1.4.0": return allowed.merging(generated) { first, _ in first }
-        case "1.5.0", "1.6.0", "1.7.0":
+        case "1.5.0", "1.6.0", "1.7.0", "1.11.0":
             var items = allowed.merging(generated) { first, _ in first }
             items[sculptureBench] = .bench
             if version != "1.5.0" { items.merge(portals) { first, _ in first } }
-            if version == "1.7.0" { items[compactStand] = .infoStand }
+            if version == "1.7.0" || version == "1.11.0" { items[compactStand] = .infoStand }
             return items
         default: return [:]
         }
@@ -76,7 +77,7 @@ enum BundledWorkspaceFurnishings {
         defer { try? handle.close() }
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              let size = Int(exactly: before.st_size), sizes.contains(size), (1...12_743).contains(size),
+              let size = Int(exactly: before.st_size), sizes.contains(size), (1...16_322).contains(size),
               let data = try handle.read(upToCount: size + 1), data.count == size,
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,
