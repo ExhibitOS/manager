@@ -9,6 +9,13 @@ The separately pinned runtime-only successor preserves catalog52 and its exact
 47-row ledger. Its directed clean saved-workspace handoff retains the original
 model and carried proof and runs no 050/051 migration. Only the detail runner's
 bounded preparation/settlement timing changes; API, Web and Spec32 stay fixed.
+The independently reviewed controlled Spec33 successor retains catalog52 and
+SQL47 while adding the selected Web/API/default-card components. Only the exact
+phase-budget predecessor → controlled successor is admitted as a same-catalog
+refresh, retaining the clean saved-document digest, original model and carried
+restore proof. This admission does not qualify actual GUI cards, frame contact,
+emitter controls or publication; those consumers still need actual checks.
+
 Runtime admission still requires the exact source/producer/manifest tuple;
 selected reads and authoring purpose boundaries remain separate from startup
 drain, GPU and ordinary publication aliases.

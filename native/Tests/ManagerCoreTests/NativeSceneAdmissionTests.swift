@@ -30,7 +30,8 @@ final class NativeSceneAdmissionTests: XCTestCase {
 
     func testCombinedThumbnailAdmissionPreservesSelectedReadsAndPurposeBoundaries() {
         for target in ["84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
-                       "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902"] {
+                       "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902",
+                       "ce4d4446197c9e1c15f54cd2409517334cd8a90339da510b379d9d0b0affbb41"] {
             XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: target))
             XCTAssertTrue(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: target))
             XCTAssertTrue(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: target))
@@ -46,6 +47,7 @@ final class NativeSceneAdmissionTests: XCTestCase {
             XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: retired))
             XCTAssertFalse(AuthoringAPI.supportsStraightMiterFrameRuntime(manifest: retired))
             XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: retired))
+            XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: "7bf127f5e890b9cf9b254fc4a0f28eb159e5e2083674a13d03403b1902bfd263"))
             let neighbor = String(target.dropLast()) + "0"
             XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: neighbor))
             XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: neighbor))
