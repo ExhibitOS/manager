@@ -3348,7 +3348,7 @@ public actor NativeAutomationSession {
             try saved.requireSameComparison(await api.exhibition(draft.id))
             let (_, _, refreshed) = try await checked(request)
             let latestPublication = try await bridge.publicationState(context)
-            guard try value(refreshed) == value(current), value(latestPublication) == value(publication) else {
+            guard try value(refreshed) == value(current), try value(latestPublication) == value(publication) else {
                 throw BridgeFailure("NATIVE_DETAIL_OUTPUT_CHANGED")
             }
             try command.requireCancelledOutput(await bridge.staticExportStatus(context), owner: current, path: path)
