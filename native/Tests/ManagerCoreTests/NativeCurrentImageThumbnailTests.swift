@@ -117,6 +117,28 @@ final class NativeCurrentImageThumbnailTests: XCTestCase {
         let stale = NativeArtwork(id:a.id, artistId:a.artistId, revision:4, approvedRevision:3, approvedAssetId:a.approvedAssetId, metadata:a.metadata, assets:a.assets, archived:false)
         XCTAssertThrowsError(try job.check(artwork: stale, workspaceId: workspace, principalId: principal, jobId: jobID))
     }
+    func testOriginalAndAreaFilteredRecipeReceiptsKeepExactAuthorityChecks() throws {
+        let recipes = ["d13ad48b1ae8c29818002225fb5ebb4840907646810d90922a4ea3a5448f06c0",
+                       "912cac7efe052040dc9aef7c3e21574e48db79965640e8e40b65cd51b839fa12"]
+        for recipe in recipes {
+            var wire = try ready()
+            wire["thumbnailPreparation"]["serverReceipt"]["producer"]["recipeSHA256"] = .string(recipe)
+            try resign(&wire)
+            let job = try decode(wire)
+            XCTAssertNoThrow(try job.check(artwork: artwork(), workspaceId: workspace, principalId: principal, jobId: jobID))
+            var changed = wire
+            changed["thumbnailPreparation"]["serverReceipt"]["producer"]["decoder"] = .string("unqualified")
+            try resign(&changed)
+            XCTAssertThrowsError(try decode(changed).check(artwork: artwork(), workspaceId: workspace, principalId: principal, jobId: jobID))
+            changed = wire; changed["thumbnailPreparation"]["serverReceipt"]["producer"]["source"]["sha256"] = .string(outputHash)
+            try resign(&changed)
+            XCTAssertThrowsError(try decode(changed).check(artwork: artwork(), workspaceId: workspace, principalId: principal, jobId: jobID))
+        }
+        var unknown = try ready()
+        unknown["thumbnailPreparation"]["serverReceipt"]["producer"]["recipeSHA256"] = .string(String(repeating: "f", count: 64))
+        try resign(&unknown)
+        XCTAssertThrowsError(try decode(unknown).check(artwork: artwork(), workspaceId: workspace, principalId: principal, jobId: jobID))
+    }
     func testClosedReceiptTamperingAndContradictoryCandidateFail() throws {
         var value = try ready(); value["thumbnailPreparation"]["serverReceipt"]["sha256"] = .string(String(repeating:"0",count:64))
         XCTAssertThrowsError(try decode(value))
