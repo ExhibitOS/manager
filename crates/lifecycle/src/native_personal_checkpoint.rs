@@ -1612,6 +1612,45 @@ impl LifecycleService {
     }
 }
 
+// Internal controller context only; no wire flag, new proof type or retry path.
+#[derive(Clone, Copy)]
+enum Current52PngRetention { Deny, SavedPair, Sealed }
+
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn current52_png_transfer_matches(transfer: &crate::installations::native_upload::Transfer, journal: &[u8]) -> bool {
+    transfer.format == 1 && transfer.revision == 2
+        && transfer.workspace_id == "da7f6880-ce0e-472e-8a06-6e43c72f9134"
+        && transfer.tenant_id == "81290384-3800-4939-93b1-bd2be4484e14"
+        && transfer.principal_id == "79003f0f-ceb5-4634-9b50-1ca59fecc408"
+        && transfer.job_id.as_deref() == Some("1b1c7c39-5720-4a0d-b30a-3e6a31ee1eb2")
+        && transfer.file_name.as_deref() == Some("fresh-rgb-source.png")
+        && transfer.compact_variant.is_none() && transfer.gpu_variant.is_none()
+        && transfer.intent.as_ref().is_some_and(|intent| intent.artwork_id == "2bb04dd5-b1e3-440b-ab33-d92e6acef3ae"
+            && intent.mime == "image/png" && intent.bytes == 11226
+            && intent.sha256 == "4e3dacb7d8dd0c9d60832968dbc95e559fbea55018ddfb70d184674fd596324d")
+        && digest(journal) == "8701a07bf1fcd913960729563240d23a7a180898b7299742b95de3920969d2b6"
+        && serde_json::to_vec(transfer).ok().as_deref() == Some(journal)
+}
+
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn current52_png_checkpoint_matches(
+    checkpoint: &Checkpoint, source: &Path, staging: &Path,
+    document: &crate::installations::native_document::DocumentState,
+) -> Result<bool> {
+    let pair = (checkpoint.old_manifest.as_str(), checkpoint.new_manifest.as_str());
+    if !FurnishingTransition::from_manifests(pair).is_some_and(|step| step.is_current52_interrupted_recovery()) { return Ok(false); }
+    checkpoint.check_host(true)?;
+    checkpoint.check_retained(TransitionRetention::None)?;
+    if checkpoint.source != source || checkpoint.staged != staging
+        || checkpoint.owner_uid != unsafe { libc::geteuid() }
+        || (checkpoint.workspace_id.as_str(), checkpoint.tenant_id.as_str(), checkpoint.principal_id.as_str())
+            != (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str())
+        || checkpoint.saved_document_sha256.as_deref() != Some(saved_document_digest(document)?.as_str()) {
+        return Err(invalid());
+    }
+    Ok(true)
+}
+
 impl InstallationController {
     fn with_transition_key<T>(
         &self,
@@ -1619,12 +1658,44 @@ impl InstallationController {
         key_path: &Path,
         staging: &Path,
         retained: TransitionRetention<'_>,
+        current52_png: Current52PngRetention,
         task: impl FnOnce(&LifecycleService, &Path, &super::installations::native_document::DocumentState, &[u8; 32]) -> Result<T>,
     ) -> Result<T> {
         if key_path.starts_with(staging) {
             return Err(invalid());
         }
-        self.with_personal_transition(token, retained, |service, profile, document| {
+        self.with_personal_transition(token, retained, |service, profile, document, file, transfer| {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            {
+                if matches!(current52_png, Current52PngRetention::Deny) { return Ok(false); }
+                if !matches!(retained, TransitionRetention::None) {
+                    return if matches!(current52_png, Current52PngRetention::SavedPair) { Err(invalid()) } else { Ok(false) };
+                }
+                if key_path.starts_with(&service.root) { return Err(invalid()); }
+                let applicable = match current52_png {
+                    Current52PngRetention::Deny => false,
+                    Current52PngRetention::SavedPair => {
+                        crate::native_runtime::current52_recovery_source_generation(&service.root)?;
+                        true
+                    }
+                    Current52PngRetention::Sealed => {
+                        let key = Bytes(crate::profile_backup::external_key(profile, key_path)?);
+                        let envelope = installation_backup::source_bytes(staging, ENVELOPE, ENVELOPE_LIMIT as u64, true)?;
+                        let checkpoint = open(&envelope, key.0.as_slice().try_into().map_err(|_| invalid())?)?;
+                        current52_png_checkpoint_matches(&checkpoint, &service.root, staging, document)?
+                    }
+                };
+                if !applicable { return Ok(false); }
+                let owner = service.personal_identity()?;
+                check_saved_transition_document((crate::native_payload::METRIC_FRAME_TARGET.2, crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2),
+                    document, (&owner.0, &owner.1, &owner.2))?;
+                let journal = installation_backup::source_bytes(profile, file, 128 * 1024, true)?;
+                if !current52_png_transfer_matches(transfer, &journal) { return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")); }
+                Ok(true)
+            }
+            #[cfg(not(feature = "workspace-v5-owner-validation"))]
+            { let _ = (current52_png, service, profile, document, file, transfer); Ok(false) }
+        }, |service, profile, document| {
             if key_path.starts_with(&service.root) {
                 return Err(invalid());
             }
@@ -1641,7 +1712,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, TransitionRetention::None, |service, _, _, key| {
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny, |service, _, _, key| {
             if !present(staging, ENVELOPE)? {
                 service.authenticate_local_personal_checkpoint(source, target, staging, key, None, TransitionRetention::None, None)?;
             }
@@ -1670,7 +1741,9 @@ impl InstallationController {
         {
             return Err(invalid());
         }
-        self.with_transition_key(token, key_path, staging, retained, |service, profile, document, key| {
+        self.with_transition_key(token, key_path, staging, retained, if FurnishingTransition::from_manifests(pair).is_some_and(|step| step.is_current52_interrupted_recovery()) {
+            Current52PngRetention::SavedPair
+        } else { Current52PngRetention::Deny }, |service, profile, document, key| {
             if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
                 return Err(invalid());
             }
@@ -1728,7 +1801,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, TransitionRetention::None, |service, _, _, key| {
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny, |service, _, _, key| {
             service.authenticate_local_personal_checkpoint(source, target, staging, key, None, TransitionRetention::None, None)
         })
     }
@@ -1742,7 +1815,7 @@ impl InstallationController {
         staging: &Path,
         key_path: &Path,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, TransitionRetention::None, |service, _, _, key| {
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny, |service, _, _, key| {
             service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
     }
@@ -1760,7 +1833,12 @@ impl InstallationController {
         #[cfg(not(feature = "workspace-v5-owner-validation"))]
         if startup_cancellation_045.is_some() { return Err(invalid()); }
         if (retained.gpu().is_some() || retained.original().is_some()) && startup_cancellation_045.is_some() { return Err(invalid()); }
-        self.with_transition_key(token, key_path, staging, retained, |service, _, document, key| {
+        self.with_transition_key(token, key_path, staging, retained, {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            { if target.context().manifest_sha256 == crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2 { Current52PngRetention::Sealed } else { Current52PngRetention::Deny } }
+            #[cfg(not(feature = "workspace-v5-owner-validation"))]
+            { Current52PngRetention::Deny }
+        }, |service, _, document, key| {
             #[cfg(feature = "workspace-v5-owner-validation")]
             if target.catalog45_recovery_validation() {
                 let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
@@ -1831,7 +1909,7 @@ impl InstallationController {
         if !target.catalog45_selected_recovery_validation() {
             return Err(invalid());
         }
-        self.with_transition_key(token, key_path, staging, TransitionRetention::None, |service, profile, document, key| {
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny, |service, profile, document, key| {
             let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
             let oex = oex_retained_cleanup::Selection::new(&selection.oex_job_id, &selection.oex_import_runtime_generation)?;
             let prefix = Path::new("blobs").join(&checkpoint.tenant_id).join("oex-staging").join(&selection.oex_job_id);
@@ -1866,7 +1944,7 @@ impl InstallationController {
         saved_workspace_host: bool,
         retained: TransitionRetention<'_>,
     ) -> Result<()> {
-        self.with_transition_key(token, key_path, staging, retained, |service, _, document, key| {
+        self.with_transition_key(token, key_path, staging, retained, Current52PngRetention::Sealed, |service, _, document, key| {
             service.recover_local_personal_runtime_transition(staging, key, saved_workspace_host, retained, Some(document))
         })
     }
@@ -2150,6 +2228,88 @@ mod tests {
         assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &changed).is_err());
         assert!(catalog45_activation_saved_document(pair, false, false, None, &document).is_err());
         assert!(check_transition_host(pair, Some(&digest), false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn current52_synthetic_png_transfer() -> crate::installations::native_upload::Transfer {
+        // Redistributable synthetic RGB fixture state; no artwork bytes or credentials.
+        serde_json::from_value(serde_json::json!({
+            "format":1,"revision":2,
+            "workspaceId":"da7f6880-ce0e-472e-8a06-6e43c72f9134",
+            "tenantId":"81290384-3800-4939-93b1-bd2be4484e14",
+            "principalId":"79003f0f-ceb5-4634-9b50-1ca59fecc408",
+            "intent":{"artworkId":"2bb04dd5-b1e3-440b-ab33-d92e6acef3ae",
+                "idempotencyKey":"51bccafa-2c17-4f8f-ba39-77e96e4ebb53","mime":"image/png",
+                "sha256":"4e3dacb7d8dd0c9d60832968dbc95e559fbea55018ddfb70d184674fd596324d",
+                "bytes":11226,"scaleMeters":1.0,
+                "rights":{"creditLine":"ExhibitOS synthetic RGB test pattern","holder":"ExhibitOS synthetic RGB test pattern",
+                    "licenseId":"CC0-1.0","ownership":"owner","permissions":{"commercial":true,"display":true,"download":true,"export":true}}},
+            "jobId":"1b1c7c39-5720-4a0d-b30a-3e6a31ee1eb2","fileName":"fresh-rgb-source.png"
+        })).unwrap()
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn current52_png_retention_keeps_exact_original_journal_not_terminal_authority() {
+        let original = current52_synthetic_png_transfer();
+        let journal = serde_json::to_vec(&original).unwrap();
+        assert!(current52_png_transfer_matches(&original, &journal));
+        assert!(!current52_png_transfer_matches(&original, &serde_json::to_vec_pretty(&original).unwrap()));
+        for variant in 0..9 {
+            let mut changed = original.clone();
+            match variant {
+                0 => changed.revision += 1,
+                1 => changed.workspace_id = Uuid::new_v4().to_string(),
+                2 => changed.tenant_id = Uuid::new_v4().to_string(),
+                3 => changed.principal_id = Uuid::new_v4().to_string(),
+                4 => changed.job_id = Some(Uuid::new_v4().to_string()),
+                5 => changed.file_name = Some("replacement.png".into()),
+                6 => changed.intent.as_mut().unwrap().sha256 = "a".repeat(64),
+                7 => changed.intent.as_mut().unwrap().bytes += 1,
+                _ => changed.intent = None,
+            }
+            assert!(!current52_png_transfer_matches(&changed, &journal));
+            assert!(!current52_png_transfer_matches(&changed, &serde_json::to_vec(&changed).unwrap()));
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn current52_png_checkpoint_retention_needs_authentication_pair_owner_and_saved_document() {
+        let transfer = current52_synthetic_png_transfer();
+        let mut document = gpu_library_empty_document();
+        document.workspace_id = transfer.workspace_id.clone(); document.tenant_id = transfer.tenant_id.clone();
+        document.principal_id = transfer.principal_id.clone(); document.revision = 3;
+        document.saved_edit_version = Some(1); document.draft = Some(serde_json::json!({"editVersion":1}));
+        document.etag = Some(format!("\"studio-r1-{}\"", "a".repeat(64)));
+        let old = crate::native_payload::METRIC_FRAME_TARGET;
+        let new = crate::native_payload::CURRENT52_INTERRUPTED_TARGET;
+        let original = "3a97db46-4b4f-4e75-97e0-54b0e79d98e7";
+        let value = serde_json::json!({
+            "source":"/synthetic/source","staged":"/synthetic/staged","sourceIdentity":[1,2],"stagedIdentity":[1,3],
+            "workspaceId":transfer.workspace_id,"tenantId":transfer.tenant_id,"principalId":transfer.principal_id,
+            "ownerUid":unsafe { libc::geteuid() },"oldManifest":old.2,"newManifest":new.2,"files":{},
+            "savedDocumentSha256":saved_document_digest(&document).unwrap(),"trial":false,"drainedFailure":null,"restore":null,
+            "catalog40":{"generation":Uuid::new_v4().to_string(),"source":{"format":1,"id":original,
+                "furnishing":{"version":1,"phase":"active","generation":original,"previousGeneration":"ef2cb6c9-bce1-4352-b0d3-287cc6d97ace",
+                    "admissionKind":"clean-reopen","owner":{"workspaceId":document.workspace_id,"tenantId":document.tenant_id,
+                        "principalId":document.principal_id,"ownerUid":501},"sourceCommit":old.0,"producerSha256":old.1,
+                    "payloadManifestSha256":old.2,"catalog":52,"physical":{"rootDevice":1,"rootInode":2,"lockDevice":1,"lockInode":3},"restore":null}}}
+        });
+        let checkpoint: Checkpoint = serde_json::from_value(value.clone()).unwrap();
+        let key = [7;32]; let sealed = seal(&checkpoint,&key).unwrap();
+        let authenticated = open(&sealed,&key).unwrap();
+        assert!(current52_png_checkpoint_matches(&authenticated, Path::new("/synthetic/source"),Path::new("/synthetic/staged"),&document).unwrap());
+        assert!(open(&sealed,&[8;32]).is_err());
+        let mut corrupt = sealed.clone(); *corrupt.last_mut().unwrap() ^= 1; assert!(open(&corrupt,&key).is_err());
+        assert!(current52_png_checkpoint_matches(&authenticated,Path::new("/foreign/source"),Path::new("/synthetic/staged"),&document).is_err());
+        let mut changed = document.clone(); changed.revision += 1;
+        assert!(current52_png_checkpoint_matches(&authenticated,Path::new("/synthetic/source"),Path::new("/synthetic/staged"),&changed).is_err());
+        for pair in [(new.2,old.2),(old.2,old.2),(old.2,crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2)] {
+            let mut foreign = value.clone(); foreign["oldManifest"]=pair.0.into();foreign["newManifest"]=pair.1.into();
+            let foreign: Checkpoint = serde_json::from_value(foreign).unwrap();
+            assert!(!current52_png_checkpoint_matches(&foreign,Path::new("/synthetic/source"),Path::new("/synthetic/staged"),&document).unwrap());
+        }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
