@@ -3442,6 +3442,35 @@ public actor AuthoringAPI {
         return next
     }
 
+    /// Validates the fixed typed proposal against the current saved owner/head.
+    /// The server check is repeated at Apply; ordinary Save remains separate.
+    func validateProceduralFrameClear(_ proposal: NativeProceduralFrameClear.Proposal,
+                                      in document: NativeDocumentState) async throws {
+        guard admitsWorkspaceArtworkFrames, nativeSession, !authenticationBusy, let session,
+              document.tenantId == tenant, document.principalId == session.userId,
+              !document.dirty, document.pending == nil, let draft = document.draft,
+              let etag = document.etag else { throw AuthoringFailure("PROCEDURAL_FRAME_CLEAR_UNAVAILABLE") }
+        let held = generation
+        let live = try await verifyRetainedSession(session)
+        guard live.workspaceFurnishingProfile == "workspace-furnishing-intake-v1",
+              live.advertisesWorkspaceArtworkFrame else { throw AuthoringFailure("PROCEDURAL_FRAME_CLEAR_UNAVAILABLE") }
+        let policy = try await nativeViewportPolicy(draft.id)
+        let saved = try await exhibition(draft.id)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard saved.draft == draft, saved.etag == etag, policy.etag == etag,
+              policy.revision == saved.revision, policy.exhibitionId == draft.id else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        guard policy.confirmsOrdinaryDraft || (policy.boundedProfile == true
+            && !policy.boundedReadOnly && policy.boundedEditRequired == false
+            && policy.editingCapability == nil) else {
+            throw AuthoringFailure("PROCEDURAL_FRAME_CLEAR_UNAVAILABLE")
+        }
+        let next = try proposal.apply(to: draft)
+        try await validateNativeViewportEdit(next, etag: etag)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+    }
+
     func validateNativeViewportEdit(_ draft: NativeExhibitionDraft, etag: String) async throws {
         struct Input: Encodable { let requestId: String; let draft: NativeExhibitionDraft }
         struct Validation: Decodable { let valid: Bool }
