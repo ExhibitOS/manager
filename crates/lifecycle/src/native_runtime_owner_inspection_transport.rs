@@ -6,6 +6,19 @@ use std::os::{fd::AsRawFd, unix::{fs::{MetadataExt,OpenOptionsExt},process::Comm
 use std::net::SocketAddr;
 
 const ERROR:&str="NATIVE_OWNER_INSPECTION_TRANSPORT_INVALID";
+fn diagnostic_current(root:&Path,expected_hash:&str)->Result<Current>{
+    let bytes=installation_backup::source_bytes(root,"native-current-run.json",4096,true)?;
+    if !hash_valid(expected_hash)||digest(&bytes)!=expected_hash{return Err(err(ERROR));}
+    let current:Current=serde_json::from_slice(&bytes).map_err(|_|err(ERROR))?;
+    owner_inspection_source::check_pointer(&current)?;
+    Ok(current)
+}
+fn diagnostic_cold(root:&Path,generation:&str,pointer_hash:&str,ports:Ports)->Result<()>{
+    let current=diagnostic_current(root,pointer_hash)?;
+    if current.id!=generation{return Err(err(ERROR));}
+    let(failed,completion)=read_run(root,generation)?;
+    owner_inspection_source::check_cold_failed(&current,&failed,completion.as_ref(),ports)
+}
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase",deny_unknown_fields)]
 struct Input {
@@ -50,6 +63,7 @@ impl Snapshot {
 struct Lease {
     directories:Vec<crate::maintenance_source::DirectoryPin>,locks:Vec<Locked>,
     writer:furnishing_lifetime::WriterLifetime,snapshots:Vec<Snapshot>,root:PathBuf,ports:Ports,
+    failed_generation:Option<(String,String)>,
 }
 impl Lease {
     fn check(&self)->Result<()>{for d in &self.directories{d.check()?;}for l in &self.locks{l.check()?;}
@@ -59,7 +73,12 @@ impl Lease {
     fn ports_free(&self)->Result<Vec<TcpListener>>{
         [self.ports.web,self.ports.api,self.ports.database].iter().map(|p|TcpListener::bind(SocketAddr::from(([127,0,0,1],*p))).map_err(|_|err("NATIVE_OWNER_INSPECTION_PORT_BUSY"))).collect()
     }
-    fn cold(&self)->Result<()>{self.check()?;check_interrupted_root(&self.root)?;
+    fn cold(&self)->Result<()>{self.check()?;
+        if let Some((generation,pointer_hash))=&self.failed_generation {diagnostic_cold(&self.root,generation,pointer_hash,self.ports)?;}
+        else {
+            #[cfg(not(test))]
+            return Err(err(ERROR));
+        }
         if exists(&self.root.join("native-database/postmaster.pid"))?{return Err(err(ERROR));}
         drop(self.ports_free()?);Ok(())}
     fn configure(&self,c:&mut Command)->Result<()> {
@@ -143,7 +162,7 @@ pub(super) fn run(profile:&Path,resources:&Path,bytes:&[u8],cancel:&AtomicBool)-
     let service=LifecycleService::bound_existing(root.clone())?;
     let prepared=service.personal_prepared()?;let ports=prepared.ports;ports.validate()?;
     let mut snapshots=vec![Snapshot::open(&root,"native-current-run.json",Some(&input.pointer_sha256))?,Snapshot::open(&root,"native-personal.json",None)?,Snapshot::open(&root,"runtime.env",None)?,Snapshot::open(&root,"native-database/PG_VERSION",None)?];
-    let current=current_run(&root)?.ok_or_else(||err(ERROR))?;
+    let current=diagnostic_current(&root,&input.pointer_sha256)?;
     for path in [root.join("native-runs"),root.join("native-runs").join(&current.id),root.join("native-runs").join(&input.predecessor.generation)]{directories.push(crate::maintenance_source::DirectoryPin::open(&path)?);}
     let log_name=format!("native-runs/{}/process.log",current.id);
     let log=Snapshot::empty_log(&root,&log_name)?;
@@ -154,7 +173,7 @@ pub(super) fn run(profile:&Path,resources:&Path,bytes:&[u8],cancel:&AtomicBool)-
     let owner=service.personal_identity()?;
     if (owner.0,owner.1,owner.2)!=(input.owner.workspace_id.clone(),input.owner.tenant_id.clone(),input.owner.principal_id.clone()){return Err(err(ERROR));}
     owner_inspection_source::check_shape(&current,&failed,failed_completion.as_ref(),&input.predecessor,&stopped,&completion.ok_or_else(||err(ERROR))?,&input.owner,writer.identity()?,unsafe{libc::geteuid()})?;
-    let lease=Arc::new(Lease{directories,locks,writer,snapshots,root:root.clone(),ports});lease.cold()?;
+    let lease=Arc::new(Lease{directories,locks,writer,snapshots,root:root.clone(),ports,failed_generation:Some((current.id.clone(),input.pointer_sha256.clone()))});lease.cold()?;
     let payload=Payload::open(resources)?;let context=payload.context();let binding=current.furnishing.as_ref().ok_or_else(||err(ERROR))?;
     if (&context.source_commit,payload.producer_sha256(),&context.manifest_sha256)!=(&binding.source_commit,binding.producer_sha256.as_str(),&binding.payload_manifest_sha256)||prepared.manifest_sha256!=binding.payload_manifest_sha256{return Err(err(ERROR));}
     let ledger=payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::RequiredModelPreparation045)?;
@@ -187,6 +206,57 @@ pub(super) fn run(profile:&Path,resources:&Path,bytes:&[u8],cancel:&AtomicBool)-
     result["journalAndBindingUnchanged"]=true.into();Ok(result)
 }
 #[cfg(test)]mod tests{use super::*;
+    fn historical_pointer()->Current {
+        let generation="55555555-5555-4555-8555-555555555555".to_string();
+        Current{format:1,id:generation.clone(),furnishing:Some(Binding{version:1,phase:Phase::Active,generation,
+            previous_generation:Some("44444444-4444-4444-8444-444444444444".into()),admission_kind:Admission::CleanReopen,
+            owner:furnishing_lifecycle::Owner{workspace_id:"11111111-1111-4111-8111-111111111111".into(),
+                tenant_id:"22222222-2222-4222-8222-222222222222".into(),principal_id:"33333333-3333-4333-8333-333333333333".into(),owner_uid:501},
+            source_commit:"3ea221c2ea0d4f419c6625ff63e7405a721de095".into(),
+            producer_sha256:"6b133c8f1372b8d886d08c894b43a17d8300fc7577db4b430874d8568557bbec".into(),
+            payload_manifest_sha256:"ad6cd9b1ae8941ce99eadb9673c7e4a6c72689aaedd628bcbe33e623eb524c13".into(),
+            catalog:45,physical:furnishing_lifetime::WriterIdentity{root_device:1,root_inode:2,lock_device:1,lock_inode:3},
+            restore:None,interrupted_claim_generations:vec![]})}
+    }
+    #[test]fn diagnostic_pointer_requires_private_bounded_nonsymlink_record(){use std::os::unix::fs::{DirBuilderExt,PermissionsExt,symlink};
+        let path=std::env::temp_dir().join(format!("inspection-pointer-{}",Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();let root=fs::canonicalize(path).unwrap();
+        let pointer=root.join("native-current-run.json");let current=historical_pointer();
+        let bytes=serde_json::to_vec(&current).unwrap();let hash=digest(&bytes);
+        fs::write(&pointer,&bytes).unwrap();fs::set_permissions(&pointer,fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(diagnostic_current(&root,&hash).unwrap(),current);
+        assert!(diagnostic_current(&root,&"0".repeat(64)).is_err());
+        assert!(current_run(&root).is_err());
+        fs::write(&pointer,b"{").unwrap();assert!(diagnostic_current(&root,&digest(b"{")).is_err());
+        fs::write(&pointer,vec![b'x';4097]).unwrap();assert!(diagnostic_current(&root,&hash).is_err());
+        fs::write(&pointer,serde_json::to_vec(&current).unwrap()).unwrap();
+        fs::set_permissions(&pointer,fs::Permissions::from_mode(0o644)).unwrap();assert!(diagnostic_current(&root,&hash).is_err());
+        fs::set_permissions(&pointer,fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(&pointer,root.join("old-pointer")).unwrap();symlink(root.join("old-pointer"),&pointer).unwrap();
+        assert!(diagnostic_current(&root,&hash).is_err());fs::remove_dir_all(root).unwrap();
+    }
+    #[test]fn diagnostic_cold_requires_exact_retained_failed_generation_and_no_live_state(){use std::os::unix::fs::{DirBuilderExt,PermissionsExt,symlink};
+        let path=std::env::temp_dir().join(format!("inspection-cold-{}",Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();let root=fs::canonicalize(path).unwrap();
+        let current=historical_pointer();let pointer=root.join("native-current-run.json");
+        let pointer_bytes=serde_json::to_vec(&current).unwrap();let pointer_hash=digest(&pointer_bytes);
+        fs::write(&pointer,&pointer_bytes).unwrap();fs::set_permissions(&pointer,fs::Permissions::from_mode(0o600)).unwrap();
+        let run=root.join("native-runs").join(&current.id);fs::create_dir_all(&run).unwrap();
+        let state=run.join("state.json");let ports=Ports{web:18091,api:18092,database:18093};
+        let mut failed=Context{format:1,job_id:Some(current.id.clone()),state:"failed".into(),ports,
+            readiness:Readiness::default(),error_code:Some("NATIVE_CANCELLED".into()),failure_code:Some("NATIVE_CANCELLED".into()),
+            postgres_pid:None,node_pid:None,auxiliary_pid:None,exits:BTreeMap::from([("postgres".into(),-15)]),log_truncated:false};
+        fs::write(&state,serde_json::to_vec(&failed).unwrap()).unwrap();fs::set_permissions(&state,fs::Permissions::from_mode(0o600)).unwrap();
+        diagnostic_cold(&root,&current.id,&pointer_hash,ports).unwrap();
+        assert!(diagnostic_cold(&root,"77777777-7777-4777-8777-777777777777",&pointer_hash,ports).is_err());
+        failed.node_pid=Some(123);fs::write(&state,serde_json::to_vec(&failed).unwrap()).unwrap();
+        assert!(diagnostic_cold(&root,&current.id,&pointer_hash,ports).is_err());
+        failed.node_pid=None;failed.readiness.ready=true;fs::write(&state,serde_json::to_vec(&failed).unwrap()).unwrap();
+        assert!(diagnostic_cold(&root,&current.id,&pointer_hash,ports).is_err());
+        failed.readiness.ready=false;fs::write(&state,serde_json::to_vec(&failed).unwrap()).unwrap();
+        fs::rename(&state,run.join("old-state")).unwrap();symlink(run.join("old-state"),&state).unwrap();
+        assert!(diagnostic_cold(&root,&current.id,&pointer_hash,ports).is_err());fs::remove_dir_all(root).unwrap();
+    }
     #[test]fn owner_inspection_transport_cluster_id_is_canonical_and_unambiguous(){assert_eq!(cluster_id(b"Database system identifier: 123\n").unwrap(),"123");for b in [b"Database system identifier: 0123\n".as_slice(),b"Database system identifier: 123\nDatabase system identifier: 456\n",b"wrong: 123\n"]{assert!(cluster_id(b).is_err());}}
     #[test]fn owner_inspection_transport_existing_lock_never_creates_or_accepts_links(){use std::os::unix::fs::{PermissionsExt,symlink};let root=std::env::temp_dir().join(format!("inspection-{}",Uuid::new_v4()));fs::create_dir(&root).unwrap();let root=fs::canonicalize(root).unwrap();let path=root.join("operation.lock");assert!(Locked::open(path.clone()).is_err());assert!(!path.exists());fs::write(&path,[]).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();let first=Locked::open(path.clone()).unwrap();assert!(Locked::open(path.clone()).is_err());fs::rename(&path,root.join("old")).unwrap();symlink(root.join("old"),&path).unwrap();assert!(first.check().is_err());assert!(Locked::open(path).is_err());drop(first);fs::remove_dir_all(root).unwrap();}
     fn fixture()->(PathBuf,Arc<Lease>){use std::os::unix::fs::DirBuilderExt;
@@ -194,7 +264,7 @@ pub(super) fn run(profile:&Path,resources:&Path,bytes:&[u8],cancel:&AtomicBool)-
         let writer=furnishing_lifetime::WriterLifetime::acquire(&root).unwrap();
         let ports:Vec<_>=(0..3).map(|_|TcpListener::bind("127.0.0.1:0").unwrap()).collect();
         let values:Vec<_>=ports.iter().map(|p|p.local_addr().unwrap().port()).collect();
-        let lease=Arc::new(Lease{directories:vec![crate::maintenance_source::DirectoryPin::open(&root).unwrap()],locks:vec![],writer,snapshots:vec![],root:root.clone(),ports:Ports{web:values[0],api:values[1],database:values[2]}});drop(ports);(root,lease)
+        let lease=Arc::new(Lease{directories:vec![crate::maintenance_source::DirectoryPin::open(&root).unwrap()],locks:vec![],writer,snapshots:vec![],root:root.clone(),ports:Ports{web:values[0],api:values[1],database:values[2]},failed_generation:None});drop(ports);(root,lease)
     }
     #[test]fn owner_inspection_transport_bounded_pipe_and_normal_process_return(){
         let(root,lease)=fixture();let mut c=command(Path::new("/bin/cat"),&root);c.stdin(Stdio::piped()).stdout(Stdio::piped());

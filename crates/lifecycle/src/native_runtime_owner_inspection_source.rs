@@ -18,6 +18,31 @@ fn quiet(record: &Context) -> bool {
         && record.readiness.error_code.is_none()
 }
 
+/// Diagnostic parsing is deliberately separate from ordinary Binding::check.
+/// This recognizes only the historical pointer shape, never an admission.
+pub(super) fn check_pointer(current: &Current) -> Result<()> {
+    let binding = current.furnishing.as_ref().ok_or_else(|| err(ERROR))?;
+    if current.format != 1 || !installations::uuid(&current.id)
+        || current.id != binding.generation || binding.version != 1
+        || binding.phase != Phase::Active || binding.admission_kind != Admission::CleanReopen
+        || binding.catalog != 45 || binding.restore.is_some() || !binding.interrupted_claim_generations.is_empty()
+        || (binding.source_commit.as_str(), binding.producer_sha256.as_str(), binding.payload_manifest_sha256.as_str()) != SOURCE
+    { return Err(err(ERROR)); }
+    Ok(())
+}
+
+pub(super) fn check_cold_failed(current: &Current, failed: &Context,
+    completion: Option<&FurnishingCompletion>, ports: Ports) -> Result<()> {
+    check_pointer(current)?;
+    if !quiet(failed) || failed.job_id.as_deref() != Some(current.id.as_str())
+        || failed.state != "failed" || failed.error_code.as_deref() != Some("NATIVE_CANCELLED")
+        || failed.failure_code.as_deref() != Some("NATIVE_CANCELLED") || completion.is_some()
+        || failed.exits.len() != 1 || failed.exits.get("postgres") != Some(&-15)
+        || failed.ports.validate().is_err() || failed.ports != ports
+    { return Err(err(ERROR)); }
+    Ok(())
+}
+
 /// Must be combined with held profile/installation/operation/writer locks,
 /// pinned files and a fresh no-live/port/postmaster check before any owned PG launch.
 /// Exact stopped predecessor evidence is compared to its retained completion;
@@ -26,6 +51,7 @@ pub(super) fn check_shape(current: &Current, failed: &Context, failed_completion
     predecessor: &Binding, stopped: &Context, completion: &FurnishingCompletion,
     owner: &Owner, physical: furnishing_lifetime::WriterIdentity, owner_uid: u32,
 ) -> Result<()> {
+    check_cold_failed(current, failed, failed_completion, stopped.ports)?;
     let binding = current.furnishing.as_ref().ok_or_else(|| err(ERROR))?;
     if current.format != 1 || current.id != binding.generation
         || !installations::uuid(&current.id) || binding.version != 1
@@ -90,8 +116,30 @@ mod tests {
     #[test]
     fn owner_inspection_source_accepts_exact_pre_node_cancelled_shape_only_for_inspection() {
         let (current,failed,predecessor,stopped,completion,owner,physical)=fixture();
+        check_pointer(&current).unwrap();
+        // This diagnostic exception does not restore ordinary binding admission.
+        assert!(current.furnishing.as_ref().unwrap().check().is_err());
         check_shape(&current,&failed,None,&predecessor,&stopped,&completion,&owner,physical,501).unwrap();
         assert!(check_shape(&current,&failed,Some(&completion),&predecessor,&stopped,&completion,&owner,physical,501).is_err());
+    }
+    #[test]
+    fn diagnostic_pointer_is_closed_and_exact_without_ordinary_admission() {
+        let(current,_,_,_,_,_,_)=fixture();
+        let value=serde_json::to_value(&current).unwrap();
+        let decoded:Current=serde_json::from_value(value.clone()).unwrap();
+        check_pointer(&decoded).unwrap();
+        let mut changed=value.clone();changed["unknown"]=true.into();
+        assert!(serde_json::from_value::<Current>(changed).is_err());
+        let mut changed=value.clone();changed["furnishing"]=Value::Null;
+        assert!(serde_json::from_value::<Current>(changed).is_err());
+        let mut changed=value.clone();changed["id"]="not-a-uuid".into();
+        assert!(check_pointer(&serde_json::from_value(changed).unwrap()).is_err());
+        let mut changed=value.clone();changed["id"]="../foreign".into();
+        assert!(check_pointer(&serde_json::from_value(changed).unwrap()).is_err());
+        let mut changed=value.clone();changed["id"]="77777777-7777-4777-8777-777777777777".into();
+        assert!(check_pointer(&serde_json::from_value(changed).unwrap()).is_err());
+        let mut changed=value;changed["furnishing"]["sourceCommit"]="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into();
+        assert!(check_pointer(&serde_json::from_value(changed).unwrap()).is_err());
     }
     #[test]
     fn owner_inspection_source_rejects_ready_node_pid_exit_error_and_port_variants() {
