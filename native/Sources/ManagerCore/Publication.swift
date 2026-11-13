@@ -168,7 +168,7 @@ public struct NativePublicationState: Codable, Equatable, Sendable {
               let attempt = nativeOriginalAttempts?[command.originalPublishRequestId], attempt.exportClaimed,
               attempt.planBindingSha256 == command.planBindingSha256,
               completed.publication.publicationId == command.publicationId,
-              completed.publication.revisionSha256 == command.revisionSha256 else {
+              completed.publication.revisionSha256 == command.revisionSha256, completed.publication.status == "published" else {
             throw BridgeFailure("NATIVE_DETAIL_OUTPUT_CHANGED")
         }
         return try completed.publication.validated()

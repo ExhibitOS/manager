@@ -58,6 +58,8 @@ final class NativeOriginalPublicationOutputTests: XCTestCase {
             XCTAssertThrowsError(try state.nativeOriginalPublicationForOutput(c, in: document), key)
         }
         let c = try NativeOriginalPublicationOutputCommand(command)
+        var unpublished = try value(state); unpublished["completed"]["publication"]["status"] = .string("unpublished")
+        XCTAssertThrowsError(try decode(unpublished, as: NativePublicationState.self).nativeOriginalPublicationForOutput(c, in: document))
         for key in ["sourceExhibitionId", "snapshotExhibitionId", "mode"] {
             var wrong = try value(state); wrong["completed"][key] = .string(key == "mode" ? "ordinary" : UUID().uuidString.lowercased())
             XCTAssertThrowsError(try decode(wrong, as: NativePublicationState.self).nativeOriginalPublicationForOutput(c, in: document), key)
