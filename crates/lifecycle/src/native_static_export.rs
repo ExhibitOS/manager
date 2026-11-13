@@ -2,6 +2,8 @@
 //! Owned, cancellable static export. Ordinary export uses public projection.
 //! Explicit detail export uses the selected owner’s private child pipe.
 use super::*;
+#[path = "native_static_export_diagnostics.rs"]
+mod diagnostics;
 use crate::{
     maintenance_source::DirectoryPin, native_payload::Payload, native_runtime::{Session, StaticDetailAuthority},
 };
@@ -1484,7 +1486,7 @@ fn detail_child_command(
     if private_editor {
         command.arg("--private-editor");
     }
-    // Child diagnostics may contain fetch errors; no detail stderr is retained.
+    // Parse transient stderr into finite classes; never retain raw child bytes.
     command
         .arg("--native-detail-v1")
         .env_clear()
@@ -1492,7 +1494,7 @@ fn detail_child_command(
         .env("LANG", "en_US.UTF-8")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .process_group(0);
     command
 }
@@ -1538,8 +1540,8 @@ impl DetailRun {
             stage,
             mut journal,
         } = self;
-        let deadline = Instant::now() + DETAIL_DEADLINE;
-        let check = || check_detail(deadline, cancel);
+        let began = Instant::now();
+        let deadline = began + DETAIL_DEADLINE;
         let command = detail_child_command(
             &payload.node(),
             &script,
@@ -1549,7 +1551,7 @@ impl DetailRun {
             journal.status.private_editor,
         );
         let startup_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
-        let mut child = match check()
+        let mut child = match check_detail(deadline, cancel)
             .and_then(|_| stage.check(&journal))
             .and_then(|_| {
                 spawn_detail_child(command, &stage.directory)
@@ -1566,6 +1568,18 @@ impl DetailRun {
         };
         let mut stdin = child.0.stdin.take();
         let mut stdout = child.0.stdout.take();
+        let mut stderr = child.0.stderr.take();
+        let diagnostic_ready = stderr.as_ref().is_some_and(|pipe| detail_nonblocking(pipe.as_raw_fd()).is_ok());
+        let diagnostic = std::cell::RefCell::new(diagnostics::Collector::new(if diagnostic_ready { stderr.take() } else { None }));
+        // Keep an unprepared pipe open, but never read it in blocking mode.
+        // The startup guard below prevents admitting a request in this case.
+        let _unprepared_stderr = stderr;
+        let check = || {
+            check_detail(deadline, cancel)?;
+            diagnostic.borrow_mut().drain(&journal.status.publication_id);
+            Ok(())
+        };
+        let phase = std::cell::Cell::new(diagnostics::Phase::Startup);
         let group = child.0.id();
         journal.child_group = Some(group);
         if controller
@@ -1582,10 +1596,13 @@ impl DetailRun {
             return Err(err(DETAIL_UNCONFIRMED));
         }
         let started = (|| {
+            if !diagnostic_ready { return Err(bad()); }
             let input = stdin.as_mut().ok_or_else(bad)?;
             detail_nonblocking(input.as_raw_fd())?;
             detail_write(input, &startup.0, &|| {
-                check_detail(startup_deadline, cancel)
+                check_detail(startup_deadline, cancel)?;
+                diagnostic.borrow_mut().drain(&journal.status.publication_id);
+                Ok(())
             })
         })();
         drop(startup);
@@ -1594,11 +1611,13 @@ impl DetailRun {
             let input = stdin.as_mut().ok_or_else(bad)?;
             let output = stdout.as_mut().ok_or_else(bad)?;
             detail_nonblocking(output.as_raw_fd())?;
+            phase.set(diagnostics::Phase::AwaitStaged);
             let staged = read_detail_frame(output, &check)?;
             if staged.kind != FrameKind::Staged || staged.job_id != journal.status.job_id {
                 return Err(bad());
             }
             // STAGED relinquishes all child writes to this tree.
+            phase.set(diagnostics::Phase::VerifyStaging);
             let (receipt, tree) = verify_detail_stage(&stage, &journal, &staged.manifest_sha256, &check)?;
             journal.manifest_sha256 = Some(staged.manifest_sha256);
             controller.write_detail_journal(token, &journal, false)?;
@@ -1611,8 +1630,10 @@ impl DetailRun {
             .map_err(|_| bad())?;
             tree.recheck(&stage.directory, &check)?;
             stage.check(&journal)?;
+            phase.set(diagnostics::Phase::WriteAcknowledgement);
             detail_write(input, &(ack.len() as u32).to_be_bytes(), &check)?;
             detail_write(input, &ack, &check)?;
+            phase.set(diagnostics::Phase::AwaitReady);
             let ready = read_detail_frame(output, &check)?;
             if ready.kind != FrameKind::Ready
                 || ready.job_id != journal.status.job_id
@@ -1620,7 +1641,9 @@ impl DetailRun {
             {
                 return Err(bad());
             }
+            phase.set(diagnostics::Phase::StdoutEnd);
             detail_stdout_end(output, &check)?;
+            phase.set(diagnostics::Phase::ChildExit);
             wait_detail_child(&mut child.0, &check)?;
             if !owned_child_group_absent(group) {
                 return Err(err(DETAIL_UNCONFIRMED));
@@ -1631,7 +1654,28 @@ impl DetailRun {
         drop(stdout);
         let (receipt, tree) = match verified {
             Ok(verified) => verified,
-            Err(_) => {
+            Err(error) => {
+                use std::os::unix::process::ExitStatusExt;
+                let exit = child.0.try_wait();
+                let observed = exit.as_ref().ok().and_then(|value| value.as_ref());
+                let mut diagnostic = diagnostic.borrow_mut();
+                diagnostic.drain(&journal.status.publication_id);
+                let failure = diagnostics::Failure {
+                    version: 1,
+                    job_id: &journal.status.job_id,
+                    publication_id: &journal.status.publication_id,
+                    runtime_generation: &journal.runtime_generation,
+                    phase: phase.get(),
+                    rust_error: diagnostics::RustError::from_code(&error.code),
+                    child_error: diagnostic.error,
+                    stderr_truncated: diagnostic.truncated,
+                    exit_code: observed.and_then(|value| value.code()),
+                    exit_signal: observed.and_then(|value| value.signal()),
+                    running: exit.as_ref().ok().map(|value| value.is_none()),
+                    elapsed_ms: began.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    deadline_reached: Instant::now() >= deadline,
+                };
+                let _ = controller.write_detail_diagnostic(token, &journal, &failure);
                 // Reaping is necessary but a lost READY is never server settlement.
                 if stop_detail_child(&mut child.0) && owned_child_group_absent(group) {
                     journal.child_returned = true;
@@ -1873,6 +1917,16 @@ impl InstallationController {
         }
         write_json(&root, &name, journal)?;
         File::open(&root).and_then(|directory| directory.sync_all()).map_err(|_| bad())
+    }
+    fn write_detail_diagnostic(&self, token: &str, journal: &DetailJournal, failure: &diagnostics::Failure<'_>) -> Result<()> {
+        let (root, name, identity) = self.static_export_location(token)?;
+        let _lock = profile_lock(self.profile.as_ref().ok_or_else(bad)?)?;
+        journal.validate(&identity)?;
+        let prior = read_detail_file(&root, &detail_journal_name(&name), &identity)?.ok_or_else(bad)?;
+        if prior.status.job_id != journal.status.job_id { return Err(bad()); }
+        // A private, disposable diagnostic, not a journal or settlement receipt.
+        // Existing helpers keep their closed journal schema and recovery rules.
+        write_json(&root, &format!("native-detail-failure-{}.json", journal.status.job_id), failure)
     }
     fn finish_detail_journal(&self, token: &str, journal: &DetailJournal, status: Status) -> Result<()> {
         let (root, name, identity) = self.static_export_location(token)?;
