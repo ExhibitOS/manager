@@ -1689,7 +1689,7 @@ impl InstallationController {
                 let owner = service.personal_identity()?;
                 check_saved_transition_document((crate::native_payload::METRIC_FRAME_TARGET.2, crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2),
                     document, (&owner.0, &owner.1, &owner.2))?;
-                let journal = installation_backup::source_bytes(profile, file, crate::installations::native_upload::LIMIT, true)?;
+                let journal = installation_backup::source_bytes(profile, file, 128 * 1024, true)?;
                 if !current52_png_transfer_matches(transfer, &journal) { return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")); }
                 Ok(true)
             }
