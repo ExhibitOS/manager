@@ -39,6 +39,25 @@ final class NativeAutomationPortalTests: XCTestCase {
         XCTAssertThrowsError(try proposal.check(current: base, refreshed: nil))
         XCTAssertEqual(proposal.draft, draft)
     }
+    func testRepreparationAcceptsOnlyRegeneratedEnvelopeTimestamp() throws {
+        let draft = try NativeExhibitionDraft.new(now: Date(timeIntervalSince1970: 1_000))
+        let base: DocumentValue = .object(["revision": .integer(7)])
+        let proposal = NativeAutomationPortal.Proposal(command: try .init(command), base: base, draft: draft)
+        var document = draft.document
+        document["updatedAt"] = .string("2030-01-01T00:00:00Z")
+        try proposal.check(current: base, refreshed: NativeExhibitionDraft(document: document))
+        for (key, value) in [(String, DocumentValue)]([
+            ("id", .string(UUID().uuidString.lowercased())), ("editVersion", .integer(2)),
+            ("createdAt", .string("2030-01-01T00:00:00Z"))]) {
+            var changed = document; changed[key] = value
+            XCTAssertThrowsError(try proposal.check(current: base, refreshed: NativeExhibitionDraft(document: changed)))
+        }
+        var changed = document; changed["candidate"]["title"] = .string("different candidate")
+        XCTAssertThrowsError(try proposal.check(current: base, refreshed: NativeExhibitionDraft(document: changed)))
+        // A timestamp change in the actual local base still expires the proposal.
+        var changedBase = base; changedBase["updatedAt"] = .string("2030-01-01T00:00:00Z")
+        XCTAssertThrowsError(try proposal.check(current: changedBase, refreshed: draft))
+    }
     func testNoChangeProposalCannotApplyDifferentDelta() throws {
         let base: DocumentValue = .object(["revision": .integer(7)])
         let proposal = NativeAutomationPortal.Proposal(command: try .init(command), base: base, draft: nil)

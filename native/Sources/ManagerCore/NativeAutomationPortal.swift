@@ -29,7 +29,11 @@ enum NativeAutomationPortal {
 
         func check(current: DocumentValue, refreshed: NativeExhibitionDraft?) throws {
             guard current == base else { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
-            guard refreshed == draft else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            var expected = draft?.document, observed = refreshed?.document
+            // The ordinary typed delta regenerates only this envelope timestamp on each preparation.
+            // Keep candidate, draft/exhibition identity, edit version and every other field exact.
+            expected?["updatedAt"] = .null; observed?["updatedAt"] = .null
+            guard observed == expected else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
         }
     }
 }
