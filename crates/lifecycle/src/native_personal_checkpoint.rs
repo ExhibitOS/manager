@@ -334,8 +334,10 @@ fn startup_cancellation_proof_matches(
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if pair == (crate::native_payload::CATALOG45_SELECTED_PNG_READ_SOURCE.2,
-                crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2) && proof.is_none() {
+    if [(crate::native_payload::CATALOG45_SELECTED_PNG_READ_SOURCE.2,
+         crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2),
+        (crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2,
+         crate::native_payload::CATALOG45_CURRENT_IMAGE_THUMBNAIL_TARGET.2)].contains(&pair) && proof.is_none() {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
     }
 
@@ -1980,6 +1982,19 @@ mod tests {
         let old = (crate::native_payload::CATALOG45_FIXTURE_AUTHORING_TARGET.2,
                    crate::native_payload::CATALOG45_DEFAULT_1_7_TARGET.2);
         assert_eq!(checkpoint_inventory_limit(old, None), CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn current_image_thumbnail_checkpoint_capacity_is_only_exact_clean_pair() {
+        let source = crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2;
+        let target = crate::native_payload::CATALOG45_CURRENT_IMAGE_THUMBNAIL_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), 8 * 1024 * 1024 * 1024);
+        for pair in [(target, source), (source, source), (target, target),
+            (crate::native_payload::CATALOG45_SELECTED_PNG_READ_SOURCE.2, target),
+            (crate::native_payload::CATALOG45_DEFAULT_1_11_TARGET.2, target), (source, "unqualified")] {
+            assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+        }
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]

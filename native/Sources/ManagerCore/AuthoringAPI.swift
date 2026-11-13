@@ -435,6 +435,7 @@ public actor AuthoringAPI {
     private let base: URL
     private let tenant: String
     private let transport: URLSession
+    private let currentImageThumbnailReviewIssuer = UUID()
     public nonisolated let admitsICCJPEG: Bool
     public nonisolated let admitsSameOwnerArtworkReplacement: Bool
     public nonisolated let productImageRuntimeQualified: Bool
@@ -1064,6 +1065,121 @@ public actor AuthoringAPI {
         return receipt
     }
 
+    /// Populated only from the independently qualified immutable producer handoff.
+    /// Older model/product-image session profiles never imply this additive route.
+    nonisolated static func supportsCurrentImageThumbnailRuntime(manifest: String?) -> Bool {
+        let qualified: Set<String> = [
+            // API a888494b / producer e662b20c; separately qualified thumbnail-only payload.
+            "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988"
+        ]
+        return manifest.map(qualified.contains) ?? false
+    }
+    private func currentImageThumbnailArtwork(_ artworkId: String, revision: Int,
+        in document: NativeDocumentState) async throws -> NativeArtwork {
+        guard Self.supportsCurrentImageThumbnailRuntime(manifest: nativeRuntimeManifestSHA256),
+              nativeSession, !authenticationBusy, let session,
+              document.tenantId == tenant, document.principalId == session.userId,
+              UUID(uuidString: document.workspaceId)?.uuidString.lowercased() == document.workspaceId,
+              (1...Int(Int32.max)).contains(revision) else { throw AuthoringFailure("IMAGE_THUMBNAIL_PREPARATION_UNAVAILABLE") }
+        _ = try await verifyRetainedSession(session)
+        let artwork = try await self.artwork(artworkId)
+        guard !artwork.archived, artwork.id == artworkId, artwork.revision == revision,
+              artwork.approvedRevision == revision, let assetId = artwork.approvedAssetId,
+              artwork.metadata?.rights.permissions.display == true,
+              artwork.metadata?.rights.permissions.export == true,
+              artwork.assets.contains(where: { $0.id == assetId && $0.state == "approved" && $0.mime == "image/png" }) else {
+            throw AuthoringFailure("REVISION_CONFLICT", status: 409)
+        }
+        return artwork
+    }
+    public func prepareCurrentImageThumbnail(artworkId: String, revision: Int, requestId: UUID,
+        in document: NativeDocumentState) async throws -> NativeCurrentImageThumbnailJob {
+        let held = generation
+        let artwork = try await currentImageThumbnailArtwork(artworkId, revision: revision, in: document)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let body = try encoded(NativeCurrentImageThumbnailRequest(requestId: requestId.uuidString.lowercased(), expectedRevision: revision))
+        let job: NativeCurrentImageThumbnailJob = try await request(prefix + "/artworks/" + identifier(artworkId) + "/image-thumbnail-preparations", method: "POST", body: body)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try job.check(artwork: artwork, workspaceId: document.workspaceId, principalId: document.principalId, jobId: job.id)
+        return job
+    }
+    public func currentImageThumbnailStatus(artworkId: String, revision: Int, jobId: String,
+        in document: NativeDocumentState) async throws -> NativeCurrentImageThumbnailJob {
+        let held = generation
+        let artwork = try await currentImageThumbnailArtwork(artworkId, revision: revision, in: document)
+        let job: NativeCurrentImageThumbnailJob = try await request("/api/v1/tenants/" + tenant + "/imports/" + identifier(jobId))
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try job.check(artwork: artwork, workspaceId: document.workspaceId, principalId: document.principalId, jobId: jobId)
+        return job
+    }
+    public func currentImageThumbnailAction(artworkId: String, revision: Int, jobId: String,
+        action: NativeImportAction, in document: NativeDocumentState) async throws -> NativeCurrentImageThumbnailJob {
+        let held = generation
+        let current = try await currentImageThumbnailStatus(artworkId: artworkId, revision: revision, jobId: jobId, in: document)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard (action == .cancel && ["queued", "processing", "failed"].contains(current.state))
+            || (action == .retry && current.state == "failed" && current.thumbnailPreparation.workerDrained) else {
+            throw AuthoringFailure("IMPORT_DRAIN_PENDING")
+        }
+        let job: NativeCurrentImageThumbnailJob = try await request("/api/v1/tenants/" + tenant + "/imports/" + identifier(jobId) + "/" + action.rawValue,
+            method: "POST", body: Data("{}".utf8))
+        let artwork = try await currentImageThumbnailArtwork(artworkId, revision: revision, in: document)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try job.check(artwork: artwork, workspaceId: document.workspaceId, principalId: document.principalId, jobId: jobId)
+        return job
+    }
+    public func reviewCurrentImageThumbnail(artworkId: String, revision: Int, jobId: String,
+        in document: NativeDocumentState) async throws -> NativeCurrentImageThumbnailReview {
+        let held = generation
+        let job = try await currentImageThumbnailStatus(artworkId: artworkId, revision: revision, jobId: jobId, in: document)
+        guard job.thumbnailPreparation.status == .ready, job.thumbnailPreparation.workerDrained,
+              let receipt = job.thumbnailPreparation.serverReceipt else { throw AuthoringFailure("IMAGE_THUMBNAIL_NOT_READY") }
+        let image = receipt.thumbnail
+        let data = try await readPreviewBytes(path: "/api/v1/tenants/" + tenant + "/assets/" + identifier(image.assetId) + "/bytes",
+            expectedBytes: image.bytes, sha256: image.sha256, mime: "application/octet-stream", invalidCode: "IMAGE_THUMBNAIL_INVALID", requireDigestHeader: false)
+        try SelectedArtworkThumbnailPNG.validate(data, expectedSHA256: image.sha256, expectedBytes: image.bytes,
+            expectedWidth: image.width, expectedHeight: image.height)
+        let current = try await currentImageThumbnailStatus(artworkId: artworkId, revision: revision, jobId: jobId, in: document)
+        guard generation == held, current.thumbnailPreparation.serverReceipt?.sha256 == receipt.sha256 else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return NativeCurrentImageThumbnailReview(job: current, png: data, generation: held, issuer: currentImageThumbnailReviewIssuer,
+            workspaceId: document.workspaceId, principalId: document.principalId)
+    }
+    public func selectCurrentImageThumbnail(_ review: NativeCurrentImageThumbnailReview, requestId: UUID,
+        expectedSelectionVersion: Int, in document: NativeDocumentState) async throws -> NativeCurrentImageThumbnailSelectionReceipt {
+        guard review.issuer == currentImageThumbnailReviewIssuer, review.generation == generation, review.workspaceId == document.workspaceId,
+              review.principalId == document.principalId, (0..<Int(Int32.max)).contains(expectedSelectionVersion),
+              let receipt = review.job.thumbnailPreparation.serverReceipt else { throw AuthoringFailure("IMAGE_THUMBNAIL_REVIEW_STALE") }
+        let current = try await currentImageThumbnailStatus(artworkId: receipt.artworkId, revision: receipt.artworkRevision,
+            jobId: review.job.id, in: document)
+        guard current.thumbnailPreparation.serverReceipt?.sha256 == receipt.sha256,
+              let candidate = current.thumbnailPreparation.selectionCandidate else { throw AuthoringFailure("IMAGE_THUMBNAIL_REVIEW_STALE") }
+        let path = prefix + "/artworks/" + (try identifier(receipt.artworkId)) + "/thumbnail-selection"
+        let selection: NativeArtworkThumbnailSelection = try await request(path + "?expectedRevision=" + String(receipt.artworkRevision), requiresNativeReadCSRF: true)
+        guard selection.selectionVersion == expectedSelectionVersion || selection.selectionVersion == expectedSelectionVersion + 1 else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
+        var payload = try JSONDecoder().decode(DocumentValue.self, from: encoded(candidate))
+        payload["requestId"] = .string(requestId.uuidString.lowercased())
+        payload["expectedSelectionVersion"] = .integer(Int64(expectedSelectionVersion))
+        guard generation == review.generation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let result: NativeCurrentImageThumbnailSelectionReceipt = try await request(path, method: "POST", body: encoded(payload))
+        guard generation == review.generation, result.selected, result.selectionVersion == expectedSelectionVersion + 1 else {
+            throw AuthoringFailure("SELECTION_CONFLICT", status: 409)
+        }
+        let selected: NativeArtworkThumbnailSelection = try await request(path + "?expectedRevision=" + String(receipt.artworkRevision), requiresNativeReadCSRF: true)
+        guard selected.selectionVersion == result.selectionVersion, selected.bindingId == result.id else {
+            throw AuthoringFailure("SELECTION_CONFLICT", status: 409)
+        }
+        let selectedPNG = try await readPreviewBytes(path: path + "/" + result.id.uuidString.lowercased()
+            + "/image",
+            expectedBytes: receipt.thumbnail.bytes, sha256: receipt.thumbnail.sha256, mime: "image/png",
+            invalidCode: "IMAGE_THUMBNAIL_INVALID", requireDigestHeader: true, requiresNativeReadCSRF: true,
+            queryItems: [URLQueryItem(name: "expectedRevision", value: String(receipt.artworkRevision)),
+                         URLQueryItem(name: "expectedSelectionVersion", value: String(result.selectionVersion))])
+        try SelectedArtworkThumbnailPNG.validate(selectedPNG, expectedSHA256: receipt.thumbnail.sha256,
+            expectedBytes: receipt.thumbnail.bytes, expectedWidth: receipt.thumbnail.width, expectedHeight: receipt.thumbnail.height)
+        guard generation == review.generation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return result
+    }
+
     public func createArtist(name: String, bio: String) async throws -> NativeArtist {
         struct Input: Encodable { let name: String; let bio: String }
         return try await request(prefix + "/artists", method: "POST", body: encoded(Input(name: name, bio: bio)))
@@ -1677,10 +1793,17 @@ public actor AuthoringAPI {
     }
 
     private func readPreviewBytes(path: String, expectedBytes: Int, sha256: String, mime: String,
-                                  invalidCode: String, requireDigestHeader: Bool, requiresNativeReadCSRF: Bool = false) async throws -> Data {
+                                  invalidCode: String, requireDigestHeader: Bool, requiresNativeReadCSRF: Bool = false,
+                                  queryItems: [URLQueryItem]? = nil) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation
-        let url = base.appendingPathComponent(path)
+        var url = base.appendingPathComponent(path)
+        if let queryItems {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw AuthoringFailure(invalidCode) }
+            components.queryItems = queryItems
+            guard let qualifiedURL = components.url else { throw AuthoringFailure(invalidCode) }
+            url = qualifiedURL
+        }
         activeRequests += 1
         defer { activeRequests -= 1 }
         var request = URLRequest(url: url, timeoutInterval: 30)

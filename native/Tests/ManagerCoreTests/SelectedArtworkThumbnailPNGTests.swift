@@ -65,4 +65,17 @@ final class SelectedArtworkThumbnailPNGTests: XCTestCase {
             XCTAssertThrowsError(try SelectedArtworkThumbnailPNG.validate(data, response: response(data)))
         }
     }
+    func testApprovedAssetReviewUsesReceiptMetricsWithoutFabricatingTransportHeaders() throws {
+        let data = try png(8), hash = nativeImportSHA256(data)
+        XCTAssertNoThrow(try SelectedArtworkThumbnailPNG.validate(data, expectedSHA256: hash,
+            expectedBytes: data.count, expectedWidth: 8, expectedHeight: 8))
+        XCTAssertThrowsError(try SelectedArtworkThumbnailPNG.validate(data, expectedSHA256: hash,
+            expectedBytes: data.count, expectedWidth: 9, expectedHeight: 8))
+        XCTAssertThrowsError(try SelectedArtworkThumbnailPNG.validate(data, expectedSHA256: hash,
+            expectedBytes: data.count + 1, expectedWidth: 8, expectedHeight: 8))
+        var corrupt = data; corrupt[29] ^= 1
+        XCTAssertThrowsError(try SelectedArtworkThumbnailPNG.validate(corrupt, expectedSHA256: nativeImportSHA256(corrupt),
+            expectedBytes: corrupt.count, expectedWidth: 8, expectedHeight: 8))
+    }
+
 }
