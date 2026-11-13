@@ -228,7 +228,13 @@ fn validate_gpu_model_upgrade_result(bytes: &[u8], binding: &Binding) -> Result<
 
 
 fn ordinary_inherited_hayes(payload: &Payload, start: Option<FurnishingStart>) -> bool {
-    (payload.retained_furnishing_catalog().is_some()
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    let fresh_contact = start == Some(FurnishingStart::Initialize)
+        && crate::native_payload::CONTACT_EMITTER_CARD_TARGET == (
+            payload.context().source_commit.as_str(), payload.producer_sha256(), payload.context().manifest_sha256.as_str());
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    let fresh_contact = false;
+    fresh_contact || (payload.retained_furnishing_catalog().is_some()
         && matches!(start, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
         || (payload.ordinary_fresh_furnishing()
             && matches!(start, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
@@ -5016,6 +5022,27 @@ mod furnishing_thumbnail_upgrade_result_tests {
         }
         for mixed in [(source.0,target.1,target.2),(target.0,source.1,target.2),(target.0,target.1,source.2)] {
             assert!(!ordinary_inherited_hayes(&make(mixed), Some(FurnishingStart::Reopen)));
+        }
+        HayesSessionPin::new(Uuid::parse_str("10000000-0000-4000-8000-000000000004").unwrap(), target.2).unwrap();
+    }
+
+    #[test]
+    fn contact_catalog52_initialize_inherits_required_hayes_channel_only_for_exact_host() {
+        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET as target,
+            COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET};
+        let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
+        assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Initialize)));
+        assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Reopen)));
+        for start in [None, Some(FurnishingStart::Upgrade051To050051),
+            Some(FurnishingStart::Upgrade045To051), Some(FurnishingStart::SelectedImport040)] {
+            assert!(!ordinary_inherited_hayes(&make(target), start));
+        }
+        for older in [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET] {
+            assert!(!ordinary_inherited_hayes(&make(older), Some(FurnishingStart::Initialize)));
+            assert!(ordinary_inherited_hayes(&make(older), Some(FurnishingStart::Reopen)));
+            for mixed in [(older.0,target.1,target.2), (target.0,older.1,target.2), (target.0,target.1,older.2)] {
+                assert!(!ordinary_inherited_hayes(&make(mixed), Some(FurnishingStart::Initialize)));
+            }
         }
         HayesSessionPin::new(Uuid::parse_str("10000000-0000-4000-8000-000000000004").unwrap(), target.2).unwrap();
     }
