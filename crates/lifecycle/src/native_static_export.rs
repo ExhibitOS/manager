@@ -1574,9 +1574,10 @@ impl DetailRun {
         // Keep an unprepared pipe open, but never read it in blocking mode.
         // The startup guard below prevents admitting a request in this case.
         let _unprepared_stderr = stderr;
+        let publication_id = journal.status.publication_id.clone();
         let check = || {
             check_detail(deadline, cancel)?;
-            diagnostic.borrow_mut().drain(&journal.status.publication_id);
+            diagnostic.borrow_mut().drain(&publication_id);
             Ok(())
         };
         let phase = std::cell::Cell::new(diagnostics::Phase::Startup);
@@ -1601,7 +1602,7 @@ impl DetailRun {
             detail_nonblocking(input.as_raw_fd())?;
             detail_write(input, &startup.0, &|| {
                 check_detail(startup_deadline, cancel)?;
-                diagnostic.borrow_mut().drain(&journal.status.publication_id);
+                diagnostic.borrow_mut().drain(&publication_id);
                 Ok(())
             })
         })();
