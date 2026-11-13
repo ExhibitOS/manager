@@ -74,7 +74,7 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
         var extensionVersion: Int64 = 4
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  ((1...7).contains(version) || version == 9),
+                  ((1...7).contains(version) || version == 9 || version == 10),
                   let descriptors = existing["furnishings"].items, let rows = existing["placements"].items,
                   version < 4 || existing["frameAttachments"].items != nil else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
@@ -117,7 +117,15 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
             }
             extensionVersion = max(extensionVersion, requiredVersion)
             let descriptor = try decoder.decode(DocumentValue.self, from: encoder.encode(furnishing))
-            let row = try decoder.decode(DocumentValue.self, from: encoder.encode(attachment))
+            var row = try decoder.decode(DocumentValue.self, from: encoder.encode(attachment))
+            // Repeating the exact six-field binding must retain its issued
+            // contact policy. A deliberate new binding remains legacy until
+            // the explicit saved-head reconciliation operation is applied.
+            if let previous = attachments.first(where: { $0["placementId"] == .string(attachment.placementId) }),
+               case .object(var oldFields) = previous, oldFields.removeValue(forKey: "imageFit") != nil,
+               DocumentValue.object(oldFields) == row {
+                row = previous
+            }
             let existing = furnishings.filter { $0["id"].string == attachment.furnishingId }
             guard existing.isEmpty || existing == [descriptor] else {
                 throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")

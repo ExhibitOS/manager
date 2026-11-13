@@ -71,7 +71,7 @@ enum NativeProceduralFrameClear {
             guard case .object(let extensions) = extensionValue else { throw AuthoringFailure("PROCEDURAL_FRAME_ATTACHMENTS_INVALID") }
             guard let value = extensions[WorkspaceFurnishingPlacement.namespace] else { return }
             guard case .object(let fields) = value, let version = fields["version"]?.integer,
-                  (1...7).contains(version) || version == 9 else { throw AuthoringFailure("PROCEDURAL_FRAME_ATTACHMENTS_INVALID") }
+                  (1...7).contains(version) || version == 9 || version == 10 else { throw AuthoringFailure("PROCEDURAL_FRAME_ATTACHMENTS_INVALID") }
             guard let attachments = fields["frameAttachments"] else {
                 guard version < 4 else { throw AuthoringFailure("PROCEDURAL_FRAME_ATTACHMENTS_INVALID") }
                 return

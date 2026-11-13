@@ -172,6 +172,14 @@ struct SelectedPlacementInspector: View {
                     if model.positionDirty { Text("위치 입력을 적용하거나 취소한 뒤 다른 배치를 선택하세요.").font(.caption).foregroundStyle(.secondary) }
                     if !model.viewportController.sharedFurnishingVisualsSupported { FurnishingCatalogView(model: model, viewport: model.viewportController, ready: ready, mode: mode) }
                     SharedFurnishingCatalogView(model: model, viewport: model.viewportController, ready: ready)
+                    if model.frameImageFitAvailable {
+                        GroupBox("액자 맞춤") {
+                            Button("이미지에 맞추기") { Task { await model.reconcileSelectedFrameImageFit() } }
+                                .disabled(!editable || !model.canReconcileFrameImageFit)
+                                .accessibilityHint("사진 전체를 유지하며 액자 안쪽 경계를 맞춥니다.")
+                                .padding(4)
+                        }
+                    }
                     InstallationSettingsView(buffer: $model.installation, inspector: $inputs, mode: mode, placementId: model.placementId, dirty: model.installationDirty,
                         editable: editable && model.installationEditable, viewport: model.viewportController, canAlign: !model.formDirty && !model.positionDirty,
                         status: model.installationStatus, floors: surfaces("floor", placement: selected.placement), walls: surfaces("wall", placement: selected.placement),

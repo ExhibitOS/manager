@@ -34,6 +34,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
+    public var nativeFrameImageFitProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
@@ -274,6 +275,9 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "WORKSPACE_FURNISHING_INVALID": return "선택한 공간과 비품의 위치, 방향, 크기를 확인하세요."
         case "FRAME_SAVED_DRAFT_REQUIRED": return "전시를 저장한 뒤 액자를 연결하거나 해제하세요."
         case "FRAME_TARGET_STALE": return "저장된 작품 배치가 바뀌었습니다. 전시를 다시 열고 작품을 선택하세요."
+        case "FRAME_IMAGE_FIT_UNAVAILABLE": return "이 작업공간에서는 액자 이미지 맞춤을 사용할 수 없습니다."
+        case "FRAME_IMAGE_FIT_INVALID", "FRAME_IMAGE_FIT_STALE", "FRAME_IMAGE_FIT_CONFLICT": return "작품과 액자의 저장 상태가 바뀌었습니다. 저장본을 다시 연 뒤 확인하세요."
+        case "FRAME_IMAGE_FIT_UNSUPPORTED": return "이 액자와 이미지의 조합은 이미지 맞춤을 지원하지 않습니다."
         case "FRAME_ASSET_UNSUPPORTED": return "이 작업공간에서 지원하는 등록 액자와 승인된 평면 이미지를 선택하세요."
         case "FRAME_SIZE_UNSUPPORTED": return "폭 60 cm, 높이 80 cm로 승인된 작품을 선택하세요."
         case "FRAME_DEPTH_UNSUPPORTED": return "깊이 정보가 없는 평면 작품을 선택하세요."
@@ -2876,6 +2880,7 @@ public actor AuthoringAPI {
 
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
+        if admitsFrameImageFitReconciliation { return 10 }
         if admitsWorkspaceStraightMiterFrameFit { return 9 }
         if admitsWorkspaceModularPortalFit || admitsWorkspaceRectangularPortalFit { return 7 }
         if admitsWorkspacePortalFinish { return 6 }
@@ -3627,6 +3632,58 @@ public actor AuthoringAPI {
             && session?.nativeFixtureAuthoringProposalProfile == "saved-head-fixture-v1"
     }
 
+    public var admitsFrameImageFitReconciliation: Bool {
+        admitsWorkspaceArtworkFrames && nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeAuthoringProposalProfile == "saved-head-v1"
+            && session?.nativeFrameImageFitProposalProfile == FrameImageFitReconciliationRequest.profile
+    }
+
+    private func requireLiveFrameImageFitReconciliation() async throws {
+        guard admitsFrameImageFitReconciliation, let session else { throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE") }
+        let live = try await verifyRetainedSession(session)
+        guard live.nativeAuthoringProposalProfile == "saved-head-v1", live.advertisesWorkspaceArtworkFrame,
+              live.nativeFrameImageFitProposalProfile == FrameImageFitReconciliationRequest.profile else {
+            throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE")
+        }
+    }
+
+    public func prepareFrameImageFitReconciliation(placementId: String,
+                                                    in document: NativeDocumentState) async throws -> FrameImageFitReconciliationPreview {
+        guard admitsFrameImageFitReconciliation, document.tenantId == tenant,
+              document.principalId == session?.userId else { throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE") }
+        guard !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED")
+        }
+        let heldGeneration = generation
+        try await requireLiveFrameImageFitReconciliation()
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("REMOTE_CONFLICT", status: 412) }
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1,
+            tenantId: document.tenantId, principalId: document.principalId, draft: saved.draft,
+            selection: .init(kind: "placement", id: placementId), mode: "select", view: "front", disabled: false,
+            workspaceId: document.workspaceId, baseETag: etag)
+        let proposal = try FrameImageFitReconciliationRequest(placementId: placementId, frame: frame)
+        let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
+                                                     etag: etag, proposal: proposal.value)
+        let preview = try proposal.checkedReply(reply)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try await validateNativeViewportEdit(try preview.apply(to: saved.draft) ?? saved.draft, etag: etag)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try await requireLiveFrameImageFitReconciliation()
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return preview
+    }
+
+    public func validateFrameImageFitReconciliation(_ preview: FrameImageFitReconciliationPreview,
+                                                     in document: NativeDocumentState) async throws {
+        let fresh = try await prepareFrameImageFitReconciliation(placementId: preview.placementId, in: document)
+        guard fresh.base == preview.base, fresh.candidate == preview.candidate, fresh.changed == preview.changed else {
+            throw AuthoringFailure("FRAME_TARGET_STALE")
+        }
+    }
+
     public var admitsNativeLightObjectAuthoringProposal: Bool {
         nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
             && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
@@ -3639,7 +3696,8 @@ public actor AuthoringAPI {
         let lightObject = LightObjectAuthoring.commands.contains(operation)
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let scene = ["set-pedestal", "add-light", "set-light-details"].contains(operation)
-        let admitted = lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let frameImageFit = operation == "reconcile-frame-image-fit"
+        let admitted = frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
@@ -3650,7 +3708,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (lightObject || ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation)) else {
+              (frameImageFit || lightObject || ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }
@@ -3734,7 +3792,8 @@ public actor AuthoringAPI {
         let next = try WorkspacePortalFinish.applying(to: draft, openingId: openingId, furnishing: furnishing,
                                                       admitsModularFit: admitsWorkspaceModularPortalFit,
                                                       admitsRectangularFit: admitsWorkspaceRectangularPortalFit,
-                                                      admitsMiterFrames: admitsWorkspaceStraightMiterFrameFit)
+                                                      admitsMiterFrames: admitsWorkspaceStraightMiterFrameFit,
+                                                      admitsFrameImageFit: admitsFrameImageFitReconciliation)
         if next != nil || furnishing != nil { try await validateNativeViewportEdit(next ?? draft, etag: etag) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next
