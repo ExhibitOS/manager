@@ -16,8 +16,11 @@ exit observed before cleanup. Unknown Node or OS errors remain `UNKNOWN`;
 raw stderr, stacks, URLs, paths and credentials are never persisted. Stderr is
 read nonblockingly with bounded work and memory, independently of stdout's
 existing STAGED/READY protocol. Failure to prepare that pipe prevents startup.
-The 120-second deadline, cancellation, verification and uncertain-settlement
-rules remain in force. This disposable diagnostic is separate from the closed
+Preparation and complete asset copying before STAGED have a finite 600-second
+budget. After the exact STAGED frame, verification, ACK/READY, child exit and
+commit share a separate 120-second budget, which cannot renew. The five-second
+startup bound, cancellation, verification and uncertain-settlement rules remain
+in force. This disposable diagnostic is separate from the closed
 detail journal, publication records and receipts; it does not prove a cause or
 complete an export and adds no checkpoint or recovery requirement.
 

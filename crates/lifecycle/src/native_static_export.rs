@@ -480,7 +480,28 @@ fn verify_export_controls(
 const DETAIL_UNCONFIRMED: &str = "NATIVE_STATIC_DETAIL_CLEANUP_UNCONFIRMED";
 const DETAIL_DURABILITY: &str = "NATIVE_STATIC_DETAIL_DURABILITY_UNCERTAIN";
 const DETAIL_CANCELLED: &str = "NATIVE_STATIC_CANCELLED";
+// The producer copies and verifies the complete asset tree before STAGED.
+// Keep that bounded preparation separate from the post-STAGED handoff budget.
+const DETAIL_PREPARATION_DEADLINE: Duration = Duration::from_secs(600);
 const DETAIL_DEADLINE: Duration = Duration::from_secs(120);
+
+struct DetailPhaseDeadline {
+    current: std::cell::Cell<Instant>,
+    staged: std::cell::Cell<bool>,
+}
+impl DetailPhaseDeadline {
+    fn new(began: Instant) -> Self {
+        Self { current: std::cell::Cell::new(began + DETAIL_PREPARATION_DEADLINE), staged: std::cell::Cell::new(false) }
+    }
+    fn get(&self) -> Instant { self.current.get() }
+    fn accept_staged(&self, now: Instant) -> Result<()> {
+        if self.staged.get() { return Err(bad()); }
+        if now >= self.get() { return Err(err("NATIVE_STATIC_DETAIL_TIMEOUT")); }
+        self.staged.set(true);
+        self.current.set(now + DETAIL_DEADLINE);
+        Ok(())
+    }
+}
 const STARTUP_LIMIT: usize = 4096;
 const CONTROL_LIMIT: usize = 1024;
 
@@ -1541,7 +1562,7 @@ impl DetailRun {
             mut journal,
         } = self;
         let began = Instant::now();
-        let deadline = began + DETAIL_DEADLINE;
+        let deadline = DetailPhaseDeadline::new(began);
         let command = detail_child_command(
             &payload.node(),
             &script,
@@ -1550,8 +1571,8 @@ impl DetailRun {
             &viewer,
             journal.status.private_editor,
         );
-        let startup_deadline = deadline.min(Instant::now() + Duration::from_secs(5));
-        let mut child = match check_detail(deadline, cancel)
+        let startup_deadline = deadline.get().min(Instant::now() + Duration::from_secs(5));
+        let mut child = match check_detail(deadline.get(), cancel)
             .and_then(|_| stage.check(&journal))
             .and_then(|_| {
                 spawn_detail_child(command, &stage.directory)
@@ -1576,7 +1597,7 @@ impl DetailRun {
         let _unprepared_stderr = stderr;
         let publication_id = journal.status.publication_id.clone();
         let check = || {
-            check_detail(deadline, cancel)?;
+            check_detail(deadline.get(), cancel)?;
             diagnostic.borrow_mut().drain(&publication_id);
             Ok(())
         };
@@ -1617,6 +1638,8 @@ impl DetailRun {
             if staged.kind != FrameKind::Staged || staged.job_id != journal.status.job_id {
                 return Err(bad());
             }
+            check()?;
+            deadline.accept_staged(Instant::now())?;
             // STAGED relinquishes all child writes to this tree.
             phase.set(diagnostics::Phase::VerifyStaging);
             let (receipt, tree) = verify_detail_stage(&stage, &journal, &staged.manifest_sha256, &check)?;
@@ -1670,7 +1693,7 @@ impl DetailRun {
                 exit_signal: observed.and_then(|value| value.signal()),
                 running: exit.as_ref().ok().map(|value| value.is_none()),
                 elapsed_ms: began.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                deadline_reached: Instant::now() >= deadline,
+                deadline_reached: Instant::now() >= deadline.get(),
             };
             let _ = controller.write_detail_diagnostic(token, &journal, &failure);
         }
@@ -2548,6 +2571,23 @@ mod detail_tests {
         let mut bytes = (body.len() as u32).to_be_bytes().to_vec();
         bytes.extend_from_slice(body);
         bytes
+    }
+
+    #[test]
+    fn static_detail_copy_and_settlement_deadlines_do_not_renew() {
+        let began = Instant::now();
+        let budget = DetailPhaseDeadline::new(began);
+        let staged = began + Duration::from_secs(121);
+        budget.accept_staged(staged).unwrap();
+        let settlement = staged + Duration::from_secs(120);
+        assert_eq!(budget.get(), settlement);
+        // An additional frame or file activity cannot buy another handoff.
+        assert!(budget.accept_staged(staged + Duration::from_secs(1)).is_err());
+        assert_eq!(budget.get(), settlement);
+        let expired = DetailPhaseDeadline::new(began);
+        let preparation_end = began + Duration::from_secs(600);
+        assert_eq!(expired.accept_staged(preparation_end).unwrap_err().code, "NATIVE_STATIC_DETAIL_TIMEOUT");
+        assert_eq!(expired.get(), preparation_end);
     }
 
     #[test]
