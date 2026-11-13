@@ -1692,7 +1692,7 @@ public actor NativeAutomationSession {
     }
 
     private static let privateHostOperations: Set<String> = [
-        "private-exhibition-create", "private-exhibition-read", "private-exhibition-edit",
+        "private-exhibition-create", "private-exhibition-open", "private-exhibition-read", "private-exhibition-edit",
         "private-exhibition-save", "private-exhibition-reopen", "private-exhibition-wall-finish",
         "private-exhibition-portal-attach", "private-exhibition-export-oex"
     ]
@@ -1705,6 +1705,18 @@ public actor NativeAutomationSession {
         guard case .object(let fields) = request,
               Set(fields.keys) == (operation == "private-exhibition-export-oex" ? common.union(["outputPath"]) : common) else {
             throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
+        }
+        if operation == "private-exhibition-open" {
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["exhibitionId", "serverRevision", "etag"])
+            guard privateHost == nil, let exhibitionId = command["exhibitionId"].string,
+                  let revision = command["serverRevision"].integer, let serverRevision = Int(exactly: revision),
+                  let etag = command["etag"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let opened = try await api.openPrivateHost(exhibitionId: exhibitionId, revision: serverRevision,
+                etag: etag, requestId: id, protecting: current)
+            try opened.checkProtected(await bridge.documentState(context)); try Task.checkCancellation()
+            privateHost = opened
+            return .object(["document": try value(opened.document), "serverRevision": .integer(Int64(serverRevision)),
+                            "protectedDocumentUnchanged": .bool(true)])
         }
         if operation == "private-exhibition-create" {
             let command = try NativeAutomationArtworkRules.command(request, keys: ["title"])
@@ -1745,11 +1757,8 @@ public actor NativeAutomationSession {
             else { try host.checkRemote(fresh) }
         } else if operation == "private-exhibition-edit" {
             let command = try NativeAutomationArtworkRules.command(request, keys: targetKeys.union(["architecture"]))
-            guard host.document.pending == nil, let etag = host.document.etag else { throw BridgeFailure("PRIVATE_EXHIBITION_PENDING") }
-            try host.checkRemote(await api.exhibition(draft.id))
-            let next = try NativePrivateHostArchitecture.applying(command["architecture"], to: draft)
-            try await api.validateNativeViewportEdit(next, etag: etag)
-            try host.checkRemote(await api.exhibition(draft.id))
+            guard host.document.pending == nil, host.document.etag != nil else { throw BridgeFailure("PRIVATE_EXHIBITION_PENDING") }
+            let next = try await api.preparePrivateHostArchitecture(command["architecture"], in: host)
             try host.checkProtected(await bridge.documentState(context)); try Task.checkCancellation()
             try host.stage(next); privateHost = host
         } else if operation == "private-exhibition-portal-attach" {

@@ -31,6 +31,24 @@ struct NativePrivateHost: Sendable {
             tenantId: current.tenantId, principalId: current.principalId, draft: draft,
             etag: nil, savedEditVersion: nil, pending: nil)
     }
+    init(opening response: NativeStudioResponse, requestId: String, protecting current: NativeDocumentState) throws {
+        guard UUID(uuidString: requestId)?.uuidString.lowercased() == requestId,
+              current.pending == nil, !current.dirty, response.draft.id != current.draft?.id,
+              [current.workspaceId,current.tenantId,current.principalId,response.draft.id].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+              response.revision > 0, response.etag.range(of: #"^"studio-r[1-9][0-9]*-[a-f0-9]{64}"$"#, options: .regularExpression) != nil, response.etag.hasPrefix("\"studio-r\(response.revision)-"),
+              response.draft.document["kind"] == .string("exhibition-draft"),
+              response.draft.candidate["kind"] == .string("exhibition-revision"),
+              response.draft.document["exhibitionId"] == .string(response.draft.id),
+              let edit = response.draft.document["editVersion"].integer, edit > 0 else {
+            throw BridgeFailure("PRIVATE_EXHIBITION_SCOPE_CHANGED")
+        }
+        creationRequestId = requestId; protectedBytes = try Self.bytes(current)
+        protectedExhibitionId = current.draft?.id
+        document = NativeDocumentState(format: 1, revision: 1, workspaceId: current.workspaceId,
+            tenantId: current.tenantId, principalId: current.principalId, draft: response.draft,
+            etag: response.etag, savedEditVersion: edit, pending: nil)
+        serverRevision = response.revision; savedDraft = response.draft
+    }
     func checkProtected(_ current: NativeDocumentState) throws {
         guard try Self.bytes(current) == protectedBytes,
               document.workspaceId == current.workspaceId, document.tenantId == current.tenantId,
