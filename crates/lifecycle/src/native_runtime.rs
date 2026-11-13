@@ -694,13 +694,21 @@ fn check_current52_recovery_source(root: &Path, source: &Current) -> Result<()> 
         return Err(rejected());
     }
     let predecessor = binding.previous_generation.as_deref().ok_or_else(rejected)?;
+    if predecessor != "ef2cb6c9-bce1-4352-b0d3-287cc6d97ace" { return Err(rejected()); }
+    // Reconstruct the exact retained clean binding, including its physical owner
+    // and predecessor, rather than accepting an arbitrary well-formed digest.
+    let mut prior_binding = binding.clone();
+    prior_binding.phase = Phase::Clean;
+    prior_binding.generation = predecessor.into();
+    prior_binding.previous_generation = Some("4b74230c-9f16-4c55-9b0c-7190d1dbac83".into());
+    prior_binding.check()?;
     let (prior, proof) = read_run(root, predecessor)?;
     let proof = proof.ok_or_else(rejected)?;
     if prior.job_id.as_deref() != Some(predecessor) || prior.state != "stopped"
-        || prior.failure_code.is_some() || prior.ports != failed.ports
+        || prior.failure_code.is_some() || prior.error_code.is_some() || prior.ports != failed.ports
         || prior.postgres_pid.is_some() || prior.node_pid.is_some() || prior.auxiliary_pid.is_some()
         || ["postgres", "node", "auxiliary"].iter().any(|name| prior.exits.get(*name) != Some(&0))
-        || !hash_valid(&proof.binding_sha256) || proof.consumed_by.as_deref() != Some(source.id.as_str()) {
+        || proof.binding_sha256 != prior_binding.sha256()? || proof.consumed_by.as_deref() != Some(source.id.as_str()) {
         return Err(rejected());
     }
     Ok(())
@@ -741,13 +749,27 @@ fn current52_failed_source_requires_exact_drained_history_and_owner() {
         ports: Ports::default(), readiness: Readiness::default(), error_code: None, failure_code: None,
         postgres_pid: None, node_pid: None, auxiliary_pid: None,
         exits: [("postgres".into(), 0), ("node".into(), 0), ("auxiliary".into(), 0)].into(), log_truncated: false };
-    let proof = || FurnishingCompletion { binding_sha256: "a".repeat(64), consumed_by: Some(generation.into()) };
+    let mut prior_binding = current.furnishing.as_ref().unwrap().clone();
+    prior_binding.phase = Phase::Clean; prior_binding.generation = predecessor.into();
+    prior_binding.previous_generation = Some("4b74230c-9f16-4c55-9b0c-7190d1dbac83".into());
+    let proof = || FurnishingCompletion { binding_sha256: prior_binding.sha256().unwrap(), consumed_by: Some(generation.into()) };
     write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
     let mut failed = prior.clone(); failed.job_id = Some(generation.into()); failed.state = "failed".into();
     failed.error_code = Some(furnishing_lifecycle::ERROR.into()); failed.failure_code = failed.error_code.clone();
     write_run(&root.join("native-runs").join(generation), &failed, None).unwrap();
     write_json(&root, "native-current-run.json", &current).unwrap();
     assert_eq!(current52_recovery_source_generation(&root).unwrap(), generation);
+    let mut substituted = proof(); substituted.binding_sha256 = "a".repeat(64);
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(substituted)).unwrap();
+    assert!(current52_recovery_source_generation(&root).is_err());
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
+    let mut wrong = current.clone(); wrong.furnishing.as_mut().unwrap().previous_generation = Some(Uuid::new_v4().to_string());
+    assert!(check_current52_recovery_source(&root, &wrong).is_err());
+    prior.error_code = Some("UNKNOWN".into());
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
+    assert!(current52_recovery_source_generation(&root).is_err());
+    prior.error_code = None;
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
     let mut wrong = current.clone(); wrong.furnishing.as_mut().unwrap().owner.principal_id = predecessor.into();
     assert!(check_current52_recovery_source(&root, &wrong).is_err());
     let mut wrong = current.clone(); wrong.furnishing.as_mut().unwrap().payload_manifest_sha256 = "0".repeat(64);
