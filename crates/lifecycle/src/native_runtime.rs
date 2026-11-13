@@ -937,6 +937,10 @@ fn furnishing_restore_stage_creates_lock(prior: Option<&Current>, has_database: 
 #[path = "native_runtime_retained_product_image.rs"]
 mod retained_product_image;
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_runtime_retained_original_model.rs"]
+mod retained_original_model;
+
 pub struct Session {
     service: LifecycleService,
     observation_root: crate::maintenance_source::DirectoryPin,
@@ -958,6 +962,8 @@ pub struct Session {
     selected_recovery_045: Option<oex_retained_cleanup::Selected045>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     retained_product_image: Option<retained_product_image::Trial>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    retained_original_model: Option<retained_original_model::Trial>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     startup_cancellation_045: Option<crate::installations::native_maintenance::StartupCancellation045>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -1405,6 +1411,8 @@ impl Session {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             retained_product_image: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            retained_original_model: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             startup_cancellation_045: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             clean_exit_hayes_before: None,
@@ -1840,6 +1848,9 @@ impl Session {
     pub(crate) fn confirm_saved_head_publication(&mut self, head: &crate::installations::native_static_export::SavedHead,
                                                 publication: &str) -> Result<()> {
         let (identity, session_hash) = self.saved_head_owner_hash()?;
+        if !head.isolated_runtime_allowed(&self.payload.context().manifest_sha256) {
+            return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
+        }
         let query = head.receipt_query(publication, &identity.1, &identity.2, &session_hash)?;
         let confirmed = self.query_database_before("exhibitos", &query, Instant::now() + Duration::from_secs(15))?;
         self.check_native_observation_fence()?;
@@ -1848,7 +1859,7 @@ impl Session {
     }
     fn saved_head_owner_hash(&mut self) -> Result<((String, String, String), String)> {
         if !cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))
-            || self.payload.context().manifest_sha256 != crate::installations::native_static_export::SAVED_HEAD_RUNTIME
+            || !crate::installations::native_static_export::saved_head_runtime_allowed(&self.payload.context().manifest_sha256)
             || self.oex_upload_selection_started || self.selected_furnishing_import()
             || self.state != "ready" || !self.readiness.ready || self.auxiliary.is_some()
             || self.active_furnishing_binding().is_none()
@@ -2689,6 +2700,8 @@ const { isDeepStrictEqual } = require('node:util');
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         self.check_retained_product_image_before_node()?;
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        self.check_retained_original_model_before_node()?;
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         self.check_clean_exit_hayes_before_node()?;
         self.state = "starting_services".into();

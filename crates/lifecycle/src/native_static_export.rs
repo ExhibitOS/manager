@@ -8,6 +8,17 @@ use crate::{
 
 pub(crate) const SAVED_HEAD_RUNTIME: &str =
     "cfc795c35628e15a9f91b71dcca0587023a0b249b2984a2615973b72bc6ed32f";
+pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
+    cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))
+        && (manifest == SAVED_HEAD_RUNTIME || isolated_saved_head_runtime_allowed(manifest))
+}
+fn isolated_saved_head_runtime_allowed(manifest: &str) -> bool {
+    cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))
+        && ["1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238",
+            "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988",
+            "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"].contains(&manifest)
+}
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{CStr, CString, OsStr, OsString},
@@ -46,6 +57,19 @@ pub(crate) struct SavedHead {
     revision: u64,
     edit_version: u64,
     revision_sha256: String,
+    #[serde(default)]
+    protected_document: Option<ProtectedDocument>,
+}
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProtectedDocument { exhibition_id: String, etag: String, revision: u64, edit_version: u64 }
+impl ProtectedDocument {
+    fn matches(&self, document: &super::native_document::DocumentState) -> bool {
+        document.pending.is_none() && self.revision == document.revision && self.edit_version > 0
+            && document.saved_edit_version == Some(self.edit_version) && document.etag.as_deref() == Some(self.etag.as_str())
+            && document.draft.as_ref().is_some_and(|draft| super::native_document::draft_id(draft) == Some(self.exhibition_id.as_str())
+                && draft["editVersion"].as_u64() == Some(self.edit_version))
+    }
 }
 impl Input {
     pub(crate) fn verify_saved_head_receipt(&mut self, session: &mut Session) -> Result<()> {
@@ -60,6 +84,10 @@ impl Input {
     }
 }
 impl SavedHead {
+    pub(crate) fn isolated(&self) -> bool { self.protected_document.is_some() }
+    pub(crate) fn isolated_runtime_allowed(&self, manifest: &str) -> bool {
+        !self.isolated() || isolated_saved_head_runtime_allowed(manifest)
+    }
     pub(crate) fn receipt_query(&self, publication: &str, tenant: &str, principal: &str, session_hash: &str) -> Result<String> {
         let bad = || err("NATIVE_SAVED_HEAD_PUBLICATION_UNCONFIRMED");
         if ![publication, tenant, principal, &self.exhibition_id, &self.request_id]
@@ -75,6 +103,12 @@ impl SavedHead {
         let draft_revision = revision.parse::<i32>().ok().filter(|value| *value > 0 && value.to_string() == revision)
             .ok_or_else(bad)?;
         if !hash_valid(etag_hash) { return Err(bad()); }
+        if let Some(protected) = &self.protected_document {
+            if !crate::installations::uuid(&protected.exhibition_id) || protected.exhibition_id == self.exhibition_id
+                || protected.revision == 0 || protected.edit_version == 0 || protected.etag.is_empty() {
+                return Err(bad());
+            }
+        }
         // This is the pinned Platform's ordinary idempotency hash. Only its
         // digest enters SQL, along with validated UUIDs, digests and integers.
         let quoted_etag = serde_json::to_string(&self.etag).map_err(|_| bad())?;
@@ -2054,16 +2088,18 @@ impl Exporter {
         let (workspace_id, tenant_id, principal_id, revision_sha256) = if let Some(head) = input.saved_head {
             if !input.saved_head_verified { return Err(err("NATIVE_SAVED_HEAD_PUBLICATION_UNCONFIRMED")); }
             let document = self.controller.native_document(&token)?;
-            if document.pending.is_some() || document.revision != head.revision
-                || document.etag.as_deref() != Some(head.etag.as_str())
-                || document.saved_edit_version != Some(head.edit_version)
-                || !document.draft.as_ref().is_some_and(|draft| {
-                    super::native_document::draft_id(draft) == Some(head.exhibition_id.as_str())
-                        && draft["editVersion"].as_u64() == Some(head.edit_version)
-                })
-            {
-                return Err(err("NATIVE_DOCUMENT_STATE_CHANGED"));
-            }
+            let matches = if let Some(protected) = &head.protected_document {
+                protected.exhibition_id != head.exhibition_id && protected.matches(&document)
+            } else {
+                document.pending.is_none() && document.revision == head.revision
+                    && document.etag.as_deref() == Some(head.etag.as_str())
+                    && document.saved_edit_version == Some(head.edit_version)
+                    && document.draft.as_ref().is_some_and(|draft| {
+                        super::native_document::draft_id(draft) == Some(head.exhibition_id.as_str())
+                            && draft["editVersion"].as_u64() == Some(head.edit_version)
+                    })
+            };
+            if !matches { return Err(err("NATIVE_DOCUMENT_STATE_CHANGED")); }
             (document.workspace_id, document.tenant_id, document.principal_id, head.revision_sha256)
         } else {
             let publication = self.controller.native_publication(&token)?;
@@ -2420,6 +2456,34 @@ mod detail_tests {
         assert!(head.receipt_query(JOB, JOB, JOB, &session_hash).is_err());
         wire["savedHeadVerified"] = true.into();
         assert!(serde_json::from_value::<Input>(wire).is_err());
+    }
+
+    #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]
+    #[test]
+    fn saved_head_private_export_protects_selected_document_and_uses_target_owner_query() {
+        let official="10000000-0000-4000-8000-000000000001";
+        let document:super::super::native_document::DocumentState=serde_json::from_value(serde_json::json!({
+            "format":1,"revision":304,"workspaceId":JOB,"tenantId":JOB,"principalId":JOB,
+            "draft":{"id":official,"editVersion":99},"etag":"official-r115","savedEditVersion":99,"pending":null
+        })).unwrap();
+        let head:SavedHead=serde_json::from_value(serde_json::json!({"exhibitionId":JOB,"requestId":JOB,
+            "etag":format!("\"studio-r16-{}\"","a".repeat(64)),"revision":17,"editVersion":16,"revisionSha256":"b".repeat(64),
+            "protectedDocument":{"exhibitionId":official,"etag":"official-r115","revision":304,"editVersion":99}})).unwrap();
+        let protected=head.protected_document.as_ref().unwrap();assert!(protected.matches(&document));
+        let mut changed=document.clone();changed.revision+=1;assert!(!protected.matches(&changed));
+        let mut changed=document.clone();changed.etag=None;assert!(!protected.matches(&changed));
+        let mut changed=document.clone();changed.draft.as_mut().unwrap()["id"]=JOB.into();assert!(!protected.matches(&changed));
+        let query=head.receipt_query(JOB,JOB,JOB,&"c".repeat(64)).unwrap();
+        assert!(query.contains(&format!("p.exhibition_id='{JOB}'")));assert!(query.contains("p.draft_revision=16"));
+        assert!(!query.contains(official));
+        assert!(!head.isolated_runtime_allowed(SAVED_HEAD_RUNTIME));
+        assert!(head.isolated_runtime_allowed(crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2));
+        assert!(!saved_head_runtime_allowed(&"f".repeat(64)));
+        let mut wire=serde_json::to_value(serde_json::json!({"exhibitionId":JOB,"requestId":JOB,
+            "etag":format!("\"studio-r16-{}\"","a".repeat(64)),"revision":17,"editVersion":16,"revisionSha256":"b".repeat(64),
+            "protectedDocument":{"exhibitionId":JOB,"etag":"official-r115","revision":304,"editVersion":99}})).unwrap();
+        assert!(serde_json::from_value::<SavedHead>(wire.clone()).unwrap().receipt_query(JOB,JOB,JOB,&"c".repeat(64)).is_err());
+        wire["protectedDocument"]["verified"]=true.into();assert!(serde_json::from_value::<SavedHead>(wire).is_err());
     }
 
     fn frame(body: &[u8]) -> Vec<u8> {

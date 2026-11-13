@@ -8,7 +8,7 @@ import Darwin
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
-        "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
+        "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
@@ -898,7 +898,7 @@ public actor NativeAutomationSession {
     }
 
     private func exportSavedHead(_ request: DocumentValue, id: String, context: Context,
-                                 current: NativeDocumentState, api: AuthoringAPI) async throws -> NativeStaticExportReceipt {
+                                 current: NativeDocumentState, api: AuthoringAPI, protecting protected: NativeDocumentState? = nil) async throws -> NativeStaticExportReceipt {
         let publicationProfile = "bounded-local-v1"
         guard let owner = existingWorkspaceV5, let manifest = runtimeManifest, owner.manifestSHA256 == manifest,
               AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest), selectedOEXFormat == nil,
@@ -906,12 +906,15 @@ public actor NativeAutomationSession {
               authoringSession?.userId == owner.principalId,
               current.workspaceId == owner.workspaceId, current.tenantId == owner.tenantId,
               current.principalId == owner.principalId else { throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE") }
-        try checkedRevision(request, current)
+        let comparison = protected ?? current
+        try checkedRevision(request, comparison)
         let command = try NativeAutomationArtworkRules.command(request, keys: ["etag"])
         guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag,
               command["etag"] == .string(etag), let path = request["outputPath"].string else {
             throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
         }
+        _ = try NativeSavedHeadExportComparison.head(current: current, protecting: protected,
+            requestId: id, revisionSHA256: String(repeating: "0", count: 64))
         let parent = try Self.exportRootIdentity(root, profile: profile)
         let destination = URL(fileURLWithPath: path)
         guard path == destination.path, destination.deletingLastPathComponent().path == root.path else {
@@ -948,15 +951,28 @@ public actor NativeAutomationSession {
         let readiness = try await api.publicationReady(exhibitionId: draft.id, etag: etag, publicationProfile: publicationProfile)
         guard readiness.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
         guard readiness.status == "READY" else { throw AuthoringFailure("PUBLICATION_NOT_READY") }
+        if let protected {
+            guard try NativePrivateHost.bytes(await bridge.documentState(context)) == NativePrivateHost.bytes(protected) else {
+                throw BridgeFailure("PRIVATE_EXHIBITION_SCOPE_CHANGED")
+            }
+        }
+        let latePolicy = try await api.nativeViewportPolicy(draft.id)
+        guard latePolicy.confirmsOrdinaryDraft, latePolicy.etag == etag else {
+            throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+        }
         let frozen = try await api.preparePublication(exhibitionId: draft.id, etag: etag, requestId: id, publicationProfile: publicationProfile)
         let matches = try await api.publications(exhibitionId: draft.id).filter { $0.publicationId == frozen.publicationId }
         guard matches == [frozen], frozen.status == "published" else { throw BridgeFailure("PUBLICATION_SCOPE_CHANGED") }
         try reopened.requireSameComparison(await api.exhibition(draft.id))
         guard try Self.exportRootIdentity(root, profile: profile) == parent else { throw BridgeFailure(changed) }
 
-        let head: DocumentValue = .object(["exhibitionId": .string(draft.id), "etag": .string(etag),
-            "requestId": .string(id), "revision": request["expectedRevision"],
-            "editVersion": request["expectedEditVersion"], "revisionSha256": .string(frozen.revisionSha256)])
+        if let protected {
+            guard try NativePrivateHost.bytes(await bridge.documentState(context)) == NativePrivateHost.bytes(protected) else {
+                throw BridgeFailure("PRIVATE_EXHIBITION_SCOPE_CHANGED")
+            }
+        }
+        let head = try NativeSavedHeadExportComparison.head(current: current, protecting: protected,
+            requestId: id, revisionSHA256: frozen.revisionSha256)
         _ = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination,
                                                privateEditor: true, nativeOriginalDetail: false,
                                                outputParentIdentity: parent, savedHead: head)
@@ -1694,7 +1710,7 @@ public actor NativeAutomationSession {
     private static let privateHostOperations: Set<String> = [
         "private-exhibition-create", "private-exhibition-open", "private-exhibition-read", "private-exhibition-edit",
         "private-exhibition-save", "private-exhibition-reopen", "private-exhibition-wall-finish",
-        "private-exhibition-portal-attach", "private-exhibition-export-oex"
+        "private-exhibition-portal-attach", "private-exhibition-export-oex", "private-exhibition-export-static"
     ]
     private func executePrivateHost(_ operation: String, request: DocumentValue, id: String,
                                     context: Context, api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
@@ -1703,7 +1719,7 @@ public actor NativeAutomationSession {
               current.pending == nil, !current.dirty else { throw BridgeFailure("PRIVATE_EXHIBITION_UNAVAILABLE") }
         let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
         guard case .object(let fields) = request,
-              Set(fields.keys) == (operation == "private-exhibition-export-oex" ? common.union(["outputPath"]) : common) else {
+              Set(fields.keys) == (["private-exhibition-export-oex", "private-exhibition-export-static"].contains(operation) ? common.union(["outputPath"]) : common) else {
             throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
         }
         if operation == "private-exhibition-open" {
@@ -1787,6 +1803,15 @@ public actor NativeAutomationSession {
             try host.requireSaved(await api.exhibition(draft.id))
             try host.checkProtected(await bridge.documentState(context)); try Task.checkCancellation()
             try host.stage(next); privateHost = host
+        } else if operation == "private-exhibition-export-static" {
+            _ = try NativeAutomationArtworkRules.command(request, keys: targetKeys)
+            try host.requireSaved(await api.exhibition(draft.id))
+            guard let etag = host.document.etag else { throw BridgeFailure("PRIVATE_EXHIBITION_REQUIRED") }
+            var scoped = request; scoped["command"] = .object(["etag": .string(etag)])
+            let receipt = try await exportSavedHead(scoped, id: id, context: context, current: host.document, api: api, protecting: current)
+            try host.requireSaved(await api.exhibition(draft.id))
+            try host.checkProtected(await bridge.documentState(context))
+            return try value(receipt)
         } else if operation == "private-exhibition-export-oex" {
             _ = try NativeAutomationArtworkRules.command(request, keys: targetKeys)
             try host.requireSaved(await api.exhibition(draft.id))
@@ -3414,5 +3439,31 @@ public actor NativeAutomationSession {
             try await Task.sleep(for: .milliseconds(100))
         }
         throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
+    }
+}
+
+/// The export's private saved head and the selected official journal have
+/// different revision domains. Neither may be substituted for the other.
+enum NativeSavedHeadExportComparison {
+    static func head(current: NativeDocumentState, protecting protected: NativeDocumentState?,
+                     requestId: String, revisionSHA256: String) throws -> DocumentValue {
+        func fields(_ state: NativeDocumentState) throws -> DocumentValue {
+            guard !state.dirty, state.pending == nil, let draft = state.draft, let etag = state.etag,
+                  state.revision > 0, state.revision <= UInt64(Int64.max),
+                  let edit = draft.document["editVersion"].integer, edit > 0,
+                  state.savedEditVersion == edit else { throw BridgeFailure("PRIVATE_EXHIBITION_SCOPE_CHANGED") }
+            return .object(["exhibitionId": .string(draft.id), "etag": .string(etag),
+                "revision": .integer(Int64(state.revision)), "editVersion": .integer(edit)])
+        }
+        var head = try fields(current)
+        head["requestId"] = .string(requestId); head["revisionSha256"] = .string(revisionSHA256)
+        if let protected {
+            guard protected.workspaceId == current.workspaceId, protected.tenantId == current.tenantId,
+                  protected.principalId == current.principalId, protected.draft?.id != current.draft?.id else {
+                throw BridgeFailure("PRIVATE_EXHIBITION_SCOPE_CHANGED")
+            }
+            head["protectedDocument"] = try fields(protected)
+        }
+        return head
     }
 }

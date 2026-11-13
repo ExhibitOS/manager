@@ -51,6 +51,8 @@ pub enum LocalPersonalTransition {
         #[serde(default)]
         retained_gpu_variant: Option<RetainedGpuVariant>,
         #[serde(default)]
+        retained_original_model: Option<RetainedOriginalModel>,
+        #[serde(default)]
         startup_cancellation_045: Option<StartupCancellation045>,
     },
     Activate {
@@ -59,6 +61,8 @@ pub enum LocalPersonalTransition {
         retained_product_image: Option<RetainedProductImage>,
         #[serde(default)]
         retained_gpu_variant: Option<RetainedGpuVariant>,
+        #[serde(default)]
+        retained_original_model: Option<RetainedOriginalModel>,
         #[serde(default)]
         startup_cancellation_045: Option<StartupCancellation045>,
     },
@@ -70,6 +74,8 @@ pub enum LocalPersonalTransition {
         retained_product_image: Option<RetainedProductImage>,
         #[serde(default)]
         retained_gpu_variant: Option<RetainedGpuVariant>,
+        #[serde(default)]
+        retained_original_model: Option<RetainedOriginalModel>,
     },
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
     InspectPreReadyGuard {
@@ -90,6 +96,47 @@ pub struct RetainedGpuVariant {
     pub(crate) transfer_sha256: String,
 }
 
+/// Exact journal/source receipt binding for an already terminal required model import.
+/// Read-only owned-PG and normal import readback prove readiness; this wire value
+/// never supplies completion, retry, CMS approval or placement authority.
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetainedOriginalModel {
+    pub(crate) job_id: String,
+    pub(crate) artwork_id: String,
+    pub(crate) artwork_revision: u32,
+    pub(crate) upload_idempotency_key: String,
+    pub(crate) generation: String,
+    pub(crate) source_sha256: String,
+    pub(crate) source_bytes: u64,
+    pub(crate) scale_meters: f64,
+    pub(crate) receipt_sha256: String,
+    pub(crate) rights_sha256: String,
+    pub(crate) transfer_sha256: String,
+}
+
+#[cfg(debug_assertions)]
+impl RetainedOriginalModel {
+    #[cfg(test)]
+    pub(crate) fn synthetic() -> Self {
+        Self { job_id:"10000000-0000-4000-8000-000000000004".into(),
+            artwork_id:"10000000-0000-4000-8000-000000000005".into(),artwork_revision:1,
+            upload_idempotency_key:"10000000-0000-4000-8000-000000000006".into(),generation:"synthetic-required-model".into(),
+            source_sha256:"a".repeat(64),source_bytes:100,scale_meters:1.0,receipt_sha256:"c".repeat(64),
+            rights_sha256:"e".repeat(64),transfer_sha256:"d".repeat(64) }
+    }
+    pub(crate) fn valid(&self) -> bool {
+        [&self.job_id, &self.artwork_id, &self.upload_idempotency_key].into_iter().all(|id| uuid(id))
+            && (1..=i32::MAX as u32).contains(&self.artwork_revision)
+            && self.generation.len() <= 128 && self.generation.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            && self.generation.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            && [&self.source_sha256, &self.receipt_sha256, &self.rights_sha256, &self.transfer_sha256].into_iter().all(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+            && (28..=32 * 1024 * 1024).contains(&self.source_bytes)
+            && self.scale_meters.is_finite() && self.scale_meters > 0.0 && self.scale_meters <= 1_000_000.0
+    }
+}
+
 #[cfg(debug_assertions)]
 #[derive(Clone, Copy, Default)]
 pub(crate) enum TransitionRetention<'a> {
@@ -97,20 +144,25 @@ pub(crate) enum TransitionRetention<'a> {
     None,
     ProductImage(&'a RetainedProductImage),
     GpuVariant(&'a RetainedGpuVariant),
+    OriginalModel(&'a RetainedOriginalModel),
 }
 
 #[cfg(debug_assertions)]
 impl<'a> TransitionRetention<'a> {
-    pub(crate) fn from_proofs(image: Option<&'a RetainedProductImage>, gpu: Option<&'a RetainedGpuVariant>) -> Result<Self> {
-        match (image, gpu) {
-            (None, None) => Ok(Self::None),
-            (Some(image), None) => Ok(Self::ProductImage(image)),
-            (None, Some(gpu)) => Ok(Self::GpuVariant(gpu)),
+    pub(crate) fn from_proofs(image: Option<&'a RetainedProductImage>, gpu: Option<&'a RetainedGpuVariant>, original: Option<&'a RetainedOriginalModel>) -> Result<Self> {
+        match (image, gpu, original) {
+            (None, None, None) => Ok(Self::None),
+            (Some(image), None, None) => Ok(Self::ProductImage(image)),
+            (None, Some(gpu), None) => Ok(Self::GpuVariant(gpu)),
+            (None, None, Some(original)) if original.valid() => Ok(Self::OriginalModel(original)),
             _ => Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")),
         }
     }
     pub(crate) fn image(self) -> Option<&'a RetainedProductImage> {
         if let Self::ProductImage(proof) = self { Some(proof) } else { None }
+    }
+    pub(crate) fn original(self) -> Option<&'a RetainedOriginalModel> {
+        if let Self::OriginalModel(proof) = self { Some(proof) } else { None }
     }
     pub(crate) fn gpu(self) -> Option<&'a RetainedGpuVariant> {
         if let Self::GpuVariant(proof) = self { Some(proof) } else { None }
