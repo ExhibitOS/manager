@@ -185,6 +185,65 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         return wire
     }
 
+    func testPortalNormalizesVersionThreeWithoutChangingLegacyContent() throws {
+        let legacy = try registered()["furnishing"]
+        var portalWire = try rectangularPortal(); portalWire["furnishing"]["id"] = .string(intakeId)
+        let portal = try XCTUnwrap(intake(portalWire).furnishing)
+        var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string), door = UUID().uuidString.lowercased()
+        let placements: [DocumentValue] = (0..<7).map { index in
+            .object(["id": .string(UUID().uuidString.lowercased()), "roomId": .string(room),
+                     "furnishingId": .string(furnishingId), "furnishingVersion": .integer(1),
+                     "transform": .object(["position": .vector([Double(index), 0, 0]),
+                         "rotation": .vector([0,0,0,1]), "scale": .vector([1,1,1])])])
+        }
+        candidate["openings"] = .array([.object(["id": .string(door), "type": .string("door")])])
+        let namespace = WorkspaceFurnishingPlacement.namespace
+        candidate["extensions"] = .object(["example/retained": .object(["value": .string("untouched")]),
+            namespace: .object(["version": .integer(3), "furnishings": .array([legacy]), "placements": .array(placements)])])
+        try draft.replaceCandidate(candidate)
+        XCTAssertNil(try WorkspacePortalFinish.applying(to: draft, openingId: door, furnishing: nil))
+        let updated = try XCTUnwrap(WorkspacePortalFinish.applying(to: draft, openingId: door,
+            furnishing: portal, admitsRectangularFit: true))
+        let result = updated.candidate["extensions"][namespace]
+        XCTAssertEqual(result["version"], .integer(7))
+        XCTAssertEqual(result["placements"], .array(placements))
+        XCTAssertEqual(result["furnishings"].items?.first, legacy)
+        XCTAssertEqual(result["furnishings"].items?.count, 2)
+        XCTAssertEqual(result["frameAttachments"], .array([]))
+        XCTAssertEqual(result["openingAttachments"].items?.count, 1)
+        XCTAssertEqual(updated.candidate["extensions"]["example/retained"], candidate["extensions"]["example/retained"])
+        for key in ["rooms", "surfaces", "openings", "placements", "artworks"] {
+            XCTAssertEqual(updated.candidate[key], candidate[key], key)
+        }
+        XCTAssertEqual(updated.document["editVersion"].integer, draft.document["editVersion"].integer! + 1)
+        XCTAssertEqual(draft.candidate, candidate)
+    }
+
+    func testPortalRejectsMalformedOrUnsupportedLegacyEnvelopes() throws {
+        let legacy = try registered()["furnishing"]
+        var portalWire = try rectangularPortal(); portalWire["furnishing"]["id"] = .string(intakeId)
+        let portal = try XCTUnwrap(intake(portalWire).furnishing)
+        var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
+        let door = UUID().uuidString.lowercased(), namespace = WorkspaceFurnishingPlacement.namespace
+        candidate["openings"] = .array([.object(["id": .string(door), "type": .string("door")])])
+        let valid: DocumentValue = .object(["version": .integer(3), "furnishings": .array([legacy]),
+            "placements": .array([.object(["id": .string(placementId)])])])
+        var rejected: [DocumentValue] = []
+        for version in [1,2,4,8,10] { var item = valid; item["version"] = .integer(Int64(version)); rejected.append(item) }
+        var extra = valid; extra["unknown"] = .bool(true); rejected.append(extra)
+        extra = valid; extra["frameAttachments"] = .array([]); rejected.append(extra)
+        extra = valid; extra["openingAttachments"] = .array([]); rejected.append(extra)
+        extra = valid; extra["placements"] = .array([]); rejected.append(extra)
+        extra = valid; extra["furnishings"] = .array([]); rejected.append(extra)
+        extra = valid; extra["furnishings"] = .array([.object(["kind": .string("unrecognized")])]); rejected.append(extra)
+        for envelope in rejected {
+            candidate["extensions"] = .object([namespace: envelope]); try draft.replaceCandidate(candidate)
+            XCTAssertThrowsError(try WorkspacePortalFinish.applying(to: draft, openingId: door,
+                furnishing: portal, admitsRectangularFit: true))
+        }
+    }
+
     func testRectangularPortalIntakeRequiresDistinctAdmissionAndBoundContinuation() throws {
         let wire = try rectangularPortal(), value = try intake(wire)
         XCTAssertThrowsError(try value.check(supportedExtensionVersion: 7))
