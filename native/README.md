@@ -28,6 +28,16 @@ Hayes owner channel, using the same authenticated envelope, descriptor passing
 and handshake as reopening. This is limited to that exact controlled tuple;
 older combined tuples do not gain initialization-channel eligibility.
 
+The independently qualified Spec34 metric-frame successor is admitted only
+from that controlled Spec33 predecessor as a directed same-catalog refresh.
+Catalog52, the exact SQL47 ledger, original assets, saved-document digest and
+carried restore proof remain unchanged. Genuine fresh initialization and its
+mandatory inherited channel use the same exact two-tuple allowlist, including
+this successor. Native transports the existing namespace10 attachment/imageFit
+contract; frame metrics and scaled-transform validation remain with the shared
+contract and renderer. Actual refresh, scaled-frame use, fresh-profile use and
+output/consumer acceptance require their own recorded results.
+
 Runtime admission still requires the exact source/producer/manifest tuple;
 selected reads and authoring purpose boundaries remain separate from startup
 drain, GPU and ordinary publication aliases.
