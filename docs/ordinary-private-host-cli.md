@@ -6,6 +6,11 @@ The selected document, artwork upload journal and publication/export journals
 are never written by these operations. No browser cookie relay, profile/workspace
 creation, raw draft file import or alternate renderer is involved.
 
+The already qualified current `1b` runtime is admitted for its existing portal
+finish contract only when the authenticated session advertises portal finish
+and source-bound rectangular-fit support. This does not admit other optional
+material or model families or an unknown runtime.
+
 Requests use the existing authenticated envelope, including the **selected**
 document's expected revision/edit version. `private-exhibition-create` accepts
 only `command: {title}`. It creates a draft through `NativeExhibitionDraft.new`
