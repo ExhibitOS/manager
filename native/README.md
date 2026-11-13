@@ -42,6 +42,12 @@ The exact current52 preservation successor (manifest `979489bc…`) additionally
 admits the retained owned, no-restore interrupted workspace through the existing
 kind7/v3 channel. Its directed Spec34 predecessor transition uses the existing
 authenticated saved-checkpoint workflow and preserves failed lineage and data.
+The existing checkpoint/controller boundary also preserves this exact ordinary
+PNG upload journal without clearing its intent or job. The directed saved pair
+requires the retained failed source and byte-pinned journal; activation/recovery
+requires the existing authenticated exact-pair checkpoint and unchanged document.
+Other writers and transition cases retain their original guards. Journal
+preservation does not establish database job settlement or worker drain.
 Before Node starts, the global unsettled-work query must return exactly `f`;
 this is an idle-only continuation and never reclaims unattributed worker tokens.
 Older tuples do not gain interrupted admission. The successor owns startup drain;

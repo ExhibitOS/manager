@@ -426,6 +426,7 @@ impl InstallationController {
         &self,
         token: &str,
         retained: native_maintenance::TransitionRetention<'_>,
+        current52_png_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState, &str, &native_upload::Transfer) -> Result<bool>,
         task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<T>,
     ) -> Result<T> {
         self.with_current_mutation(token, |service| {
@@ -449,6 +450,9 @@ impl InstallationController {
             }
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let (file, transfer) = self.upload_unlocked(service)?;
+            // The sole checkpoint caller can preserve only its authenticated,
+            // exact current52 PNG journal; all ordinary writer checks stay here.
+            let retained_current52_png = current52_png_check(service, &profile.root, &document, &file, &transfer)?;
             if let Some(proof) = retained.image() {
                 if !transfer.matches_retained_product_image(proof)
                     || document.etag.as_deref() != Some(proof.saved_etag.as_str())
@@ -469,8 +473,8 @@ impl InstallationController {
                     &installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?) {
                     return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
                 }
-            } else if transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some()
-                || transfer.compact_variant.is_some() || transfer.gpu_variant.is_some() {
+            } else if !retained_current52_png && (transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some()
+                || transfer.compact_variant.is_some() || transfer.gpu_variant.is_some()) {
                 return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
             }
             gpu_model_job_root_empty(&service.root)?;
