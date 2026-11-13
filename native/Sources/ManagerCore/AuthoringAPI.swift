@@ -3263,6 +3263,57 @@ public actor AuthoringAPI {
         return WorkspaceFurnishingThumbnailImage(selection: selection, candidate: candidate, data: data)
     }
 
+    private func checkInstalledFurnishingThumbnailScope(_ document: NativeDocumentState, generation held: UInt64) throws {
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard nativeSession, !authenticationBusy, admitsWorkspaceFurnishings,
+              Self.supportsWorkspaceFurnishingThumbnailRuntime(manifest: nativeRuntimeManifestSHA256 ?? ""),
+              document.tenantId == tenant, session?.tenantId == document.tenantId,
+              session?.userId == document.principalId,
+              [document.workspaceId, document.tenantId, document.principalId].allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_THUMBNAIL_UNAVAILABLE")
+        }
+    }
+
+    /// Read only an explicitly advertised installed card. Missing or invalid
+    /// bindings fail; never fall back to a tenant selection or a new capture.
+    public func installedWorkspaceFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary,
+                                                      in document: NativeDocumentState) async throws -> InstalledFurnishingThumbnailImage {
+        let held = generation
+        try checkInstalledFurnishingThumbnailScope(document, generation: held)
+        guard summary.isValid, summary.installedThumbnailProfile == InstalledFurnishingThumbnail.profile,
+              summary.rightsAvailability.display else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        let path = try workspaceFurnishingVersionPath(summary.id, version: summary.version)
+        func descriptor() async throws -> (DocumentValue, WorkspaceFurnishing) {
+            try checkInstalledFurnishingThumbnailScope(document, generation: held)
+            let raw: DocumentValue = try await request(path)
+            try checkInstalledFurnishingThumbnailScope(document, generation: held)
+            let item = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(raw))
+            guard item.id == summary.id, item.version == summary.version, item.details.kind == summary.kind,
+                  item.details.name == summary.name,
+                  item.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion,
+                  item.fit.map({ supportedFurnishingExtensionVersion >= ($0.profile?.minimumExtensionVersion ?? Int64.max) }) ?? true,
+                  item.fit?.profile != .rectangularPortal || admitsWorkspaceRectangularPortalFit else {
+                throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+            }
+            try NativeFurnishingThumbnailRules.requireDisplay(item.details.rights)
+            return (raw, item)
+        }
+        let (raw, item) = try await descriptor()
+        let wire: DocumentValue = try await request(path + "/installed-thumbnail", requiresNativeReadCSRF: true)
+        try checkInstalledFurnishingThumbnailScope(document, generation: held)
+        let binding = try InstalledFurnishingThumbnail(value: wire, descriptor: raw, furnishing: item)
+        let data = try await readPreviewBytes(path: path + "/installed-thumbnail/image", expectedBytes: binding.png.bytes,
+                                             sha256: binding.png.sha256, mime: "image/png", invalidCode: "CATALOG_PREVIEW_INVALID",
+                                             requireDigestHeader: true, requiresNativeReadCSRF: true)
+        try checkInstalledFurnishingThumbnailScope(document, generation: held)
+        _ = try binding.png.checkedData(data)
+        let latest: DocumentValue = try await request(path + "/installed-thumbnail", requiresNativeReadCSRF: true)
+        try checkInstalledFurnishingThumbnailScope(document, generation: held)
+        let (latestRaw, latestItem) = try await descriptor()
+        guard latest == wire, latestRaw == raw, latestItem == item else { throw AuthoringFailure("MODEL_CONFLICT") }
+        return InstalledFurnishingThumbnailImage(furnishing: item, binding: binding, data: data)
+    }
+
     private func checkInfoStandApproval(_ furnishing: WorkspaceFurnishing, intakeId: String) async throws {
         guard let manifest = infoStandPreparationManifest else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         let intake = try await workspaceFurnishingIntake(intakeId)

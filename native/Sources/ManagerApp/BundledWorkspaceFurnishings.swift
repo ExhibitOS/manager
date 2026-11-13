@@ -55,6 +55,7 @@ enum BundledWorkspaceFurnishings {
         11855: (version: "1.6.0", digest: "3c9dc8c1a32d9f2a59d7e62ed8da62a700cfcd6c87ab473987a1980ab1e75864"),
         12743: (version: "1.7.0", digest: "eeffc547ee6ffa4d7d6db5656c09703b8dadda00699da6d89b483d5cc7ebecb6"),
         16322: (version: "1.11.0", digest: "827048c2722f7ed6ecf4c77ec7a3d13f944e9987c2cdc0b36ae01b9d2175c9bd"),
+        19618: (version: "1.12.0", digest: "b265727004a7be3255b424c0d77dd649e601bd3409eb72fca522116c491c05ab"),
         18561: (version: "1.12.0", digest: "241cb694e2cc7ae96ac6ae369eb37462ffb848e55803e602ae831f8895c3617b"),
     ]
     private static func supportedItems(version: String) -> [String: WorkspaceFurnishingKind] {
@@ -78,7 +79,7 @@ enum BundledWorkspaceFurnishings {
         defer { try? handle.close() }
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              let size = Int(exactly: before.st_size), sizes.contains(size), (1...18_561).contains(size),
+              let size = Int(exactly: before.st_size), sizes.contains(size), (1...19_618).contains(size),
               let data = try handle.read(upToCount: size + 1), data.count == size,
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,

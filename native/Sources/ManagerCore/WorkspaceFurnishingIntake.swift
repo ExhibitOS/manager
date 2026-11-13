@@ -282,8 +282,13 @@ public struct WorkspaceFurnishingSummary: Codable, Sendable, Identifiable {
     public let kind: WorkspaceFurnishingKind
     public let name: String
     public let rightsAvailability: WorkspaceMaterialSummary.Availability
+    /// Present only when the installed distribution supplies an immutable card.
+    public let installedThumbnailProfile: String?
 
-    var isValid: Bool { workspaceFurnishingID(id) && version == 1 && furnishingText(name, limit: 120) }
+    var isValid: Bool {
+        workspaceFurnishingID(id) && version == 1 && furnishingText(name, limit: 120)
+            && (installedThumbnailProfile == nil || installedThumbnailProfile == InstalledFurnishingThumbnail.profile)
+    }
 }
 
 public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
