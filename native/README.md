@@ -83,6 +83,17 @@ stable `save` request UUID to create the server exhibition; creation and Save
 remain separate. This does not replace an existing exhibition or waive the
 selected/bounded GUI's new-document guard.
 
+`workspace-portal-prepare` accepts `command: {openingId, furnishingId,
+furnishingVersion: 1, modelSha256}` for the ordinary registered portal path.
+It checks the current saved head, descriptor and authoritative viewport fit,
+then returns `proposalId`, `changed` and `candidate` without staging a local edit.
+Inspect the exact opening pair and placement changes before sending
+`workspace-portal-apply` with that proposal ID and the same document revisions.
+Apply requires the unchanged local state and repeats the existing server checks;
+a different validated candidate is refused. Apply stages the local draft only;
+`save` remains explicit. `workspace-portal-cancel` drops the session-only proposal.
+No candidate JSON is accepted as input, and proposals expire when the session closes.
+
 `pedestal-prepare` accepts `command: {placementId, pedestal}` using the existing
 closed installation pedestal fields. `light-prepare` accepts either
 `command: {light, settings?}` for creation (a full existing light row with a
