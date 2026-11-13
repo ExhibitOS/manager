@@ -1072,7 +1072,8 @@ public actor AuthoringAPI {
     /// Older model/product-image session profiles never imply this additive route.
     nonisolated static func supportsCorrectedCurrentImageThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822"
+        ["73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822",
+         "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f"].contains(manifest)
         #else
         false
         #endif
@@ -1085,7 +1086,9 @@ public actor AuthoringAPI {
             // Separately qualified Frame9 payload retains this exact producer.
             "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be",
             // Corrected dedicated051 catalog; exact immutable producer handoff.
-            "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822"
+            "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822",
+            // Same051 catalog, current-only area-prefilter correction.
+            "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f"
         ]
         return manifest.map(qualified.contains) ?? false
     }

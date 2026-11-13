@@ -373,7 +373,9 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         (crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2,
          crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2),
         (crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2,
-         crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2)].contains(&pair) && proof.is_none() {
+         crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2),
+        (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2,
+         crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2)].contains(&pair) && proof.is_none() {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
     }
 
