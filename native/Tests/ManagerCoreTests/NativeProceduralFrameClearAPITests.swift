@@ -95,8 +95,12 @@ private final class FrameClearAPIProtocol: URLProtocol, @unchecked Sendable {
         let data = Self.responses[retained ? "/retained-session" : path]
             ?? Data((rejected ? "{\"code\":\"BOUNDED_EDIT_UNSUPPORTED\"}" : "{\"valid\":true}").utf8)
         Self.lock.unlock()
+        var headers = ["Content-Type": "application/json"]
+        if let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let etag = body["etag"] as? String {
+            headers["ETag"] = etag
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: rejected ? 422 : 200, httpVersion: nil,
-            headerFields: ["Content-Type": "application/json"])!
+            headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
     }
