@@ -1081,7 +1081,8 @@ public actor AuthoringAPI {
     nonisolated static func supportsCombinedThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
         ["84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
-         "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902"].contains(manifest)
+         "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902",
+         "ce4d4446197c9e1c15f54cd2409517334cd8a90339da510b379d9d0b0affbb41"].contains(manifest)
         #else
         false
         #endif

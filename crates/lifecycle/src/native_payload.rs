@@ -485,9 +485,16 @@ pub(crate) const STATIC_DETAIL_PHASE_TARGET: RuntimeTuple = (
     "f3357928224460b163b626339b12708de2e96ff9d12e06edd51d7416d37ed1a2",
     "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902",
 );
+// Qualified controlled Spec33 API/Web/default-card consumer; catalog52 and SQL47 remain unchanged.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CONTACT_EMITTER_CARD_TARGET: RuntimeTuple = (
+    "b06ca797074226bbcea091efd379f2afc5d654bf",
+    "c62d7f2ad78c9487805119b415627c1ca1ab28c90254f23912bc02dac8f929d4",
+    "ce4d4446197c9e1c15f54cd2409517334cd8a90339da510b379d9d0b0affbb41",
+);
 pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET].contains(&tuple);
+    return [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET, CONTACT_EMITTER_CARD_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1064,7 +1071,8 @@ pub(crate) fn current_image_thumbnail_transition(pair: (&str, &str)) -> bool {
             (CATALOG45_FRAME9_THUMBNAIL_TARGET.2, CURRENT_IMAGE_THUMBNAIL_051_TARGET.2),
             (CURRENT_IMAGE_THUMBNAIL_051_TARGET.2, CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2),
             (CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2, COMBINED_THUMBNAIL_TARGET.2),
-            (COMBINED_THUMBNAIL_TARGET.2, STATIC_DETAIL_PHASE_TARGET.2)].contains(&pair);
+            (COMBINED_THUMBNAIL_TARGET.2, STATIC_DETAIL_PHASE_TARGET.2),
+            (STATIC_DETAIL_PHASE_TARGET.2, CONTACT_EMITTER_CARD_TARGET.2)].contains(&pair);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = pair; false }
 }
@@ -1429,6 +1437,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2 == manifest
         || COMBINED_THUMBNAIL_TARGET.2 == manifest
         || STATIC_DETAIL_PHASE_TARGET.2 == manifest
+        || CONTACT_EMITTER_CARD_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1484,10 +1493,15 @@ impl FurnishingTransition {
 
     pub(crate) fn is_combined_thumbnail_runtime_refresh(self) -> bool {
         matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }
-            if source == COMBINED_THUMBNAIL_TARGET && target == STATIC_DETAIL_PHASE_TARGET)
+            if (source == COMBINED_THUMBNAIL_TARGET && target == STATIC_DETAIL_PHASE_TARGET)
+                || (source == STATIC_DETAIL_PHASE_TARGET && target == CONTACT_EMITTER_CARD_TARGET))
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair == (STATIC_DETAIL_PHASE_TARGET.2, CONTACT_EMITTER_CARD_TARGET.2) {
+            return Some(Self::SameCatalog { source: STATIC_DETAIL_PHASE_TARGET,
+                target: CONTACT_EMITTER_CARD_TARGET, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+        }
         if pair == (COMBINED_THUMBNAIL_TARGET.2, STATIC_DETAIL_PHASE_TARGET.2) {
             return Some(Self::SameCatalog { source: COMBINED_THUMBNAIL_TARGET,
                 target: STATIC_DETAIL_PHASE_TARGET, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -2315,6 +2329,44 @@ pub(crate) mod normal_oex_release_declaration_tests {
             FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CurrentImageThumbnail051 },
             FurnishingTransition::SameCatalog { source, target: source, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 },
         ] { assert!(!other.is_combined_thumbnail_runtime_refresh()); }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn contact_emitter_card_refresh_is_exact_directed_same_catalog_and_preserves_ledger() {
+        let source = STATIC_DETAIL_PHASE_TARGET;
+        let target = CONTACT_EMITTER_CARD_TARGET;
+        assert_ne!(source.1, target.1);
+        assert!(combined_thumbnail_host_matches(target));
+        assert_eq!(combined_thumbnail_carried_receipt_payload(target), Some(CATALOG45_CARRIED_RESTORE_BASE.2));
+        assert!(saved_workspace_transition_target(target.2));
+        let pair = (source.2, target.2);
+        assert!(current_image_thumbnail_transition(pair));
+        assert!(saved_workspace_transition_supported(pair));
+        let step = FurnishingTransition::from_manifests(pair).unwrap();
+        assert_eq!(step, FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+        assert!(step.is_combined_thumbnail_runtime_refresh());
+        assert!(!step.upgrades_catalog());
+        assert!(step.startup_recovery().is_none());
+        let prior = combined_thumbnail_payload(source).workspace_furnishing_ledger(step.source_catalog()).unwrap();
+        let next = combined_thumbnail_payload(target).workspace_furnishing_ledger(step.target_catalog()).unwrap();
+        assert_eq!(prior, next); assert_eq!(next.lines().count(), 47);
+        let obsolete = "7bf127f5e890b9cf9b254fc4a0f28eb159e5e2083674a13d03403b1902bfd263";
+        for denied in [(target.2, source.2), (target.2, target.2), (source.2, source.2),
+            (COMBINED_THUMBNAIL_TARGET.2, target.2), (CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2, target.2),
+            (obsolete, target.2), (source.2, obsolete)] {
+            assert!(FurnishingTransition::from_manifests(denied).is_none());
+            assert!(!current_image_thumbnail_transition(denied));
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        for mixed in [(source.0, target.1, target.2), (target.0, source.1, target.2),
+            (target.0, target.1, source.2), (target.0, target.1, obsolete)] {
+            assert!(!combined_thumbnail_host_matches(mixed));
+            assert!(combined_thumbnail_carried_receipt_payload(mixed).is_none());
+        }
+        assert!(!current_image_thumbnail_host_matches(target));
+        assert!(!furnishing_thumbnail_host_matches(target));
+        assert!(!gpu_model_host_matches(target)); assert!(!large_model_host_matches(target));
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

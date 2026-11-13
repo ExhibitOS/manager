@@ -48,7 +48,7 @@ final class InstalledFurnishingThumbnailTests: XCTestCase {
         return try .init(session: JSONSerialization.data(withJSONObject: session), descriptors: [JSONEncoder().encode(f.descriptor)],
             metadata: JSONEncoder().encode(f.metadata), image: f.image, digest: nativeImportSHA256(f.image))
     }
-    private func connect(_ f: Fixture, manifest: String = "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902") async throws -> AuthoringAPI {
+    private func connect(_ f: Fixture, manifest: String = "ce4d4446197c9e1c15f54cd2409517334cd8a90339da510b379d9d0b0affbb41") async throws -> AuthoringAPI {
         let api = try AuthoringAPI(port: 18091, tenantId: f.document.tenantId, nativeRuntimeManifestSHA256: manifest, protocolClasses: [InstalledCardProtocol.self])
         _ = try await api.connect(LocalAuthoringSession(tenantId: f.document.tenantId, principalId: f.document.principalId,
             origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))

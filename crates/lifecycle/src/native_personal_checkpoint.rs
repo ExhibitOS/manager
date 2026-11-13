@@ -393,7 +393,9 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2,
          crate::native_payload::COMBINED_THUMBNAIL_TARGET.2),
         (crate::native_payload::COMBINED_THUMBNAIL_TARGET.2,
-         crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2)].contains(&pair) && proof.is_none() {
+         crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2),
+        (crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2,
+         crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2)].contains(&pair) && proof.is_none() {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
     }
 
@@ -2136,6 +2138,41 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn contact_emitter_card_refresh_keeps_47_rows_and_clean_saved_digest() {
+        let source = crate::native_payload::STATIC_DETAIL_PHASE_TARGET;
+        let target = crate::native_payload::CONTACT_EMITTER_CARD_TARGET;
+        let pair = (source.2, target.2);
+        let transition = FurnishingTransition::from_manifests(pair).unwrap();
+        let payload = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload(target);
+        let ledger = transition_source_ledger(&payload, transition).unwrap();
+        assert_eq!(ledger.lines().count(), 47);
+        assert!(ledger.contains("050_workspace_furnishing_thumbnail.sql|"));
+        assert!(ledger.contains("051_current_image_thumbnail.sql|"));
+        assert!(!transition.upgrades_catalog());
+        assert_eq!(checkpoint_inventory_limit(pair, None), 8 * 1024 * 1024 * 1024);
+        for denied in [(target.2, source.2), (source.2, source.2), (target.2, target.2),
+            (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2, target.2)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+        let mut document = gpu_library_empty_document();
+        document.revision = 424; document.draft = Some(serde_json::json!({"editVersion": 139}));
+        document.saved_edit_version = Some(139);
+        document.etag = Some(format!("\"studio-r155-{}\"", "a".repeat(64)));
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        check_saved_transition_document(pair, &document, owner).unwrap();
+        let digest = saved_document_digest(&document).unwrap();
+        check_transition_host(pair, Some(&digest), true).unwrap();
+        assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &document).unwrap());
+        let mut dirty = document.clone(); dirty.saved_edit_version = Some(138);
+        assert!(check_saved_transition_document(pair, &dirty, owner).is_err());
+        let mut changed = document.clone(); changed.draft.as_mut().unwrap()["unrelated"] = true.into();
+        assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &changed).is_err());
+        assert!(catalog45_activation_saved_document(pair, false, false, None, &document).is_err());
+        assert!(check_transition_host(pair, Some(&digest), false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn retained_original_seals_only_exact_saved_forward_transition() {
         for (old,new) in [
             (crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2, crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2),
@@ -2143,6 +2180,7 @@ mod tests {
             (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2, crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2),
             (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2, crate::native_payload::COMBINED_THUMBNAIL_TARGET.2),
             (crate::native_payload::COMBINED_THUMBNAIL_TARGET.2, crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2),
+            (crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2, crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2),
         ] {
         let proof=RetainedOriginalModel::synthetic();
         let owner=("10000000-0000-4000-8000-000000000001","10000000-0000-4000-8000-000000000002","10000000-0000-4000-8000-000000000003");
