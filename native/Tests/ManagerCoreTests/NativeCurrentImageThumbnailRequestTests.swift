@@ -57,7 +57,19 @@ private final class ThumbnailRequestProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.lock.lock(); let stale = Self.stale
-        if request.httpMethod == "POST" { Self.observed.append((request.url!.path, request.httpBody)) }
+        if request.httpMethod == "POST" {
+            var body = request.httpBody
+            if body == nil, let stream = request.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var bytes = Data(), buffer = [UInt8](repeating: 0, count: 1024)
+                while stream.hasBytesAvailable {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    if count <= 0 { break }; bytes.append(contentsOf: buffer.prefix(count))
+                }
+                body = bytes
+            }
+            Self.observed.append((request.url!.path, body))
+        }
         Self.lock.unlock()
         let data: Data
         if request.url!.path == "/api/v1/auth/session" {

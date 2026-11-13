@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import XCTest
 import CryptoKit
+import CoreGraphics
+import ImageIO
 @testable import ManagerCore
 
 final class NativeCurrentImageThumbnailTests: XCTestCase {
@@ -51,6 +53,58 @@ final class NativeCurrentImageThumbnailTests: XCTestCase {
         guard case .object(var fields) = value["thumbnailPreparation"]["serverReceipt"] else { XCTFail(); return }
         fields.removeValue(forKey: "sha256"); let body = DocumentValue.object(fields)
         value["thumbnailPreparation"]["serverReceipt"]["sha256"] = .string(try hash(body))
+    }
+    @MainActor
+    func testGenericSelectionResponseAndAuthoritativeReadback() async throws {
+        let (api, document, review) = try await selectionFixture(mode: "normal")
+        let result = try await api.selectCurrentImageThumbnail(review, requestId: UUID(), expectedSelectionVersion: 0, in: document)
+        XCTAssertTrue(result.selected); XCTAssertEqual(result.selectionVersion, 1)
+        XCTAssertEqual(ThumbnailSelectionProtocol.posts(), 1)
+    }
+    @MainActor
+    func testLostSelectionReplyRequiresExplicitSameRequestReplay() async throws {
+        let (api, document, review) = try await selectionFixture(mode: "lose-once")
+        let id = UUID()
+        do { _ = try await api.selectCurrentImageThumbnail(review, requestId: id, expectedSelectionVersion: 0, in: document); XCTFail() }
+        catch { XCTAssertEqual(ThumbnailSelectionProtocol.posts(), 1) }
+        let result = try await api.selectCurrentImageThumbnail(review, requestId: id, expectedSelectionVersion: 0, in: document)
+        XCTAssertTrue(result.selected); XCTAssertEqual(ThumbnailSelectionProtocol.posts(), 2)
+    }
+    @MainActor
+    func testWrongSelectedImagePreservesUncertainMutationWithoutAutomaticRetry() async throws {
+        let (api, document, review) = try await selectionFixture(mode: "wrong-selected-image")
+        do { _ = try await api.selectCurrentImageThumbnail(review, requestId: UUID(), expectedSelectionVersion: 0, in: document); XCTFail() }
+        catch { XCTAssertEqual(ThumbnailSelectionProtocol.posts(), 1) }
+    }
+    @MainActor
+    private func selectionFixture(mode: String) async throws -> (AuthoringAPI, NativeDocumentState, NativeCurrentImageThumbnailReview) {
+        let pixels = Data(repeating: 128, count: 256 * 128 * 4)
+        let provider = try XCTUnwrap(CGDataProvider(data: pixels as CFData))
+        let image = try XCTUnwrap(CGImage(width: 256, height: 128, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: 1024, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let output = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil); XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let png = output as Data, digest = nativeImportSHA256(png)
+        var wire = try ready()
+        wire["thumbnailPreparation"]["serverReceipt"]["thumbnail"]["sha256"] = .string(digest)
+        wire["thumbnailPreparation"]["serverReceipt"]["thumbnail"]["bytes"] = .integer(Int64(png.count))
+        wire["thumbnailPreparation"]["selectionCandidate"]["thumbnailSha256"] = .string(digest)
+        try resign(&wire)
+        ThumbnailSelectionProtocol.configure(job: try JSONEncoder().encode(wire), artwork: try JSONEncoder().encode(artwork()),
+            png: png, tenant: workspace, principal: principal, mode: mode)
+        let api = try AuthoringAPI(port: 18091, tenantId: workspace,
+            nativeRuntimeManifestSHA256: "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988",
+            protocolClasses: [ThumbnailSelectionProtocol.self])
+        _ = try await api.connect(LocalAuthoringSession(tenantId: workspace, principalId: principal,
+            origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+        let draft = try NativeExhibitionDraft.new(title: "Synthetic selection")
+        let document = NativeDocumentState(format: 1, revision: 304, workspaceId: workspace, tenantId: workspace,
+            principalId: principal, draft: draft, etag: nil, savedEditVersion: draft.document["editVersion"].integer, pending: nil)
+        let review = try await api.reviewCurrentImageThumbnail(artworkId: artworkID, revision: 3, jobId: jobID, in: document)
+        return (api, document, review)
     }
     func testReadyBindsCurrentApprovedSourceAndOwners() throws {
         let job = try decode(ready())
@@ -111,4 +165,47 @@ final class NativeCurrentImageThumbnailTests: XCTestCase {
         var forged = requestWire; forged["path"] = .string("/unexpected")
         XCTAssertThrowsError(try JSONDecoder().decode(NativeCurrentImageThumbnailRequest.self, from: JSONEncoder().encode(forged)))
     }
+}
+
+private final class ThumbnailSelectionProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var job = Data(), artwork = Data(), png = Data()
+    nonisolated(unsafe) private static var tenant = "", principal = "", mode = "", selected = false, count = 0
+    static let binding = "88888888-8888-4888-8888-888888888888"
+    static func configure(job: Data, artwork: Data, png: Data, tenant: String, principal: String, mode: String) {
+        lock.lock(); defer { lock.unlock() }; Self.job = job; Self.artwork = artwork; Self.png = png
+        Self.tenant = tenant; Self.principal = principal; Self.mode = mode; selected = false; count = 0
+    }
+    static func posts() -> Int { lock.lock(); defer { lock.unlock() }; return count }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock()
+        let path = request.url!.path
+        var data = Self.artwork, headers = ["Content-Type": "application/json"]
+        var lose = false
+        if path == "/api/v1/auth/session" {
+            data = try! JSONSerialization.data(withJSONObject: ["tenantId": Self.tenant, "userId": Self.principal,
+                "role": "admin", "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z"])
+        } else if path.contains("/imports/") { data = Self.job }
+        else if request.httpMethod == "POST" {
+            Self.count += 1; Self.selected = true
+            lose = Self.mode == "lose-once" && Self.count == 1
+            data = try! JSONSerialization.data(withJSONObject: ["id": Self.binding, "selectionVersion": 1, "selected": true])
+        } else if path.hasSuffix("/thumbnail-selection") {
+            data = try! JSONSerialization.data(withJSONObject: ["selectionVersion": Self.selected ? 1 : 0,
+                "bindingId": Self.selected ? Self.binding as Any : NSNull()])
+        } else if path.contains("/assets/") || path.hasSuffix("/image") {
+            data = Self.png
+            if path.hasSuffix("/image") && Self.mode == "wrong-selected-image" { data[0] ^= 1 }
+            headers = ["Content-Type": path.hasSuffix("/image") ? "image/png" : "application/octet-stream",
+                "Content-Length": String(data.count), "x-exhibitos-sha256": nativeImportSHA256(Self.png)]
+        }
+        Self.lock.unlock()
+        if lose { client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)); return }
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

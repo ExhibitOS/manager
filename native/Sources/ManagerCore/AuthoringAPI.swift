@@ -1136,7 +1136,7 @@ public actor AuthoringAPI {
               let receipt = job.thumbnailPreparation.serverReceipt else { throw AuthoringFailure("IMAGE_THUMBNAIL_NOT_READY") }
         let image = receipt.thumbnail
         let data = try await readPreviewBytes(path: "/api/v1/tenants/" + tenant + "/assets/" + identifier(image.assetId) + "/bytes",
-            expectedBytes: image.bytes, sha256: image.sha256, mime: "application/octet-stream", invalidCode: "IMAGE_THUMBNAIL_INVALID")
+            expectedBytes: image.bytes, sha256: image.sha256, mime: "application/octet-stream", invalidCode: "IMAGE_THUMBNAIL_INVALID", requireDigestHeader: false)
         try SelectedArtworkThumbnailPNG.validate(data, expectedSHA256: image.sha256, expectedBytes: image.bytes,
             expectedWidth: image.width, expectedHeight: image.height)
         let current = try await currentImageThumbnailStatus(artworkId: artworkId, revision: revision, jobId: jobId, in: document)
@@ -1145,7 +1145,7 @@ public actor AuthoringAPI {
             workspaceId: document.workspaceId, principalId: document.principalId)
     }
     public func selectCurrentImageThumbnail(_ review: NativeCurrentImageThumbnailReview, requestId: UUID,
-        expectedSelectionVersion: Int, in document: NativeDocumentState) async throws -> NativeRenderedArtworkThumbnailSelectionReceipt {
+        expectedSelectionVersion: Int, in document: NativeDocumentState) async throws -> NativeCurrentImageThumbnailSelectionReceipt {
         guard review.issuer == currentImageThumbnailReviewIssuer, review.generation == generation, review.workspaceId == document.workspaceId,
               review.principalId == document.principalId, (0..<Int(Int32.max)).contains(expectedSelectionVersion),
               let receipt = review.job.thumbnailPreparation.serverReceipt else { throw AuthoringFailure("IMAGE_THUMBNAIL_REVIEW_STALE") }
@@ -1155,15 +1155,28 @@ public actor AuthoringAPI {
               let candidate = current.thumbnailPreparation.selectionCandidate else { throw AuthoringFailure("IMAGE_THUMBNAIL_REVIEW_STALE") }
         let path = prefix + "/artworks/" + (try identifier(receipt.artworkId)) + "/thumbnail-selection"
         let selection: NativeArtworkThumbnailSelection = try await request(path + "?expectedRevision=" + String(receipt.artworkRevision), requiresNativeReadCSRF: true)
-        guard selection.selectionVersion == expectedSelectionVersion else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
+        guard selection.selectionVersion == expectedSelectionVersion || selection.selectionVersion == expectedSelectionVersion + 1 else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
         var payload = try JSONDecoder().decode(DocumentValue.self, from: encoded(candidate))
         payload["requestId"] = .string(requestId.uuidString.lowercased())
         payload["expectedSelectionVersion"] = .integer(Int64(expectedSelectionVersion))
         guard generation == review.generation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        let result: NativeRenderedArtworkThumbnailSelectionReceipt = try await request(path, method: "POST", body: encoded(payload))
-        guard result.selected, result.selectionVersion == expectedSelectionVersion + 1,
-              result.thumbnailAssetId.uuidString.lowercased() == receipt.thumbnail.assetId,
-              result.thumbnailSha256 == receipt.thumbnail.sha256 else { throw AuthoringFailure("SELECTION_CONFLICT", status: 409) }
+        let result: NativeCurrentImageThumbnailSelectionReceipt = try await request(path, method: "POST", body: encoded(payload))
+        guard generation == review.generation, result.selected, result.selectionVersion == expectedSelectionVersion + 1 else {
+            throw AuthoringFailure("SELECTION_CONFLICT", status: 409)
+        }
+        let selected: NativeArtworkThumbnailSelection = try await request(path + "?expectedRevision=" + String(receipt.artworkRevision), requiresNativeReadCSRF: true)
+        guard selected.selectionVersion == result.selectionVersion, selected.bindingId == result.id else {
+            throw AuthoringFailure("SELECTION_CONFLICT", status: 409)
+        }
+        let selectedPNG = try await readPreviewBytes(path: path + "/" + result.id.uuidString.lowercased()
+            + "/image",
+            expectedBytes: receipt.thumbnail.bytes, sha256: receipt.thumbnail.sha256, mime: "image/png",
+            invalidCode: "IMAGE_THUMBNAIL_INVALID", requireDigestHeader: true, requiresNativeReadCSRF: true,
+            queryItems: [URLQueryItem(name: "expectedRevision", value: String(receipt.artworkRevision)),
+                         URLQueryItem(name: "expectedSelectionVersion", value: String(result.selectionVersion))])
+        try SelectedArtworkThumbnailPNG.validate(selectedPNG, expectedSHA256: receipt.thumbnail.sha256,
+            expectedBytes: receipt.thumbnail.bytes, expectedWidth: receipt.thumbnail.width, expectedHeight: receipt.thumbnail.height)
+        guard generation == review.generation else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return result
     }
 
@@ -1780,10 +1793,17 @@ public actor AuthoringAPI {
     }
 
     private func readPreviewBytes(path: String, expectedBytes: Int, sha256: String, mime: String,
-                                  invalidCode: String, requireDigestHeader: Bool, requiresNativeReadCSRF: Bool = false) async throws -> Data {
+                                  invalidCode: String, requireDigestHeader: Bool, requiresNativeReadCSRF: Bool = false,
+                                  queryItems: [URLQueryItem]? = nil) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation
-        let url = base.appendingPathComponent(path)
+        var url = base.appendingPathComponent(path)
+        if let queryItems {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw AuthoringFailure(invalidCode) }
+            components.queryItems = queryItems
+            guard let qualifiedURL = components.url else { throw AuthoringFailure(invalidCode) }
+            url = qualifiedURL
+        }
         activeRequests += 1
         defer { activeRequests -= 1 }
         var request = URLRequest(url: url, timeoutInterval: 30)

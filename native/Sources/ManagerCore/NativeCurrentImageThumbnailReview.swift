@@ -11,3 +11,10 @@ public struct NativeCurrentImageThumbnailReview: Sendable {
     let workspaceId: String
     let principalId: String
 }
+
+/// Existing-asset selection response; image identity is verified by an authoritative read.
+public struct NativeCurrentImageThumbnailSelectionReceipt: Codable, Sendable {
+    public let id: UUID
+    public let selectionVersion: Int
+    public let selected: Bool
+}

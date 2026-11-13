@@ -42,3 +42,12 @@ Qualified immutable producer tuple: `a888494bb9ebb9299b6adc14eebad314e4153573 / 
 Compiled route inventory SHA256: `25dc63eeb4398069de154b5b2e791795436bd7de4520035827a70c3ae155a944`.
 This admission adds only the current-image thumbnail operations; other optional
 runtime families retain their own gates.
+
+Selection decodes the generic existing-asset three-field response, then reads the
+current binding/version and the selected PNG under that binding to verify its
+exact reviewed hash and dimensions. A lost response or readback failure remains
+an uncertain mutation; there is no automatic retry. An explicit replay retains
+the same request ID, candidate and expected selection version; server request
+idempotency and CAS remain authoritative. Cancellation currently requires the
+retained current artwork/rights context, so stale-context cleanup remains an
+owner action through existing supported operations.
