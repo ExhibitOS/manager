@@ -633,7 +633,9 @@ public actor AuthoringAPI {
         workspaceFramePreparationRuntimeQualified = framePreparationQualified
         workspaceInfoStandPreparationRuntimeQualified = Self.supportsInfoStandPreparationRuntime(manifest: manifest)
         workspacePortalFinishRuntimeQualified = portalQualified || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
+            || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
+            || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
             || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
             || Self.supportsDefaultSeatRuntime(manifest: manifest)
@@ -2795,6 +2797,20 @@ public actor AuthoringAPI {
         admitsWorkspaceFurnishings && session?.advertisesWorkspaceArtworkFrame == true
     }
 
+    public nonisolated static func supportsStraightMiterFrameRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"
+        #else
+        false
+        #endif
+    }
+
+    public var admitsWorkspaceStraightMiterFrameFit: Bool {
+        admitsWorkspaceArtworkFrames && session?.advertisesWorkspaceArtworkFrameModels == true
+            && session?.workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
+            && Self.supportsStraightMiterFrameRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+    }
+
     private var admitsWorkspaceArtworkFramePreparation: Bool {
         workspaceFramePreparationRuntimeQualified && admitsWorkspaceFurnishings
             && session?.advertisesWorkspaceArtworkFramePreparation == true
@@ -2815,7 +2831,8 @@ public actor AuthoringAPI {
 
     public var admitsWorkspaceModularPortalFit: Bool {
         admitsWorkspacePortalFinish
-            && Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && (Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+                || Self.supportsStraightMiterFrameRuntime(manifest: nativeRuntimeManifestSHA256 ?? ""))
             && session?.workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
             && session?.workspacePortalModularFitProfile == WorkspaceFurnishingFitProfile.modularPortal.rawValue
     }
@@ -2826,6 +2843,7 @@ public actor AuthoringAPI {
 
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
+        if admitsWorkspaceStraightMiterFrameFit { return 9 }
         if admitsWorkspaceModularPortalFit || admitsWorkspaceRectangularPortalFit { return 7 }
         if admitsWorkspacePortalFinish { return 6 }
         if session.advertisesWorkspaceArtworkFrameModels { return 5 }
@@ -2852,14 +2870,16 @@ public actor AuthoringAPI {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         if let fitProfile {
-            let admitted = fitProfile == .modularPortal ? admitsWorkspaceModularPortalFit
+            let admitted = fitProfile == .straightMiterRing ? admitsWorkspaceStraightMiterFrameFit
+                : fitProfile == .modularPortal ? admitsWorkspaceModularPortalFit
                 : fitProfile == .rectangularPortal && admitsWorkspaceRectangularPortalFit
             guard admitted, fitProfile.matches(details.kind), preparationPolicy == nil else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
         }
         if details.kind == .artworkFrame {
-            let version = try WorkspaceArtworkFrameAttachment.extensionVersion(for: details.model)
+            let version = try fitProfile?.minimumExtensionVersion
+                ?? WorkspaceArtworkFrameAttachment.extensionVersion(for: details.model)
             guard version <= supportedFurnishingExtensionVersion else {
                 throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
             }
@@ -3005,7 +3025,7 @@ public actor AuthoringAPI {
     public func workspaceFurnishing(_ id: String, version: Int) async throws -> WorkspaceFurnishing {
         let furnishing: WorkspaceFurnishing = try await request(workspaceFurnishingVersionPath(id, version: version))
         guard furnishing.id == id, furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion,
-              furnishing.fit == nil || supportedFurnishingExtensionVersion >= 7,
+              furnishing.fit.map({ supportedFurnishingExtensionVersion >= ($0.profile?.minimumExtensionVersion ?? Int64.max) }) ?? true,
               furnishing.fit?.profile != .rectangularPortal || admitsWorkspaceRectangularPortalFit else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
@@ -3014,6 +3034,7 @@ public actor AuthoringAPI {
 
     public func workspaceFurnishingModel(_ furnishing: WorkspaceFurnishing) async throws -> Data {
         guard furnishing.details.kind.minimumExtensionVersion <= supportedFurnishingExtensionVersion,
+              furnishing.fit.map({ supportedFurnishingExtensionVersion >= ($0.profile?.minimumExtensionVersion ?? Int64.max) }) ?? true,
               furnishing.fit?.profile != .rectangularPortal || admitsWorkspaceRectangularPortalFit else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
@@ -3649,7 +3670,8 @@ public actor AuthoringAPI {
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         let next = try WorkspacePortalFinish.applying(to: draft, openingId: openingId, furnishing: furnishing,
                                                       admitsModularFit: admitsWorkspaceModularPortalFit,
-                                                      admitsRectangularFit: admitsWorkspaceRectangularPortalFit)
+                                                      admitsRectangularFit: admitsWorkspaceRectangularPortalFit,
+                                                      admitsMiterFrames: admitsWorkspaceStraightMiterFrameFit)
         if next != nil || furnishing != nil { try await validateNativeViewportEdit(next ?? draft, etag: etag) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next

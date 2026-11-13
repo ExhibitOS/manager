@@ -1516,3 +1516,21 @@ fresh ordinary reopen. Ordinary reopen never applies this migration implicitly.
 The existing thumbnail request, ready receipt and separate reviewed selection
 operations remain unchanged. Source and package qualification do not establish
 an actual profile transition or successful thumbnail jobs.
+
+### Source-bound miter frame intake
+
+The debug SDK admits `straight-miter-ring-v1` only for the qualified Frame74
+runtime manifest and an authenticated furnishing editor advertising the existing
+frame-model and `source-bound-fit-v1` profiles. Intake sends the original model
+and the requested profile. Platform measures and validates the mesh; Native
+checks the returned fit's source identity, closed geometry and Spec draft.31
+bounds, without rewriting the model or using a model hash allowlist.
+
+The existing frame attach/detach commands carry that registered descriptor in
+furnishing envelope9, retaining room placements and portal attachments. Removing
+the last miter frame returns the remaining graph to the applicable legacy
+5/6/7 envelope. Reserved envelope8 remains unsupported. Explicit save, reopen
+and bounded OEX download use the existing operations; Platform selects OEX
+draft.21 for envelope9. Selected archive import support is unchanged. These
+source paths require separate actual intake/save/reopen/export and Viewer
+qualification before claiming acceptance of a real frame.

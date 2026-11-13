@@ -13,7 +13,7 @@ public enum WorkspacePortalFinish {
     // The client carries the server's registered fit descriptor into the visual delta.
     static func applying(to draft: NativeExhibitionDraft, openingId: String,
                          furnishing: WorkspaceFurnishing?, admitsModularFit: Bool = false,
-                         admitsRectangularFit: Bool = false) throws -> NativeExhibitionDraft? {
+                         admitsRectangularFit: Bool = false, admitsMiterFrames: Bool = false) throws -> NativeExhibitionDraft? {
         let openingId = openingId.lowercased()
         let hosts = draft.candidate["openings"].items?.filter { $0["id"].string?.lowercased() == openingId }
         guard workspaceFurnishingID(openingId), hosts?.count == 1, hosts?.first?["type"].string == "door" else {
@@ -31,7 +31,8 @@ public enum WorkspacePortalFinish {
         var openings: [DocumentValue] = []
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  version == 5 || version == 6 || (version == 7 && (admitsModularFit || admitsRectangularFit)),
+                  version == 5 || version == 6 || (version == 7 && (admitsModularFit || admitsRectangularFit))
+                    || (version == 9 && admitsMiterFrames),
                   let listed = existing["furnishings"].items,
                   let placed = existing["placements"].items,
                   let attachedFrames = existing["frameAttachments"].items else {
@@ -86,7 +87,8 @@ public enum WorkspacePortalFinish {
         if furnishings.isEmpty && placements.isEmpty && frames.isEmpty && openings.isEmpty {
             extensions.removeValue(forKey: namespace)
         } else {
-            let version: Int64 = furnishings.contains { $0["fit"] != .null } ? 7 : openings.isEmpty ? 5 : 6
+            let hasMiter = furnishings.contains { $0["fit"]["geometry"]["profile"].string == WorkspaceFurnishingFitProfile.straightMiterRing.rawValue }
+            let version: Int64 = hasMiter ? 9 : furnishings.contains { $0["fit"] != .null } ? 7 : openings.isEmpty ? 5 : 6
             var fields: [String: DocumentValue] = [
                 "version": .integer(version), "furnishings": .array(furnishings),
                 "placements": .array(placements), "frameAttachments": .array(frames)
