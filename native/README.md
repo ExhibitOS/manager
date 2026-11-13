@@ -1142,6 +1142,16 @@ The bundled runtime serves these files to Manager over its authenticated local
 connection. They are available without downloading assets or importing GLBs
 into the workspace. The Manager catalog uses its existing localized labels.
 
+The local-import reader also recognizes the exact default1.12.0 manifest
+(`241cb694e2cc7ae96ac6ae369eb37462ffb848e55803e602ae831f8895c3617b`,
+18,561 bytes), preserving the existing nine local-import choices. Installed
+Black Aluminum and Thin Brass frames remain on the owner API discovery and
+version/model selection path; they are not new local-import candidates. The
+installed Thin Brass identity `af88109b-27e2-4d10-a08c-3ddc0224451a` remains
+distinct from a workspace registration even when their model bytes agree.
+This reader change alone does not qualify a new runtime, clean installation,
+selection, thumbnail approval, saved frame-image fit, or publication.
+
 With a Platform producer that supports `defaultFurnishingsRoot`, stage the
 [default furnishings v1.0.0 release](https://github.com/ExhibitOS/default-furnishings/releases/tag/v1.0.0)
 at commit `4ac7d23c1b557d8e303ad04d78379bcefab50b40` and pass the staged

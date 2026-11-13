@@ -5,9 +5,9 @@ import XCTest
 @testable import ManagerApp
 
 final class BundledWorkspaceFurnishingsTests: XCTestCase {
-    private func catalog111Fixture() throws -> (source: URL, root: URL) {
-        guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_111_FIXTURE"] else {
-            throw XCTSkip("Set EXHIBITOS_DEFAULT_111_FIXTURE to the exact default 1.11.0 source checkout")
+    private func catalogFixture(variable: String = "EXHIBITOS_DEFAULT_111_FIXTURE") throws -> (source: URL, root: URL) {
+        guard let input = ProcessInfo.processInfo.environment[variable] else {
+            throw XCTSkip("Set \(variable) to the exact default source checkout")
         }
         let source = URL(fileURLWithPath: input, isDirectory: true)
         let files = FileManager.default
@@ -29,7 +29,7 @@ final class BundledWorkspaceFurnishingsTests: XCTestCase {
     }
 
     func testExactCatalog111LoadsExistingPortal() async throws {
-        let fixture = try catalog111Fixture()
+        let fixture = try catalogFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let catalog = try BundledWorkspaceFurnishings.catalog(root: fixture.root)
         XCTAssertEqual(catalog.version, "1.11.0")
@@ -46,7 +46,7 @@ final class BundledWorkspaceFurnishingsTests: XCTestCase {
     }
 
     func testCatalog111RejectsChangedAndMissingFiles() async throws {
-        let fixture = try catalog111Fixture(), files = FileManager.default
+        let fixture = try catalogFixture(), files = FileManager.default
         defer { try? files.removeItem(at: fixture.root) }
         let catalog = try BundledWorkspaceFurnishings.catalog(root: fixture.root)
         let portal = try XCTUnwrap(catalog.items.first { $0.id == "portal-pale-mineral" })
@@ -72,6 +72,36 @@ final class BundledWorkspaceFurnishingsTests: XCTestCase {
         try bytes.write(to: manifest)
         XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: fixture.root))
         bytes.append(0)
+        try bytes.write(to: manifest)
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: fixture.root))
+    }
+
+    func testCatalog112PreservesLocalImportsAndInstalledFrameDiscoveryBoundary() async throws {
+        let fixture = try catalogFixture(variable: "EXHIBITOS_DEFAULT_112_FIXTURE")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: fixture.root)
+        XCTAssertEqual(catalog.version, "1.12.0")
+        XCTAssertEqual(Set(catalog.items.map(\.id)), Set(["freestanding-info-stand", "gallery-stool", "upholstered-gallery-bench",
+            "closed-exit-door", "exit-pictogram-sign", "sculpture-gallery-bench", "portal-pale-mineral", "portal-warm-oak", "compact-caption-stand"]))
+        let portal = try XCTUnwrap(catalog.items.first { $0.id == "portal-pale-mineral" })
+        let model = try await BundledWorkspaceFurnishings.load(portal.id, from: catalog)
+        XCTAssertEqual(model.sha256, "62fd3bc49e0e77ffde26f60dee7ddfbbac0939347d68ea53a94700de0695f1ae")
+        // Installed authored frames are discovered through the owner API, not re-imported as new intakes.
+        for id in ["black-aluminum-frame", "thin-brass-frame"] {
+            do {
+                _ = try await BundledWorkspaceFurnishings.load(id, from: catalog)
+                XCTFail("Installed frame admitted as a local import")
+            } catch let error as AuthoringFailure { XCTAssertEqual(error.code, "FURNISHING_CATALOG_INVALID") }
+        }
+    }
+
+    func testCatalog112RejectsSameSizeChangedManifest() throws {
+        let fixture = try catalogFixture(variable: "EXHIBITOS_DEFAULT_112_FIXTURE")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let manifest = fixture.root.appendingPathComponent("assets/furnishings/default-manifest.json")
+        var bytes = try Data(contentsOf: manifest)
+        XCTAssertEqual(bytes.count, 18_561)
+        bytes[bytes.startIndex] ^= 1
         try bytes.write(to: manifest)
         XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: fixture.root))
     }
