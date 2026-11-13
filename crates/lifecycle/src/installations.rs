@@ -464,6 +464,11 @@ impl InstallationController {
                 {
                     return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
                 }
+            } else if let Some(proof) = retained.original() {
+                if !transfer.matches_retained_original_model(proof,
+                    &installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?) {
+                    return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+                }
             } else if transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some()
                 || transfer.compact_variant.is_some() || transfer.gpu_variant.is_some() {
                 return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));

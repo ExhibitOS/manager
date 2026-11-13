@@ -347,6 +347,21 @@ impl Transfer {
             && digest(journal) == proof.transfer_sha256
             && self.gpu_variant.as_ref().is_some_and(|gpu| gpu.job_id.as_deref() == Some(proof.job_id.as_str()))
     }
+    #[cfg(debug_assertions)]
+    pub(super) fn matches_retained_original_model(&self, proof: &super::native_maintenance::RetainedOriginalModel, journal: &[u8]) -> bool {
+        let Some(intent) = &self.intent else { return false };
+        let Some(preparation) = &intent.model_preparation else { return false };
+        proof.valid() && validate(self).is_ok() && digest(journal) == proof.transfer_sha256
+            && serde_json::to_vec(&intent.rights).ok().is_some_and(|bytes| digest(&bytes) == proof.rights_sha256)
+            && self.compact_variant.is_none() && self.gpu_variant.is_none() && self.file_name.is_some()
+            && self.job_id.as_deref() == Some(proof.job_id.as_str())
+            && intent.artwork_id == proof.artwork_id && intent.idempotency_key == proof.upload_idempotency_key
+            && intent.sha256 == proof.source_sha256 && intent.bytes == proof.source_bytes
+            && intent.scale_meters == proof.scale_meters && intent.mime == "model/gltf-binary"
+            && intent.product_image_preparation.is_none() && intent.hayes_original.is_none()
+            && preparation.version == 1 && preparation.profile_id == "embedded-model-compact-20k-512-v1"
+            && preparation.artwork_revision == proof.artwork_revision && preparation.generation == proof.generation
+    }
     pub(super) fn matches_retained_product_image(&self, proof: &super::native_maintenance::RetainedProductImage) -> bool {
         let Some(intent) = &self.intent else { return false };
         let Some(preparation) = &intent.product_image_preparation else { return false };
@@ -1065,5 +1080,40 @@ mod gpu_variant_tests {
         assert!(upload_transition_matches(&bound, &cleared));
         assert!(upload_transition_matches(&cleared, &prior));
         assert!(!upload_transition_matches(&cleared, &bound));
+    }
+}
+
+#[cfg(all(test,debug_assertions,target_os="macos"))]
+mod retained_original_tests {
+    use super::*;
+    #[test]
+    fn retained_original_binds_exact_journal_and_closed_original_intent() {
+        let mut proof=super::super::native_maintenance::RetainedOriginalModel::synthetic();
+        let rights=serde_json::json!({"permissions":{"display":true}});
+        proof.rights_sha256=digest(&serde_json::to_vec(&rights).unwrap());
+        let state:Transfer=serde_json::from_value(serde_json::json!({"format":1,"revision":47,
+            "workspaceId":"10000000-0000-4000-8000-000000000001","tenantId":"10000000-0000-4000-8000-000000000002",
+            "principalId":"10000000-0000-4000-8000-000000000003","jobId":proof.job_id,"fileName":"synthetic.glb",
+            "intent":{"artworkId":proof.artwork_id,"idempotencyKey":proof.upload_idempotency_key,
+                "mime":"model/gltf-binary","sha256":proof.source_sha256,"bytes":proof.source_bytes,"scaleMeters":1,
+                "rights":rights,"modelPreparation":{"version":1,"profileId":"embedded-model-compact-20k-512-v1",
+                    "operationID":proof.upload_idempotency_key,"artworkRevision":1,"generation":proof.generation}}})).unwrap();
+        validate(&state).unwrap();let bytes=serde_json::to_vec(&state).unwrap();proof.transfer_sha256=digest(&bytes);
+        assert!(state.matches_retained_original_model(&proof,&bytes));
+        assert!(!state.matches_retained_original_model(&proof,&serde_json::to_vec_pretty(&state).unwrap()));
+        for field in ["jobId","artworkId","uploadIdempotencyKey","generation","sourceSha256","receiptSha256","rightsSha256","transferSha256"] {
+            let mut bad=serde_json::to_value(&proof).unwrap();bad[field]="changed".into();
+            assert!(!state.matches_retained_original_model(&serde_json::from_value(bad).unwrap(),&bytes));
+        }
+        for extra in ["ready","workerDrained","retry","approved"] {
+            let mut bad=serde_json::to_value(&proof).unwrap();bad[extra]=true.into();
+            assert!(serde_json::from_value::<super::super::native_maintenance::RetainedOriginalModel>(bad).is_err());
+        }
+        let mut changed=state.clone();changed.intent.as_mut().unwrap().rights=serde_json::json!({"permissions":{"display":false}});
+        assert!(!changed.matches_retained_original_model(&proof,&bytes));
+        let mut changed=state.clone();changed.intent.as_mut().unwrap().model_preparation=None;
+        assert!(!changed.matches_retained_original_model(&proof,&bytes));
+        let mut changed=state.clone();changed.job_id=None;
+        assert!(!changed.matches_retained_original_model(&proof,&bytes));
     }
 }

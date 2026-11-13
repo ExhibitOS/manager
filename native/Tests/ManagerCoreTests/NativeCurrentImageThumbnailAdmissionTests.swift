@@ -13,6 +13,9 @@ final class NativeCurrentImageThumbnailAdmissionTests: XCTestCase {
     func testOnlyQualifiedThumbnailManifestAdvertisesProducer() {
         XCTAssertTrue(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988"))
     }
+    func testQualifiedFramePayloadRetainsOnlyThumbnailAdmission() {
+        XCTAssertTrue(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"))
+    }
     func testOldRuntimeRejectsBeforeAnyRequest() async throws {
         let tenant = "11111111-1111-4111-8111-111111111111"
         LegacyThumbnailAdmissionProtocol.reset()

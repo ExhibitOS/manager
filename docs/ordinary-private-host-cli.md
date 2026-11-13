@@ -80,3 +80,27 @@ use typed Core staging and the ordinary conditional PUT; supported bounded
 provenance retains the dedicated viewport check. Missing, stale, read-only or
 changing policy/head rejects staging. A FORBIDDEN reply is never a fallback.
 Specialized portal/frame preparation checks are unchanged.
+
+## Local static output of the same saved private exhibition
+
+`private-exhibition-export-static` uses the host's existing explicit exhibition,
+server revision and ETag comparison and an output directory under the owning
+private output root. It reuses the ordinary saved-head readiness, local
+publication and native static producer, preserving the exhibition ID. It does
+not select the private draft into the official document journal.
+
+The helper requires both the private publication's owner/session/request SQL
+receipt and a separate comparison against the protected selected document.
+The Swift wrapper fences the complete protected document before publication and
+producer dispatch and after completion. Missing, dirty, foreign or same-selected
+contexts are refused. The existing saved-head route retains its original wire
+when no private context is supplied. Only the exact reviewed debug runtimes are
+admitted; this does not broaden the abandoned-publication custody operation.
+
+Local publication creates ordinary publication/request/binding/audit rows and
+advances the workspace's latest native static-export status. Preserve its prior
+bytes as evidence and record the exact before/after and target when using an
+existing workspace. Official document/publication journals, retained detail
+records, original assets and previous output directories remain protected.
+A successful local output is neither an Internet deployment nor Viewer visual
+or physical-clearance acceptance.

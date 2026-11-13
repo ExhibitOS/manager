@@ -1070,7 +1070,9 @@ public actor AuthoringAPI {
     nonisolated static func supportsCurrentImageThumbnailRuntime(manifest: String?) -> Bool {
         let qualified: Set<String> = [
             // API a888494b / producer e662b20c; separately qualified thumbnail-only payload.
-            "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988"
+            "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988",
+            // Separately qualified Frame9 payload retains this exact producer.
+            "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"
         ]
         return manifest.map(qualified.contains) ?? false
     }
@@ -3463,6 +3465,8 @@ public actor AuthoringAPI {
     nonisolated static func supportsOrdinarySavedHeadStaticRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == workspaceInfoStandPreparationManifestPin
+            || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
+            || supportsCurrentImageThumbnailRuntime(manifest: manifest)
         #else
         false
         #endif
