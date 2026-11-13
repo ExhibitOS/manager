@@ -68,9 +68,10 @@ impl<R: Read> Collector<R> {
     fn end_line(&mut self, publication: &str) {
         // The first primary Error line wins, including an unknown/overlong one.
         // Never search arbitrary stacks, suffixes, source lines or URL text.
-        let primary = [b"Error: ".as_slice(), b"TypeError: ", b"RangeError: ", b"SyntaxError: ",
-            b"ReferenceError: ", b"AggregateError: ", b"AbortError: "]
-            .iter().any(|prefix| self.line.starts_with(prefix));
+        let primary = [b"Error".as_slice(), b"TypeError", b"RangeError", b"SyntaxError",
+            b"ReferenceError", b"AggregateError", b"AbortError", b"URIError", b"EvalError"]
+            .iter().any(|name| self.line.strip_prefix(*name).is_some_and(|suffix|
+                suffix.starts_with(b": ") || suffix.starts_with(b" [")));
         if !self.primary_seen && primary {
             self.primary_seen = true;
             if !self.overflow && self.line.starts_with(b"Error: ") {
@@ -157,7 +158,7 @@ mod tests {
     }
     #[test]
     fn detail_diagnostic_does_not_promote_stack_or_second_error() {
-        for bytes in [b"Error: fetch failed\nError: STATIC_JSON_INVALID\n".as_slice(), b"TypeError: fetch failed\nError: STATIC_JSON_INVALID\n", b"  Error: STATIC_JSON_INVALID\n", b"STATIC_JSON_INVALID\n", b"Error: \xff\n"] {
+        for bytes in [b"Error: fetch failed\nError: STATIC_JSON_INVALID\n".as_slice(), b"TypeError: fetch failed\nError: STATIC_JSON_INVALID\n", b"Error [ERR_X]: unknown\nError: STATIC_JSON_INVALID\n", b"TypeError [ERR_INVALID_URL]: private URL\nError: STATIC_JSON_INVALID\n", b"  Error: STATIC_JSON_INVALID\n", b"STATIC_JSON_INVALID\n", b"Error: \xff\n"] {
             assert_eq!(parsed(bytes).error, ChildError::Unknown);
         }
     }
@@ -192,9 +193,13 @@ mod tests {
         while c.input.is_some() && std::time::Instant::now() < until {
             c.drain(PUBLICATION); std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        assert!(c.input.is_none()); assert!(child.wait().unwrap().success());
-        let mut stdout = String::new(); child.stdout.take().unwrap().read_to_string(&mut stdout).unwrap();
-        assert_eq!(stdout, "protocol-only"); assert_eq!(c.error, ChildError::StaticJsonInvalid);
+        let drained = c.input.is_none(); let error = c.error;
         assert!(c.line.len() <= LINE_LIMIT);
+        // Closing stderr also lets a failed flood test reap a blocked writer.
+        drop(c);
+        let exit = child.wait().unwrap();
+        assert!(drained); assert!(exit.success());
+        let mut stdout = String::new(); child.stdout.take().unwrap().read_to_string(&mut stdout).unwrap();
+        assert_eq!(stdout, "protocol-only"); assert_eq!(error, ChildError::StaticJsonInvalid);
     }
 }
