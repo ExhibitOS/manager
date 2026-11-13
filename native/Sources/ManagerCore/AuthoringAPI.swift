@@ -1206,6 +1206,49 @@ public actor AuthoringAPI {
         guard value.draft.id.lowercased() == id.lowercased() else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
         return value
     }
+    /// Opens only the explicitly compared ordinary server draft into isolated RAM.
+    func openPrivateHost(exhibitionId: String, revision: Int, etag: String,
+                         requestId: String, protecting current: NativeDocumentState) async throws -> NativePrivateHost {
+        let held = generation
+        guard nativeSession, !authenticationBusy, let session,
+              current.tenantId == tenant, current.principalId == session.userId,
+              exhibitionId != current.draft?.id, revision > 0 else { throw AuthoringFailure("PRIVATE_EXHIBITION_SCOPE_CHANGED") }
+        _ = try await verifyRetainedSession(session)
+        let saved = try await exhibition(exhibitionId)
+        guard saved.revision == revision, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let policy = try await nativeViewportPolicy(exhibitionId)
+        guard policy.confirmsOrdinaryDraft, policy.revision == revision, policy.etag == etag else {
+            throw AuthoringFailure("PRIVATE_EXHIBITION_POLICY_UNAVAILABLE")
+        }
+        try saved.requireSameComparison(await exhibition(exhibitionId))
+        let latest = try await nativeViewportPolicy(exhibitionId)
+        guard generation == held, latest.confirmsOrdinaryDraft, latest.revision == revision, latest.etag == etag else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        return try NativePrivateHost(opening: saved, requestId: requestId, protecting: current)
+    }
+
+    /// Ordinary policy uses existing typed PUT authority; bounded provenance retains its dedicated check.
+    func preparePrivateHostArchitecture(_ command: DocumentValue, in host: NativePrivateHost) async throws -> NativeExhibitionDraft {
+        let held = generation
+        guard let draft = host.document.draft, let etag = host.document.etag,
+              host.document.pending == nil else { throw AuthoringFailure("PRIVATE_EXHIBITION_PENDING") }
+        let policy = try await nativeViewportPolicy(draft.id)
+        let needsCheck = try NativeAutomationSession.operatorRequiresViewportValidation(policy, etag: etag)
+        let saved = try await exhibition(draft.id)
+        try host.checkRemote(saved)
+        guard saved.revision == policy.revision else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let next = try NativePrivateHostArchitecture.applying(command, to: draft)
+        if needsCheck { try await validateNativeViewportEdit(next, etag: etag) }
+        try host.checkRemote(await exhibition(draft.id))
+        let latest = try await nativeViewportPolicy(draft.id)
+        guard generation == held, latest.revision == saved.revision,
+              try NativeAutomationSession.operatorRequiresViewportValidation(latest, etag: etag) == needsCheck else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        return next
+    }
+
     /// A scoped policy observation; it does not authorize a write.
     public func nativeViewportPolicy(_ id: String) async throws -> NativeViewportPolicy {
         let value: NativeViewportPolicy = try await request(studioPrefix + "/exhibitions/" + identifier(id) + "/native-viewport-policy")

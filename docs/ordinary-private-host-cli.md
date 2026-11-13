@@ -66,3 +66,17 @@ fit, save/reopen/output, Viewer observation or visual acceptance. Those require
 separate current-owner execution receipts. No asset-specific hash, hardcoded
 qualification scene, caller-authored fit receipt or legacy retrofit exemption is
 introduced by this ordinary client path.
+
+`private-exhibition-open` accepts only `exhibitionId,serverRevision,etag` from an
+explicitly selected remote head. It opens that authenticated ordinary exhibition
+into isolated RAM after positive ordinary policy and repeated head/policy checks,
+while preserving the official native context. It accepts no caller draft or raw
+snapshot and refuses the selected official exhibition. The same server-owned
+exhibition can therefore be continued after a clean process exit without a
+second creation. Pending RAM saves still require explicit owner reconciliation.
+
+Architectural edits reuse the existing operator policy: positive ordinary drafts
+use typed Core staging and the ordinary conditional PUT; supported bounded
+provenance retains the dedicated viewport check. Missing, stale, read-only or
+changing policy/head rejects staging. A FORBIDDEN reply is never a fallback.
+Specialized portal/frame preparation checks are unchanged.
