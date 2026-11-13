@@ -12,7 +12,7 @@ public actor NativeAutomationSession {
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
-        "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
+        "current-image-thumbnail-status", "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
         "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
     ]
 
@@ -57,6 +57,7 @@ public actor NativeAutomationSession {
     private var context: Context?
     private var api: AuthoringAPI?
     private var authoringSession: AuthoringSession?
+    private var currentImageThumbnailReviews: [String: NativeCurrentImageThumbnailReview] = [:]
     private var runtimeManifest: String?
     private var identity: NativeDocumentState?
     private var closed = false
@@ -1457,6 +1458,64 @@ public actor NativeAutomationSession {
         }
     }
 
+    private static let currentImageThumbnailOperations: Set<String> = [
+        "current-image-thumbnail-prepare", "current-image-thumbnail-status",
+        "current-image-thumbnail-review", "current-image-thumbnail-select",
+        "current-image-thumbnail-cancel", "current-image-thumbnail-retry"
+    ]
+    private func executeCurrentImageThumbnail(_ operation: String, request: DocumentValue, id: String,
+        api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
+        try checkedRevision(request, current)
+        guard selectedOEXFormat == nil, !installedImageCLI, current.pending == nil, !current.dirty,
+              id == UUID(uuidString: id)?.uuidString.lowercased() else { throw BridgeFailure("IMAGE_THUMBNAIL_SCOPE_CHANGED") }
+        let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+        guard case .object(let fields) = request,
+              Set(fields.keys) == (operation == "current-image-thumbnail-review" ? common.union(["outputPath"]) : common) else {
+            throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
+        }
+        if operation == "current-image-thumbnail-select" {
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["reviewId", "expectedSelectionVersion"])
+            guard let reviewId = command["reviewId"].string, let review = currentImageThumbnailReviews[reviewId],
+                  let version = command["expectedSelectionVersion"].integer, let selectionVersion = Int(exactly: version) else {
+                throw BridgeFailure("IMAGE_THUMBNAIL_REVIEW_REQUIRED")
+            }
+            let selected = try await api.selectCurrentImageThumbnail(review, requestId: UUID(uuidString: id)!,
+                expectedSelectionVersion: selectionVersion, in: current)
+            return try value(selected)
+        }
+        let keys: Set<String> = operation == "current-image-thumbnail-prepare"
+            ? ["artworkId", "artworkRevision"] : ["artworkId", "artworkRevision", "jobId"]
+        let command = try NativeAutomationArtworkRules.command(request, keys: keys)
+        guard let artworkId = command["artworkId"].string, let revision = command["artworkRevision"].integer,
+              let artworkRevision = Int(exactly: revision), (1...Int(Int32.max)).contains(artworkRevision) else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        if operation == "current-image-thumbnail-prepare" {
+            return try value(await api.prepareCurrentImageThumbnail(artworkId: artworkId, revision: artworkRevision,
+                requestId: UUID(uuidString: id)!, in: current))
+        }
+        guard let jobId = command["jobId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        if ["current-image-thumbnail-cancel", "current-image-thumbnail-retry"].contains(operation) {
+            let action: NativeImportAction = operation.hasSuffix("-cancel") ? .cancel : .retry
+            return try value(await api.currentImageThumbnailAction(artworkId: artworkId, revision: artworkRevision,
+                jobId: jobId, action: action, in: current))
+        }
+        if operation == "current-image-thumbnail-status" {
+            return try value(await api.currentImageThumbnailStatus(artworkId: artworkId, revision: artworkRevision,
+                jobId: jobId, in: current))
+        }
+        guard operation == "current-image-thumbnail-review", let path = request["outputPath"].string,
+              currentImageThumbnailReviews.count < 32 else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        let destination = try output(path)
+        let review = try await api.reviewCurrentImageThumbnail(artworkId: artworkId, revision: artworkRevision,
+            jobId: jobId, in: current)
+        try Task.checkCancellation()
+        try review.png.write(to: destination, options: [.withoutOverwriting])
+        let reviewId = UUID().uuidString.lowercased(); currentImageThumbnailReviews[reviewId] = review
+        return .object(["reviewId": .string(reviewId), "job": try value(review.job), "path": .string(destination.path),
+                        "pngSHA256": .string(nativeImportSHA256(review.png)), "selected": .bool(false)])
+    }
+
     private func executeWorkspaceFurnishing(_ operation: String, request: DocumentValue,
                                             api: AuthoringAPI) async throws -> DocumentValue {
         switch operation {
@@ -1638,7 +1697,7 @@ public actor NativeAutomationSession {
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel"]
-            guard allowed.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+            guard allowed.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
@@ -2321,6 +2380,8 @@ public actor NativeAutomationSession {
             var next = current
             next.draft = try proposal.applyReply(reply, to: current)
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case let name where Self.currentImageThumbnailOperations.contains(name):
+            result = try await executeCurrentImageThumbnail(name, request: request, id: id, api: api, current: current)
         case "catalog-read":
             let artists = try await api.artists(), artworks = try await api.artworks()
             guard artists.nextCursor == nil, artworks.nextCursor == nil else { throw BridgeFailure("AUTOMATION_CATALOG_PAGE_LIMIT") }

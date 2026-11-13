@@ -24,6 +24,21 @@ enum SelectedArtworkThumbnailPNG {
         guard data.count <= 512 * 1024,
               response.value(forHTTPHeaderField: "content-length") == String(data.count),
               response.value(forHTTPHeaderField: "x-exhibitos-sha256") == nativeImportSHA256(data) else { throw invalid }
+        try validateBody(data)
+    }
+
+    static func validate(_ data: Data, expectedSHA256: String, expectedBytes: Int,
+                         expectedWidth: Int, expectedHeight: Int) throws {
+        guard (33...512 * 1024).contains(expectedBytes), data.count == expectedBytes,
+              nativeImportSHA256(data) == expectedSHA256 else { throw invalid }
+        try validateBody(data)
+        let bytes = [UInt8](data)
+        let width = bytes[16..<20].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        let height = bytes[20..<24].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        guard Int(width) == expectedWidth, Int(height) == expectedHeight else { throw invalid }
+    }
+
+    private static func validateBody(_ data: Data) throws {
         let bytes = [UInt8](data)
         guard bytes.count >= 45, Array(bytes.prefix(8)) == [137,80,78,71,13,10,26,10] else { throw invalid }
         func u32(_ offset: Int) -> UInt32 {
