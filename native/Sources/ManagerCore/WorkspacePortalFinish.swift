@@ -31,22 +31,29 @@ public enum WorkspacePortalFinish {
         var openings: [DocumentValue] = []
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  version == 5 || version == 6 || (version == 7 && (admitsModularFit || admitsRectangularFit))
+                  version == 3 || version == 5 || version == 6 || (version == 7 && (admitsModularFit || admitsRectangularFit))
                     || (version == 9 && admitsMiterFrames),
                   let listed = existing["furnishings"].items,
-                  let placed = existing["placements"].items,
-                  let attachedFrames = existing["frameAttachments"].items else {
+                  let placed = existing["placements"].items else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
             let common: Set<String> = ["version", "furnishings", "placements", "frameAttachments"]
-            guard Set(fields.keys) == (version >= 6 ? common.union(["openingAttachments"]) : common),
-                  version == 5 || existing["openingAttachments"].items != nil,
+            let expected: Set<String> = version == 3 ? ["version", "furnishings", "placements"]
+                : version >= 6 ? common.union(["openingAttachments"]) : common
+            guard Set(fields.keys) == expected,
+                  version != 3 || (!listed.isEmpty && listed.count <= 64 && !placed.isEmpty && placed.count <= 128
+                    && listed.allSatisfy({ item in
+                        guard let kind = item["kind"].string.flatMap(WorkspaceFurnishingKind.init(rawValue:)) else { return false }
+                        return kind.minimumExtensionVersion <= 3
+                    })),
+                  version == 3 || existing["frameAttachments"].items != nil,
+                  version < 6 || existing["openingAttachments"].items != nil,
                   version != 6 || existing["openingAttachments"].items?.isEmpty == false else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
             furnishings = listed
             placements = placed
-            frames = attachedFrames
+            frames = existing["frameAttachments"].items ?? []
             openings = existing["openingAttachments"].items ?? []
         }
         let targets = openings.compactMap { $0["openingId"].string?.lowercased() }
