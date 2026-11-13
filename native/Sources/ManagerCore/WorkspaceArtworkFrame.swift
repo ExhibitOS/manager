@@ -11,6 +11,14 @@ public struct WorkspaceArtworkFrameAttachment: Codable, Equatable, Sendable {
         return 4
     }
 
+    static func extensionVersion(for furnishing: WorkspaceFurnishing) throws -> Int64 {
+        if let fit = furnishing.fit, let profile = fit.profile {
+            guard profile.matches(.artworkFrame) else { throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED") }
+            return profile.minimumExtensionVersion
+        }
+        return try extensionVersion(for: furnishing.details.model)
+    }
+
     public let placementId: String
     public let artworkRevisionId: String
     public let assetId: String
@@ -66,7 +74,7 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
         var extensionVersion: Int64 = 4
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
-                  (1...7).contains(version),
+                  ((1...7).contains(version) || version == 9),
                   let descriptors = existing["furnishings"].items, let rows = existing["placements"].items,
                   version < 4 || existing["frameAttachments"].items != nil else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
@@ -103,7 +111,7 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
                   furnishing.details.model.sha256 == attachment.modelSha256 else {
                 throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
             }
-            let requiredVersion = try WorkspaceArtworkFrameAttachment.extensionVersion(for: furnishing.details.model)
+            let requiredVersion = try WorkspaceArtworkFrameAttachment.extensionVersion(for: furnishing)
             guard requiredVersion <= supportedExtensionVersion else {
                 throw AuthoringFailure("FRAME_ASSET_UNSUPPORTED")
             }
@@ -133,6 +141,14 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
            !(attachments + placements).contains(where: { $0["furnishingId"].string == previousFurnishingId }) {
             furnishings.removeAll { $0["id"].string == previousFurnishingId && $0["kind"].string == "artwork-frame" }
         }
+        // Profile 9 requires a measured miter descriptor. Removing its last
+        // attachment returns the remaining graph to its existing legacy shape.
+        if extensionVersion == 9 && !furnishings.contains(where: {
+            $0["fit"]["geometry"]["profile"].string == WorkspaceFurnishingFitProfile.straightMiterRing.rawValue
+        }) {
+            extensionVersion = furnishings.contains(where: { $0["fit"] != .null }) ? 7
+                : (openingAttachments?.isEmpty == false ? 6 : 5)
+        }
         if furnishings.isEmpty, placements.isEmpty, attachments.isEmpty {
             extensions.removeValue(forKey: namespace)
         } else {
@@ -140,7 +156,7 @@ public enum WorkspaceArtworkFrameCommand: Sendable {
                 "version": .integer(extensionVersion), "furnishings": .array(furnishings),
                 "placements": .array(placements), "frameAttachments": .array(attachments)
             ]
-            if let openingAttachments { fields["openingAttachments"] = .array(openingAttachments) }
+            if extensionVersion >= 6 { fields["openingAttachments"] = .array(openingAttachments ?? []) }
             extensions[namespace] = .object(fields)
         }
         candidate["extensions"] = .object(extensions)

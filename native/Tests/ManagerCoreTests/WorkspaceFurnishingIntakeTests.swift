@@ -71,6 +71,106 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try intake(wire))
     }
 
+    private func miterFrame() throws -> DocumentValue {
+        var wire = try registered()
+        wire["declaration"]["kind"] = .string("artwork-frame")
+        wire["furnishing"]["kind"] = .string("artwork-frame")
+        wire["fitProfile"] = .string("straight-miter-ring-v1")
+        wire["furnishing"]["fit"] = .object([
+            "version": .integer(1), "sourceBytes": .integer(23), "sourceSha256": .string(modelSHA256),
+            "geometry": .object(["profile": .string("straight-miter-ring-v1"),
+                "openingWidth": .number(0.6), "openingHeight": .number(0.8), "imagePlaneZ": .number(-0.012)])
+        ])
+        return wire
+    }
+
+    func testMiterFitBindsOriginalWithoutModelWhitelistAndCarriesOnlyProfileInRequest() throws {
+        let wire = try miterFrame(), value = try intake(wire)
+        try value.check(requestId: requestId, details: value.declaration, expectedFit: .straightMiterRing,
+                        supportedExtensionVersion: 9)
+        XCTAssertThrowsError(try value.check(supportedExtensionVersion: 7))
+        let request = WorkspaceFurnishingRequest(requestId: requestId, details: value.declaration, fitProfile: .straightMiterRing)
+        var expected = wire["declaration"]
+        expected["requestId"] = .string(requestId); expected["fitProfile"] = .string("straight-miter-ring-v1")
+        XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(request)), expected)
+        XCTAssertEqual(try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(value.furnishing)), wire["furnishing"])
+        for field in ["sourceBytes", "sourceSha256", "version", "extra"] {
+            var changed = wire
+            changed["furnishing"]["fit"][field] = field == "sourceSha256" ? .string(String(repeating: "b", count: 64)) : .integer(2)
+            XCTAssertThrowsError(try intake(changed), field)
+        }
+        var wrongKind = wire; wrongKind["furnishing"]["kind"] = .string("portal-finish")
+        XCTAssertThrowsError(try intake(wrongKind))
+    }
+
+    func testMiterGeometryClosedFieldsAndSourceBoundsMatchSpec31() throws {
+        for field in ["openingWidth", "openingHeight"] {
+            for boundary in [0.4, 2.0] {
+                var wire = try miterFrame(); wire["furnishing"]["fit"]["geometry"][field] = .number(boundary)
+                XCTAssertNoThrow(try intake(wire))
+            }
+            for outside in [0.39999, 2.00001] {
+                var wire = try miterFrame(); wire["furnishing"]["fit"]["geometry"][field] = .number(outside)
+                XCTAssertThrowsError(try intake(wire))
+            }
+        }
+        let invalid: [(String, DocumentValue)] = [("imagePlaneZ", .number(0.012)), ("extra", .bool(true))]
+        for (field, value) in invalid {
+            var wire = try miterFrame(); wire["furnishing"]["fit"]["geometry"][field] = value
+            XCTAssertThrowsError(try intake(wire))
+        }
+    }
+
+    func testMiterFrameRoundTripPreservesPortalAndBenchAndDowngradesAfterLastDetach() throws {
+        let frame = try XCTUnwrap(intake(miterFrame()).furnishing)
+        let pedestal = try XCTUnwrap(intake(registered()).furnishing)
+        // Give the portal and frame distinct synthetic identities.
+        var portalWire = try rectangularPortal(); portalWire["furnishing"]["id"] = .string(intakeId)
+        let portal = try XCTUnwrap(intake(portalWire).furnishing)
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let asset = "10000000-0000-4000-8000-000000000005"
+        let door = "10000000-0000-4000-8000-00000000000a"
+        try draft.addApprovedArtwork(.object(["kind": .string("artwork"), "revisionId": .string(requestId),
+            "primaryAssetId": .string(asset)]), roomId: room, placementId: placementId, transform: NativeExhibitionDraft.identity)
+        var candidate = draft.candidate
+        candidate["openings"] = .array([.object(["id": .string(door), "type": .string("door")])])
+        candidate["extensions"] = .object(["example": .bool(true)]); try draft.replaceCandidate(candidate)
+        let attachment = WorkspaceArtworkFrameCommand.attach(.init(placementId: placementId,
+            artworkRevisionId: requestId, assetId: asset, furnishingId: frame.id, furnishingVersion: 1,
+            modelSha256: modelSHA256))
+        let ns = WorkspaceFurnishingPlacement.namespace
+        XCTAssertThrowsError(try attachment.applying(to: draft, furnishing: frame, supportedExtensionVersion: 7))
+        let attached = try XCTUnwrap(attachment.applying(to: draft, furnishing: frame, supportedExtensionVersion: 9))
+        XCTAssertEqual(attached.candidate["extensions"][ns]["version"], .integer(9))
+        XCTAssertEqual(attached.candidate["extensions"][ns]["openingAttachments"], .array([]))
+        XCTAssertNil(try attachment.applying(to: attached, furnishing: frame, supportedExtensionVersion: 9))
+        let withPortal = try XCTUnwrap(WorkspacePortalFinish.applying(to: attached, openingId: door,
+            furnishing: portal, admitsRectangularFit: true, admitsMiterFrames: true))
+        XCTAssertEqual(withPortal.candidate["extensions"][ns]["frameAttachments"], attached.candidate["extensions"][ns]["frameAttachments"])
+        let detached = try XCTUnwrap(WorkspaceArtworkFrameCommand.detach(placementId: placementId)
+            .applying(to: withPortal, furnishing: nil, supportedExtensionVersion: 9))
+        XCTAssertEqual(detached.candidate["extensions"][ns]["version"], .integer(7))
+        XCTAssertEqual(detached.candidate["extensions"][ns]["openingAttachments"], withPortal.candidate["extensions"][ns]["openingAttachments"])
+        var pedestalWire = try registered()["furnishing"]; pedestalWire["id"] = .string(requestId)
+        let distinctPedestal = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(pedestalWire))
+        XCTAssertEqual(pedestal.details, distinctPedestal.details)
+        let place = WorkspaceFurnishingPlacement(id: "10000000-0000-4000-8000-000000000006", roomId: room,
+            furnishingId: distinctPedestal.id, furnishingVersion: 1, position: [0, 0, 0], yaw: 0, scale: 1)
+        let mixed = try XCTUnwrap(place.applying(distinctPedestal, to: attached, supportedExtensionVersion: 9))
+        XCTAssertEqual(mixed.candidate["extensions"][ns]["frameAttachments"], attached.candidate["extensions"][ns]["frameAttachments"])
+        let legacy = try XCTUnwrap(WorkspaceArtworkFrameCommand.detach(placementId: placementId)
+            .applying(to: mixed, furnishing: nil, supportedExtensionVersion: 9))
+        XCTAssertEqual(legacy.candidate["extensions"][ns]["version"], .integer(5))
+        let empty = try XCTUnwrap(WorkspaceArtworkFrameCommand.detach(placementId: placementId)
+            .applying(to: attached, furnishing: nil, supportedExtensionVersion: 9))
+        XCTAssertEqual(empty.candidate, draft.candidate)
+        var reserved = attached.candidate; reserved["extensions"][ns]["version"] = .integer(8)
+        var invalid = attached; try invalid.replaceCandidate(reserved)
+        XCTAssertThrowsError(try attachment.applying(to: invalid, furnishing: frame, supportedExtensionVersion: 9))
+        XCTAssertThrowsError(try place.applying(distinctPedestal, to: invalid, supportedExtensionVersion: 9))
+    }
+
     private func rectangularPortal() throws -> DocumentValue {
         var wire = try registered()
         wire["declaration"]["kind"] = .string("portal-finish")

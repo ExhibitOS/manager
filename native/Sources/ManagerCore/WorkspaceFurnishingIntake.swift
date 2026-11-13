@@ -167,12 +167,15 @@ public struct WorkspaceFurnishingDetails: Codable, Equatable, Sendable {
 
 public enum WorkspaceFurnishingFitProfile: String, Codable, Sendable {
     case straightRing = "straight-ring-v1"
+    case straightMiterRing = "straight-miter-ring-v1"
     case continuousPortal = "continuous-portal-v1"
     case modularPortal = "modular-portal-v1"
     case rectangularPortal = "rectangular-portal-v1"
 
+    var minimumExtensionVersion: Int64 { self == .straightMiterRing ? 9 : 7 }
+
     func matches(_ kind: WorkspaceFurnishingKind) -> Bool {
-        kind == (self == .straightRing ? .artworkFrame : .portalFinish)
+        kind == ((self == .straightRing || self == .straightMiterRing) ? .artworkFrame : .portalFinish)
     }
 }
 
@@ -182,6 +185,27 @@ public struct WorkspaceFurnishingFit: Codable, Equatable, Sendable {
     public let sourceSha256: String
     public let geometry: DocumentValue
 
+    private enum CodingKeys: String, CodingKey { case version, sourceBytes, sourceSha256, geometry }
+    private struct Field: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+    public init(from decoder: Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        version = try fields.decode(Int.self, forKey: .version)
+        sourceBytes = try fields.decode(Int.self, forKey: .sourceBytes)
+        sourceSha256 = try fields.decode(String.self, forKey: .sourceSha256)
+        geometry = try fields.decode(DocumentValue.self, forKey: .geometry)
+        if profile == .straightMiterRing {
+            let raw = try decoder.container(keyedBy: Field.self)
+            guard Set(raw.allKeys.map(\.stringValue)) == ["version", "sourceBytes", "sourceSha256", "geometry"] else {
+                throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+            }
+        }
+    }
+
     var profile: WorkspaceFurnishingFitProfile? {
         geometry["profile"].string.flatMap(WorkspaceFurnishingFitProfile.init(rawValue:))
     }
@@ -189,6 +213,14 @@ public struct WorkspaceFurnishingFit: Codable, Equatable, Sendable {
     func matches(_ details: WorkspaceFurnishingDetails) -> Bool {
         guard version == 1, sourceBytes == details.model.bytes, sourceSha256 == details.model.sha256,
               profile?.matches(details.kind) == true else { return false }
+        if profile == .straightMiterRing {
+            guard case .object(let fields) = geometry,
+                  Set(fields.keys) == ["profile", "openingWidth", "openingHeight", "imagePlaneZ"],
+                  let width = geometry["openingWidth"].double, width.isFinite, (0.4...2).contains(width),
+                  let height = geometry["openingHeight"].double, height.isFinite, (0.4...2).contains(height),
+                  geometry["imagePlaneZ"].double == -0.012 else { return false }
+            return true
+        }
         guard profile == .rectangularPortal else { return true }
         guard case .object(let fields) = geometry,
               Set(fields.keys) == ["profile", "openingWidth", "openingHeight", "minZ", "maxZ"],
@@ -342,7 +374,7 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
               id.map({ $0 == intakeId }) ?? true, requestId.map({ $0 == self.requestId }) ?? true,
               declaration.isValid, declaration.kind.minimumExtensionVersion <= supportedExtensionVersion,
               details.map({ $0 == declaration && expectedPolicy == preparationPolicy && expectedFit == fitProfile }) ?? true,
-              fitProfile.map({ supportedExtensionVersion >= 7 && preparationPolicy == nil && $0.matches(declaration.kind) }) ?? true,
+              fitProfile.map({ supportedExtensionVersion >= $0.minimumExtensionVersion && preparationPolicy == nil && $0.matches(declaration.kind) }) ?? true,
               fitProfile != .rectangularPortal || admitsRectangularFit,
               furnishing.map({ $0.fit?.profile == fitProfile }) ?? true,
               received.map({ $0.bytes == declaration.model.bytes && $0.sha256 == declaration.model.sha256 }) ?? true,
