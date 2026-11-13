@@ -1076,7 +1076,7 @@ public actor AuthoringAPI {
     /// Older model/product-image session profiles never imply this additive route.
     nonisolated static func supportsCombinedThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41"
+        manifest == "84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975"
         #else
         false
         #endif

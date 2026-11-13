@@ -471,12 +471,12 @@ pub(crate) const CURRENT_IMAGE_THUMBNAIL_AREA_TARGET: RuntimeTuple = (
     "f448dd2810ddc9ba992c446857b116a5c986d9607ed98348c58ceb4a18dd752e",
     "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f",
 );
-// Existing050 composed with retained051; catalog identity52 is not a SQL migration number.
+// Final qualified cap20/Spec32 producer: existing050 + retained051; catalog52 is not a migration number.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const COMBINED_THUMBNAIL_TARGET: RuntimeTuple = (
-    "122493271acaeed9fbb0b79020d08cf3846557d8",
-    "926507cc5b7b014001dcee7899eb50697c4c69c15b42dc5ab0c974af7675252c",
-    "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41",
+    "d8dffe47e47cd13a274f0ac690db448f80fbe53f",
+    "f3357928224460b163b626339b12708de2e96ff9d12e06edd51d7416d37ed1a2",
+    "84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
 );
 pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2242,6 +2242,14 @@ pub(crate) mod normal_oex_release_declaration_tests {
         }
         assert!(!current_image_thumbnail_host_matches(target)); assert!(!furnishing_thumbnail_host_matches(target));
         assert!(!gpu_model_host_matches(target)); assert!(!large_model_host_matches(target));
+        // The earlier cap8 assembly was never consumed; it is superseded, not a transition hop.
+        let retired = ("122493271acaeed9fbb0b79020d08cf3846557d8",
+            "926507cc5b7b014001dcee7899eb50697c4c69c15b42dc5ab0c974af7675252c",
+            "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41");
+        assert!(!combined_thumbnail_host_matches(retired));
+        assert!(!saved_workspace_transition_target(retired.2));
+        assert!(FurnishingTransition::from_manifests((source.2, retired.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((retired.2, target.2)).is_none());
     }
 
     #[test]
