@@ -16,6 +16,14 @@ refresh, retaining the clean saved-document digest, original model and carried
 restore proof. This admission does not qualify actual GUI cards, frame contact,
 emitter controls or publication; those consumers still need actual checks.
 
+The exact controlled Spec33 tuple also admits genuine `FreshEmpty` catalog52
+initialization through the existing ordinary personal-workspace path. Fresh
+bindings require no previous generation, restore proof or interrupted lineage;
+physical owner and payload checks remain mandatory. Earlier combined catalog52
+tuples do not gain fresh admission. This creates no alternate initialization
+route and does not qualify installed-default discovery or use without actual
+fresh-profile, save/reopen and consumer evidence.
+
 Runtime admission still requires the exact source/producer/manifest tuple;
 selected reads and authoring purpose boundaries remain separate from startup
 drain, GPU and ordinary publication aliases.
