@@ -2464,7 +2464,8 @@ mod detail_tests {
         let official="10000000-0000-4000-8000-000000000001";
         let document:super::super::native_document::DocumentState=serde_json::from_value(serde_json::json!({
             "format":1,"revision":304,"workspaceId":JOB,"tenantId":JOB,"principalId":JOB,
-            "draft":{"id":official,"editVersion":99},"etag":"official-r115","savedEditVersion":99,"pending":null
+            "draft":{"id":JOB,"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.2","exhibitionId":official,
+                "candidate":{"kind":"exhibition-revision","schemaVersion":"1.0.0-draft.2","id":official},"editVersion":99},"etag":"official-r115","savedEditVersion":99,"pending":null
         })).unwrap();
         let head:SavedHead=serde_json::from_value(serde_json::json!({"exhibitionId":JOB,"requestId":JOB,
             "etag":format!("\"studio-r16-{}\"","a".repeat(64)),"revision":17,"editVersion":16,"revisionSha256":"b".repeat(64),
@@ -2472,7 +2473,7 @@ mod detail_tests {
         let protected=head.protected_document.as_ref().unwrap();assert!(protected.matches(&document));
         let mut changed=document.clone();changed.revision+=1;assert!(!protected.matches(&changed));
         let mut changed=document.clone();changed.etag=None;assert!(!protected.matches(&changed));
-        let mut changed=document.clone();changed.draft.as_mut().unwrap()["id"]=JOB.into();assert!(!protected.matches(&changed));
+        let mut changed=document.clone();changed.draft.as_mut().unwrap()["exhibitionId"]=JOB.into();assert!(!protected.matches(&changed));
         let query=head.receipt_query(JOB,JOB,JOB,&"c".repeat(64)).unwrap();
         assert!(query.contains(&format!("p.exhibition_id='{JOB}'")));assert!(query.contains("p.draft_revision=16"));
         assert!(!query.contains(official));
