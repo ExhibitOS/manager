@@ -8,7 +8,7 @@ import Darwin
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
-        "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
+        "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
@@ -1836,6 +1836,24 @@ public actor NativeAutomationSession {
                         "protectedDocumentUnchanged": .bool(true)])
     }
 
+    // Only observations used by the existing saved-head static export guards; no credentials or publication intent.
+    static func savedHeadStaticReadinessProjection(runtimeSupported: Bool, publicationProfile: String?,
+        policy: NativeViewportPolicy) -> DocumentValue {
+        let publicationAdmitted = publicationProfile == "bounded-local-v1"
+        return .object([
+            "available": .bool(runtimeSupported && publicationAdmitted && policy.confirmsOrdinaryDraft),
+            "runtimeSupported": .bool(runtimeSupported),
+            "nativePublicationProfile": publicationProfile.map(DocumentValue.string) ?? .null,
+            "publicationSessionAdmitted": .bool(publicationAdmitted),
+            "ordinaryPolicyConfirmed": .bool(policy.confirmsOrdinaryDraft),
+            "policy": .object(["exhibitionId": .string(policy.exhibitionId), "revision": .integer(Int64(policy.revision)),
+                "etag": .string(policy.etag), "boundedReadOnly": .bool(policy.boundedReadOnly),
+                "boundedProfile": policy.boundedProfile.map(DocumentValue.bool) ?? .null,
+                "boundedEditRequired": policy.boundedEditRequired.map(DocumentValue.bool) ?? .null,
+                "editingCapabilityPresent": .bool(policy.editingCapability != nil)])
+        ])
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
@@ -1886,6 +1904,11 @@ public actor NativeAutomationSession {
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                        "expectedRevision", "expectedEditVersion"]
             let expected = operation.hasSuffix("-set") ? common.union(["command"]) : common
+            guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
+        if operation == "saved-head-static-readiness" {
+            let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
+                                        "expectedRevision", "expectedEditVersion"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if operation == "export-static-saved-head" {
@@ -3279,6 +3302,25 @@ public actor NativeAutomationSession {
                                                     "sha256": .string(sha256), "etag": .string(etag)]
             if !confirmed { receipt["commitState"] = .string("committed-path-unconfirmed") }
             result = .object(receipt)
+        case "saved-head-static-readiness":
+            try checkedRevision(request, current)
+            guard let owner = existingWorkspaceV5, let manifest = runtimeManifest, selectedOEXFormat == nil,
+                  owner.manifestSHA256 == manifest, current.workspaceId == owner.workspaceId,
+                  current.tenantId == owner.tenantId, current.principalId == owner.principalId,
+                  authoringSession?.userId == owner.principalId else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else {
+                throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+            }
+            let saved = try await api.exhibition(draft.id)
+            let policy = try await api.nativeViewportPolicy(draft.id)
+            let (_, _, refreshed) = try await checked(request)
+            guard saved.draft == draft, saved.etag == etag, policy.etag == etag, policy.revision == saved.revision,
+                  policy.exhibitionId == draft.id, try value(refreshed) == value(current) else {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            result = Self.savedHeadStaticReadinessProjection(
+                runtimeSupported: AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest),
+                publicationProfile: authoringSession?.nativePublicationProfile, policy: policy)
         case "export-static-saved-head":
             result = try value(await exportSavedHead(request, id: id, context: context, current: current, api: api))
         case "export-static", "export-static-native-original":
