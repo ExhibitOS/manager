@@ -55,6 +55,13 @@ debug timeout diagnostics distinguish IPC reply deadlines from bounded status
 poll exhaustion without recording request fields, tokens or paths. This source
 admission does not establish actual recovery, old-job settlement or image use.
 
+On that exact debug successor, an ordinary failed PNG with the supported v1
+worker-drain receipt can use the existing different-file action. The app binds
+the selected artwork, retained intent/job and current account, refreshes the
+server drain receipt, then uses the existing revision-checked local journal
+write. The old failed server job and original source remain intact; general
+terminal-job semantics and prepared-image/model review paths stay unchanged.
+
 Runtime admission still requires the exact source/producer/manifest tuple;
 selected reads and authoring purpose boundaries remain separate from startup
 drain, GPU and ordinary publication aliases.

@@ -123,7 +123,7 @@ struct NativeImportControls: View {
                         if !job.terminal, model.transfer?.permitsOrdinaryJobAction(job.id, selectedArtworkId: model.selected?.id) == true {
                             Button("검사 중단") { Task { await model.changeImport(.cancel) } }
                         }
-                        if job.terminal { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.intakeDrainPending || model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
+                        if model.canPrepareDifferentImport { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.intakeDrainPending || model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
                     }
                     if model.intakeDrainPending { Text("현재 파일 검사 작업이 실제로 끝날 때까지 다음 파일은 대기합니다.").foregroundStyle(.secondary) }
                     if let code = job.errorCode {

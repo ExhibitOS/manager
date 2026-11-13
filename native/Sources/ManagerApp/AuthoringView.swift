@@ -88,6 +88,31 @@ final class AuthoringModel: ObservableObject {
         return (job.terminal || job.state == "failed") && requiresIntakeDrain(intent, job: job)
             && !job.confirmsIntakeDrain(for: intent)
     }
+    static func permitsFailedPlainPNGReplacement(_ job: NativeImportJob, intent: NativeImportIntent, manifest: String?) -> Bool {
+        #if DEBUG
+        manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
+            && job.state == "failed" && intent.mime == "image/png"
+            && intent.derived == nil && intent.modelDerivation == nil && intent.modelPreparation == nil
+            && intent.coarsePreparation == nil && intent.productImagePreparation == nil && intent.hayesOriginal == nil
+            && job.modelDerivation == nil && job.modelPreparation == nil && job.imagePreparation == nil
+            && job.productImagePreparation == nil && job.coarsePreparation == nil
+            && job.confirmsIntakeDrain(for: intent)
+        #else
+        false
+        #endif
+    }
+    private func permitsClearingImportJob(_ job: NativeImportJob) -> Bool {
+        if job.terminal { return true }
+        guard available, !metadataDirty, let session, let state = transfer, let intent = state.intent,
+              state.jobId == job.id, selected?.id == intent.artworkId,
+              state.tenantId == session.tenantId, state.principalId == session.userId,
+              state.compactVariant == nil, state.gpuVariant == nil else { return false }
+        return Self.permitsFailedPlainPNGReplacement(job, intent: intent, manifest: runtimeManifestSHA256)
+    }
+    var canPrepareDifferentImport: Bool {
+        importJob.map { permitsClearingImportJob($0) } ?? false
+    }
+
     private func requiresIntakeDrain(_ intent: NativeImportIntent, job: NativeImportJob) -> Bool {
         // A restarted queue loses its in-memory row, but keeps this intent and
         // the runtime's drain contract. Unknown older single-file runtimes
@@ -1041,7 +1066,7 @@ extension AuthoringModel {
         await action {
             guard !hasProductImageTransfer else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
             guard transfer?.intent?.derived?.recipe.colourConversion == nil || iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
-            guard importJob?.terminal == true, !modelWorkerPending,
+            guard let currentJob = importJob, permitsClearingImportJob(currentJob), !modelWorkerPending,
                   importJob?.modelDerivation?.workerDrained != false, var state = transfer else { throw AuthoringFailure("IMPORT_ACTIVE") }
             let generation = importStatusGeneration, currentScope = scope
             let tenant = session?.tenantId, principal = session?.userId
@@ -1050,7 +1075,7 @@ extension AuthoringModel {
                 let observed = try await api.importJob(job.id)
                 try importTransfer.observe(observed, intent: intent)
                 importJob = observed
-                guard observed.id == job.id, observed.terminal, observed.confirmsIntakeDrain(for: intent),
+                guard observed.id == job.id, permitsClearingImportJob(observed), observed.confirmsIntakeDrain(for: intent),
                       transfer?.revision == state.revision else { throw AuthoringFailure("IMPORT_DRAIN_PENDING") }
             }
             if let intent = state.intent, intent.derived?.recipe.colourConversion != nil {
