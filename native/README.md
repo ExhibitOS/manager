@@ -38,6 +38,17 @@ contract; frame metrics and scaled-transform validation remain with the shared
 contract and renderer. Actual refresh, scaled-frame use, fresh-profile use and
 output/consumer acceptance require their own recorded results.
 
+The exact current52 preservation successor (manifest `979489bc…`) additionally
+admits the retained owned, no-restore interrupted workspace through the existing
+kind7/v3 channel. Its directed Spec34 predecessor transition uses the existing
+authenticated saved-checkpoint workflow and preserves failed lineage and data.
+Before Node starts, the global unsettled-work query must return exactly `f`;
+this is an idle-only continuation and never reclaims unattributed worker tokens.
+Older tuples do not gain interrupted admission. The successor owns startup drain;
+debug timeout diagnostics distinguish IPC reply deadlines from bounded status
+poll exhaustion without recording request fields, tokens or paths. This source
+admission does not establish actual recovery, old-job settlement or image use.
+
 Runtime admission still requires the exact source/producer/manifest tuple;
 selected reads and authoring purpose boundaries remain separate from startup
 drain, GPU and ordinary publication aliases.

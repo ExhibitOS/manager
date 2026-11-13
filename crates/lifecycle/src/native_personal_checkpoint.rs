@@ -52,6 +52,10 @@ fn admitted_pair(source: &str, target: &str) -> bool {
 fn check_cold_transition_source(root: &Path, pair: (&str, &str)) -> Result<()> {
     crate::installations::gpu_model_job_root_empty(root)?;
     #[cfg(feature = "workspace-v5-owner-validation")]
+    if FurnishingTransition::from_manifests(pair).is_some_and(|step| step.is_current52_interrupted_recovery()) {
+        return crate::native_runtime::current52_recovery_source_generation(root).map(|_| ());
+    }
+    #[cfg(feature = "workspace-v5-owner-validation")]
     if let Some(transition @ FurnishingTransition::Recover45 { .. }) = FurnishingTransition::from_manifests(pair) {
         return crate::native_runtime::catalog45_recovery_source_generation(root, transition.startup_recovery()).map(|_| ());
     }
@@ -158,6 +162,12 @@ fn check_saved_transition_document(
     pair: (&str, &str), document: &super::installations::native_document::DocumentState,
     owner: (&str, &str, &str),
 ) -> Result<()> {
+    if FurnishingTransition::from_manifests(pair).is_some_and(|step| step.is_current52_interrupted_recovery())
+        && (document.format != 1 || document.revision != 3 || document.saved_edit_version != Some(1)
+            || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != Some(1)
+            || document.pending.is_some() || document.etag.is_none()
+            || (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str()) != owner)
+    { return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED")); }
     // Library-only 049 still seals the exact scoped Native document digest.
     // It needs no fabricated exhibition head; every other pair keeps its guards.
     if gpu_empty_document(pair, document, owner) { return Ok(()); }
@@ -182,7 +192,7 @@ fn catalog45_activation_saved_document(
         && !crate::native_payload::catalog45_clean_exit_handoff(pair)
         && !crate::native_payload::catalog45_restored_backed_handoff(pair)
         && !crate::native_payload::catalog45_adoption_handoff(pair)
-        && !FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || step.is_combined_thumbnail_runtime_refresh())
+        && !FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || step.is_combined_thumbnail_runtime_refresh() || step.is_current52_interrupted_recovery())
     {
         return Ok(false);
     }
@@ -379,6 +389,10 @@ fn transition_source_ledger(payload: &crate::native_payload::Payload, transition
 }
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && FurnishingTransition::from_manifests(pair).is_some_and(|step| step.is_current52_interrupted_recovery()) {
+        return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
+    }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if [(crate::native_payload::CATALOG45_SELECTED_PNG_READ_SOURCE.2,
          crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2),
@@ -1296,7 +1310,7 @@ impl LifecycleService {
             if (crate::native_payload::catalog45_clean_exit_handoff(pair)
                 || crate::native_payload::catalog45_restored_backed_handoff(pair)
                 || crate::native_payload::catalog45_adoption_handoff(pair)
-                || FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || step.is_combined_thumbnail_runtime_refresh()))
+                || FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || step.is_combined_thumbnail_runtime_refresh() || step.is_current52_interrupted_recovery()))
                 && !catalog45_activation_saved_document(
                     pair, false, false, checkpoint.saved_document_sha256.as_deref(), document.ok_or_else(invalid)?,
                 )?
@@ -2136,6 +2150,28 @@ mod tests {
         assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &changed).is_err());
         assert!(catalog45_activation_saved_document(pair, false, false, None, &document).is_err());
         assert!(check_transition_host(pair, Some(&digest), false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn current52_interrupted_checkpoint_requires_saved_revision_and_exact_pair() {
+        let pair = (crate::native_payload::METRIC_FRAME_TARGET.2, crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2);
+        let mut document = gpu_library_empty_document();
+        document.revision = 3; document.draft = Some(serde_json::json!({"editVersion": 1}));
+        document.saved_edit_version = Some(1);
+        document.etag = Some(format!("\"studio-r1-{}\"", "a".repeat(64)));
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        check_saved_transition_document(pair, &document, owner).unwrap();
+        let digest = saved_document_digest(&document).unwrap();
+        assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &document).unwrap());
+        assert_eq!(checkpoint_inventory_limit(pair, None), 8 * 1024 * 1024 * 1024);
+        let mut dirty = document.clone(); dirty.saved_edit_version = Some(2);
+        assert!(check_saved_transition_document(pair, &dirty, owner).is_err());
+        let mut changed = document.clone(); changed.revision = 4;
+        assert!(check_saved_transition_document(pair, &changed, owner).is_err());
+        assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &changed).is_err());
+        assert!(check_saved_transition_document(pair, &document, (owner.0, owner.1, "foreign")).is_err());
+        assert_eq!(checkpoint_inventory_limit((pair.1, pair.0), None), MAX_BYTES);
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

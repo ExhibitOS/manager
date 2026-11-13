@@ -119,6 +119,13 @@ impl Binding {
                 45 => crate::native_payload::catalog45_recovery_host_matches(tuple),
                 46 => crate::native_payload::large_model_recovery_host_matches(tuple),
                 47 => crate::native_payload::fresh_image_host_matches(tuple),
+                52 => self.restore.is_none() && crate::native_payload::current52_interrupted_host_matches(tuple)
+                    && self.previous_generation.as_deref() == Some("3a97db46-4b4f-4e75-97e0-54b0e79d98e7")
+                    && lineage.len() == 1 && lineage[0] == "3a97db46-4b4f-4e75-97e0-54b0e79d98e7"
+                    && self.owner.workspace_id == "da7f6880-ce0e-472e-8a06-6e43c72f9134"
+                    && self.owner.tenant_id == "81290384-3800-4939-93b1-bd2be4484e14"
+                    && self.owner.principal_id == "79003f0f-ceb5-4634-9b50-1ca59fecc408"
+                    && self.owner.owner_uid == 501,
                 _ => false,
             };
             if !supported || lineage.is_empty() || lineage.len() > 8
@@ -153,7 +160,8 @@ impl Binding {
             && crate::native_payload::combined_thumbnail_fresh_host_matches(tuple);
         let combined_thumbnail = self.catalog == 52
             && (matches!(self.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
-                || fresh_contact)
+                || fresh_contact || (interrupted && self.restore.is_none()
+                    && crate::native_payload::current52_interrupted_host_matches(tuple)))
             && crate::native_payload::combined_thumbnail_host_matches(tuple)
             && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let current_thumbnail = self.catalog == 51
@@ -347,6 +355,11 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
+        if transition.is_current52_interrupted_recovery() {
+            return if self.phase == Phase::Active && self.admission_kind == Admission::CleanReopen && self.restore.is_none() {
+                Ok(None)
+            } else { Err(err(ERROR)) };
+        }
         if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || transition.is_current_image_thumbnail_refresh() || transition.is_combined_thumbnail_runtime_refresh() {
             return if self.admission_kind == Admission::CleanReopen
                 && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
@@ -402,6 +415,7 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_admission(transition: FurnishingTransition) -> Admission {
+        if transition.is_current52_interrupted_recovery() { return Admission::InterruptedReopen; }
         match transition {
             FurnishingTransition::Upgrade39(_) => Admission::CatalogUpgrade039To040,
             FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
@@ -697,6 +711,64 @@ mod tests {
         let mut wrong_physical = recovery(LATER);
         wrong_physical.physical.root_inode += 1;
         assert!(wrong_physical.consume_interrupted(&attempt, false).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn current52_transition_is_exact_no_restore_interrupted_v3() {
+        use crate::native_payload::{METRIC_FRAME_TARGET as OLD, CURRENT52_INTERRUPTED_TARGET as NEW};
+        let step = FurnishingTransition::from_manifests((OLD.2, NEW.2)).unwrap();
+        let original = "3a97db46-4b4f-4e75-97e0-54b0e79d98e7";
+        let make = |generation: &str, tuple: (&str, &str, &str)| {
+            let mut value = binding(generation); value.catalog = 52;
+            value.owner.workspace_id = "da7f6880-ce0e-472e-8a06-6e43c72f9134".into();
+            value.owner.tenant_id = "81290384-3800-4939-93b1-bd2be4484e14".into();
+            value.owner.principal_id = "79003f0f-ceb5-4634-9b50-1ca59fecc408".into();
+            value.source_commit = tuple.0.into(); value.producer_sha256 = tuple.1.into();
+            value.payload_manifest_sha256 = tuple.2.into(); value
+        };
+        let mut prior = make(original, OLD);
+        prior.admission_kind = Admission::CleanReopen; prior.previous_generation = Some(LATER.into());
+        prior.check().unwrap();
+        let initial = make(NEXT, NEW);
+        for variant in 0..5 {
+            let mut target = initial.clone(); let mut source = prior.clone();
+            match variant {
+                0 => target.owner.tenant_id = NEXT.into(),
+                1 => target.physical.lock_inode += 1,
+                2 => source.phase = Phase::Clean,
+                3 => target.payload_manifest_sha256 = OLD.2.into(),
+                _ => source.generation = NEXT.into(),
+            }
+            assert!(target.consume_furnishing_transition(&source, step).is_err());
+        }
+        let mut next = initial;
+        next.consume_furnishing_transition(&prior, step).unwrap();
+        assert_eq!(next.phase, Phase::Active);
+        assert_eq!(next.admission_kind, Admission::InterruptedReopen);
+        assert_eq!(next.previous_generation.as_deref(), Some(original));
+        assert_eq!(next.interrupted_claim_generations, [original]);
+        assert!(next.restore.is_none());
+        next.select_interrupted_claim_generation("").unwrap();
+        let exchange = Exchange::new(&next, b"synthetic-lease").unwrap();
+        for kind in [Kind::Admission, Kind::AdmissionAck, Kind::Stop, Kind::Drained] {
+            let bytes = exchange.signed(&[0x55; 32], kind).unwrap();
+            exchange.check_frame(&[0x55; 32], kind, &bytes).unwrap();
+            assert!(exchange.check_frame(&[0x56; 32], kind, &bytes).is_err());
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["version"], 3);
+            assert_eq!(value["admissionKind"], "interrupted-reopen");
+            assert_eq!(value["previousRuntimeGeneration"], original);
+        }
+        let mut old_interrupted = prior.clone();
+        old_interrupted.admission_kind = Admission::InterruptedReopen;
+        old_interrupted.interrupted_claim_generations.push(LATER.into());
+        assert!(old_interrupted.check().is_err());
+        let mut restored = prior.clone();
+        restored.restore = Some(Restore { id: NEXT.into(), backup_id: LATER.into(),
+            archive_manifest_sha256: "a".repeat(64), target_system_identifier: "123".into(),
+            provenance: None, carried_provenance: None });
+        assert!(make(NEXT, NEW).consume_furnishing_transition(&restored, step).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
