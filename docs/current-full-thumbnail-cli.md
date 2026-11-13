@@ -51,3 +51,9 @@ the same request ID, candidate and expected selection version; server request
 idempotency and CAS remain authoritative. Cancellation currently requires the
 retained current artwork/rights context, so stale-context cleanup remains an
 owner action through existing supported operations.
+
+The validation helper admits only the exact new runtime tuple and its clean
+`1b` predecessor. It retains the existing carried restore receipt and applies
+the established 8 GiB checkpoint bound only to this exact clean pair without a
+startup cancellation proof. Reverse, mixed, self and foreign pairs gain no such
+transition or capacity. This adds no recovery or restore mode.
