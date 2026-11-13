@@ -30,10 +30,23 @@ final class NativeCurrentImageThumbnailRequestTests: XCTestCase {
         } catch let error as AuthoringFailure { XCTAssertEqual(error.code, "REVISION_CONFLICT") }
         XCTAssertTrue(ThumbnailRequestProtocol.writes().isEmpty)
     }
-    private func connected() async throws -> (AuthoringAPI, NativeDocumentState) {
+    func testCorrected051UsesSameClosedRequestWithoutSelection() async throws {
+        ThumbnailRequestProtocol.reset(stale: false)
+        let (api, document) = try await connected(manifest: "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822")
+        _ = try await api.prepareCurrentImageThumbnail(artworkId: ThumbnailRequestProtocol.id,
+            revision: 2, requestId: UUID(uuidString: ThumbnailRequestProtocol.requestID)!, in: document)
+        let writes = ThumbnailRequestProtocol.writes()
+        XCTAssertEqual(writes.count, 1)
+        let body = try XCTUnwrap(writes.first?.1)
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(Set(fields.keys), ["requestId", "expectedRevision"])
+        XCTAssertEqual(fields["expectedRevision"] as? Int, 2)
+    }
+
+    private func connected(manifest: String = "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988") async throws -> (AuthoringAPI, NativeDocumentState) {
         let id = ThumbnailRequestProtocol.id
         let api = try AuthoringAPI(port: 18091, tenantId: id,
-            nativeRuntimeManifestSHA256: "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988",
+            nativeRuntimeManifestSHA256: manifest,
             protocolClasses: [ThumbnailRequestProtocol.self])
         _ = try await api.connect(LocalAuthoringSession(tenantId: id, principalId: id,
             origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))

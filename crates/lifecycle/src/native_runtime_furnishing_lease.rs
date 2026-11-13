@@ -101,6 +101,7 @@ impl Lease {
             FurnishingStart::Upgrade044To045 => 8,
             FurnishingStart::Upgrade045To050 => 9,
             FurnishingStart::Upgrade045To049 => 10,
+            FurnishingStart::Upgrade045To051 => 11,
         });
         if !hash_valid(&self.manifest_sha256)
             || self.identity.root_inode == 0
@@ -265,6 +266,20 @@ mod tests {
             assert_eq!(frame["mac"], expected_mac);
         }
         assert!(lease.check_ack(&key, &selected_039).is_err());
+    }
+
+    #[test]
+    fn current_thumbnail_upgrade_uses_ordinal11_and_rejects_old_ack() {
+        let mut lease = golden(); let key = [0x55; 32];
+        lease.start = FurnishingStart::Upgrade045To049;
+        let prior = lease.signed(&key, Kind::Ack).unwrap();
+        lease.start = FurnishingStart::Upgrade045To051;
+        let message = lease.message(Kind::Lease).unwrap();
+        let offset = "ExhibitOS/workspace-furnishing/furnishing-writer-lease/v1".len() + 1 + 4 * 16;
+        assert_eq!(message[offset], 11);
+        let frame: Value = serde_json::from_slice(&lease.signed(&key, Kind::Lease).unwrap()).unwrap();
+        assert_eq!(frame["mode"], "workspace-furnishing-045-to-051-upgrade-v1");
+        assert!(lease.check_ack(&key, &prior).is_err());
     }
 
     #[test]

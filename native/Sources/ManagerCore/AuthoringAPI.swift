@@ -609,6 +609,7 @@ public actor AuthoringAPI {
             || manifest == Self.default17RuntimeManifestPin
             || manifest == Self.furnishingThumbnail050RuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
+            || Self.supportsCorrectedCurrentImageThumbnailRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
         let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
@@ -1067,12 +1068,22 @@ public actor AuthoringAPI {
 
     /// Populated only from the independently qualified immutable producer handoff.
     /// Older model/product-image session profiles never imply this additive route.
+    nonisolated static func supportsCorrectedCurrentImageThumbnailRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsCurrentImageThumbnailRuntime(manifest: String?) -> Bool {
         let qualified: Set<String> = [
             // API a888494b / producer e662b20c; separately qualified thumbnail-only payload.
             "0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988",
             // Separately qualified Frame9 payload retains this exact producer.
-            "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"
+            "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be",
+            // Corrected dedicated051 catalog; exact immutable producer handoff.
+            "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822"
         ]
         return manifest.map(qualified.contains) ?? false
     }
