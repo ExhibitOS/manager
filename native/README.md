@@ -1545,3 +1545,12 @@ and bounded OEX download use the existing operations; Platform selects OEX
 draft.21 for envelope9. Selected archive import support is unchanged. These
 source paths require separate actual intake/save/reopen/export and Viewer
 qualification before claiming acceptance of a real frame.
+
+The qualified current-image thumbnail area correction keeps catalog051 and the
+existing receipt shape. Native accepts the exact original normalization recipe
+and the separately qualified area-filtered thumbnail recipe in
+`producer.recipeSHA256`. The exact051 runtime-to-runtime transition uses the
+existing same-catalog path, preserving carried-restore and retained-original
+custody without running a catalog upgrade. Earlier issued jobs/receipts remain
+valid history; new generation needs new request IDs. Source admission does not
+establish actual output quality or selection; each new candidate requires review.

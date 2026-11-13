@@ -373,7 +373,9 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         (crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2,
          crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2),
         (crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2,
-         crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2)].contains(&pair) && proof.is_none() {
+         crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2),
+        (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2,
+         crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2)].contains(&pair) && proof.is_none() {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
     }
 
@@ -2040,6 +2042,12 @@ mod tests {
         let source = crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2;
         let target = crate::native_payload::CATALOG45_CURRENT_IMAGE_THUMBNAIL_TARGET.2;
         assert_eq!(checkpoint_inventory_limit((source, target), None), 8 * 1024 * 1024 * 1024);
+        let current = crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2;
+        let area = crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((current, area), None), 8 * 1024 * 1024 * 1024);
+        for pair in [(area, current), (area, area), (source, area)] {
+            assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+        }
         for pair in [(target, source), (source, source), (target, target),
             (crate::native_payload::CATALOG45_SELECTED_PNG_READ_SOURCE.2, target),
             (crate::native_payload::CATALOG45_DEFAULT_1_11_TARGET.2, target), (source, "unqualified")] {
@@ -2053,6 +2061,7 @@ mod tests {
         for (old,new) in [
             (crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2, crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2),
             (crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2, crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2),
+            (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2, crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2),
         ] {
         let proof=RetainedOriginalModel::synthetic();
         let owner=("10000000-0000-4000-8000-000000000001","10000000-0000-4000-8000-000000000002","10000000-0000-4000-8000-000000000003");

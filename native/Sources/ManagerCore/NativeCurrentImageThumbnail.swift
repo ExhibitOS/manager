@@ -208,7 +208,8 @@ public struct NativeCurrentImageThumbnailJob: Codable, Sendable {
               selection.sourceSha256 == p.source.sha256, selection.thumbnailAssetId == r.thumbnail.assetId,
               selection.thumbnailSha256 == r.thumbnail.sha256, selection.view.kind == "default" else { throw thumbnailInvalid() }
         let producer = r.producer, source = producer.source
-        guard producer.version == 1, producer.recipeSHA256 == "d13ad48b1ae8c29818002225fb5ebb4840907646810d90922a4ea3a5448f06c0",
+        guard producer.version == 1, ["d13ad48b1ae8c29818002225fb5ebb4840907646810d90922a4ea3a5448f06c0",
+               "912cac7efe052040dc9aef7c3e21574e48db79965640e8e40b65cd51b839fa12"].contains(producer.recipeSHA256),
               producer.decoder == "sharp-0.35.4-vips-8.18.6-mozjpeg-0826579", source.mime == p.source.mime,
               source.sha256 == p.source.sha256, source.bytes == p.source.bytes, source.iccSHA256 == nil,
               (1...8192).contains(source.width), (1...8192).contains(source.height), source.width * source.height <= 24 * 1024 * 1024,

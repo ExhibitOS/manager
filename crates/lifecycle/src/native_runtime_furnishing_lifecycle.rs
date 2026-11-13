@@ -333,7 +333,7 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
-        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. }) {
+        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. }) || transition.is_current_image_thumbnail_refresh() {
             return if self.admission_kind == Admission::CleanReopen
                 && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
             { Ok(self.restore.as_ref()) } else { Err(err(ERROR)) };
@@ -1797,7 +1797,19 @@ mod tests {
         let mut reopened = pin(LATER, 51, target); reopened.consume(&clean).unwrap();
         assert_eq!(reopened.admission_kind, Admission::CleanReopen);
         assert_eq!(reopened.restore, prior.restore);
-        for value in [upgraded, reopened] {
+        let area = crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET;
+        let refresh = FurnishingTransition::from_manifests((target.2, area.2)).unwrap();
+        let mut source_clean = reopened.clone(); source_clean.phase = Phase::Clean;
+        let mut refreshed = pin("10000000-0000-4000-8000-000000000005", 51, area);
+        refreshed.consume_furnishing_transition(&source_clean, refresh).unwrap();
+        assert_eq!(refreshed.admission_kind, Admission::CleanReopen);
+        assert_eq!(refreshed.restore, prior.restore);
+        assert!(!refresh.upgrades_catalog());
+        let mut area_clean = refreshed.clone(); area_clean.phase = Phase::Clean;
+        let mut area_reopened = pin("10000000-0000-4000-8000-000000000006", 51, area);
+        area_reopened.consume(&area_clean).unwrap();
+        assert_eq!(area_reopened.restore, prior.restore);
+        for value in [upgraded, reopened, refreshed, area_reopened] {
             value.check().unwrap();
             let key = [0x55; 32];
             let auth = LocalAuthority { format:1, workspace_id:value.owner.workspace_id.clone(),
