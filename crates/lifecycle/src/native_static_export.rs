@@ -1651,32 +1651,34 @@ impl DetailRun {
             }
             Ok((receipt, tree))
         })();
+        if let Err(error) = &verified {
+            use std::os::unix::process::ExitStatusExt;
+            let exit = child.0.try_wait();
+            let observed = exit.as_ref().ok().and_then(|value| value.as_ref());
+            let mut diagnostic = diagnostic.borrow_mut();
+            diagnostic.drain(&journal.status.publication_id);
+            let failure = diagnostics::Failure {
+                version: 1,
+                job_id: &journal.status.job_id,
+                publication_id: &journal.status.publication_id,
+                runtime_generation: &journal.runtime_generation,
+                phase: phase.get(),
+                rust_error: diagnostics::RustError::from_code(&error.code),
+                child_error: diagnostic.error,
+                stderr_truncated: diagnostic.truncated,
+                exit_code: observed.and_then(|value| value.code()),
+                exit_signal: observed.and_then(|value| value.signal()),
+                running: exit.as_ref().ok().map(|value| value.is_none()),
+                elapsed_ms: began.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                deadline_reached: Instant::now() >= deadline,
+            };
+            let _ = controller.write_detail_diagnostic(token, &journal, &failure);
+        }
         drop(stdin);
         drop(stdout);
         let (receipt, tree) = match verified {
             Ok(verified) => verified,
-            Err(error) => {
-                use std::os::unix::process::ExitStatusExt;
-                let exit = child.0.try_wait();
-                let observed = exit.as_ref().ok().and_then(|value| value.as_ref());
-                let mut diagnostic = diagnostic.borrow_mut();
-                diagnostic.drain(&journal.status.publication_id);
-                let failure = diagnostics::Failure {
-                    version: 1,
-                    job_id: &journal.status.job_id,
-                    publication_id: &journal.status.publication_id,
-                    runtime_generation: &journal.runtime_generation,
-                    phase: phase.get(),
-                    rust_error: diagnostics::RustError::from_code(&error.code),
-                    child_error: diagnostic.error,
-                    stderr_truncated: diagnostic.truncated,
-                    exit_code: observed.and_then(|value| value.code()),
-                    exit_signal: observed.and_then(|value| value.signal()),
-                    running: exit.as_ref().ok().map(|value| value.is_none()),
-                    elapsed_ms: began.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                    deadline_reached: Instant::now() >= deadline,
-                };
-                let _ = controller.write_detail_diagnostic(token, &journal, &failure);
+            Err(_) => {
                 // Reaping is necessary but a lost READY is never server settlement.
                 if stop_detail_child(&mut child.0) && owned_child_group_absent(group) {
                     journal.child_returned = true;
