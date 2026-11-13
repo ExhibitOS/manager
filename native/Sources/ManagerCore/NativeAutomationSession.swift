@@ -69,6 +69,7 @@ public actor NativeAutomationSession {
     private var sharedBenchProposals: [String: SharedFurnishingViewportRequest] = [:]
     private var surfaceProposals: [String: SurfaceMaterialTextureRequest] = [:]
     private var plaqueProposals: [String: (PlaquePreview, String)] = [:]
+    private var portalProposals: [String: NativeAutomationPortal.Proposal] = [:]
     private var wallFinishProposals: [String: (WallFinishPreview, String)] = [:]
     private enum SceneProposal: Sendable {
         case scene(NativeAutomationScene.ScenePreview)
@@ -386,7 +387,7 @@ public actor NativeAutomationSession {
 
         runtimeStopped = true
         proposals.removeAll(); sharedBenchProposals.removeAll(); surfaceProposals.removeAll(); plaqueProposals.removeAll(); wallFinishProposals.removeAll()
-        sceneProposals.removeAll()
+        sceneProposals.removeAll(); portalProposals.removeAll()
         _ = try await bridge.stop(context)
         let stopped = try await waitReady()
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses,
@@ -1838,7 +1839,7 @@ public actor NativeAutomationSession {
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
-            let allowed: Set<String> = ["workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel"]
+            let allowed: Set<String> = ["workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel"]
             guard allowed.contains(operation) || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
@@ -1863,7 +1864,7 @@ public actor NativeAutomationSession {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
-        if ["plaque-prepare", "plaque-apply", "plaque-cancel", "wall-finish-prepare", "wall-finish-apply", "wall-finish-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-object-prepare", "light-object-apply", "light-object-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel"].contains(operation) {
+        if ["plaque-prepare", "plaque-apply", "plaque-cancel", "wall-finish-prepare", "wall-finish-apply", "wall-finish-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-object-prepare", "light-object-apply", "light-object-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel"].contains(operation) {
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
             let extra: Set<String> = operation.hasSuffix("-prepare") ? ["command"] : ["proposalId"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -1932,6 +1933,7 @@ public actor NativeAutomationSession {
             if ["pedestal-prepare", "light-prepare", "fixture-prepare", "light-attachment-prepare", "light-object-prepare"].contains(operation), sceneProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "plaque-prepare", plaqueProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "wall-finish-prepare", wallFinishProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            if operation == "workspace-portal-prepare", portalProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             return prior
         }
         guard !busy, seenRequests.count < 128 else { throw BridgeFailure("AUTOMATION_BUSY") }
@@ -2313,6 +2315,47 @@ public actor NativeAutomationSession {
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
+            }
+        case "workspace-portal-prepare":
+            guard selectedOEXFormat == nil, await api.admitsWorkspacePortalFinish else {
+                throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationPortal.Command(request["command"])
+            let draft = try await api.prepareWorkspacePortalFinish(openingId: command.openingId,
+                furnishingId: command.furnishingId, expectedModelSHA256: command.modelSHA256, in: current)
+            let (_, _, refreshed) = try await checked(request)
+            guard try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            try Task.checkCancellation()
+            portalProposals[id] = NativeAutomationPortal.Proposal(command: command, base: try value(current), draft: draft)
+            result = .object(["proposalId": .string(id), "changed": .bool(draft != nil),
+                "candidate": (draft ?? current.draft)?.candidate ?? .null])
+        case "workspace-portal-apply", "workspace-portal-cancel":
+            guard selectedOEXFormat == nil, await api.admitsWorkspacePortalFinish else {
+                throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            guard let proposalId = request["proposalId"].string, let proposal = portalProposals[proposalId] else {
+                throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED")
+            }
+            if operation == "workspace-portal-cancel" {
+                portalProposals.removeValue(forKey: proposalId)
+                result = .object(["cancelled": .bool(true)])
+            } else {
+                // Check local state before network work, then revalidate CAS, descriptor and fit at Apply.
+                try proposal.check(current: value(current), refreshed: proposal.draft)
+                let command = proposal.command
+                let draft = try await api.prepareWorkspacePortalFinish(openingId: command.openingId,
+                    furnishingId: command.furnishingId, expectedModelSHA256: command.modelSHA256, in: current)
+                let (_, _, refreshed) = try await checked(request)
+                try proposal.check(current: value(refreshed), refreshed: draft)
+                try Task.checkCancellation()
+                var next = current
+                if let draft { next.draft = draft }
+                var document = current
+                if draft != nil { document = try await bridge.saveDocumentState(context, state: next) }
+                portalProposals.removeValue(forKey: proposalId)
+                result = .object(["changed": .bool(draft != nil), "document": try value(document)])
             }
         case "workspace-portal-attach", "workspace-portal-detach":
             guard selectedOEXFormat == nil, await api.admitsWorkspacePortalFinish else {
