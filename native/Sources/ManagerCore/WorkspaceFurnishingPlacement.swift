@@ -65,7 +65,7 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
         var openingAttachments: [DocumentValue]?
         if let existing = extensions[Self.namespace] {
             guard case .object(let fields) = existing,
-                  let existingVersion = existing["version"].integer, ((1...7).contains(existingVersion) || existingVersion == 9),
+                  let existingVersion = existing["version"].integer, ((1...7).contains(existingVersion) || existingVersion == 9 || existingVersion == 10),
                   let assets = existing["furnishings"].items,
                   let rows = existing["placements"].items, !assets.isEmpty,
                   assets.count <= 64, rows.count <= 128 else {

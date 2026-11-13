@@ -2041,6 +2041,36 @@ final class ExhibitionModel: ObservableObject {
         workspaceArtworkFrameAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
             && state?.etag != nil && viewportController.editingContextActive
     }
+    var frameImageFitAvailable: Bool {
+        guard workspaceArtworkFrameAvailable,
+              session?.nativeFrameImageFitProposalProfile == FrameImageFitReconciliationRequest.profile,
+              let draft else { return false }
+        return FrameImageFitReconciliationRequest.supports(placementId: placementId, in: draft)
+    }
+    var canReconcileFrameImageFit: Bool {
+        frameImageFitAvailable && canEditWorkspaceArtworkFrame && !formDirty && !positionDirty && !architectureDirty
+            && viewportSelection == ViewportSelection(kind: "placement", id: placementId)
+    }
+    func reconcileSelectedFrameImageFit() async {
+        guard canReconcileFrameImageFit else { return }
+        let target = placementId, access = viewportAccessID
+        let context = viewportController.editingContextGeneration, host = viewportController.hostEpoch
+        do {
+            let changed = try await applyWorkspaceArtworkFrame(to: target, access: access) { api, state in
+                let preview = try await api.prepareFrameImageFitReconciliation(placementId: target, in: state)
+                guard self.viewportSelection == ViewportSelection(kind: "placement", id: target),
+                      self.viewportController.editingContextGeneration == context,
+                      self.viewportController.hostEpoch == host, let draft = state.draft else {
+                    throw AuthoringFailure("FRAME_TARGET_STALE")
+                }
+                return try preview.apply(to: draft)
+            }
+            notice = changed ? "액자를 이미지에 맞춰 이 Mac에 보관했습니다. 전시를 저장하세요." : "이미지에 이미 맞춰진 액자입니다."
+        } catch {
+            failure = error as? AuthoringFailure ?? AuthoringFailure("FRAME_IMAGE_FIT_INVALID")
+            viewportController.diagnose("FRAME_IMAGE_FIT", error)
+        }
+    }
     var canEditWorkspaceBenchSeat: Bool {
         workspaceFurnishingIntakeAvailable && canSelectCatalog && !immutable && !dirty && !benchDirty
             && !viewingPlanDirty && !architectureDirty && !formDirty && !positionDirty

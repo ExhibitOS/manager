@@ -84,6 +84,27 @@ the edit. Use the existing `save` operation to commit it, then
 `reopen-saved` to read it back. This operation adds no fields to the draft or
 journal formats.
 
+## Saved frame and image contact
+
+A live owner session advertising `nativeFrameImageFitProposalProfile` as
+`saved-head-frame-image-fit-v1` can explicitly fit an existing measured model
+frame to its approved primary PNG. The app exposes “이미지에 맞추기” for eligible
+saved placements. It stages a local edit; ordinary Save and reopen remain
+separate. Exact existing contact is a no-op and needs no Save.
+
+The CLI uses `workspace-frame-image-fit-prepare` with `command.placementId`,
+then `workspace-frame-image-fit-apply` or `workspace-frame-image-fit-cancel`
+with the returned `proposalId`, under the existing owner/revision envelope.
+Preparation and Apply both recheck the live owner, capability and saved ETag.
+Only the selected attachment's closed `contain-contact-v1` image record and the
+workspace namespace transition to version 10 can change. Physical dimensions,
+source images (including photographic margins), models, rights and poses stay
+unchanged. Spec33/OEX22 retain the record; legacy version 9 rows keep their
+existing behavior until explicit reconciliation. Repeating an identical frame
+binding retains its issued contact record; a deliberate new binding requires
+Save followed by reconciliation. Exact runtime qualification and actual GUI,
+export and Viewer acceptance remain separate from this source support.
+
 ## Authenticated scene and thumbnail CLI
 
 The installed app exposes `ExhibitOSManager --authoring-cli --profile
