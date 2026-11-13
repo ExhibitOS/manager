@@ -1613,3 +1613,23 @@ startup-drain or ordinary native-publication admission lists. Unknown, reversed,
 mixed and older direct transition tuples remain rejected. These are scoped
 validation capabilities; source tests alone do not establish an actual profile
 transition, a newly selected furnishing thumbnail, or native GUI acceptance.
+
+## Saved procedural frame removal
+
+`procedural-frame-clear-prepare` accepts only `command: {placementId}` for a
+saved placement with an existing procedural frame and no model-frame attachment.
+It uses the existing typed installation validator and returns a session-owned
+`proposalId`, the frame-only candidate, and the original frame for review.
+`procedural-frame-clear-apply` takes that proposal ID and requires the exact
+unchanged local document and saved head. Both steps recheck the current owner,
+role, furnishing/frame capabilities, viewport policy, saved ETag and the existing
+server candidate validator. Unsupported bounded editing remains refused.
+`procedural-frame-clear-cancel` discards the proposal without writing.
+
+Apply stages only the local draft. Use the existing explicit `save` operation,
+then `reopen-saved`, before a separate model-frame attachment. The intermediate
+saved state has no procedural frame; the old complete frame parameters remain
+in the reviewed before-image. The command does not remove model frames, restore
+old content automatically, change other installation settings, unlock the GUI,
+or publish an exhibition. A rejected server check or Save remains a failure to
+report and reconcile through the existing owner lifecycle.
