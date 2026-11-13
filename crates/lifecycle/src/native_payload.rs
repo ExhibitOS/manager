@@ -471,12 +471,12 @@ pub(crate) const CURRENT_IMAGE_THUMBNAIL_AREA_TARGET: RuntimeTuple = (
     "f448dd2810ddc9ba992c446857b116a5c986d9607ed98348c58ceb4a18dd752e",
     "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f",
 );
-// Existing050 composed with retained051; catalog identity52 is not a SQL migration number.
+// Final qualified cap20/Spec32 producer: existing050 + retained051; catalog52 is not a migration number.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const COMBINED_THUMBNAIL_TARGET: RuntimeTuple = (
-    "122493271acaeed9fbb0b79020d08cf3846557d8",
-    "926507cc5b7b014001dcee7899eb50697c4c69c15b42dc5ab0c974af7675252c",
-    "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41",
+    "d8dffe47e47cd13a274f0ac690db448f80fbe53f",
+    "f3357928224460b163b626339b12708de2e96ff9d12e06edd51d7416d37ed1a2",
+    "84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
 );
 pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2242,6 +2242,54 @@ pub(crate) mod normal_oex_release_declaration_tests {
         }
         assert!(!current_image_thumbnail_host_matches(target)); assert!(!furnishing_thumbnail_host_matches(target));
         assert!(!gpu_model_host_matches(target)); assert!(!large_model_host_matches(target));
+        // The earlier cap8 assembly was never consumed; it is superseded, not a transition hop.
+        let retired = ("122493271acaeed9fbb0b79020d08cf3846557d8",
+            "926507cc5b7b014001dcee7899eb50697c4c69c15b42dc5ab0c974af7675252c",
+            "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41");
+        assert!(!combined_thumbnail_host_matches(retired));
+        assert!(!saved_workspace_transition_target(retired.2));
+        assert!(FurnishingTransition::from_manifests((source.2, retired.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((retired.2, target.2)).is_none());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn combined_thumbnail_052_upgrade_script_pins_use_final_cap20_and_reject_old_or_mutated() {
+        // Exercise the same private pin guard called by the production upgrade entry,
+        // without replacing its separate full on-disk recheck or rescanning a runtime.
+        let make = || {
+            let mut payload = combined_thumbnail_payload(COMBINED_THUMBNAIL_TARGET);
+            payload.manifest.files.retain(|file| !["platform/scripts/local-runtime.mjs",
+                "platform/scripts/native-workspace-furnishing-bootstrap.mjs"].contains(&file.path.as_str()));
+            for (path, bytes, hash) in [
+                ("platform/scripts/local-runtime.mjs", 102667,
+                    "157121884db9b4f6504a7f94119c07f302f6c19143aebe5896ee307f2b611044"),
+                ("platform/scripts/native-workspace-furnishing-bootstrap.mjs", 38436,
+                    "2001170b1e036ec046e1af454779c1bcceef2a2e796ac891cebe55255cb0b455"),
+            ] {
+                payload.manifest.files.push(Item { path: path.into(), bytes: Some(bytes),
+                    sha256: Some(hash.into()), executable: Some(false), link: None });
+            }
+            payload
+        };
+        assert!(make().combined_thumbnail_upgrade_script_pins().is_ok());
+        for (path, hash) in [
+            ("platform/scripts/local-runtime.mjs", "4623b891e2caab5fe5ce57529a803f986ca56501e9ab28e80336b323a0ed5c22"),
+            ("platform/scripts/local-runtime.mjs", "0000000000000000000000000000000000000000000000000000000000000000"),
+            ("platform/scripts/native-workspace-furnishing-bootstrap.mjs", "0000000000000000000000000000000000000000000000000000000000000000"),
+        ] {
+            let mut payload = make();
+            payload.manifest.files.iter_mut().find(|file| file.path == path).unwrap().sha256 = Some(hash.into());
+            assert_eq!(payload.combined_thumbnail_upgrade_script_pins().unwrap_err().code, "NATIVE_RUNTIME_UNQUALIFIED");
+        }
+        for path in ["platform/scripts/local-runtime.mjs", "platform/scripts/native-workspace-furnishing-bootstrap.mjs"] {
+            let mut missing = make(); missing.manifest.files.retain(|file| file.path != path);
+            assert!(missing.combined_thumbnail_upgrade_script_pins().is_err());
+            let mut executable = make(); executable.manifest.files.iter_mut().find(|file| file.path == path).unwrap().executable = Some(true);
+            assert!(executable.combined_thumbnail_upgrade_script_pins().is_err());
+            let mut linked = make(); linked.manifest.files.iter_mut().find(|file| file.path == path).unwrap().link = Some("other".into());
+            assert!(linked.combined_thumbnail_upgrade_script_pins().is_err());
+        }
     }
 
     #[test]
@@ -5087,16 +5135,22 @@ impl Payload {
                 &self.manifest.producer_sha256, &self.manifest_sha256))
             || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CombinedThumbnails052)
         { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        self.combined_thumbnail_upgrade_script_pins()?;
+        self.recheck()?;
+        Ok(self.script())
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn combined_thumbnail_upgrade_script_pins(&self) -> Result<()> {
         for (path, hash) in [
-            ("platform/scripts/local-runtime.mjs", "4623b891e2caab5fe5ce57529a803f986ca56501e9ab28e80336b323a0ed5c22"),
+            ("platform/scripts/local-runtime.mjs", "157121884db9b4f6504a7f94119c07f302f6c19143aebe5896ee307f2b611044"),
             ("platform/scripts/native-workspace-furnishing-bootstrap.mjs", "2001170b1e036ec046e1af454779c1bcceef2a2e796ac891cebe55255cb0b455"),
         ] {
             if !self.manifest.files.iter().any(|file| file.path == path && file.link.is_none()
                 && file.executable == Some(false) && file.sha256.as_deref() == Some(hash))
             { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
         }
-        self.recheck()?;
-        Ok(self.script())
+        Ok(())
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

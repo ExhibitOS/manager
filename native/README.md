@@ -1,5 +1,14 @@
 # Native macOS application (in progress)
 
+The debug-only combined catalog52 target is the final qualified Spec32 producer
+with twenty wall-finish rows and the unchanged 8192-byte namespace budget. It
+supersedes the unconsumed cap8 target; no intermediate adoption is needed. The
+existing source51 → target52 maintenance mode, exact 13-key receipt, source46
+and target47 SQL ledgers, and sole existing050 migration remain unchanged.
+Runtime admission still requires the exact source/producer/manifest tuple;
+selected reads and authoring purpose boundaries remain separate from startup
+drain, GPU and ordinary publication aliases.
+
 Private detail-output failures retain a bounded diagnostic in
 `native-detail-failure-<job UUID>.json` inside the private profile. It records
 the protocol phase, finite Rust/child error classes, elapsed time and the child
