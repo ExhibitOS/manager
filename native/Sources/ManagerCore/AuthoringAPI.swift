@@ -1887,7 +1887,7 @@ public actor AuthoringAPI {
 
     private func readPreviewBytes(path: String, expectedBytes: Int, sha256: String, mime: String,
                                   invalidCode: String, requireDigestHeader: Bool, requiresNativeReadCSRF: Bool = false,
-                                  queryItems: [URLQueryItem]? = nil) async throws -> Data {
+                                  queryItems: [URLQueryItem]? = nil, requireMimeHeader: Bool = false) async throws -> Data {
         guard !authenticationBusy, session != nil else { throw AuthoringFailure("AUTH_REQUIRED", status: 401) }
         let current = generation
         var url = base.appendingPathComponent(path)
@@ -1915,6 +1915,7 @@ public actor AuthoringAPI {
         }
         guard let http = response as? HTTPURLResponse, http.url == url, http.statusCode == 200,
               http.mimeType?.lowercased() == mime,
+              !requireMimeHeader || http.value(forHTTPHeaderField: "Content-Type")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == mime,
               !requireDigestHeader || http.value(forHTTPHeaderField: "x-exhibitos-sha256") == sha256,
               http.value(forHTTPHeaderField: "Content-Encoding").map({ $0.lowercased() == "identity" }) ?? true,
               http.expectedContentLength < 0 || http.expectedContentLength == Int64(expectedBytes) else { throw AuthoringFailure(invalidCode) }
@@ -3304,7 +3305,7 @@ public actor AuthoringAPI {
         let binding = try InstalledFurnishingThumbnail(value: wire, descriptor: raw, furnishing: item)
         let data = try await readPreviewBytes(path: path + "/installed-thumbnail/image", expectedBytes: binding.png.bytes,
                                              sha256: binding.png.sha256, mime: "image/png", invalidCode: "CATALOG_PREVIEW_INVALID",
-                                             requireDigestHeader: true, requiresNativeReadCSRF: true)
+                                             requireDigestHeader: true, requiresNativeReadCSRF: true, requireMimeHeader: true)
         try checkInstalledFurnishingThumbnailScope(document, generation: held)
         _ = try binding.png.checkedData(data)
         let latest: DocumentValue = try await request(path + "/installed-thumbnail", requiresNativeReadCSRF: true)
