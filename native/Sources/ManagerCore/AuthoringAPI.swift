@@ -2800,6 +2800,7 @@ public actor AuthoringAPI {
     public nonisolated static func supportsStraightMiterFrameRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"
+            || supportsCorrectedCurrentImageThumbnailRuntime(manifest: manifest)
         #else
         false
         #endif

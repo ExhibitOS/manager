@@ -1520,7 +1520,7 @@ an actual profile transition or successful thumbnail jobs.
 ### Source-bound miter frame intake
 
 The debug SDK admits `straight-miter-ring-v1` only for the qualified Frame74
-runtime manifest and an authenticated furnishing editor advertising the existing
+or corrected051 runtime manifest and an authenticated furnishing editor advertising the existing
 frame-model and `source-bound-fit-v1` profiles. Intake sends the original model
 and the requested profile. Platform measures and validates the mesh; Native
 checks the returned fit's source identity, closed geometry and Spec draft.31

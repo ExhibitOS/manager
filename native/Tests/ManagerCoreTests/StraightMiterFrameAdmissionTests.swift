@@ -11,6 +11,8 @@ final class StraightMiterFrameAdmissionTests: XCTestCase {
     func testExactRuntimeAndLiveProfilesRequiredBeforeCreateRequest() async throws {
         let cases: [(String, String?, String, Bool)] = [
             (exact, "source-bound-fit-v1", "admin", true),
+            ("73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822", "source-bound-fit-v1", "admin", true),
+            ("0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988", "source-bound-fit-v1", "admin", false),
             (exact, nil, "admin", false), (exact, "unknown", "admin", false),
             (exact, "source-bound-fit-v1", "viewer", false),
             ("1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238", "source-bound-fit-v1", "admin", false),

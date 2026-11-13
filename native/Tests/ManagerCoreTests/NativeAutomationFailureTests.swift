@@ -322,7 +322,8 @@ final class NativeAutomationFailureTests: XCTestCase {
         let owner = UUID().uuidString.lowercased()
         let missing = URL(fileURLWithPath: "/missing/exhibitos-native")
         let pins = ["0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988",
-                    "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"]
+                    "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be",
+                    "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822"]
         for manifest in pins + [String(repeating: "f", count: 64)] {
             let identity = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: Data("""
                 {"workspaceId":"\(owner)","tenantId":"\(owner)","principalId":"\(owner)","manifestSHA256":"\(manifest)"}
