@@ -1,5 +1,17 @@
 # Native macOS application (in progress)
 
+Private detail-output failures retain a bounded diagnostic in
+`native-detail-failure-<job UUID>.json` inside the private profile. It records
+the protocol phase, finite Rust/child error classes, elapsed time and the child
+exit observed before cleanup. Unknown Node or OS errors remain `UNKNOWN`;
+raw stderr, stacks, URLs, paths and credentials are never persisted. Stderr is
+read nonblockingly with bounded work and memory, independently of stdout's
+existing STAGED/READY protocol. Failure to prepare that pipe prevents startup.
+The 120-second deadline, cancellation, verification and uncertain-settlement
+rules remain in force. This disposable diagnostic is separate from the closed
+detail journal, publication records and receipts; it does not prove a cause or
+complete an export and adds no checkpoint or recovery requirement.
+
 Responsibility and build boundaries are defined once in the [Platform architecture](https://github.com/ExhibitOS/platform/blob/main/docs/architecture.md#repository-roles-build-boundaries). This page is for developers, not end-user installation prerequisites. The current native development slice has bounded synthetic save/cold-reopen/OEX and existing-publication-to-static-output evidence. Native settings GUI/accessibility, real hosted delivery, legacy migration and final signed installation remain separate. Dated coverage below records its original checkpoint and must not override later scoped results.
 
 The SwiftUI window is connected to the existing Rust installation controller by
