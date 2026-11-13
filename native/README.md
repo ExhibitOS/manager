@@ -1561,3 +1561,10 @@ reads the existing authenticated selection binding/version without a new render
 or write. Each call refreshes the response. Supply that version to the separate
 `current-image-thumbnail-select` command with a fresh same-session review ID;
 selection still performs its existing CAS, source/receipt and image readback checks.
+
+`saved-head-static-readiness` is a read-only existing-workspace SDK observation
+with the current document revisions and no command body. It reports the existing
+runtime admission, sanitized publication profile and exact saved-head viewport
+policy used by static export. A size-valid draft with bounded provenance remains
+distinct from a positive ordinary draft. The observation creates no publication,
+export intent or journal and does not grant export permission.
