@@ -489,8 +489,7 @@ public actor NativeBridge {
         try Task.checkCancellation()
         sequence += 1
         #if DEBUG
-        let traceStartup = Bundle.main.bundleIdentifier == "org.exhibitos.manager.validation"
-            && Self.startupRPCs.contains(command)
+        let traceStartup = Self.startupRPCs.contains(command)
         if traceStartup && (command == "native_prepare" || command == "native_start") {
             Self.startupLog.notice("Native startup request rpc=\(command, privacy: .public) sequence=\(self.sequence, privacy: .public)")
         }
@@ -510,7 +509,14 @@ public actor NativeBridge {
             if ContinuousClock.now >= deadline {
                 #if DEBUG
                 if traceStartup {
-                    Self.startupLog.error("Native startup timeout rpc=\(command, privacy: .public) sequence=\(self.sequence, privacy: .public) lastPhase=\(self.lastStartupPhase, privacy: .public) lastBusy=\(self.lastStartupBusy, privacy: .public)")
+                    Self.startupLog.error("Native startup IPC reply deadline rpc=\(command, privacy: .public) sequence=\(self.sequence, privacy: .public) lastPhase=\(self.lastStartupPhase, privacy: .public) lastBusy=\(self.lastStartupBusy, privacy: .public)")
+                }
+                #endif
+                #if DEBUG
+                if traceStartup {
+                    // Only fixed RPC names and bounded status metadata; never frame fields.
+                    let diagnostic = "Native startup timeout kind=ipc-reply-deadline rpc=\(command) sequence=\(sequence) lastPhase=\(lastStartupPhase) lastBusy=\(lastStartupBusy)\n"
+                    try? FileHandle.standardError.write(contentsOf: Data(diagnostic.utf8))
                 }
                 #endif
                 process.terminate()

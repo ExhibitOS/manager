@@ -498,9 +498,22 @@ pub(crate) const METRIC_FRAME_TARGET: RuntimeTuple = (
     "7dfcb1c980a2e1c98030027ae1c004fd2946df043a129eb32ccf53b7f2febbef",
     "76200d7f27776a9e0060c1f071cc66deeffe5de271d92a02ef4048c56493bdbd",
 );
+// Only the independently qualified successor supports idle-only interrupted recovery.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CURRENT52_INTERRUPTED_TARGET: RuntimeTuple = (
+    "9120bb4d98c227aa036d82bae748a08b0ab045ea",
+    "7dfcb1c980a2e1c98030027ae1c004fd2946df043a129eb32ccf53b7f2febbef",
+    "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c",
+);
+pub(crate) fn current52_interrupted_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == CURRENT52_INTERRUPTED_TARGET;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
 pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET, CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET].contains(&tuple);
+    return [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET, CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, CURRENT52_INTERRUPTED_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1454,6 +1467,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || STATIC_DETAIL_PHASE_TARGET.2 == manifest
         || CONTACT_EMITTER_CARD_TARGET.2 == manifest
         || METRIC_FRAME_TARGET.2 == manifest
+        || CURRENT52_INTERRUPTED_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1514,7 +1528,16 @@ impl FurnishingTransition {
                 || (source == CONTACT_EMITTER_CARD_TARGET && target == METRIC_FRAME_TARGET))
     }
 
+    pub(crate) fn is_current52_interrupted_recovery(self) -> bool {
+        matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }
+            if source == METRIC_FRAME_TARGET && target == CURRENT52_INTERRUPTED_TARGET)
+    }
+
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair == (METRIC_FRAME_TARGET.2, CURRENT52_INTERRUPTED_TARGET.2) {
+            return Some(Self::SameCatalog { source: METRIC_FRAME_TARGET, target: CURRENT52_INTERRUPTED_TARGET,
+                catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+        }
         if pair == (CONTACT_EMITTER_CARD_TARGET.2, METRIC_FRAME_TARGET.2) {
             return Some(Self::SameCatalog { source: CONTACT_EMITTER_CARD_TARGET,
                 target: METRIC_FRAME_TARGET, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -2304,6 +2327,34 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(!saved_workspace_transition_target(retired.2));
         assert!(FurnishingTransition::from_manifests((source.2, retired.2)).is_none());
         assert!(FurnishingTransition::from_manifests((retired.2, target.2)).is_none());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn current52_recovery_is_one_directed_target_and_keeps_ledger() {
+        let old = METRIC_FRAME_TARGET;
+        let new = CURRENT52_INTERRUPTED_TARGET;
+        let step = FurnishingTransition::from_manifests((old.2, new.2)).unwrap();
+        assert!(step.is_current52_interrupted_recovery());
+        assert!(!step.upgrades_catalog());
+        assert_eq!(step.source_catalog(), WorkspaceFurnishingCatalog::CombinedThumbnails052);
+        assert_eq!(step.target_catalog(), WorkspaceFurnishingCatalog::CombinedThumbnails052);
+        assert!(current52_interrupted_host_matches(new));
+        assert!(!current52_interrupted_host_matches(old));
+        assert!(combined_thumbnail_host_matches(new));
+        assert!(saved_workspace_transition_target(new.2));
+        for pair in [(new.2, old.2), (old.2, old.2), (new.2, new.2),
+            (CONTACT_EMITTER_CARD_TARGET.2, new.2), (COMBINED_THUMBNAIL_TARGET.2, new.2)] {
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+        }
+        for mixed in [(old.0, new.1, new.2), (new.0, new.1, old.2),
+            (new.0, "0000000000000000000000000000000000000000000000000000000000000000", new.2)] {
+            assert!(!current52_interrupted_host_matches(mixed));
+        }
+        let before = combined_thumbnail_payload(old).workspace_furnishing_ledger(step.source_catalog()).unwrap();
+        let after = combined_thumbnail_payload(new).workspace_furnishing_ledger(step.target_catalog()).unwrap();
+        assert_eq!(before, after);
+        assert_eq!(after.lines().count(), 47);
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

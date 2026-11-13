@@ -202,6 +202,11 @@ public actor NativeAutomationSession {
             }
             try await Task.sleep(for: .milliseconds(100))
         }
+        #if DEBUG
+        // Distinguish bounded status polling from a bridge reply deadline without
+        // including profile paths, session tokens or response payloads.
+        try? FileHandle.standardError.write(contentsOf: Data("Native startup timeout kind=status-poll-exhausted polls=1200\n".utf8))
+        #endif
         throw BridgeFailure("NATIVE_TIMEOUT")
     }
     private func waitStartup(manifest: String) async throws -> NativeHostStatus {

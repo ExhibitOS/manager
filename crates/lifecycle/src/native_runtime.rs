@@ -649,6 +649,143 @@ pub(crate) fn catalog45_recovery_source_generation(root: &Path, startup: Option<
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CURRENT52_UNSETTLED_SQL: &str = r#"SELECT EXISTS (
+ SELECT 1 FROM public.import_jobs WHERE state IN ('uploading','queued','processing')
+ OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cardinality(png_worker_tokens)>0
+ OR model_preparation ? 'claim' OR derived ? 'claim'
+) OR EXISTS (
+ SELECT 1 FROM public.oex_import_jobs WHERE state IN ('uploading','queued','processing')
+ OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cleanup_pending
+) OR EXISTS (
+ SELECT 1 FROM public.workspace_material_intakes WHERE phase IN ('uploading','validating','cancelling') OR worker_token IS NOT NULL
+) OR EXISTS (
+ SELECT 1 FROM public.workspace_furnishing_intakes WHERE phase IN ('uploading','validating','cancelling') OR worker_token IS NOT NULL
+) OR EXISTS (
+ SELECT 1 FROM public.freeze_requests WHERE state='creating' OR lease_id IS NOT NULL OR lease_until IS NOT NULL OR cleanup_pending
+) OR EXISTS (
+ SELECT 1 FROM public.workspace_frame_preparations WHERE state='staged'
+) AS unsettled
+"#;
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn current52_idle_observation(value: &str) -> Result<&'static str> {
+    if value != "f" { return Err(err("FURNISHING_RECOVERY_UNAVAILABLE")); }
+    Ok("")
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn check_current52_recovery_source(root: &Path, source: &Current) -> Result<()> {
+    let rejected = || err(furnishing_lifecycle::ERROR);
+    let binding = source.furnishing.as_ref().ok_or_else(rejected)?;
+    binding.check()?;
+    if source.id != binding.generation || binding.phase != Phase::Active
+        || binding.admission_kind != Admission::CleanReopen || binding.restore.is_some()
+        || binding.generation != "3a97db46-4b4f-4e75-97e0-54b0e79d98e7"
+        || binding.owner.workspace_id != "da7f6880-ce0e-472e-8a06-6e43c72f9134"
+        || binding.owner.tenant_id != "81290384-3800-4939-93b1-bd2be4484e14"
+        || binding.owner.principal_id != "79003f0f-ceb5-4634-9b50-1ca59fecc408"
+        || binding.owner.owner_uid != 501
+        || !binding.matches_catalog_tuple(52, crate::native_payload::METRIC_FRAME_TARGET) {
+        return Err(rejected());
+    }
+    let (failed, completion) = read_run(root, &source.id)?;
+    if completion.is_some() || failed.job_id.as_deref() != Some(source.id.as_str())
+        || !catalog45_failed_reopen_shape(&failed, Some(Catalog45StartupRecovery::Unqualified)) {
+        return Err(rejected());
+    }
+    let predecessor = binding.previous_generation.as_deref().ok_or_else(rejected)?;
+    if predecessor != "ef2cb6c9-bce1-4352-b0d3-287cc6d97ace" { return Err(rejected()); }
+    // Reconstruct the exact retained clean binding, including its physical owner
+    // and predecessor, rather than accepting an arbitrary well-formed digest.
+    let mut prior_binding = binding.clone();
+    prior_binding.phase = Phase::Clean;
+    prior_binding.generation = predecessor.into();
+    prior_binding.previous_generation = Some("4b74230c-9f16-4c55-9b0c-7190d1dbac83".into());
+    prior_binding.check()?;
+    let (prior, proof) = read_run(root, predecessor)?;
+    let proof = proof.ok_or_else(rejected)?;
+    if prior.job_id.as_deref() != Some(predecessor) || prior.state != "stopped"
+        || prior.failure_code.is_some() || prior.error_code.is_some() || prior.ports != failed.ports
+        || prior.postgres_pid.is_some() || prior.node_pid.is_some() || prior.auxiliary_pid.is_some()
+        || ["postgres", "node", "auxiliary"].iter().any(|name| prior.exits.get(*name) != Some(&0))
+        || proof.binding_sha256 != prior_binding.sha256()? || proof.consumed_by.as_deref() != Some(source.id.as_str()) {
+        return Err(rejected());
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn current52_recovery_source_generation(root: &Path) -> Result<String> {
+    let source = current_run(root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+    check_cold_transition_root(root, Some(&source.id))?;
+    check_current52_recovery_source(root, &source)?;
+    Ok(source.id)
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[test]
+fn current52_failed_source_requires_exact_drained_history_and_owner() {
+    use std::os::unix::fs::DirBuilderExt;
+    assert_eq!(digest(CURRENT52_UNSETTLED_SQL.as_bytes()), "252a7d38f3935bc32003516be77c2999e15b85030db9feb3a15088647a209868");
+    assert_eq!(current52_idle_observation("f").unwrap(), "");
+    for denied in ["t", "", "false", "f\nf", "unknown"] { assert!(current52_idle_observation(denied).is_err()); }
+    let root = std::env::temp_dir().join(format!("current52-source-{}", Uuid::new_v4()));
+    let generation = "3a97db46-4b4f-4e75-97e0-54b0e79d98e7";
+    let predecessor = "ef2cb6c9-bce1-4352-b0d3-287cc6d97ace";
+    for id in [generation, predecessor] {
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(root.join("native-runs").join(id)).unwrap();
+    }
+    let tuple = crate::native_payload::METRIC_FRAME_TARGET;
+    let binding = Binding { version: 1, phase: Phase::Active, generation: generation.into(),
+        previous_generation: Some(predecessor.into()), admission_kind: Admission::CleanReopen,
+        owner: FurnishingOwner { workspace_id: "da7f6880-ce0e-472e-8a06-6e43c72f9134".into(),
+            tenant_id: "81290384-3800-4939-93b1-bd2be4484e14".into(),
+            principal_id: "79003f0f-ceb5-4634-9b50-1ca59fecc408".into(), owner_uid: 501 },
+        source_commit: tuple.0.into(), producer_sha256: tuple.1.into(), payload_manifest_sha256: tuple.2.into(),
+        catalog: 52, physical: FurnishingWriterIdentity { root_device: 1, root_inode: 2, lock_device: 1, lock_inode: 3 },
+        restore: None, interrupted_claim_generations: Vec::new() };
+    let current = Current { format: 1, id: generation.into(), furnishing: Some(binding) };
+    let mut prior = Context { format: 1, job_id: Some(predecessor.into()), state: "stopped".into(),
+        ports: Ports::default(), readiness: Readiness::default(), error_code: None, failure_code: None,
+        postgres_pid: None, node_pid: None, auxiliary_pid: None,
+        exits: [("postgres".into(), 0), ("node".into(), 0), ("auxiliary".into(), 0)].into(), log_truncated: false };
+    let mut prior_binding = current.furnishing.as_ref().unwrap().clone();
+    prior_binding.phase = Phase::Clean; prior_binding.generation = predecessor.into();
+    prior_binding.previous_generation = Some("4b74230c-9f16-4c55-9b0c-7190d1dbac83".into());
+    let proof = || FurnishingCompletion { binding_sha256: prior_binding.sha256().unwrap(), consumed_by: Some(generation.into()) };
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
+    let mut failed = prior.clone(); failed.job_id = Some(generation.into()); failed.state = "failed".into();
+    failed.error_code = Some(furnishing_lifecycle::ERROR.into()); failed.failure_code = failed.error_code.clone();
+    write_run(&root.join("native-runs").join(generation), &failed, None).unwrap();
+    write_json(&root, "native-current-run.json", &current).unwrap();
+    assert_eq!(current52_recovery_source_generation(&root).unwrap(), generation);
+    let mut substituted = proof(); substituted.binding_sha256 = "a".repeat(64);
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(substituted)).unwrap();
+    assert!(current52_recovery_source_generation(&root).is_err());
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
+    let mut wrong = current.clone(); wrong.furnishing.as_mut().unwrap().previous_generation = Some(Uuid::new_v4().to_string());
+    assert!(check_current52_recovery_source(&root, &wrong).is_err());
+    prior.error_code = Some("UNKNOWN".into());
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
+    assert!(current52_recovery_source_generation(&root).is_err());
+    prior.error_code = None;
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
+    let mut wrong = current.clone(); wrong.furnishing.as_mut().unwrap().owner.principal_id = predecessor.into();
+    assert!(check_current52_recovery_source(&root, &wrong).is_err());
+    let mut wrong = current.clone(); wrong.furnishing.as_mut().unwrap().payload_manifest_sha256 = "0".repeat(64);
+    assert!(check_current52_recovery_source(&root, &wrong).is_err());
+    failed.exits.insert("node".into(), 1);
+    write_run(&root.join("native-runs").join(generation), &failed, None).unwrap();
+    assert!(current52_recovery_source_generation(&root).is_err());
+    failed.exits.insert("node".into(), 0);
+    write_run(&root.join("native-runs").join(generation), &failed, None).unwrap();
+    prior.ports.web = prior.ports.web.saturating_add(1);
+    write_run(&root.join("native-runs").join(predecessor), &prior, Some(proof())).unwrap();
+    assert!(current52_recovery_source_generation(&root).is_err());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FurnishingTransitionTrial {
@@ -675,7 +812,7 @@ impl FurnishingTransitionTrial {
     fn source_binding(&self, transition: FurnishingTransition) -> Result<&Binding> {
         let prior = self.source.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
         prior.check()?;
-        let source_phase = if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+        let source_phase = if matches!(transition, FurnishingTransition::Recover45 { .. }) || transition.is_current52_interrupted_recovery() {
             Phase::Active
         } else {
             Phase::Clean
@@ -800,7 +937,10 @@ impl FurnishingTransitionTrial {
         if observed != self.source {
             return Err(err(furnishing_lifecycle::ERROR));
         }
-        if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+        if transition.is_current52_interrupted_recovery() {
+            check_cold_transition_root(&service.root, Some(&self.source.id))?;
+            check_current52_recovery_source(&service.root, &self.source)?;
+        } else if matches!(transition, FurnishingTransition::Recover45 { .. }) {
             let startup = transition.startup_recovery();
             if startup != Some(Catalog45StartupRecovery::Cancelled) {
                 check_cold_transition_root(&service.root, Some(&self.source.id))?;
@@ -854,7 +994,9 @@ impl FurnishingTransitionTrial {
     // have drained. Never remove the trial run or its diagnostic evidence.
     pub(crate) fn hold_recovery(&self, service: &LifecycleService, transition: FurnishingTransition) -> Result<FurnishingTransitionWriterGuard> {
         let (guard, _) = self.hold(service, transition)?;
-        if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+        if transition.is_current52_interrupted_recovery() {
+            check_current52_recovery_source(&service.root, &self.source)?;
+        } else if matches!(transition, FurnishingTransition::Recover45 { .. }) {
             check_catalog45_recovery_source(&service.root, &self.source, transition.startup_recovery())?;
         } else {
             self.recoverable_source_completion(&service.root, transition)?;
@@ -879,6 +1021,9 @@ impl FurnishingTransitionTrial {
         }
         let current = current_run(root)?.ok_or_else(cold)?;
         if current == self.source {
+            if transition.is_current52_interrupted_recovery() {
+                return check_current52_recovery_source(root, &self.source);
+            }
             if let Some(startup) = transition.startup_recovery() {
                 return check_catalog45_recovery_source(root, &self.source, Some(startup));
             }
@@ -961,7 +1106,9 @@ impl FurnishingTransitionTrial {
         if guard.identity()? != prior.physical {
             return Err(err(furnishing_lifecycle::ERROR));
         }
-        if matches!(transition, FurnishingTransition::Recover45 { .. }) {
+        if transition.is_current52_interrupted_recovery() {
+            check_current52_recovery_source(&service.root, &self.source)?;
+        } else if matches!(transition, FurnishingTransition::Recover45 { .. }) {
             check_catalog45_recovery_source(&service.root, &self.source, transition.startup_recovery())?;
         } else {
             let (context, mut proof) = self.recoverable_source_completion(&service.root, transition)?;
@@ -2810,6 +2957,15 @@ const { isDeepStrictEqual } = require('node:util');
                          AND (cardinality(png_worker_tokens)>0 OR derived ? 'claim') ORDER BY 1 LIMIT 2",
                         owner.tenant_id, owner.principal_id, owner.workspace_id,
                     ))?,
+                    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                    52 if crate::native_payload::current52_interrupted_host_matches((
+                        binding.source_commit.as_str(), binding.producer_sha256.as_str(), binding.payload_manifest_sha256.as_str(),
+                    )) => {
+                        // Global idle-only observation; the backend repeats this
+                        // exact predicate under its own locks before commit.
+                        let unsettled = self.query_database("exhibitos", CURRENT52_UNSETTLED_SQL)?;
+                        current52_idle_observation(&unsettled)?.to_owned()
+                    },
                     _ => return Err(err(furnishing_lifecycle::ERROR)),
                 };
                 binding.select_interrupted_claim_generation(&observed)?;
