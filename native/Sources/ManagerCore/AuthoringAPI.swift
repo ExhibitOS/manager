@@ -631,7 +631,7 @@ public actor AuthoringAPI {
         #endif
         workspaceFramePreparationRuntimeQualified = framePreparationQualified
         workspaceInfoStandPreparationRuntimeQualified = Self.supportsInfoStandPreparationRuntime(manifest: manifest)
-        workspacePortalFinishRuntimeQualified = portalQualified
+        workspacePortalFinishRuntimeQualified = portalQualified || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
             || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
