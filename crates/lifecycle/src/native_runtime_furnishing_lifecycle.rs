@@ -149,8 +149,14 @@ impl Binding {
             && matches!(self.admission_kind, Admission::CatalogUpgrade045To050 | Admission::CleanReopen)
             && crate::native_payload::furnishing_thumbnail_host_matches(tuple)
             && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let fresh_contact = self.admission_kind == Admission::FreshEmpty
+            && tuple == crate::native_payload::CONTACT_EMITTER_CARD_TARGET;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let fresh_contact = false;
         let combined_thumbnail = self.catalog == 52
-            && matches!(self.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
+            && (matches!(self.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
+                || fresh_contact)
             && crate::native_payload::combined_thumbnail_host_matches(tuple)
             && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let current_thumbnail = self.catalog == 51
@@ -1545,6 +1551,79 @@ mod tests {
         let mut reopened = pin(LATER, target);
         reopened.consume(&next).unwrap();
         assert_eq!(reopened.restore, next.restore);
+    }
+
+    #[test]
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn contact_catalog52_fresh_binding_retains_fresh_invariants_and_reopens() {
+        let target = crate::native_payload::CONTACT_EMITTER_CARD_TARGET;
+        let mut fresh = binding(GENERATION);
+        fresh.catalog = 52;
+        fresh.source_commit = target.0.into();
+        fresh.producer_sha256 = target.1.into();
+        fresh.payload_manifest_sha256 = target.2.into();
+        fresh.check().unwrap();
+
+        let key = [0x55; 32];
+        let exchange = Exchange::new(&fresh, b"fresh-catalog52-authority").unwrap();
+        for kind in [Kind::Admission, Kind::AdmissionAck, Kind::Stop, Kind::Drained] {
+            let bytes = exchange.signed(&key, kind).unwrap();
+            exchange.check_frame(&key, kind, &bytes).unwrap();
+            assert!(exchange.check_frame(&[0x56; 32], kind, &bytes).is_err());
+            let frame: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(frame["version"], 1);
+            assert_eq!(frame["admissionKind"], "fresh-empty");
+            for field in ["restoreProof", "carriedRestoreProof", "previousRuntimeGeneration"] {
+                assert!(frame.get(field).is_none());
+            }
+        }
+        fresh.phase = Phase::Clean;
+        fresh.check().unwrap();
+        let mut next = fresh.clone();
+        next.phase = Phase::Active;
+        next.generation = NEXT.into();
+        next.consume(&fresh).unwrap();
+        assert_eq!(next.admission_kind, Admission::CleanReopen);
+        assert_eq!(next.previous_generation.as_deref(), Some(GENERATION));
+        assert_eq!(next.owner, fresh.owner);
+        assert_eq!(next.physical, fresh.physical);
+        assert!(next.restore.is_none());
+
+        let mut invalid = fresh.clone();
+        invalid.previous_generation = Some(NEXT.into());
+        assert!(invalid.check().is_err());
+        invalid = fresh.clone();
+        invalid.restore = Some(Restore {
+            id: NEXT.into(), backup_id: LATER.into(), archive_manifest_sha256: "5".repeat(64),
+            target_system_identifier: "123".into(), provenance: None, carried_provenance: None,
+        });
+        assert!(invalid.check().is_err());
+        invalid = fresh.clone();
+        invalid.owner.owner_uid = 0;
+        assert!(invalid.check().is_err());
+        invalid = fresh.clone();
+        invalid.physical.root_inode = 0;
+        assert!(invalid.check().is_err());
+        invalid = fresh.clone();
+        invalid.interrupted_claim_generations.push(NEXT.into());
+        assert!(invalid.check().is_err());
+        for field in ["sourceCommit", "producerSha256", "payloadManifestSha256", "catalog"] {
+            let mut value = serde_json::to_value(&fresh).unwrap();
+            value[field] = match field {
+                "sourceCommit" => "f".repeat(40).into(),
+                "catalog" => 51.into(),
+                _ => "f".repeat(64).into(),
+            };
+            assert!(serde_json::from_value::<Binding>(value).unwrap().check().is_err());
+        }
+        for older in [crate::native_payload::COMBINED_THUMBNAIL_TARGET,
+                      crate::native_payload::STATIC_DETAIL_PHASE_TARGET] {
+            invalid = fresh.clone();
+            invalid.source_commit = older.0.into();
+            invalid.producer_sha256 = older.1.into();
+            invalid.payload_manifest_sha256 = older.2.into();
+            assert!(invalid.check().is_err());
+        }
     }
 
     #[test]
