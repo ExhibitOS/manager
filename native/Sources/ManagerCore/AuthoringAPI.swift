@@ -3467,7 +3467,7 @@ public actor AuthoringAPI {
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
             || supportsPreReadyPreservationReadback(manifest: manifest)
-            || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
+            || manifest == selectedArtworkThumbnailRuntimePin
         #else
         false
         #endif
@@ -3547,7 +3547,7 @@ public actor AuthoringAPI {
             || manifest == fixtureAuthoringRuntimeManifestPin
             || manifest == default17RuntimeManifestPin
             || manifest == default111RuntimeManifestPin
-            || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
+            || manifest == selectedArtworkThumbnailRuntimePin
             || manifest == furnishingThumbnail050RuntimeManifestPin
         #else
         false

@@ -22,6 +22,8 @@ final class NativeSceneAdmissionTests: XCTestCase {
     func testAreaSelectedReadAdmissionDoesNotEnableUnqualifiedNeighborOrFurnishingThumbnail() {
         let area = "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f"
         XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: area))
+        XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: area))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: area))
         XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: String(area.dropLast()) + "0"))
         XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: area))
     }
