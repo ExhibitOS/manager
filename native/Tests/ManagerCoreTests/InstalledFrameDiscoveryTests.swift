@@ -59,7 +59,9 @@ private final class InstalledFrameProtocol: URLProtocol, @unchecked Sendable {
             "workspaceFurnishingProfile": "workspace-furnishing-intake-v1",
             "workspaceFurnishingStoolProfile": "workspace-furnishing-stool-v1",
             "workspaceFurnishingRoomVisualProfile": "workspace-furnishing-room-visual-v1",
-            "workspaceArtworkFrameProfile": "workspace-artwork-frame-v1"]
+            "workspaceArtworkFrameProfile": "workspace-artwork-frame-v1",
+            "workspaceArtworkFrameModelsProfile": "workspace-artwork-frame-models-v1",
+            "workspaceFurnishingReusableFitProfile": "source-bound-fit-v1"]
         let prefix = "/api/v1/tenants/\(FrameFitSynthetic.owner)/workspace/furnishings"
         let items: [DocumentValue] = ids.map { .object(["id": .string($0), "version": .integer(1),
             "kind": .string("artwork-frame"), "name": .string("Synthetic"),

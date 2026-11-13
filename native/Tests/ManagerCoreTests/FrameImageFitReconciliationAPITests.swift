@@ -119,12 +119,24 @@ private final class FrameFitAPIProtocol: URLProtocol, @unchecked Sendable {
         Self.lock.lock()
         let path = request.url!.path, mode = Self.mode
         let retained = path == "/api/v1/auth/session" && Self.requests.contains { $0.url?.path.hasSuffix("/native-viewport-check") == true }
-        Self.requests.append(request)
+        var body = request.httpBody
+        if body == nil, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var bytes = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                bytes.append(contentsOf: buffer.prefix(count))
+            }
+            body = bytes
+        }
+        var recorded = request; recorded.httpBody = body
+        Self.requests.append(recorded)
         var status = 200, headers = ["Content-Type": "application/json"], data: Data
         if path.hasSuffix("/native-authoring-proposal") {
             headers["ETag"] = mode == "bad-etag" ? "\"wrong\"" : Self.etag
             if mode == "reject" { status = 422; data = Data("{\"code\":\"BOUNDED_EDIT_UNSUPPORTED\"}".utf8) }
-            else if let body = request.httpBody, let parsed = try? JSONDecoder().decode(DocumentValue.self, from: body) {
+            else if let body, let parsed = try? JSONDecoder().decode(DocumentValue.self, from: body) {
                 let input = parsed["request"]
                 var candidate = Self.savedCandidate, rows = candidate["extensions"][FrameFitSynthetic.ns]["frameAttachments"].items!
                 if rows[0]["imageFit"] == .null { rows[0]["imageFit"] = FrameFitSynthetic.fit }
