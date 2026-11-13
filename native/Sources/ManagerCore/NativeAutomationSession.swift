@@ -106,6 +106,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsWalkingCollisionRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: $0.manifestSHA256)
             } == true
         guard !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,

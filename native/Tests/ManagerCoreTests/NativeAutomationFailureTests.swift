@@ -318,6 +318,29 @@ final class NativeAutomationFailureTests: XCTestCase {
         }
     }
 
+    func testOrdinaryCurrentThumbnailRuntimeAdmitsOnlyQualifiedConfiguration() throws {
+        let owner = UUID().uuidString.lowercased()
+        let missing = URL(fileURLWithPath: "/missing/exhibitos-native")
+        let pins = ["0f04520a8742f9774206d12c8a2b56da8ed2a4e07c095b3cb8ad3b3e988dd988",
+                    "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"]
+        for manifest in pins + [String(repeating: "f", count: 64)] {
+            let identity = try JSONDecoder().decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: Data("""
+                {"workspaceId":"\(owner)","tenantId":"\(owner)","principalId":"\(owner)","manifestSHA256":"\(manifest)"}
+                """.utf8))
+            for selected in [false, true] {
+                XCTAssertThrowsError(try NativeAutomationSession(helper: missing, profile: missing,
+                    ports: [:], outputRoot: missing, temporaryRoot: missing, inputs: [:],
+                    selectedOEX10: selected, existingWorkspaceV5: identity)) {
+                    // A qualified ordinary configuration reaches the existing
+                    // missing-profile check. No helper or product data is opened.
+                    let expected = !selected && pins.contains(manifest)
+                        ? "AUTOMATION_SCOPE_CHANGED" : "AUTOMATION_CONFIGURATION_INVALID"
+                    XCTAssertEqual(($0 as? BridgeFailure)?.code, expected)
+                }
+            }
+        }
+    }
+
     func testOrdinaryExistingThumbnailOexRequiresExactReviewedRuntime() throws {
         let previous = "f21b1378b39d11fd6ea8f9c89636912f233f884af176e2deb9856dea3ae77b53"
         let corrected = "0efbf042ad20b7cd8963751e5cfe5f343ead93d6ced6164e8bbd08566e378c99"
