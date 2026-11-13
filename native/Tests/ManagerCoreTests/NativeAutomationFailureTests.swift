@@ -220,6 +220,7 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertNil(try NativeAutomationSession.replayResponse(for: "export-static-saved-head", prior: prior, matching: request))
         XCTAssertNil(try NativeAutomationSession.replayResponse(for: "workspace-info-stand-check", prior: prior, matching: request))
         XCTAssertNil(try NativeAutomationSession.replayResponse(for: "current-image-thumbnail-selection", prior: prior, matching: request))
+        XCTAssertNil(try NativeAutomationSession.replayResponse(for: "saved-head-static-readiness", prior: prior, matching: request))
         for operation in ["workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates",
                           "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image",
                           "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select",
