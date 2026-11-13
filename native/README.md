@@ -1568,3 +1568,8 @@ runtime admission, sanitized publication profile and exact saved-head viewport
 policy used by static export. A size-valid draft with bounded provenance remains
 distinct from a positive ordinary draft. The observation creates no publication,
 export intent or journal and does not grant export permission.
+
+The exact qualified area051 runtime also admits the existing catalogue selected-image
+reader. Its live session/authority, revision/selection/binding identity headers,
+no-store, MIME/length/digest/PNG and cancellation checks stay unchanged. This is
+separate from furnishing-card thumbnails and from actual GUI display qualification.

@@ -21,10 +21,12 @@ final class SelectedArtworkThumbnailAPITests: XCTestCase {
         return output as Data
     }
     private func configure(_ image: Data, status: Int = 200, changes: [String: String] = [:],
-                           revoke: CatalogThumbnailAuthority? = nil) throws {
-        let session = try JSONSerialization.data(withJSONObject: ["tenantId": id, "userId": id, "role": "admin",
+                           revoke: CatalogThumbnailAuthority? = nil, advertise: Bool = true) throws {
+        var sessionFields: [String: Any] = ["tenantId": id, "userId": id, "role": "admin",
             "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z",
-            "nativeRenderedArtworkThumbnailProfile": ViewportRenderedThumbnail.profile])
+            "nativeRenderedArtworkThumbnailProfile": ViewportRenderedThumbnail.profile]
+        if !advertise { sessionFields.removeValue(forKey: "nativeRenderedArtworkThumbnailProfile") }
+        let session = try JSONSerialization.data(withJSONObject: sessionFields)
         let selection = try JSONEncoder().encode(NativeArtworkThumbnailSelection(selectionVersion: 1, bindingId: binding))
         let bindingId = binding.uuidString.lowercased(), digest = nativeImportSHA256(image)
         SelectedPNGProtocol.configure { request in
@@ -65,6 +67,37 @@ final class SelectedArtworkThumbnailAPITests: XCTestCase {
         XCTAssertEqual(read.value(forHTTPHeaderField: "Origin"), "http://127.0.0.1:18091")
         XCTAssertEqual(read.value(forHTTPHeaderField: "x-csrf-token"), "synthetic-csrf")
         XCTAssertEqual(read.value(forHTTPHeaderField: "Accept-Encoding"), "identity")
+    }
+
+    func testQualifiedAreaRuntimeUsesExistingIdentityHeadersAndRejectsStaleBinding() async throws {
+        let image = try png(), area = "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f"
+        try configure(image)
+        let (api, session) = try await connect(area), authority = CatalogThumbnailAuthority()
+        let admitted = await api.admitsSelectedArtworkThumbnailRead; XCTAssertTrue(admitted)
+        let selection = try await api.artworkThumbnailSelection(artworkId: id, revision: 2, session: session, authority: authority)
+        let body = try await api.selectedArtworkThumbnail(artworkId: id, revision: 2, selection: selection, session: session, authority: authority)
+        XCTAssertEqual(body, image)
+        XCTAssertEqual(SelectedPNGProtocol.requests().map(\.httpMethod), ["GET", "GET", "GET"])
+        try configure(image, changes: ["x-exhibitos-thumbnail-selection-version": "2"])
+        let (staleAPI, staleSession) = try await connect(area)
+        do {
+            _ = try await staleAPI.selectedArtworkThumbnail(artworkId: id, revision: 2, selection: selection,
+                session: staleSession, authority: CatalogThumbnailAuthority())
+            XCTFail("Stale header must be rejected")
+        } catch let error as AuthoringFailure { XCTAssertEqual(error.code, "CATALOG_PREVIEW_INVALID") }
+        SelectedPNGProtocol.configure(nil)
+    }
+    func testQualifiedAreaPinStillRequiresItsLiveProfile() async throws {
+        try configure(png(), advertise: false)
+        let (api, session) = try await connect("a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f")
+        let admitted = await api.admitsSelectedArtworkThumbnailRead; XCTAssertFalse(admitted)
+        do {
+            _ = try await api.selectedArtworkThumbnail(artworkId: id, revision: 2,
+                selection: .init(selectionVersion: 1, bindingId: binding), session: session, authority: CatalogThumbnailAuthority())
+            XCTFail("Exact pin alone must not admit an image read")
+        } catch let error as AuthoringFailure { XCTAssertEqual(error.code, "CATALOG_PREVIEW_UNAVAILABLE") }
+        XCTAssertEqual(SelectedPNGProtocol.requests().count, 1)
+        SelectedPNGProtocol.configure(nil)
     }
 
     func testOldRecipeFlagDoesNotAdmitBodyEndpointWithoutExactNewRuntime() async throws {
