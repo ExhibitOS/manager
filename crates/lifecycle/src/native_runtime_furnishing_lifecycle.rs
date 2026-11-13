@@ -27,13 +27,15 @@ pub(super) enum Admission {
     CatalogUpgrade045To049,
     #[serde(rename = "catalog-upgrade-045-to-051")]
     CatalogUpgrade045To051,
+    #[serde(rename = "catalog-upgrade-051-to-050-051")]
+    CatalogUpgrade051To050051,
 }
 
 impl Admission {
     // Wire proof policy shared with Binding's carried-proof validation. Exact
     // catalog/tuple and restore shape checks remain independently mandatory.
     fn allows_carried_v4(self) -> bool {
-        matches!(self, Self::VerifiedRestore | Self::CleanReopen | Self::CatalogUpgrade045To050 | Self::CatalogUpgrade045To049 | Self::CatalogUpgrade045To051)
+        matches!(self, Self::VerifiedRestore | Self::CleanReopen | Self::CatalogUpgrade045To050 | Self::CatalogUpgrade045To049 | Self::CatalogUpgrade045To051 | Self::CatalogUpgrade051To050051)
     }
 
     fn tag(self) -> u8 {
@@ -48,6 +50,7 @@ impl Admission {
             Self::CatalogUpgrade045To050 => 8,
             Self::CatalogUpgrade045To049 => 9,
             Self::CatalogUpgrade045To051 => 10,
+            Self::CatalogUpgrade051To050051 => 11,
         }
     }
 }
@@ -146,6 +149,10 @@ impl Binding {
             && matches!(self.admission_kind, Admission::CatalogUpgrade045To050 | Admission::CleanReopen)
             && crate::native_payload::furnishing_thumbnail_host_matches(tuple)
             && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
+        let combined_thumbnail = self.catalog == 52
+            && matches!(self.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
+            && crate::native_payload::combined_thumbnail_host_matches(tuple)
+            && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let current_thumbnail = self.catalog == 51
             && matches!(self.admission_kind, Admission::CatalogUpgrade045To051 | Admission::CleanReopen)
             && crate::native_payload::current_image_thumbnail_host_matches(tuple)
@@ -157,7 +164,7 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || combined_thumbnail
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -238,6 +245,9 @@ impl Binding {
             (Phase::Active | Phase::Clean, Admission::CatalogUpgrade045To051) => {
                 self.catalog == 51 && self.previous_generation.is_some()
             }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade051To050051) => {
+                self.catalog == 52 && self.previous_generation.is_some()
+            }
             (Phase::ActivatedRestore, Admission::VerifiedRestore) => {
                 self.previous_generation.is_none() && self.restore.is_some()
             }
@@ -256,7 +266,7 @@ impl Binding {
                         })
                 || proof.carried_provenance.as_ref().is_some_and(|provenance|
                     !self.admission_kind.allows_carried_v4()
-                        || !(carried_restore || thumbnail || gpu || current_thumbnail) || proof.provenance.is_some()
+                        || !(carried_restore || thumbnail || gpu || current_thumbnail || combined_thumbnail) || proof.provenance.is_some()
                         || !provenance.matches(&proof.archive_manifest_sha256, &proof.target_system_identifier))
                 || proof.provenance.as_ref().is_some_and(|provenance|
                     !(retained_restore || crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple))
@@ -276,6 +286,7 @@ impl Binding {
             .or_else(|| crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::furnishing_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::current_image_thumbnail_carried_receipt_payload(tuple))
+            .or_else(|| crate::native_payload::combined_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::gpu_model_carried_receipt_payload(tuple))
             .unwrap_or(self.payload_manifest_sha256.as_str());
         crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
@@ -333,7 +344,7 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
-        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. }) || transition.is_current_image_thumbnail_refresh() {
+        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || transition.is_current_image_thumbnail_refresh() {
             return if self.admission_kind == Admission::CleanReopen
                 && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
             { Ok(self.restore.as_ref()) } else { Err(err(ERROR)) };
@@ -394,6 +405,7 @@ impl Binding {
             FurnishingTransition::Upgrade44 { .. } => Admission::CatalogUpgrade044To045,
             FurnishingTransition::Upgrade50 { .. } => Admission::CatalogUpgrade045To050,
             FurnishingTransition::Upgrade51 { .. } => Admission::CatalogUpgrade045To051,
+            FurnishingTransition::Upgrade52 { .. } => Admission::CatalogUpgrade051To050051,
             FurnishingTransition::Upgrade49 { .. } => Admission::CatalogUpgrade045To049,
             FurnishingTransition::Recover45 { .. } => Admission::InterruptedReopen,
             _ => Admission::CleanReopen,
@@ -1809,7 +1821,19 @@ mod tests {
         let mut area_reopened = pin("10000000-0000-4000-8000-000000000006", 51, area);
         area_reopened.consume(&area_clean).unwrap();
         assert_eq!(area_reopened.restore, prior.restore);
-        for value in [upgraded, reopened, refreshed, area_reopened] {
+        let combined = crate::native_payload::COMBINED_THUMBNAIL_TARGET;
+        let composed = FurnishingTransition::from_manifests((area.2, combined.2)).unwrap();
+        let mut combined_source = area_reopened.clone(); combined_source.phase = Phase::Clean;
+        let mut combined_active = pin("10000000-0000-4000-8000-000000000011", 52, combined);
+        combined_active.consume_furnishing_transition(&combined_source, composed).unwrap();
+        assert_eq!(combined_active.admission_kind, Admission::CatalogUpgrade051To050051);
+        assert_eq!(combined_active.admission_kind.tag(), 11);
+        assert_eq!(combined_active.restore, prior.restore);
+        let mut combined_clean = combined_active.clone(); combined_clean.phase = Phase::Clean;
+        let mut combined_reopen = pin("10000000-0000-4000-8000-000000000012", 52, combined);
+        combined_reopen.consume(&combined_clean).unwrap();
+        assert_eq!(combined_reopen.restore, prior.restore);
+        for value in [upgraded, reopened, refreshed, area_reopened, combined_active, combined_reopen] {
             value.check().unwrap();
             let key = [0x55; 32];
             let auth = LocalAuthority { format:1, workspace_id:value.owner.workspace_id.clone(),
@@ -1817,6 +1841,8 @@ mod tests {
                 owner_uid:value.owner.owner_uid, session_token:String::new(), csrf_token:String::new() };
             let start = if value.admission_kind == Admission::CatalogUpgrade045To051 {
                 FurnishingStart::Upgrade045To051
+            } else if value.admission_kind == Admission::CatalogUpgrade051To050051 {
+                FurnishingStart::Upgrade051To050051
             } else { FurnishingStart::Reopen };
             let lease = furnishing_lease::Lease::new(&auth, &value.generation, start,
                 value.payload_manifest_sha256.clone(), value.physical);

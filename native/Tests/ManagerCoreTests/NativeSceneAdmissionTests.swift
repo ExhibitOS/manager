@@ -28,6 +28,22 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: area))
     }
 
+    func testCombinedThumbnailAdmissionPreservesSelectedReadsAndPurposeBoundaries() {
+        let target = "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41"
+        XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: target))
+        XCTAssertTrue(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: target))
+        XCTAssertTrue(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: target))
+        XCTAssertTrue(AuthoringAPI.supportsStraightMiterFrameRuntime(manifest: target))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: target))
+        XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: target))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: target))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: target, ready: true))
+        let neighbor = String(target.dropLast()) + "0"
+        XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: neighbor))
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: neighbor))
+        XCTAssertFalse(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: neighbor))
+    }
+
     func testDefault111OrdinaryEntryDoesNotEnableOptionalCatalogFamilies() {
         let runtime = "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84"
         XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: runtime))

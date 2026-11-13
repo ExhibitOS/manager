@@ -1589,6 +1589,31 @@ publication, save a scene, stage an intent or clear the original export claim.
 A missing binding or uncertain terminal result requires review; do not retry the
 original publication command or create another publication to complete output.
 
+## Combined thumbnail catalog validation
+
+The debug owner-validation consumer admits one directed transition from the
+qualified current-image area-filter catalog51 payload to its qualified combined
+catalog52 payload. Catalog52 identifies the composition of the existing050
+furnishing-thumbnail and051 current-image migrations; it introduces no052 SQL.
+The source ledger must be exactly the45 base rows plus051. The owned helper may
+apply only050, or confirm that the exact47-row target ledger is already applied.
+Ordinary reopen requires all47 target rows and performs no migration.
+
+The existing version3 owner envelope uses mode
+`workspace-furnishing-051-to-050-051-upgrade-v1`, furnishing lease MAC byte12 and
+admission `catalog-upgrade-051-to-050-051` with MAC ordinal11. Existing values,
+carried restore proofs, retained original-model custody, and the051 image recipe
+remain unchanged. The closed thirteen-field migration receipt binds the current
+owner, generation, payload,050 hash,47 rows and a drained terminal result.
+
+Swift admits this exact composition for furnishing-thumbnail preparation and
+selection while preserving current-image and selected-image reads and existing
+straight-miter support. It does not add the payload to the unrelated pinned
+startup-drain or ordinary native-publication admission lists. Unknown, reversed,
+mixed and older direct transition tuples remain rejected. These are scoped
+validation capabilities; source tests alone do not establish an actual profile
+transition, a newly selected furnishing thumbnail, or native GUI acceptance.
+
 ## Saved procedural frame removal
 
 `procedural-frame-clear-prepare` accepts only `command: {placementId}` for a

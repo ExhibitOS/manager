@@ -161,7 +161,7 @@ fn check_saved_transition_document(
     // Library-only 049 still seals the exact scoped Native document digest.
     // It needs no fabricated exhibition head; every other pair keeps its guards.
     if gpu_empty_document(pair, document, owner) { return Ok(()); }
-    if FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. }))
+    if FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }))
         && (document.pending.is_some() || document.saved_edit_version.is_none()
             || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != document.saved_edit_version)
     { return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED")); }
@@ -182,7 +182,7 @@ fn catalog45_activation_saved_document(
         && !crate::native_payload::catalog45_clean_exit_handoff(pair)
         && !crate::native_payload::catalog45_restored_backed_handoff(pair)
         && !crate::native_payload::catalog45_adoption_handoff(pair)
-        && !FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. }))
+        && !FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }))
     {
         return Ok(false);
     }
@@ -364,6 +364,20 @@ fn startup_cancellation_proof_matches(
     proof.is_none()
 }
 
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn transition_source_ledger(payload: &crate::native_payload::Payload, transition: FurnishingTransition) -> Result<String> {
+    match transition {
+        FurnishingTransition::Upgrade39(_) => payload.catalog39_upgrade_source_ledger(),
+        FurnishingTransition::Upgrade40(_) => payload.catalog40_upgrade_source_ledger(),
+        FurnishingTransition::Upgrade44 { .. } => payload.catalog44_upgrade_source_ledger(),
+        FurnishingTransition::Upgrade50 { .. } => payload.catalog50_upgrade_source_ledger(),
+        FurnishingTransition::Upgrade51 { .. } => payload.catalog51_upgrade_source_ledger(),
+        FurnishingTransition::Upgrade52 { .. } => payload.catalog52_upgrade_source_ledger(),
+        FurnishingTransition::Upgrade49 { .. } => payload.catalog49_upgrade_source_ledger(),
+        _ => payload.workspace_furnishing_ledger(transition.target_catalog()),
+    }
+}
+
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if [(crate::native_payload::CATALOG45_SELECTED_PNG_READ_SOURCE.2,
@@ -375,13 +389,15 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         (crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2,
          crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2),
         (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2,
-         crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2)].contains(&pair) && proof.is_none() {
+         crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2),
+        (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2,
+         crate::native_payload::COMBINED_THUMBNAIL_TARGET.2)].contains(&pair) && proof.is_none() {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]
     if crate::native_payload::catalog45_adoption_handoff(pair)
-        || FurnishingTransition::from_manifests(pair).is_some_and(|transition| matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. })) {
+        || FurnishingTransition::from_manifests(pair).is_some_and(|transition| matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. })) {
         return CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(feature = "workspace-v5-owner-validation")]
@@ -1274,7 +1290,7 @@ impl LifecycleService {
             if (crate::native_payload::catalog45_clean_exit_handoff(pair)
                 || crate::native_payload::catalog45_restored_backed_handoff(pair)
                 || crate::native_payload::catalog45_adoption_handoff(pair)
-                || FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. })))
+                || FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. })))
                 && !catalog45_activation_saved_document(
                     pair, false, false, checkpoint.saved_document_sha256.as_deref(), document.ok_or_else(invalid)?,
                 )?
@@ -1496,15 +1512,7 @@ impl LifecycleService {
             {
                 return Err(invalid());
             }
-            let target_expected_source = match transition {
-                FurnishingTransition::Upgrade39(_) => target_payload.catalog39_upgrade_source_ledger()?,
-                FurnishingTransition::Upgrade40(_) => target_payload.catalog40_upgrade_source_ledger()?,
-                FurnishingTransition::Upgrade44 { .. } => target_payload.catalog44_upgrade_source_ledger()?,
-                FurnishingTransition::Upgrade50 { .. } => target_payload.catalog50_upgrade_source_ledger()?,
-                FurnishingTransition::Upgrade51 { .. } => target_payload.catalog51_upgrade_source_ledger()?,
-                FurnishingTransition::Upgrade49 { .. } => target_payload.catalog49_upgrade_source_ledger()?,
-                _ => target_payload.workspace_furnishing_ledger(target_catalog)?,
-            };
+            let target_expected_source = transition_source_ledger(&target_payload, transition)?;
             if source_payload.workspace_furnishing_ledger(source_catalog)? != target_expected_source {
                 return Err(invalid());
             }
@@ -2057,11 +2065,46 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn combined_thumbnail_052_checkpoint_uses_source46_clean_saved_digest_and_exact_capacity() {
+        let source = crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET;
+        let target = crate::native_payload::COMBINED_THUMBNAIL_TARGET; let pair = (source.2, target.2);
+        let transition = FurnishingTransition::from_manifests(pair).unwrap();
+        let payload = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload(target);
+        let ledger = transition_source_ledger(&payload, transition).unwrap();
+        assert_eq!(ledger.lines().count(), 46); assert!(ledger.contains("051_current_image_thumbnail.sql|"));
+        assert!(!ledger.contains("050_workspace_furnishing_thumbnail.sql|"));
+        assert_eq!(checkpoint_inventory_limit(pair, None), 8 * 1024 * 1024 * 1024);
+        for other in [(target.2, source.2), (target.2, target.2), (source.2, source.2),
+            (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2, target.2)] {
+            assert_eq!(checkpoint_inventory_limit(other, None), MAX_BYTES);
+        }
+        let mut document = gpu_library_empty_document(); document.revision = 7;
+        document.draft = Some(serde_json::json!({"editVersion": 7})); document.saved_edit_version = Some(7);
+        document.etag = Some(format!("\"studio-r1-{}\"", "a".repeat(64)));
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        check_saved_transition_document(pair, &document, owner).unwrap();
+        let digest = saved_document_digest(&document).unwrap();
+        check_transition_host(pair, Some(&digest), true).unwrap();
+        assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &document).unwrap());
+        let mut changed = document.clone(); changed.saved_edit_version = Some(8);
+        assert!(check_saved_transition_document(pair, &changed, owner).is_err());
+        assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &changed).is_err());
+        assert!(catalog45_activation_saved_document(pair, false, false, None, &document).is_err());
+        let mut missing = document.clone(); missing.saved_edit_version = None;
+        assert!(check_saved_transition_document(pair, &missing, owner).is_err());
+        let mut pending = serde_json::to_value(&document).unwrap();
+        pending["pending"] = serde_json::json!({"requestId":"10000000-0000-4000-8000-000000000099","etag":document.etag,"draft":{"editVersion":7}});
+        assert!(check_saved_transition_document(pair, &serde_json::from_value(pending).unwrap(), owner).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn retained_original_seals_only_exact_saved_forward_transition() {
         for (old,new) in [
             (crate::native_payload::CATALOG45_SELECTED_PNG_READ_TARGET.2, crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2),
             (crate::native_payload::CATALOG45_FRAME9_THUMBNAIL_TARGET.2, crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2),
             (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_051_TARGET.2, crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2),
+            (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2, crate::native_payload::COMBINED_THUMBNAIL_TARGET.2),
         ] {
         let proof=RetainedOriginalModel::synthetic();
         let owner=("10000000-0000-4000-8000-000000000001","10000000-0000-4000-8000-000000000002","10000000-0000-4000-8000-000000000003");

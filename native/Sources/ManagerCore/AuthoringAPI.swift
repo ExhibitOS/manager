@@ -610,6 +610,7 @@ public actor AuthoringAPI {
             || manifest == Self.furnishingThumbnail050RuntimeManifestPin
             || Self.supportsSavedHeadAuthoringRuntime(manifest: manifest)
             || Self.supportsCorrectedCurrentImageThumbnailRuntime(manifest: manifest)
+            || Self.supportsCombinedThumbnailRuntime(manifest: manifest)
             || Self.requiredModelPreparationManifestPins.contains(manifest)
             || admitsSameOwnerArtworkReplacement || hayesOriginalRuntimeQualified
         let multimapQualified = portalQualified || Self.workspaceMaterialMultimapManifestPins.contains(manifest)
@@ -970,6 +971,7 @@ public actor AuthoringAPI {
         [selectedArtworkThumbnailRuntimePin,
          // Qualified area051 payload retains the existing selected-image/header contract.
          "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f"].contains(manifest ?? "")
+            || supportsCombinedThumbnailRuntime(manifest: manifest ?? "")
         #else
         false
         #endif
@@ -1072,6 +1074,14 @@ public actor AuthoringAPI {
 
     /// Populated only from the independently qualified immutable producer handoff.
     /// Older model/product-image session profiles never imply this additive route.
+    nonisolated static func supportsCombinedThumbnailRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "5b567170e8d9a50ce71c21a2432edba035190992a2f66d3d0ad77dfdecddac41"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsCorrectedCurrentImageThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
         ["73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822",
@@ -1092,7 +1102,8 @@ public actor AuthoringAPI {
             // Same051 catalog, current-only area-prefilter correction.
             "a81d7ec85895c455dfeca5b67ecff5124eebb0dc43fbd703e7a9a34da164d98f"
         ]
-        return manifest.map(qualified.contains) ?? false
+        return (manifest.map(qualified.contains) ?? false)
+            || supportsCombinedThumbnailRuntime(manifest: manifest ?? "")
     }
     private func currentImageThumbnailArtwork(_ artworkId: String, revision: Int,
         in document: NativeDocumentState) async throws -> NativeArtwork {
@@ -2820,6 +2831,7 @@ public actor AuthoringAPI {
         #if DEBUG
         manifest == "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"
             || supportsCorrectedCurrentImageThumbnailRuntime(manifest: manifest)
+            || supportsCombinedThumbnailRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -3556,6 +3568,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsWorkspaceFurnishingThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == furnishingThumbnail050RuntimeManifestPin
+            || supportsCombinedThumbnailRuntime(manifest: manifest)
         #else
         false
         #endif

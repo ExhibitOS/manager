@@ -86,7 +86,7 @@ mod hayes_probe_source;
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040, Upgrade040To044, Upgrade044To045, Upgrade045To050, Upgrade045To049, Upgrade045To051 }
+enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040, Upgrade040To044, Upgrade044To045, Upgrade045To050, Upgrade045To049, Upgrade045To051, Upgrade051To050051 }
 
 #[derive(Clone, Copy)]
 enum StartMode<'a> {
@@ -111,7 +111,7 @@ impl FurnishingStart {
     }
 
     fn opens_existing(self) -> bool {
-        matches!(self, Self::Reopen | Self::Upgrade039To040 | Self::Upgrade040To044 | Self::Upgrade044To045 | Self::Upgrade045To050 | Self::Upgrade045To049 | Self::Upgrade045To051)
+        matches!(self, Self::Reopen | Self::Upgrade039To040 | Self::Upgrade040To044 | Self::Upgrade044To045 | Self::Upgrade045To050 | Self::Upgrade045To049 | Self::Upgrade045To051 | Self::Upgrade051To050051)
     }
 
     fn owner_mode(self) -> &'static str {
@@ -127,6 +127,7 @@ impl FurnishingStart {
             Self::Upgrade045To050 => "workspace-furnishing-045-to-050-upgrade-v1",
             Self::Upgrade045To049 => "workspace-furnishing-045-to-049-upgrade-v1",
             Self::Upgrade045To051 => "workspace-furnishing-045-to-051-upgrade-v1",
+            Self::Upgrade051To050051 => "workspace-furnishing-051-to-050-051-upgrade-v1",
         }
     }
 }
@@ -149,11 +150,16 @@ fn validate_thumbnail_upgrade_result(bytes: &[u8], binding: &Binding) -> Result<
     let error = || err("NATIVE_FURNISHING_THUMBNAIL_UPGRADE_UNQUALIFIED");
     let body = bytes.strip_prefix(b"EXHIBITOS_NATIVE_FURNISHING_THUMBNAIL_UPGRADE_RESULT ").ok_or_else(error)?;
     let receipt: Receipt = serde_json::from_slice(body).map_err(|_| error())?;
-    if receipt.version != 1 || receipt.mode != FurnishingStart::Upgrade045To050.owner_mode()
+    let combined = binding.catalog == 52;
+    if combined && (!matches!(binding.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
+        || !crate::native_payload::combined_thumbnail_host_matches((&binding.source_commit, &binding.producer_sha256, &binding.payload_manifest_sha256)))
+    { return Err(error()); }
+    let (mode, rows) = if combined { (FurnishingStart::Upgrade051To050051, 47) } else { (FurnishingStart::Upgrade045To050, 46) };
+    if receipt.version != 1 || receipt.mode != mode.owner_mode()
         || receipt.profile != "workspace-furnishing-thumbnail-v1" || !matches!(receipt.state.as_str(), "applied" | "already-applied")
         || receipt.workspace_id != binding.owner.workspace_id || receipt.tenant_id != binding.owner.tenant_id
         || receipt.principal_id != binding.owner.principal_id || receipt.runtime_generation != binding.generation
-        || receipt.payload_manifest_sha256 != binding.payload_manifest_sha256 || receipt.catalog_rows != 46
+        || receipt.payload_manifest_sha256 != binding.payload_manifest_sha256 || receipt.catalog_rows != rows
         || receipt.migration != "050_workspace_furnishing_thumbnail.sql"
         || receipt.migration_sha256 != crate::native_payload::FURNISHING_THUMBNAIL_SCHEMA.2 || !receipt.drained
     { return Err(error()); }
@@ -232,6 +238,9 @@ fn ordinary_inherited_hayes(payload: &Payload, start: Option<FurnishingStart>) -
                 payload.producer_sha256(), &payload.context().manifest_sha256))
             && start == Some(FurnishingStart::Reopen))
         || (crate::native_payload::current_image_thumbnail_host_matches((&payload.context().source_commit,
+                payload.producer_sha256(), &payload.context().manifest_sha256))
+            && start == Some(FurnishingStart::Reopen))
+        || (crate::native_payload::combined_thumbnail_host_matches((&payload.context().source_commit,
                 payload.producer_sha256(), &payload.context().manifest_sha256))
             && start == Some(FurnishingStart::Reopen))
         || (crate::native_payload::gpu_model_host_matches((&payload.context().source_commit,
@@ -821,7 +830,7 @@ impl FurnishingTransitionTrial {
                 || target.previous_generation.as_deref() != Some(prior.generation.as_str())
                 || !target.matches_catalog_tuple(transition.target_catalog().version(), transition.target())
                 || !(target.admission_kind == Binding::transition_admission(transition)
-                    || (matches!(transition, FurnishingTransition::Upgrade50 { .. })
+                    || (matches!(transition, FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade52 { .. })
                         && target.admission_kind == Admission::CleanReopen
                         && thumbnail_upgrade_completion(&service.root, target).is_ok())
                     || (matches!(transition, FurnishingTransition::Upgrade51 { .. })
@@ -885,7 +894,7 @@ impl FurnishingTransitionTrial {
         }
         if self.failed_thumbnail_helper_cold(root, transition)? { return Ok(()); }
         if self.committed_gpu_ordinary_failure_cold(root, transition)? { return Ok(()); }
-        if ((matches!(transition, FurnishingTransition::Upgrade50 { .. })
+        if ((matches!(transition, FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade52 { .. })
                 && thumbnail_upgrade_completion(root, binding).is_ok())
             || (matches!(transition, FurnishingTransition::Upgrade51 { .. })
                 && current_thumbnail_upgrade_completion(root, binding).is_ok())
@@ -1525,6 +1534,7 @@ impl Session {
                         FurnishingTransition::Upgrade44 { .. } => FurnishingStart::Upgrade044To045,
                         FurnishingTransition::Upgrade50 { .. } => FurnishingStart::Upgrade045To050,
                         FurnishingTransition::Upgrade51 { .. } => FurnishingStart::Upgrade045To051,
+                        FurnishingTransition::Upgrade52 { .. } => FurnishingStart::Upgrade051To050051,
                         FurnishingTransition::Upgrade49 { .. } => FurnishingStart::Upgrade045To049,
                         _ => FurnishingStart::Reopen,
                     }));
@@ -1625,26 +1635,32 @@ impl Session {
     fn run_furnishing_thumbnail_upgrade(&mut self, environment: &[(&str, String)]) -> Result<()> {
         const ERROR: &str = "NATIVE_FURNISHING_THUMBNAIL_UPGRADE_UNQUALIFIED";
         let (_, transition) = self.furnishing_transition_trial.as_ref().ok_or_else(|| err(ERROR))?;
-        if !matches!(transition, FurnishingTransition::Upgrade50 { .. }) || self.transition_fence.is_none()
+        if !matches!(transition, FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade52 { .. }) || self.transition_fence.is_none()
             || self.node.is_some() || self.auxiliary.is_some() || self.postgres.is_none()
         { return Err(err(ERROR)); }
         let binding = self.active_furnishing_binding().ok_or_else(|| err(ERROR))?.clone();
-        if binding.admission_kind != Admission::CatalogUpgrade045To050 { return Err(err(ERROR)); }
-        let full = self.payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::FurnishingThumbnail050)?;
-        let source = self.payload.catalog50_upgrade_source_ledger()?;
+        let combined = matches!(transition, FurnishingTransition::Upgrade52 { .. });
+        let (start, admission, catalog) = if combined {
+            (FurnishingStart::Upgrade051To050051, Admission::CatalogUpgrade051To050051, WorkspaceFurnishingCatalog::CombinedThumbnails052)
+        } else {
+            (FurnishingStart::Upgrade045To050, Admission::CatalogUpgrade045To050, WorkspaceFurnishingCatalog::FurnishingThumbnail050)
+        };
+        if binding.admission_kind != admission { return Err(err(ERROR)); }
+        let full = self.payload.workspace_furnishing_ledger(catalog)?;
+        let source = if combined { self.payload.catalog52_upgrade_source_ledger()? } else { self.payload.catalog50_upgrade_source_ledger()? };
         let observed = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name")?;
-        // Only this owned helper accepts the exact46 retry. Ordinary reopen
+        // Only this owned helper accepts the exact target-ledger retry. Ordinary reopen
         // always requires the target ledger before it starts any Node child.
         if observed != source && observed != full { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
-        let script = self.payload.furnishing_thumbnail_upgrade_script()?;
+        let script = if combined { self.payload.combined_thumbnail_upgrade_script()? } else { self.payload.furnishing_thumbnail_upgrade_script()? };
         let generation = self.job_id.as_deref().ok_or_else(|| err(ERROR))?.to_owned();
         let lifetime = self.furnishing_writer_lifetime.as_ref().ok_or_else(|| err(ERROR))?;
         let writer = lifetime.duplicate_for_writer()?;
         let authority = self.local_authority.as_ref().ok_or_else(|| err(ERROR))?;
-        let lease = furnishing_lease::Lease::new(authority, &generation, FurnishingStart::Upgrade045To050,
+        let lease = furnishing_lease::Lease::new(authority, &generation, start,
             self.payload.context().manifest_sha256, writer.identity);
         let mut setup = owner_channel::Setup::new()?.with_furnishing_writer(writer);
-        let mut input = setup.workspace_furnishing_bootstrap(authority, &generation, FurnishingStart::Upgrade045To050)?;
+        let mut input = setup.workspace_furnishing_bootstrap(authority, &generation, start)?;
         let spawned = self.spawn(&self.payload.node(), &[script.to_string_lossy().into()], environment,
             Some(&input), true, false, Some(&setup));
         input.fill(0);
@@ -1710,7 +1726,7 @@ impl Session {
         let full = self.payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CurrentImageThumbnail051)?;
         let source = self.payload.catalog51_upgrade_source_ledger()?;
         let observed = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name")?;
-        // Only this owned helper accepts the exact46 retry. Ordinary reopen
+        // Only this owned helper accepts the exact target-ledger retry. Ordinary reopen
         // always requires the target ledger before it starts any Node child.
         if observed != source && observed != full { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
         let script = self.payload.current_image_thumbnail_upgrade_script()?;
@@ -1787,7 +1803,7 @@ impl Session {
         let full = self.payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::GpuModelPreparation049)?;
         let source = self.payload.catalog49_upgrade_source_ledger()?;
         let observed = self.query_database("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name")?;
-        // Only this owned helper accepts the exact46 retry. Ordinary reopen
+        // Only this owned helper accepts the exact target-ledger retry. Ordinary reopen
         // always requires the target ledger before it starts any Node child.
         if observed != source && observed != full { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
         let script = self.payload.gpu_model_upgrade_script()?;
@@ -2884,10 +2900,10 @@ const { isDeepStrictEqual } = require('node:util');
             None
         };
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        if furnishing == Some(FurnishingStart::Upgrade045To050) {
+        if matches!(furnishing, Some(FurnishingStart::Upgrade045To050 | FurnishingStart::Upgrade051To050051)) {
             self.run_furnishing_thumbnail_upgrade(&environment)?;
             self.verify_workspace_furnishing_ledger()?;
-            // The helper-only kind8 has drained. The following ordinary node
+            // The helper-only upgrade admission has drained. The following ordinary node
             // receives a new authenticated clean-reopen exchange, never kind8.
             let mut binding = self.active_furnishing_binding().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.clone();
             binding.admission_kind = Admission::CleanReopen;
@@ -2897,7 +2913,7 @@ const { isDeepStrictEqual } = require('node:util');
             furnishing = Some(FurnishingStart::Reopen);
         }
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
-        if furnishing == Some(FurnishingStart::Upgrade045To050) { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        if matches!(furnishing, Some(FurnishingStart::Upgrade045To050 | FurnishingStart::Upgrade051To050051)) { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if furnishing == Some(FurnishingStart::Upgrade045To051) {
             self.run_current_image_thumbnail_upgrade(&environment)?;
@@ -3273,7 +3289,7 @@ const { isDeepStrictEqual } = require('node:util');
             if services {
                 match furnishing {
                     Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039 | FurnishingStart::SelectedImport040) => (),
-                    Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045 | FurnishingStart::Upgrade045To050 | FurnishingStart::Upgrade045To049 | FurnishingStart::Upgrade045To051) => {
+                    Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045 | FurnishingStart::Upgrade045To050 | FurnishingStart::Upgrade045To049 | FurnishingStart::Upgrade045To051 | FurnishingStart::Upgrade051To050051) => {
                         let source = prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                         let transition = self.furnishing_transition_trial.as_ref();
@@ -4989,6 +5005,47 @@ mod furnishing_thumbnail_upgrade_result_tests {
         validate_thumbnail_upgrade_result(&wire(&value),&binding).unwrap();
         value["state"]="already-applied".into();validate_thumbnail_upgrade_result(&wire(&value),&binding).unwrap();
     }
+    #[test]
+    fn combined_thumbnail_052_ordinary_reopen_inherits_hayes_only_for_exact_host() {
+        use crate::native_payload::{COMBINED_THUMBNAIL_TARGET as target, CURRENT_IMAGE_THUMBNAIL_AREA_TARGET as source};
+        let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
+        assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Reopen)));
+        for start in [None, Some(FurnishingStart::Initialize), Some(FurnishingStart::Upgrade051To050051),
+            Some(FurnishingStart::Upgrade045To051), Some(FurnishingStart::SelectedImport040)] {
+            assert!(!ordinary_inherited_hayes(&make(target), start));
+        }
+        for mixed in [(source.0,target.1,target.2),(target.0,source.1,target.2),(target.0,target.1,source.2)] {
+            assert!(!ordinary_inherited_hayes(&make(mixed), Some(FurnishingStart::Reopen)));
+        }
+        HayesSessionPin::new(Uuid::parse_str("10000000-0000-4000-8000-000000000004").unwrap(), target.2).unwrap();
+    }
+
+    #[test]
+    fn combined_thumbnail_052_receipt_is_closed_and_survives_committed_clean_completion() {
+        let mut binding = binding();
+        let target = crate::native_payload::COMBINED_THUMBNAIL_TARGET;
+        binding.catalog = 52; binding.admission_kind = Admission::CatalogUpgrade051To050051;
+        binding.source_commit = target.0.into(); binding.producer_sha256 = target.1.into();
+        binding.payload_manifest_sha256 = target.2.into();
+        let mut good = receipt(&binding);
+        good["mode"] = FurnishingStart::Upgrade051To050051.owner_mode().into(); good["catalogRows"] = 47.into();
+        for state in ["applied", "already-applied"] {
+            good["state"] = state.into(); validate_thumbnail_upgrade_result(&wire(&good), &binding).unwrap();
+        }
+        let mut clean = binding.clone(); clean.admission_kind = Admission::CleanReopen; clean.phase = Phase::Clean;
+        validate_thumbnail_upgrade_result(&wire(&good), &clean).unwrap();
+        for (field, value) in [("catalogRows", serde_json::json!(46)), ("catalogRows", serde_json::json!(52)),
+            ("mode", serde_json::json!(FurnishingStart::Upgrade045To050.owner_mode())),
+            ("migration", serde_json::json!("051_current_image_thumbnail.sql")),
+            ("migrationSha256", serde_json::json!("f".repeat(64))), ("drained", serde_json::json!(false)),
+            ("extra", serde_json::json!(true))] {
+            let mut bad = good.clone(); bad[field] = value;
+            assert!(validate_thumbnail_upgrade_result(&wire(&bad), &binding).is_err());
+        }
+        binding.producer_sha256 = "f".repeat(64);
+        assert!(validate_thumbnail_upgrade_result(&wire(&good), &binding).is_err());
+    }
+
     #[test]
     fn furnishing_thumbnail_upgrade_result_rejects_foreign_incomplete_or_open_receipt() {
         let binding=binding();let good=receipt(&binding);
