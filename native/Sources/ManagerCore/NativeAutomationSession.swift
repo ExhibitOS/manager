@@ -12,7 +12,7 @@ public actor NativeAutomationSession {
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
-        "current-image-thumbnail-status", "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
+        "current-image-thumbnail-status", "current-image-thumbnail-selection", "compact-model-prepare", "compact-model-status", "compact-model-retry", "compact-model-cancel", "compact-model-approve", "compact-model-refresh-placement",
         "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
     ]
 
@@ -1478,7 +1478,7 @@ public actor NativeAutomationSession {
     }
 
     private static let currentImageThumbnailOperations: Set<String> = [
-        "current-image-thumbnail-prepare", "current-image-thumbnail-status",
+        "current-image-thumbnail-prepare", "current-image-thumbnail-status", "current-image-thumbnail-selection",
         "current-image-thumbnail-review", "current-image-thumbnail-select",
         "current-image-thumbnail-cancel", "current-image-thumbnail-retry"
     ]
@@ -1502,7 +1502,7 @@ public actor NativeAutomationSession {
                 expectedSelectionVersion: selectionVersion, in: current)
             return try value(selected)
         }
-        let keys: Set<String> = operation == "current-image-thumbnail-prepare"
+        let keys: Set<String> = ["current-image-thumbnail-prepare", "current-image-thumbnail-selection"].contains(operation)
             ? ["artworkId", "artworkRevision"] : ["artworkId", "artworkRevision", "jobId"]
         let command = try NativeAutomationArtworkRules.command(request, keys: keys)
         guard let artworkId = command["artworkId"].string, let revision = command["artworkRevision"].integer,
@@ -1512,6 +1512,9 @@ public actor NativeAutomationSession {
         if operation == "current-image-thumbnail-prepare" {
             return try value(await api.prepareCurrentImageThumbnail(artworkId: artworkId, revision: artworkRevision,
                 requestId: UUID(uuidString: id)!, in: current))
+        }
+        if operation == "current-image-thumbnail-selection" {
+            return try value(await api.currentImageThumbnailSelection(artworkId: artworkId, revision: artworkRevision, in: current))
         }
         guard let jobId = command["jobId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
         if ["current-image-thumbnail-cancel", "current-image-thumbnail-retry"].contains(operation) {

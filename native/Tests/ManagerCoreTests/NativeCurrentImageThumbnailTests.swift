@@ -106,6 +106,42 @@ final class NativeCurrentImageThumbnailTests: XCTestCase {
         let review = try await api.reviewCurrentImageThumbnail(artworkId: artworkID, revision: 3, jobId: jobID, in: document)
         return (api, document, review)
     }
+    @MainActor
+    func testCurrentSelectionReadReturnsFreshCASWithoutPostingOrRendering() async throws {
+        let (api, document, review) = try await selectionFixture(mode: "normal")
+        let before = try await api.currentImageThumbnailSelection(artworkId: artworkID, revision: 3, in: document)
+        XCTAssertEqual(before.selectionVersion, 0); XCTAssertNil(before.bindingId)
+        XCTAssertEqual(ThumbnailSelectionProtocol.posts(), 0)
+        _ = try await api.selectCurrentImageThumbnail(review, requestId: UUID(), expectedSelectionVersion: before.selectionVersion, in: document)
+        let after = try await api.currentImageThumbnailSelection(artworkId: artworkID, revision: 3, in: document)
+        XCTAssertEqual(after.selectionVersion, 1)
+        XCTAssertEqual(after.bindingId?.uuidString.lowercased(), ThumbnailSelectionProtocol.binding)
+        XCTAssertEqual(ThumbnailSelectionProtocol.posts(), 1)
+    }
+    @MainActor
+    func testCurrentSelectionReadRejectsInvalidVersionBindingPairs() async throws {
+        for mode in ["negative-selection", "zero-with-binding", "positive-without-binding", "selection-limit"] {
+            let (api, document, _) = try await selectionFixture(mode: mode)
+            do {
+                _ = try await api.currentImageThumbnailSelection(artworkId: artworkID, revision: 3, in: document)
+                XCTFail("Invalid selection binding must fail")
+            } catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "CATALOG_PREVIEW_INVALID") }
+            XCTAssertEqual(ThumbnailSelectionProtocol.posts(), 0)
+        }
+    }
+    @MainActor
+    func testCurrentSelectionReadRejectsChangedPrincipalBeforeMutation() async throws {
+        let (api, document, _) = try await selectionFixture(mode: "normal")
+        let wrong = NativeDocumentState(format: document.format, revision: document.revision,
+            workspaceId: document.workspaceId, tenantId: document.tenantId,
+            principalId: "77777777-7777-4777-8777-777777777777", draft: document.draft,
+            etag: document.etag, savedEditVersion: document.savedEditVersion, pending: nil)
+        do {
+            _ = try await api.currentImageThumbnailSelection(artworkId: artworkID, revision: 3, in: wrong)
+            XCTFail("Changed principal must fail")
+        } catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "IMAGE_THUMBNAIL_PREPARATION_UNAVAILABLE") }
+        XCTAssertEqual(ThumbnailSelectionProtocol.posts(), 0)
+    }
     func testReadyBindsCurrentApprovedSourceAndOwners() throws {
         let job = try decode(ready())
         XCTAssertNoThrow(try job.check(artwork: artwork(), workspaceId: workspace, principalId: principal, jobId: jobID))
@@ -215,8 +251,10 @@ private final class ThumbnailSelectionProtocol: URLProtocol, @unchecked Sendable
             lose = Self.mode == "lose-once" && Self.count == 1
             data = try! JSONSerialization.data(withJSONObject: ["id": Self.binding, "selectionVersion": 1, "selected": true])
         } else if path.hasSuffix("/thumbnail-selection") {
-            data = try! JSONSerialization.data(withJSONObject: ["selectionVersion": Self.selected ? 1 : 0,
-                "bindingId": Self.selected ? Self.binding as Any : NSNull()])
+            let version = Self.mode == "negative-selection" ? -1 : Self.mode == "positive-without-binding" ? 1
+                : Self.mode == "selection-limit" ? Int(Int32.max) : Self.selected ? 1 : 0
+            let binding: Any = Self.mode == "zero-with-binding" || Self.selected ? Self.binding as Any : NSNull()
+            data = try! JSONSerialization.data(withJSONObject: ["selectionVersion": version, "bindingId": binding])
         } else if path.contains("/assets/") || path.hasSuffix("/image") {
             data = Self.png
             if path.hasSuffix("/image") && Self.mode == "wrong-selected-image" { data[0] ^= 1 }

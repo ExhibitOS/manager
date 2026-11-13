@@ -1554,3 +1554,10 @@ existing same-catalog path, preserving carried-restore and retained-original
 custody without running a catalog upgrade. Earlier issued jobs/receipts remain
 valid history; new generation needs new request IDs. Source admission does not
 establish actual output quality or selection; each new candidate requires review.
+
+For a reviewed current-image candidate, `current-image-thumbnail-selection` takes
+`command: {artworkId, artworkRevision}` and the current document revisions. It
+reads the existing authenticated selection binding/version without a new render
+or write. Each call refreshes the response. Supply that version to the separate
+`current-image-thumbnail-select` command with a fresh same-session review ID;
+selection still performs its existing CAS, source/receipt and image readback checks.

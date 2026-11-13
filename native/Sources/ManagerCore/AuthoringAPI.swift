@@ -1110,6 +1110,20 @@ public actor AuthoringAPI {
         }
         return artwork
     }
+    /// Read the existing selection CAS version without rendering or changing a candidate.
+    public func currentImageThumbnailSelection(artworkId: String, revision: Int,
+        in document: NativeDocumentState) async throws -> NativeArtworkThumbnailSelection {
+        let held = generation
+        _ = try await currentImageThumbnailArtwork(artworkId, revision: revision, in: document)
+        let selection: NativeArtworkThumbnailSelection = try await request(prefix + "/artworks/" + identifier(artworkId)
+            + "/thumbnail-selection?expectedRevision=" + String(revision), requiresNativeReadCSRF: true)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard (0..<Int(Int32.max)).contains(selection.selectionVersion),
+              (selection.selectionVersion == 0) == (selection.bindingId == nil) else {
+            throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+        }
+        return selection
+    }
     public func prepareCurrentImageThumbnail(artworkId: String, revision: Int, requestId: UUID,
         in document: NativeDocumentState) async throws -> NativeCurrentImageThumbnailJob {
         let held = generation
