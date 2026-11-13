@@ -43,6 +43,7 @@ final class InstalledFurnishingThumbnailTests: XCTestCase {
             "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z",
             "workspaceFurnishingProfile": "workspace-furnishing-intake-v1", "workspaceFurnishingStoolProfile": "workspace-furnishing-stool-v1",
             "workspaceFurnishingRoomVisualProfile": "workspace-furnishing-room-visual-v1",
+            "workspaceArtworkFrameProfile": "workspace-artwork-frame-v1",
             "workspaceArtworkFrameModelsProfile": "workspace-artwork-frame-models-v1", "workspaceFurnishingReusableFitProfile": "source-bound-fit-v1"]
         return try .init(session: JSONSerialization.data(withJSONObject: session), descriptors: [JSONEncoder().encode(f.descriptor)],
             metadata: JSONEncoder().encode(f.metadata), image: f.image, digest: nativeImportSHA256(f.image))
