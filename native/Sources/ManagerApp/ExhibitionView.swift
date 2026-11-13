@@ -59,6 +59,7 @@ final class ExhibitionModel: ObservableObject {
         let access: UUID, tenant: String, principal: String, furnishingID: String
         let version: Int, modelBytes: Int
         let modelSHA256: String, recipe: String, tool: String
+        let installedBindingSHA256: String?
     }
 
     enum FurnishingThumbnail {
@@ -84,7 +85,7 @@ final class ExhibitionModel: ObservableObject {
         let item = registration.item, model = item.details.model
         return .init(access: registration.access, tenant: state.tenantId, principal: state.principalId,
                      furnishingID: item.id, version: item.version, modelBytes: model.bytes, modelSHA256: model.sha256,
-                     recipe: ViewportFurnishingThumbnailRequest.recipe, tool: ViewportFurnishingThumbnailRequest.tool)
+                     recipe: ViewportFurnishingThumbnailRequest.recipe, tool: ViewportFurnishingThumbnailRequest.tool, installedBindingSHA256: nil)
     }
 
     func furnishingThumbnail(for item: WorkspaceFurnishingSummary) -> FurnishingThumbnail? {
@@ -102,7 +103,7 @@ final class ExhibitionModel: ObservableObject {
             && !infoStandPreviewing && readThumbnailCheckpoint != nil && writeThumbnailCheckpoint != nil
     }
     func makeFurnishingThumbnailReview(_ summary: WorkspaceFurnishingSummary) -> FurnishingThumbnailReviewModel? {
-        guard durableFurnishingThumbnailsAvailable, !busy, summary.rightsAvailability.display,
+        guard summary.installedThumbnailProfile == nil, durableFurnishingThumbnailsAvailable, !busy, summary.rightsAvailability.display,
               let api, let owner = state, let readCheckpoint = readThumbnailCheckpoint,
               let writeCheckpoint = writeThumbnailCheckpoint else { return nil }
         let access = viewportAccessID
@@ -169,6 +170,35 @@ final class ExhibitionModel: ObservableObject {
         return true
     }
 
+    private func loadInstalledFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary) async throws {
+        guard let api, let owner = state, let lookup = furnishingThumbnailLookupKey(summary) else {
+            throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE")
+        }
+        let selected = try await api.installedWorkspaceFurnishingThumbnail(summary, in: owner)
+        try Task.checkCancellation()
+        guard self.api === api, furnishingThumbnailLookupKey(summary) == lookup,
+              state?.workspaceId == owner.workspaceId, let image = NSImage(data: selected.data) else {
+            throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+        }
+        let item = selected.furnishing, rights = item.details.rights
+        var expires: Date?
+        if let text = rights.expiresAt {
+            let formatter = ISO8601DateFormatter(); expires = formatter.date(from: text)
+            if expires == nil { formatter.formatOptions.insert(.withFractionalSeconds); expires = formatter.date(from: text) }
+            guard let expires, expires > .now else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let binding = try SHA256.hash(data: encoder.encode(selected.binding.value)).map { String(format: "%02x", $0) }.joined()
+        let key = FurnishingThumbnailKey(access: lookup.access, tenant: owner.tenantId, principal: owner.principalId,
+            furnishingID: item.id, version: item.version, modelBytes: item.details.model.bytes,
+            modelSHA256: item.details.model.sha256, recipe: ViewportFurnishingThumbnailRequest.recipe,
+            tool: ViewportFurnishingThumbnailRequest.tool, installedBindingSHA256: binding)
+        furnishingThumbnailOrder.removeAll { $0 == key }; furnishingThumbnailOrder.append(key)
+        if furnishingThumbnailOrder.count > 16 { furnishingThumbnails.removeValue(forKey: furnishingThumbnailOrder.removeFirst()) }
+        furnishingThumbnails[key] = .ready(image, expires: expires)
+        furnishingThumbnailLookupFailures.remove(lookup)
+    }
+
     /// Existing registry cards need the same current descriptor/rights binding
     /// as a live intake return. Read it without creating or saving an intake.
     func loadFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary, retry: Bool) async {
@@ -184,6 +214,17 @@ final class ExhibitionModel: ObservableObject {
     }
 
     private func loadExistingFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary, retry: Bool) async {
+        if summary.installedThumbnailProfile != nil {
+            do { try await loadInstalledFurnishingThumbnail(summary) }
+            catch {
+                guard let lookup = furnishingThumbnailLookupKey(summary), !Task.isCancelled else { return }
+                let stale = furnishingThumbnailOrder.filter { $0.access == lookup.access && $0.furnishingID == summary.id && $0.version == summary.version }
+                for key in stale { furnishingThumbnails.removeValue(forKey: key) }
+                furnishingThumbnailOrder.removeAll { stale.contains($0) }
+                furnishingThumbnailLookupFailures.insert(lookup)
+            }
+            return
+        }
         if durableFurnishingThumbnailsAvailable {
             do { if try await loadSelectedFurnishingThumbnail(summary) { return } }
             catch {

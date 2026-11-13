@@ -106,6 +106,21 @@ final class BundledWorkspaceFurnishingsTests: XCTestCase {
         XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: fixture.root))
     }
 
+    func testImmutableCardCatalog112PreservesImportsAndRejectsChangedPin() async throws {
+        let fixture = try catalogFixture(variable: "EXHIBITOS_DEFAULT_112_CARD_FIXTURE")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: fixture.root)
+        XCTAssertEqual(catalog.version, "1.12.0"); XCTAssertEqual(catalog.items.count, 9)
+        XCTAssertFalse(catalog.items.contains { $0.id == "thin-brass-frame" || $0.id == "black-aluminum-frame" })
+        let portal = try XCTUnwrap(catalog.items.first { $0.id == "portal-pale-mineral" })
+        let model = try await BundledWorkspaceFurnishings.load(portal.id, from: catalog)
+        XCTAssertEqual(model.sha256, "62fd3bc49e0e77ffde26f60dee7ddfbbac0939347d68ea53a94700de0695f1ae")
+        let manifest = fixture.root.appendingPathComponent("assets/furnishings/default-manifest.json")
+        var bytes = try Data(contentsOf: manifest); XCTAssertEqual(bytes.count, 19_618)
+        bytes[bytes.startIndex] ^= 1; try bytes.write(to: manifest)
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: fixture.root))
+    }
+
     private func catalog17Root() throws -> URL {
         guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_17_PLATFORM_FIXTURE"] else {
             throw XCTSkip("Set EXHIBITOS_DEFAULT_17_PLATFORM_FIXTURE to the exact default1.7 assembly platform root")

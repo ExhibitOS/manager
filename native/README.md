@@ -112,6 +112,26 @@ binding retains its issued contact record; a deliberate new binding requires
 Save followed by reconciliation. Exact runtime qualification and actual GUI,
 export and Viewer acceptance remain separate from this source support.
 
+## Installed immutable furnishing cards
+
+Library rows may explicitly advertise `installedThumbnailProfile` as
+`installed-furnishing-thumbnail-v1`. Those rows use the owner-authenticated
+installed-thumbnail metadata/image GET routes. The typed reader rechecks the
+fresh descriptor's canonical digest, model, rights, provenance and bounded
+256px PNG, requires the image digest header, and rechecks owner generation and
+source after reading. Advertised missing or corrupt cards fail without creating
+a capture or reading a tenant selection. The app keeps these cards read only
+and binds its cache to the full immutable metadata and current owner access.
+Rows without the marker retain their existing tenant thumbnail behavior.
+
+The local catalog reader additionally accepts the exact 19,618-byte `1.12.0`
+manifest `b265727004a7be3255b424c0d77dd649e601bd3409eb72fca522116c491c05ab`.
+Previously supported inventories remain accepted. Installed black and brass
+frames remain API-discovered items, outside the nine local import choices.
+Source tests and compilation do not qualify a new runtime or prove the actual
+Manager GUI card. Those consumers use the separately reviewed runtime and fixed
+validation app assembly; this source change adds no installation transition.
+
 ## Authenticated scene and thumbnail CLI
 
 The installed app exposes `ExhibitOSManager --authoring-cli --profile

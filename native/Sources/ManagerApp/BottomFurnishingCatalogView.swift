@@ -144,8 +144,11 @@ struct BottomFurnishingCatalogView: View {
     }
 
     private var thumbnailWork: ThumbnailWork? {
+        let installed = model.workspaceFurnishingIntakeAvailable && workspace.contains {
+            $0.installedThumbnailProfile == InstalledFurnishingThumbnail.profile && $0.rightsAvailability.display
+        }
         guard workspaceVisible,
-              (model.durableFurnishingThumbnailsAvailable || (model.furnishingThumbnailFrameReady && controller.furnishingThumbnailSupported)) else { return nil }
+              (installed || model.durableFurnishingThumbnailsAvailable || (model.furnishingThumbnailFrameReady && controller.furnishingThumbnailSupported)) else { return nil }
         var ids = visibleRows.compactMap { row -> String? in
             guard case .workspace(let item) = row, item.rightsAvailability.display else { return nil }; return item.id
         }
@@ -300,7 +303,7 @@ struct BottomFurnishingCatalogView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            if case .workspace(let item) = row, model.durableFurnishingThumbnailsAvailable {
+            if case .workspace(let item) = row, item.installedThumbnailProfile == nil, model.durableFurnishingThumbnailsAvailable {
                 Button("대표 이미지 확인·선택", systemImage: "photo") {
                     thumbnailReview = model.makeFurnishingThumbnailReview(item)
                 }
