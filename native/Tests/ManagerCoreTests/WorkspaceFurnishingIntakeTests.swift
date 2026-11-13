@@ -186,7 +186,8 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
     }
 
     func testPortalNormalizesVersionThreeWithoutChangingLegacyContent() throws {
-        let legacy = try registered()["furnishing"]
+        var legacy = try registered()["furnishing"]
+        legacy["kind"] = .string("barrier")
         var portalWire = try rectangularPortal(); portalWire["furnishing"]["id"] = .string(intakeId)
         let portal = try XCTUnwrap(intake(portalWire).furnishing)
         var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
@@ -194,8 +195,8 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         let placements: [DocumentValue] = (0..<7).map { index in
             .object(["id": .string(UUID().uuidString.lowercased()), "roomId": .string(room),
                      "furnishingId": .string(furnishingId), "furnishingVersion": .integer(1),
-                     "transform": .object(["position": .vector([Double(index), 0, 0]),
-                         "rotation": .vector([0,0,0,1]), "scale": .vector([1,1,1])])])
+                     "position": .vector([Double(index % 3) - 1, 0, Double(index / 3) - 1]),
+                     "yaw": .number(0), "scale": .number(1)])
         }
         candidate["openings"] = .array([.object(["id": .string(door), "type": .string("door")])])
         let namespace = WorkspaceFurnishingPlacement.namespace
