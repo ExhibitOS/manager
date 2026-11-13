@@ -1573,3 +1573,18 @@ The exact qualified area051 runtime also admits the existing catalogue selected-
 reader. Its live session/authority, revision/selection/binding identity headers,
 no-store, MIME/length/digest/PNG and cancellation checks stay unchanged. This is
 separate from furnishing-card thumbnails and from actual GUI display qualification.
+
+
+`export-static-native-original-publication` is an export-only continuation for an
+already published native original whose prior detail output was cancelled. It
+requires a clean saved source and exact `etag`, `publicationId`, `revisionSha256`,
+`originalPublishRequestId`, `cancelledDetailJobId` and `planBindingSha256` in the
+closed `command`, plus the normal revision/edit-version and output path envelope.
+The prior cancelled job must match the same owner, publication, revision and
+absent destination. Fresh supported saved-head/publication reads must still match.
+Use a distinct output-attempt request ID and preserve the prior terminal/staging
+records before invoking it. The existing helper creates a **new** detail output
+job, not a resume of the cancelled job. The operation does not prepare a
+publication, save a scene, stage an intent or clear the original export claim.
+A missing binding or uncertain terminal result requires review; do not retry the
+original publication command or create another publication to complete output.

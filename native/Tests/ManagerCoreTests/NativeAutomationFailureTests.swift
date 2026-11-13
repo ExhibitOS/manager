@@ -141,7 +141,7 @@ final class NativeAutomationFailureTests: XCTestCase {
         XCTAssertThrowsError(try NativeAutomationSession.checkInstalledExportRequest("read", fields: export)) {
             XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_PROTOCOL_INVALID")
         }
-        for operation in ["save", "import-image", "export-static-native-original", "export-static-saved-head"] {
+        for operation in ["save", "import-image", "export-static-native-original", "export-static-native-original-publication", "export-static-saved-head"] {
             XCTAssertThrowsError(try NativeAutomationSession.checkInstalledExportRequest(operation, fields: scope)) {
                 XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
             }
