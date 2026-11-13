@@ -8,7 +8,7 @@ import Darwin
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
-        "thumbnail-status", "required-model-original-status", "required-model-original-discover",
+        "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
         "workspace-frame-lineage-prepare", "export-static-native-original", "export-static-saved-head", "export-static-status",
@@ -59,6 +59,7 @@ public actor NativeAutomationSession {
     private var authoringSession: AuthoringSession?
     private var runtimeManifest: String?
     private var identity: NativeDocumentState?
+    private var privateHost: NativePrivateHost?
     private var closed = false
     private var busy = false
     private var replay: [String: (Data, DocumentValue)] = [:]
@@ -1631,6 +1632,112 @@ public actor NativeAutomationSession {
         }
     }
 
+    private static let privateHostOperations: Set<String> = [
+        "private-exhibition-create", "private-exhibition-read", "private-exhibition-edit",
+        "private-exhibition-save", "private-exhibition-reopen", "private-exhibition-wall-finish",
+        "private-exhibition-portal-attach", "private-exhibition-export-oex"
+    ]
+    private func executePrivateHost(_ operation: String, request: DocumentValue, id: String,
+                                    context: Context, api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
+        try checkedRevision(request, current)
+        guard selectedOEXFormat == nil, !installedImageCLI, await api.admitsPersonalExhibitionCreation,
+              current.pending == nil, !current.dirty else { throw BridgeFailure("PRIVATE_EXHIBITION_UNAVAILABLE") }
+        let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+        guard case .object(let fields) = request,
+              Set(fields.keys) == (operation == "private-exhibition-export-oex" ? common.union(["outputPath"]) : common) else {
+            throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
+        }
+        if operation == "private-exhibition-create" {
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["title"])
+            guard let title = command["title"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            if let existing = privateHost {
+                try existing.checkProtected(current)
+                guard existing.creationRequestId == id else { throw BridgeFailure("PRIVATE_EXHIBITION_ALREADY_OPEN") }
+            } else {
+                privateHost = try NativePrivateHost(requestId: id, title: title, protecting: current,
+                    roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
+            }
+        } else {
+            guard let host = privateHost, let hostId = request["command"]["exhibitionId"].string,
+                  let revision = request["command"]["privateRevision"].integer, revision > 0 else {
+                throw BridgeFailure("PRIVATE_EXHIBITION_REQUIRED")
+            }
+            try host.checkProtected(current); try host.checkTarget(id: hostId, revision: UInt64(revision))
+        }
+        guard var host = privateHost, let draft = host.document.draft else { throw BridgeFailure("PRIVATE_EXHIBITION_REQUIRED") }
+        let targetKeys: Set<String> = ["exhibitionId", "privateRevision"]
+        if operation == "private-exhibition-create" || operation == "private-exhibition-save" {
+            if operation != "private-exhibition-create" {
+                _ = try NativeAutomationArtworkRules.command(request, keys: targetKeys)
+                if host.document.pending == nil { try host.checkRemote(await api.exhibition(draft.id)) }
+            }
+            // Retain exactly the same draft/requestId/ETag before the first POST.
+            // An uncertain response cannot create a different exhibition on retry.
+            let pending = try host.prepareSave(requestId: id); privateHost = host
+            let saved = try await api.saveExhibition(pending.draft, requestId: pending.requestId, etag: pending.etag)
+            try saved.requireSameComparison(await api.exhibition(draft.id))
+            try host.checkProtected(await bridge.documentState(context)); try Task.checkCancellation()
+            try host.acceptSaved(saved); privateHost = host
+        } else if ["private-exhibition-read", "private-exhibition-reopen"].contains(operation) {
+            _ = try NativeAutomationArtworkRules.command(request, keys: targetKeys)
+            if host.document.pending != nil { throw BridgeFailure("PRIVATE_EXHIBITION_PENDING") }
+            let fresh = try await api.exhibition(draft.id)
+            if operation == "private-exhibition-reopen" { try host.requireSaved(fresh) }
+            else { try host.checkRemote(fresh) }
+        } else if operation == "private-exhibition-edit" {
+            let command = try NativeAutomationArtworkRules.command(request, keys: targetKeys.union(["architecture"]))
+            guard host.document.pending == nil, let etag = host.document.etag else { throw BridgeFailure("PRIVATE_EXHIBITION_PENDING") }
+            try host.checkRemote(await api.exhibition(draft.id))
+            let next = try NativePrivateHostArchitecture.applying(command["architecture"], to: draft)
+            try await api.validateNativeViewportEdit(next, etag: etag)
+            try host.checkRemote(await api.exhibition(draft.id))
+            try host.checkProtected(await bridge.documentState(context)); try Task.checkCancellation()
+            try host.stage(next); privateHost = host
+        } else if operation == "private-exhibition-portal-attach" {
+            let command = try NativeAutomationArtworkRules.command(request, keys: targetKeys.union(["openingId", "furnishingId", "furnishingVersion", "modelSha256"]))
+            guard let opening = command["openingId"].string, let furnishing = command["furnishingId"].string,
+                  command["furnishingVersion"] == .integer(1), let hash = command["modelSha256"].string,
+                  nativeImportDigest(hash) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            try host.requireSaved(await api.exhibition(draft.id))
+            if let next = try await api.prepareWorkspacePortalFinish(openingId: opening, furnishingId: furnishing,
+                expectedModelSHA256: hash, in: host.document) {
+                try host.checkProtected(await bridge.documentState(context)); try Task.checkCancellation()
+                try host.stage(next); privateHost = host
+            }
+        } else if operation == "private-exhibition-wall-finish" {
+            let command = try NativeAutomationArtworkRules.command(request, keys: targetKeys.union(["wallFinish"]))
+            try host.requireSaved(await api.exhibition(draft.id))
+            guard let etag = host.document.etag, let revision = host.serverRevision else { throw BridgeFailure("PRIVATE_EXHIBITION_REQUIRED") }
+            let wall = try NativeAutomationPlaqueWall.wall(command["wallFinish"])
+            let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1,
+                tenantId: current.tenantId, principalId: current.principalId, draft: draft,
+                selection: ViewportSelection(kind: "surface", id: wall.surfaceId), mode: "translate", view: "isometric", disabled: false,
+                workspaceId: current.workspaceId, baseETag: etag)
+            let proposal = try WallFinishViewportRequest(frame: frame, command: wall)
+            let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: revision, etag: etag, proposal: proposal.value)
+            let next = try proposal.checkedReply(reply).apply(to: draft, command: wall, selectedSurfaceId: wall.surfaceId)
+            try host.requireSaved(await api.exhibition(draft.id))
+            try host.checkProtected(await bridge.documentState(context)); try Task.checkCancellation()
+            try host.stage(next); privateHost = host
+        } else if operation == "private-exhibition-export-oex" {
+            _ = try NativeAutomationArtworkRules.command(request, keys: targetKeys)
+            try host.requireSaved(await api.exhibition(draft.id))
+            guard let etag = host.document.etag, let path = request["outputPath"].string,
+                  authoringSession?.nativeOexExportProfile == "bounded-file-v1" else { throw BridgeFailure("NATIVE_OEX_EXPORT_UNAVAILABLE") }
+            let url = try output(path)
+            let archive = try await api.exportBoundedOEX(exhibitionId: draft.id, etag: etag)
+            try host.requireSaved(await api.exhibition(draft.id))
+            try host.checkProtected(await bridge.documentState(context)); try Task.checkCancellation()
+            let confirmed = try await archive.write(to: url, expectedParent: installedExportRootIdentity)
+            return .object(["exhibitionId": .string(draft.id), "etag": .string(etag), "sha256": .string(archive.sha256),
+                "path": confirmed ? .string(url.path) : .null, "protectedDocumentUnchanged": .bool(true)])
+        }
+        try host.checkProtected(await bridge.documentState(context))
+        guard let final = privateHost else { throw BridgeFailure("PRIVATE_EXHIBITION_REQUIRED") }
+        return .object(["document": try value(final.document), "serverRevision": final.serverRevision.map { .integer(Int64($0)) } ?? .null,
+                        "protectedDocumentUnchanged": .bool(true)])
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
@@ -1638,7 +1745,7 @@ public actor NativeAutomationSession {
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel"]
-            guard allowed.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+            guard allowed.contains(operation) || Self.privateHostOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
@@ -1718,6 +1825,7 @@ public actor NativeAutomationSession {
         if installedExportRootIdentity != nil {
             try Self.checkInstalledPendingOperation(operation, hasPending: current.pending != nil, authoring: installedAuthoringCLI)
         }
+        if Self.privateHostOperations.contains(operation), let host = privateHost { try host.checkProtected(current) }
         if let seen = seenRequests[id], seen != bytes { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
         let prior = try Self.replayResponse(for: operation, prior: replay[id], matching: bytes)
         if let expected = installedExportRootIdentity,
@@ -1741,6 +1849,8 @@ public actor NativeAutomationSession {
         busy = true; defer { busy = false }
         let result: DocumentValue
         switch operation {
+        case let name where Self.privateHostOperations.contains(name):
+            result = try await executePrivateHost(name, request: request, id: id, context: context, api: api, current: current)
         case "exhibition-new":
             try checkedRevision(request, current)
             guard installedAuthoringCLI, await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
@@ -3180,6 +3290,7 @@ public actor NativeAutomationSession {
     public func close() async throws {
         guard !busy, !closing else { throw BridgeFailure("AUTOMATION_BUSY") }
         guard !closed else { return }
+        guard privateHost?.document.dirty != true else { throw BridgeFailure("PRIVATE_EXHIBITION_PENDING") }
         closing = true
         defer { closing = false }
         try await closeBridge()
