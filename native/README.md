@@ -23,6 +23,10 @@ physical owner and payload checks remain mandatory. Earlier combined catalog52
 tuples do not gain fresh admission. This creates no alternate initialization
 route and does not qualify installed-default discovery or use without actual
 fresh-profile, save/reopen and consumer evidence.
+Its ordinary initialization also inherits the existing mandatory dedicated
+Hayes owner channel, using the same authenticated envelope, descriptor passing
+and handshake as reopening. This is limited to that exact controlled tuple;
+older combined tuples do not gain initialization-channel eligibility.
 
 Runtime admission still requires the exact source/producer/manifest tuple;
 selected reads and authoring purpose boundaries remain separate from startup
