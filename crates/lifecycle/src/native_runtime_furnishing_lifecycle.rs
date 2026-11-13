@@ -25,13 +25,15 @@ pub(super) enum Admission {
     CatalogUpgrade045To050,
     #[serde(rename = "catalog-upgrade-045-to-049")]
     CatalogUpgrade045To049,
+    #[serde(rename = "catalog-upgrade-045-to-051")]
+    CatalogUpgrade045To051,
 }
 
 impl Admission {
     // Wire proof policy shared with Binding's carried-proof validation. Exact
     // catalog/tuple and restore shape checks remain independently mandatory.
     fn allows_carried_v4(self) -> bool {
-        matches!(self, Self::VerifiedRestore | Self::CleanReopen | Self::CatalogUpgrade045To050 | Self::CatalogUpgrade045To049)
+        matches!(self, Self::VerifiedRestore | Self::CleanReopen | Self::CatalogUpgrade045To050 | Self::CatalogUpgrade045To049 | Self::CatalogUpgrade045To051)
     }
 
     fn tag(self) -> u8 {
@@ -45,6 +47,7 @@ impl Admission {
             Self::InterruptedReopen => 7,
             Self::CatalogUpgrade045To050 => 8,
             Self::CatalogUpgrade045To049 => 9,
+            Self::CatalogUpgrade045To051 => 10,
         }
     }
 }
@@ -143,6 +146,10 @@ impl Binding {
             && matches!(self.admission_kind, Admission::CatalogUpgrade045To050 | Admission::CleanReopen)
             && crate::native_payload::furnishing_thumbnail_host_matches(tuple)
             && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
+        let current_thumbnail = self.catalog == 51
+            && matches!(self.admission_kind, Admission::CatalogUpgrade045To051 | Admission::CleanReopen)
+            && crate::native_payload::current_image_thumbnail_host_matches(tuple)
+            && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let private_hayes_bootstrap = self.admission_kind == Admission::FreshEmpty && match self.catalog {
             42 => crate::native_payload::hayes_validation_host_matches(tuple),
             43 => crate::native_payload::hayes_disposition_host_matches(tuple),
@@ -150,7 +157,7 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -228,6 +235,9 @@ impl Binding {
             (Phase::Active | Phase::Clean, Admission::CatalogUpgrade045To050) => {
                 self.catalog == 50 && self.previous_generation.is_some()
             }
+            (Phase::Active | Phase::Clean, Admission::CatalogUpgrade045To051) => {
+                self.catalog == 51 && self.previous_generation.is_some()
+            }
             (Phase::ActivatedRestore, Admission::VerifiedRestore) => {
                 self.previous_generation.is_none() && self.restore.is_some()
             }
@@ -265,6 +275,7 @@ impl Binding {
         let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
             .or_else(|| crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::furnishing_thumbnail_carried_receipt_payload(tuple))
+            .or_else(|| crate::native_payload::current_image_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::gpu_model_carried_receipt_payload(tuple))
             .unwrap_or(self.payload_manifest_sha256.as_str());
         crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
@@ -322,7 +333,7 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
-        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. }) {
+        if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. }) {
             return if self.admission_kind == Admission::CleanReopen
                 && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
             { Ok(self.restore.as_ref()) } else { Err(err(ERROR)) };
@@ -382,6 +393,7 @@ impl Binding {
             FurnishingTransition::Upgrade40(_) => Admission::CatalogUpgrade040To044,
             FurnishingTransition::Upgrade44 { .. } => Admission::CatalogUpgrade044To045,
             FurnishingTransition::Upgrade50 { .. } => Admission::CatalogUpgrade045To050,
+            FurnishingTransition::Upgrade51 { .. } => Admission::CatalogUpgrade045To051,
             FurnishingTransition::Upgrade49 { .. } => Admission::CatalogUpgrade045To049,
             FurnishingTransition::Recover45 { .. } => Admission::InterruptedReopen,
             _ => Admission::CleanReopen,
@@ -2253,5 +2265,21 @@ mod gpu_admission_tests {
         assert_eq!(Admission::CatalogUpgrade045To050.tag(), 8);
         assert_eq!(Admission::InterruptedReopen.tag(), 7);
         assert_eq!(serde_json::to_value(Admission::CatalogUpgrade045To049).unwrap(), "catalog-upgrade-045-to-049");
+    }
+}
+
+#[cfg(test)]
+mod current_thumbnail_admission_tests {
+    use super::*;
+    #[test]
+    fn current_thumbnail_kind10_preserves_all_existing_admission_codes() {
+        assert_eq!(Admission::CatalogUpgrade045To051.tag(), 10);
+        assert!(Admission::CatalogUpgrade045To051.allows_carried_v4());
+        assert_eq!(serde_json::to_value(Admission::CatalogUpgrade045To051).unwrap(), "catalog-upgrade-045-to-051");
+        for (admission, expected) in [(Admission::FreshEmpty,1), (Admission::CleanReopen,2),
+            (Admission::VerifiedRestore,3), (Admission::CatalogUpgrade039To040,4),
+            (Admission::CatalogUpgrade040To044,5), (Admission::CatalogUpgrade044To045,6),
+            (Admission::InterruptedReopen,7), (Admission::CatalogUpgrade045To050,8),
+            (Admission::CatalogUpgrade045To049,9)] { assert_eq!(admission.tag(), expected); }
     }
 }

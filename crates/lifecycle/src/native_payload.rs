@@ -449,6 +449,34 @@ pub(crate) fn furnishing_thumbnail_carried_receipt_payload(tuple: (&str, &str, &
     { let _ = tuple; None }
 }
 
+const CURRENT_IMAGE_THUMBNAIL_DIRECTORY: &str = "platform/database/native-current-image-thumbnail/";
+pub(crate) const CURRENT_IMAGE_THUMBNAIL_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-current-image-thumbnail/051_current_image_thumbnail.sql", 5292,
+    "02b57bd69518126bc74e03b8ae63b2219e87686e5ee4f63747f1362277fdd0ac",
+);
+const CURRENT_IMAGE_THUMBNAIL_CAPABILITY: (&str, u64, &str) = (
+    "platform/scripts/native-current-image-thumbnail-capability-v1.json", 265,
+    "09bbab6d06974d942a36e0845ecf67e50203b4062c85ad560f4cf30f38b203c0",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const CURRENT_IMAGE_THUMBNAIL_051_TARGET: RuntimeTuple = (
+    "3899312f864b69d83d68314f280b6844ca5ced23",
+    "f448dd2810ddc9ba992c446857b116a5c986d9607ed98348c58ceb4a18dd752e",
+    "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822",
+);
+pub(crate) fn current_image_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == CURRENT_IMAGE_THUMBNAIL_051_TARGET;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+pub(crate) fn current_image_thumbnail_carried_receipt_payload(tuple: (&str, &str, &str)) -> Option<&'static str> {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return current_image_thumbnail_host_matches(tuple).then_some(CATALOG45_CARRIED_RESTORE_BASE.2);
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; None }
+}
+
 const HAYES_FRAME_PREPARATION_CAPABILITY: (&str, u64, &str) = (
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.0,
     WORKSPACE_FRAME_PREPARATION_CAPABILITY.1,
@@ -998,7 +1026,8 @@ pub(crate) const CATALOG45_FRAME9_THUMBNAIL_TARGET: RuntimeTuple = (
 pub(crate) fn current_image_thumbnail_transition(pair: (&str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return [(CATALOG45_SELECTED_PNG_READ_TARGET.2, CATALOG45_CURRENT_IMAGE_THUMBNAIL_TARGET.2),
-            (CATALOG45_SELECTED_PNG_READ_TARGET.2, CATALOG45_FRAME9_THUMBNAIL_TARGET.2)].contains(&pair);
+            (CATALOG45_SELECTED_PNG_READ_TARGET.2, CATALOG45_FRAME9_THUMBNAIL_TARGET.2),
+            (CATALOG45_FRAME9_THUMBNAIL_TARGET.2, CURRENT_IMAGE_THUMBNAIL_051_TARGET.2)].contains(&pair);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = pair; false }
 }
@@ -1359,6 +1388,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || CATALOG45_RENDERED_SCULPTURE_THUMBNAIL_OEX.2 == manifest
         || GPU_MODEL_TARGETS.iter().any(|target| target.2 == manifest && gpu_model_host_matches(*target))
         || FURNISHING_THUMBNAIL_TARGETS.iter().any(|target| target.2 == manifest && furnishing_thumbnail_host_matches(*target))
+        || CURRENT_IMAGE_THUMBNAIL_051_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1372,6 +1402,7 @@ pub(crate) enum FurnishingTransition {
     Upgrade44 { source: RuntimeTuple, target: RuntimeTuple },
     Upgrade49 { source: RuntimeTuple, target: RuntimeTuple },
     Upgrade50 { source: RuntimeTuple, target: RuntimeTuple },
+    Upgrade51 { source: RuntimeTuple, target: RuntimeTuple },
     Recover45 { source: RuntimeTuple, target: RuntimeTuple },
     SameCatalog { source: RuntimeTuple, target: RuntimeTuple, catalog: WorkspaceFurnishingCatalog },
 }
@@ -1406,6 +1437,9 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair == (CATALOG45_FRAME9_THUMBNAIL_TARGET.2, CURRENT_IMAGE_THUMBNAIL_051_TARGET.2) {
+            return Some(Self::Upgrade51 { source: CATALOG45_FRAME9_THUMBNAIL_TARGET, target: CURRENT_IMAGE_THUMBNAIL_051_TARGET });
+        }
         if gpu_model_wrapping_transition(pair) {
             return Some(Self::SameCatalog {
                 source: GPU_MODEL_LEGACY_TARGET,
@@ -1608,14 +1642,14 @@ impl FurnishingTransition {
 
     #[cfg(test)]
     pub(crate) fn upgrades_catalog(self) -> bool {
-        matches!(self, Self::Upgrade39(_) | Self::Upgrade40(_) | Self::Upgrade44 { .. } | Self::Upgrade49 { .. } | Self::Upgrade50 { .. })
+        matches!(self, Self::Upgrade39(_) | Self::Upgrade40(_) | Self::Upgrade44 { .. } | Self::Upgrade49 { .. } | Self::Upgrade50 { .. } | Self::Upgrade51 { .. })
     }
 
     pub(crate) fn source_catalog(self) -> WorkspaceFurnishingCatalog {
         match self {
             Self::Upgrade39(_) => WorkspaceFurnishingCatalog::MaterialPublication039,
             Self::Upgrade44 { .. } => WorkspaceFurnishingCatalog::HayesRelease044,
-            Self::Upgrade49 { .. } | Self::Upgrade50 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
+            Self::Upgrade49 { .. } | Self::Upgrade50 { .. } | Self::Upgrade51 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::Recover45 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::SameCatalog { catalog, .. } => catalog,
             _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
@@ -1628,6 +1662,7 @@ impl FurnishingTransition {
             Self::Upgrade44 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::Upgrade49 { .. } => WorkspaceFurnishingCatalog::GpuModelPreparation049,
             Self::Upgrade50 { .. } => WorkspaceFurnishingCatalog::FurnishingThumbnail050,
+            Self::Upgrade51 { .. } => WorkspaceFurnishingCatalog::CurrentImageThumbnail051,
             Self::Recover45 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::SameCatalog { catalog, .. } => catalog,
             _ => WorkspaceFurnishingCatalog::MaterialMultimap040,
@@ -1640,7 +1675,7 @@ impl FurnishingTransition {
             Self::Tangent => CATALOG40_FRAME_TARGET,
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
             Self::Upgrade40(step) => step.source,
-            Self::Upgrade44 { source, .. } | Self::Upgrade49 { source, .. } | Self::Upgrade50 { source, .. } => source,
+            Self::Upgrade44 { source, .. } | Self::Upgrade49 { source, .. } | Self::Upgrade50 { source, .. } | Self::Upgrade51 { source, .. } => source,
             Self::Recover45 { source, .. } => source,
             Self::SameCatalog { source, .. } => source,
         }
@@ -1652,7 +1687,7 @@ impl FurnishingTransition {
             Self::Tangent => CATALOG40_TANGENT_TARGET,
             Self::Upgrade39(target) => target.0,
             Self::Upgrade40(step) => step.target,
-            Self::Upgrade44 { target, .. } | Self::Upgrade49 { target, .. } | Self::Upgrade50 { target, .. } => target,
+            Self::Upgrade44 { target, .. } | Self::Upgrade49 { target, .. } | Self::Upgrade50 { target, .. } | Self::Upgrade51 { target, .. } => target,
             Self::Recover45 { target, .. } => target,
             Self::SameCatalog { target, .. } => target,
         }
@@ -1707,6 +1742,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     InfoStandPreparation048,
     GpuModelPreparation049,
     FurnishingThumbnail050,
+    CurrentImageThumbnail051,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -1727,6 +1763,7 @@ impl WorkspaceFurnishingCatalog {
             Self::InfoStandPreparation048 => 48,
             Self::GpuModelPreparation049 => 49,
             Self::FurnishingThumbnail050 => 50,
+            Self::CurrentImageThumbnail051 => 51,
         }
     }
 
@@ -1735,7 +1772,7 @@ impl WorkspaceFurnishingCatalog {
             | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042
             | Self::HayesDisposition043 | Self::HayesRelease044 | Self::RequiredModelPreparation045
             | Self::LargeModelPreparation046 | Self::FreshImagePreparation047 | Self::InfoStandPreparation048
-            | Self::GpuModelPreparation049 | Self::FurnishingThumbnail050)
+            | Self::GpuModelPreparation049 | Self::FurnishingThumbnail050 | Self::CurrentImageThumbnail051)
     }
 }
 
@@ -3221,6 +3258,50 @@ mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn current_thumbnail_051_accepts_only_exact_frame74_forward_pair() {
+        let source = CATALOG45_FRAME9_THUMBNAIL_TARGET; let target = CURRENT_IMAGE_THUMBNAIL_051_TARGET;
+        let step = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        assert!(matches!(step, FurnishingTransition::Upgrade51 { .. }));
+        assert_eq!(step.source(), source); assert_eq!(step.target(), target);
+        assert_eq!(step.source_catalog().version(), 45); assert_eq!(step.target_catalog().version(), 51);
+        assert!(saved_workspace_transition_target(target.2));
+        assert!(current_image_thumbnail_transition((source.2, target.2)));
+        for pair in [(target.2, source.2), (target.2, target.2), (CATALOG45_CURRENT_IMAGE_THUMBNAIL_TARGET.2, target.2),
+            (CATALOG45_SELECTED_PNG_READ_TARGET.2, target.2)] {
+            assert!(FurnishingTransition::from_manifests(pair).is_none());
+            assert!(!current_image_thumbnail_transition(pair));
+        }
+        for tuple in [(source.0,target.1,target.2),(target.0,source.1,target.2),(target.0,target.1,source.2)] {
+            assert!(!current_image_thumbnail_host_matches(tuple));
+        }
+        assert!(!furnishing_thumbnail_host_matches(target)); assert!(!large_model_host_matches(target));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the separately qualified immutable corrected051 runtime"]
+    fn current_thumbnail_051_opens_exact_payload_and_only_appends_051() {
+        let root = std::env::var_os("EXHIBITOS_TEST_CURRENT_THUMBNAIL_051_RUNTIME").expect("qualified runtime path");
+        let mut payload = Payload::open_workspace_v5_validation(Path::new(&root), false).unwrap();
+        let c = payload.context();
+        assert_eq!((c.source_commit.as_str(), payload.producer_sha256(), c.manifest_sha256.as_str()), CURRENT_IMAGE_THUMBNAIL_051_TARGET);
+        let catalog = WorkspaceFurnishingCatalog::CurrentImageThumbnail051;
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ledger.lines().count(), 46);
+        assert_eq!(ledger.lines().last().unwrap(), format!("051_current_image_thumbnail.sql|{}", CURRENT_IMAGE_THUMBNAIL_SCHEMA.2));
+        assert_eq!(payload.catalog51_upgrade_source_ledger().unwrap().lines().count(), 45);
+        assert!(!payload.workspace_v5_selected_input());
+        assert_eq!(payload.current_image_thumbnail_upgrade_script().unwrap(), Path::new(&root).join("platform/scripts/local-runtime.mjs"));
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::LargeModelPreparation046).is_err());
+        let schema = payload.manifest.files.iter_mut().find(|file| file.path == CURRENT_IMAGE_THUMBNAIL_SCHEMA.0).unwrap();
+        schema.sha256 = Some("0".repeat(64));
+        assert!(payload.workspace_furnishing_catalog().is_err());
+        assert!(payload.workspace_furnishing_ledger(catalog).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     #[ignore = "requires the separately qualified immutable Frame9 runtime"]
     fn frame_thumbnail_opens_exact_payload_without_profile() {
         let root = std::env::var_os("EXHIBITOS_TEST_FRAME_THUMBNAIL_RUNTIME").expect("qualified runtime path");
@@ -4596,13 +4677,15 @@ impl Payload {
                 &payload.manifest.producer_sha256, &payload.manifest_sha256));
             let thumbnail = furnishing_thumbnail_host_matches((&payload.manifest.source_commit,
                 &payload.manifest.producer_sha256, &payload.manifest_sha256));
-            let expected = Some(if gpu { WorkspaceFurnishingCatalog::GpuModelPreparation049 }
+            let current_thumbnail = current_image_thumbnail_host_matches((&payload.manifest.source_commit,
+                &payload.manifest.producer_sha256, &payload.manifest_sha256));
+            let expected = Some(if current_thumbnail { WorkspaceFurnishingCatalog::CurrentImageThumbnail051 } else if gpu { WorkspaceFurnishingCatalog::GpuModelPreparation049 }
                 else if thumbnail { WorkspaceFurnishingCatalog::FurnishingThumbnail050 }
                 else { WorkspaceFurnishingCatalog::RequiredModelPreparation045 });
             let publication = catalog45_native_publication_host_matches((
                 &payload.manifest.source_commit, &payload.manifest.producer_sha256, &payload.manifest_sha256,
             ));
-            if selected || (!gpu && !thumbnail && !publication && !payload.native_model_adoption_original_target()
+            if selected || (!gpu && !thumbnail && !current_thumbnail && !publication && !payload.native_model_adoption_original_target()
                 && payload.retained_furnishing_catalog() != expected)
                 || payload.workspace_furnishing_catalog()? != expected
             {
@@ -4632,9 +4715,10 @@ impl Payload {
             CATALOG45_CARRIED_RESTORE_BASE, CATALOG45_MODEL_ADOPTION_CARRIED_TARGET,
             CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET, CATALOG45_RENDERED_ARTWORK_THUMBNAIL_TARGET, CATALOG45_CANONICAL_MODEL_THUMBNAIL_TARGET, CATALOG45_PORTAL_HAYES_CARD_TARGET, CATALOG45_SCENE_AUTHORING_TARGET, CATALOG45_THUMBNAIL_FRESHNESS_TARGET, CATALOG45_COMPLETE_STATIC_TARGET, CATALOG45_FIXTURE_AUTHORING_TARGET, CATALOG45_DEFAULT_1_7_TARGET, CATALOG45_DEFAULT_1_11_TARGET, CATALOG45_SELECTED_PNG_READ_SOURCE, CATALOG45_SELECTED_PNG_READ_TARGET, CATALOG45_CURRENT_IMAGE_THUMBNAIL_TARGET, CATALOG45_FRAME9_THUMBNAIL_TARGET,
         ].contains(&(context.source_commit.as_str(), payload.manifest.producer_sha256.as_str(), context.manifest_sha256.as_str()));
-        let retained_catalog = furnishing_thumbnail_host_matches((&context.source_commit,
+        let retained_catalog = current_image_thumbnail_host_matches((&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
+            .then_some(WorkspaceFurnishingCatalog::CurrentImageThumbnail051).or_else(|| furnishing_thumbnail_host_matches((&context.source_commit,
             payload.producer_sha256(), &context.manifest_sha256))
-            .then_some(WorkspaceFurnishingCatalog::FurnishingThumbnail050)
+            .then_some(WorkspaceFurnishingCatalog::FurnishingThumbnail050))
             .or_else(|| gpu_model_host_matches((&context.source_commit, payload.producer_sha256(), &context.manifest_sha256))
                 .then_some(WorkspaceFurnishingCatalog::GpuModelPreparation049))
             .or(payload.retained_furnishing_catalog()).or(
@@ -4859,6 +4943,24 @@ impl Payload {
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn current_image_thumbnail_upgrade_script(&self) -> Result<PathBuf> {
+        if !current_image_thumbnail_host_matches((&self.manifest.source_commit,
+                &self.manifest.producer_sha256, &self.manifest_sha256))
+            || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CurrentImageThumbnail051)
+        { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        for (path, hash) in [
+            ("platform/scripts/local-runtime.mjs", "85f4c436e5bca3e0a0b3cfd66466fde51ec7c07bb9b2791fe60eb516fd5f479f"),
+            ("platform/scripts/native-workspace-furnishing-bootstrap.mjs", "d10d42309138497846f4425ec3e76a5d49b3ad005a2c71855d1a38dc6409a8ee"),
+        ] {
+            if !self.manifest.files.iter().any(|file| file.path == path && file.link.is_none()
+                && file.executable == Some(false) && file.sha256.as_deref() == Some(hash))
+            { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        }
+        self.recheck()?;
+        Ok(self.script())
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn gpu_model_upgrade_script(&self) -> Result<PathBuf> {
         if !gpu_model_host_matches((&self.manifest.source_commit,
                 &self.manifest.producer_sha256, &self.manifest_sha256))
@@ -4920,6 +5022,7 @@ impl Payload {
             || self.ordinary_fresh_furnishing()
             || catalog45_carried_restore_payload(self)
             || furnishing_thumbnail_host_matches((&self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256))
+            || current_image_thumbnail_host_matches((&self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256))
             || gpu_model_host_matches((&self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256))
             || portal.into_iter().chain(artwork_replacement).chain(wheat_grant).chain(CATALOG40_WHEAT_DETAIL).any(|(source, producer, manifest)|
                 self.manifest.source_commit == source && self.manifest.producer_sha256 == producer
@@ -4998,6 +5101,10 @@ impl Payload {
         let thumbnail_declared = self.manifest.files.iter().any(|file|
             file.path == FURNISHING_THUMBNAIL_CAPABILITY.0 || file.path.starts_with(FURNISHING_THUMBNAIL_DIRECTORY));
         if thumbnail_declared != thumbnail_pinned { return Err(unqualified()); }
+        let current_thumbnail_pinned = current_image_thumbnail_host_matches(tuple);
+        let current_thumbnail_declared = self.manifest.files.iter().any(|file|
+            file.path == CURRENT_IMAGE_THUMBNAIL_CAPABILITY.0 || file.path.starts_with(CURRENT_IMAGE_THUMBNAIL_DIRECTORY));
+        if current_thumbnail_declared != current_thumbnail_pinned { return Err(unqualified()); }
         let info_stand_pinned = info_stand_preparation_host_matches(tuple);
         let info_stand_declared = self.manifest.files.iter().any(|file|
             file.path == INFO_STAND_PREPARATION_CAPABILITY.0 || file.path.starts_with(INFO_STAND_PREPARATION_DIRECTORY));
@@ -5005,7 +5112,7 @@ impl Payload {
             return Err(unqualified());
         }
         let model_preparation_pinned = required_model_preparation_host_matches(tuple)
-            || self.ordinary_fresh_furnishing() || catalog45_carried_restore_host_matches(tuple) || thumbnail_pinned || gpu_pinned;
+            || self.ordinary_fresh_furnishing() || catalog45_carried_restore_host_matches(tuple) || thumbnail_pinned || gpu_pinned || current_thumbnail_pinned;
         let model_preparation_declared = self.manifest.files.iter().any(|file|
             file.path == MODEL_PREPARATION_CAPABILITY.0 || file.path.starts_with(MODEL_PREPARATION_DIRECTORY));
         if model_preparation_declared != model_preparation_pinned {
@@ -5158,6 +5265,15 @@ impl Payload {
                                             }
                                             return Ok(Some(WorkspaceFurnishingCatalog::FreshImagePreparation047));
                                         }
+                                        if current_thumbnail_pinned {
+                                            if !pinned_file(CURRENT_IMAGE_THUMBNAIL_CAPABILITY)
+                                                || !pinned_file(CURRENT_IMAGE_THUMBNAIL_SCHEMA)
+                                                || ["platform/scripts/native-model-adoption-capability-v1.json",
+                                                    "platform/scripts/native-model-adoption-carried-target-capability-v1.json"]
+                                                    .into_iter().any(|path| self.manifest.files.iter().any(|file| file.path == path))
+                                            { return Err(unqualified()); }
+                                            return Ok(Some(WorkspaceFurnishingCatalog::CurrentImageThumbnail051));
+                                        }
                                         if gpu_pinned {
                                             if !GPU_MODEL_CAPABILITY.is_some_and(pinned_file)
                                                 || !pinned_file(GPU_MODEL_SCHEMA)
@@ -5228,6 +5344,10 @@ impl Payload {
             if catalog == WorkspaceFurnishingCatalog::GpuModelPreparation049
                 && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
                 && file.path != GPU_MODEL_SCHEMA.0
+            { return Err(invalid()); }
+            if catalog == WorkspaceFurnishingCatalog::CurrentImageThumbnail051
+                && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
+                && file.path != CURRENT_IMAGE_THUMBNAIL_SCHEMA.0
             { return Err(invalid()); }
             if catalog == WorkspaceFurnishingCatalog::FurnishingThumbnail050
                 && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
@@ -5325,6 +5445,12 @@ impl Payload {
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 49
+            } else if file.path.starts_with(CURRENT_IMAGE_THUMBNAIL_DIRECTORY) {
+                let (path, bytes, hash) = CURRENT_IMAGE_THUMBNAIL_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::CurrentImageThumbnail051
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                { return Err(invalid()); }
+                51
             } else if file.path.starts_with(FURNISHING_THUMBNAIL_DIRECTORY) {
                 let (path, bytes, hash) = FURNISHING_THUMBNAIL_SCHEMA;
                 if catalog != WorkspaceFurnishingCatalog::FurnishingThumbnail050
@@ -5356,7 +5482,8 @@ impl Payload {
         // These isolated catalogs append one migration to 045.
         let count = match catalog {
             WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048
-                | WorkspaceFurnishingCatalog::GpuModelPreparation049 | WorkspaceFurnishingCatalog::FurnishingThumbnail050 => 46,
+                | WorkspaceFurnishingCatalog::GpuModelPreparation049 | WorkspaceFurnishingCatalog::FurnishingThumbnail050
+                | WorkspaceFurnishingCatalog::CurrentImageThumbnail051 => 46,
             _ => catalog.version(),
         };
         if rows.len() != count as usize { return Err(invalid()); }
@@ -5392,6 +5519,15 @@ impl Payload {
         let full = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::FurnishingThumbnail050)?;
         let (source, last) = full.rsplit_once('\n').ok_or_else(invalid)?;
         let (path, _, sha) = FURNISHING_THUMBNAIL_SCHEMA;
+        if last != format!("{}|{sha}", path.rsplit('/').next().ok_or_else(invalid)?) { return Err(invalid()); }
+        Ok(source.into())
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn catalog51_upgrade_source_ledger(&self) -> Result<String> {
+        let full = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CurrentImageThumbnail051)?;
+        let (source, last) = full.rsplit_once('\n').ok_or_else(invalid)?;
+        let (path, _, sha) = CURRENT_IMAGE_THUMBNAIL_SCHEMA;
         if last != format!("{}|{sha}", path.rsplit('/').next().ok_or_else(invalid)?) { return Err(invalid()); }
         Ok(source.into())
     }
@@ -5757,6 +5893,7 @@ impl Payload {
                     || CATALOG45_CARRIED_RESTORE_BASE == provenance
                     || self.native_model_adoption_original_target()
                     || furnishing_thumbnail_host_matches(provenance)
+                    || current_image_thumbnail_host_matches(provenance)
                     || gpu_model_host_matches(provenance)))
             || (catalog45_recovery_host_matches(provenance)
                 && !self.catalog45_pre_ready_preservation_validation()

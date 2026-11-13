@@ -155,7 +155,7 @@ impl Setup {
         self.normal_selected_v3_bootstrap(auth, generation, super::oex_catalog_frames::Protocol::from(version).owner_mode())
     }
     pub(super) fn workspace_furnishing_bootstrap(&self, auth: &LocalAuthority, generation: &str, start: super::FurnishingStart) -> Result<Vec<u8>> {
-        if matches!(start, super::FurnishingStart::Upgrade045To050 | super::FurnishingStart::Upgrade045To049) {
+        if matches!(start, super::FurnishingStart::Upgrade045To050 | super::FurnishingStart::Upgrade045To049 | super::FurnishingStart::Upgrade045To051) {
             if self.hayes.is_some() || self.adoption.is_some() { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
             return self.normal_selected_v3_bootstrap(auth, generation, start.owner_mode());
         }

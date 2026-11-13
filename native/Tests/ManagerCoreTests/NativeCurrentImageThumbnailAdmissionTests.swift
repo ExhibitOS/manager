@@ -16,6 +16,19 @@ final class NativeCurrentImageThumbnailAdmissionTests: XCTestCase {
     func testQualifiedFramePayloadRetainsOnlyThumbnailAdmission() {
         XCTAssertTrue(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: "74bd7aaa8500a4bd52240827b9c6a2da0e22b2757111bb57a3b05c969ea308be"))
     }
+    func testCorrected051RuntimeAdmissionIsExactAndPreservesLegacyProducerPins() throws {
+        let exact = "73c0878ee50623114081cfb14cc6e2f4870727c3f399519ee67e6208342af822"
+        XCTAssertTrue(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: exact))
+        XCTAssertFalse(AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: String(exact.dropLast()) + "3"))
+        #if DEBUG
+        XCTAssertTrue(AuthoringAPI.supportsCorrectedCurrentImageThumbnailRuntime(manifest: exact))
+        let api = try AuthoringAPI(port: 18091, tenantId: "11111111-1111-4111-8111-111111111111", nativeRuntimeManifestSHA256: exact)
+        XCTAssertTrue(api.workspaceFurnishingRuntimeQualified)
+        XCTAssertTrue(api.workspacePortalFinishRuntimeQualified)
+        XCTAssertFalse(api.workspaceFramePreparationRuntimeQualified)
+        #endif
+    }
+
     func testOldRuntimeRejectsBeforeAnyRequest() async throws {
         let tenant = "11111111-1111-4111-8111-111111111111"
         LegacyThumbnailAdmissionProtocol.reset()

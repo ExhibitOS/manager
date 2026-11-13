@@ -1504,10 +1504,23 @@ admission, GUI lifecycle/Undo, Save/reopen and output qualification must be
 reported from their actual runs. No existing profile, database or runtime is
 migrated by opening a document with this field.
 
+### Corrected current-image thumbnail catalog051
+
+The qualified debug runtime adds only `051_current_image_thumbnail.sql` to the
+existing45 migrations (46 ledger rows, catalog identity51). Native admits its
+exact source/producer/manifest tuple through an explicit Frame74→051 saved
+workspace transition. The sealed owner helper uses lease mode11 and admission
+kind10, preserves earlier wire codes and carried original-model custody, checks
+the exact ledger before and after migration, then drains and exits before a
+fresh ordinary reopen. Ordinary reopen never applies this migration implicitly.
+The existing thumbnail request, ready receipt and separate reviewed selection
+operations remain unchanged. Source and package qualification do not establish
+an actual profile transition or successful thumbnail jobs.
+
 ### Source-bound miter frame intake
 
 The debug SDK admits `straight-miter-ring-v1` only for the qualified Frame74
-runtime manifest and an authenticated furnishing editor advertising the existing
+or corrected051 runtime manifest and an authenticated furnishing editor advertising the existing
 frame-model and `source-bound-fit-v1` profiles. Intake sends the original model
 and the requested profile. Platform measures and validates the mesh; Native
 checks the returned fit's source identity, closed geometry and Spec draft.31
