@@ -149,11 +149,8 @@ impl Binding {
             && matches!(self.admission_kind, Admission::CatalogUpgrade045To050 | Admission::CleanReopen)
             && crate::native_payload::furnishing_thumbnail_host_matches(tuple)
             && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
-        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let fresh_contact = self.admission_kind == Admission::FreshEmpty
-            && tuple == crate::native_payload::CONTACT_EMITTER_CARD_TARGET;
-        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
-        let fresh_contact = false;
+            && crate::native_payload::combined_thumbnail_fresh_host_matches(tuple);
         let combined_thumbnail = self.catalog == 52
             && (matches!(self.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
                 || fresh_contact)
@@ -1556,7 +1553,7 @@ mod tests {
     #[test]
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn contact_catalog52_fresh_binding_retains_fresh_invariants_and_reopens() {
-        let target = crate::native_payload::CONTACT_EMITTER_CARD_TARGET;
+        for target in [crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET] {
         let mut fresh = binding(GENERATION);
         fresh.catalog = 52;
         fresh.source_commit = target.0.into();
@@ -1624,6 +1621,7 @@ mod tests {
             invalid.payload_manifest_sha256 = older.2.into();
             assert!(invalid.check().is_err());
         }
+        }
     }
 
     #[test]
@@ -1633,6 +1631,7 @@ mod tests {
             (crate::native_payload::CATALOG45_MODEL_ADOPTION_ORIGINAL_TARGET, crate::native_payload::CATALOG45_MODEL_ADOPTION_TERMINAL_TARGET),
             (crate::native_payload::COMBINED_THUMBNAIL_TARGET, crate::native_payload::STATIC_DETAIL_PHASE_TARGET),
             (crate::native_payload::STATIC_DETAIL_PHASE_TARGET, crate::native_payload::CONTACT_EMITTER_CARD_TARGET),
+            (crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET),
         ] {
         let transition = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
         let pin = |generation: &str, tuple: (&str, &str, &str)| {

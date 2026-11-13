@@ -395,7 +395,9 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         (crate::native_payload::COMBINED_THUMBNAIL_TARGET.2,
          crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2),
         (crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2,
-         crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2)].contains(&pair) && proof.is_none() {
+         crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2),
+        (crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2,
+         crate::native_payload::METRIC_FRAME_TARGET.2)].contains(&pair) && proof.is_none() {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
     }
 
@@ -2139,8 +2141,10 @@ mod tests {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn contact_emitter_card_refresh_keeps_47_rows_and_clean_saved_digest() {
-        let source = crate::native_payload::STATIC_DETAIL_PHASE_TARGET;
-        let target = crate::native_payload::CONTACT_EMITTER_CARD_TARGET;
+        for (source, target) in [
+            (crate::native_payload::STATIC_DETAIL_PHASE_TARGET, crate::native_payload::CONTACT_EMITTER_CARD_TARGET),
+            (crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET),
+        ] {
         let pair = (source.2, target.2);
         let transition = FurnishingTransition::from_manifests(pair).unwrap();
         let payload = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload(target);
@@ -2169,6 +2173,7 @@ mod tests {
         assert!(catalog45_activation_saved_document(pair, false, false, Some(&digest), &changed).is_err());
         assert!(catalog45_activation_saved_document(pair, false, false, None, &document).is_err());
         assert!(check_transition_host(pair, Some(&digest), false).is_err());
+        }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2181,6 +2186,7 @@ mod tests {
             (crate::native_payload::CURRENT_IMAGE_THUMBNAIL_AREA_TARGET.2, crate::native_payload::COMBINED_THUMBNAIL_TARGET.2),
             (crate::native_payload::COMBINED_THUMBNAIL_TARGET.2, crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2),
             (crate::native_payload::STATIC_DETAIL_PHASE_TARGET.2, crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2),
+            (crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2, crate::native_payload::METRIC_FRAME_TARGET.2),
         ] {
         let proof=RetainedOriginalModel::synthetic();
         let owner=("10000000-0000-4000-8000-000000000001","10000000-0000-4000-8000-000000000002","10000000-0000-4000-8000-000000000003");
