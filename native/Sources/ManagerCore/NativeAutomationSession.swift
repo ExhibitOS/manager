@@ -2281,6 +2281,8 @@ public actor NativeAutomationSession {
             }
         case "workspace-bench-visual-check", "workspace-bench-visual-replace":
             try checkedRevision(request, current)
+            guard Set(fields.keys) == ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
+                "expectedRevision", "expectedEditVersion", "command"] else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
             let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "benchId", "placementId",
                 "expectedModelSha256", "furnishingId", "furnishingVersion", "modelSha256", "intakeId"])
             guard selectedOEXFormat == nil, request["inputPath"] == .null, request["outputPath"] == .null,

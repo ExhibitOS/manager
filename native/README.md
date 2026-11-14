@@ -1962,3 +1962,14 @@ descriptor is removed only from this scene snapshot, preserving workspace
 registration and prior saved versions. This operation neither creates a second
 bench nor converts a backed seat to a slab. Full server viewport/Save checks and
 actual affected Viewer/seat/collision/appearance qualification remain required.
+
+The debug owner-validation helper also admits the exact reviewed
+`9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0`
+payload (source `df43d2efd8c63989a3cd581b393b46d1f5b93925`, producer
+`8fb986110af35269b8345e233df517ec506f69bad1a58a373ba2114c3dc679e0`)
+only as the existing directed clean refresh from `899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59`, with the same
+catalog and carried restoration authority. Reverse, self and skipped refreshes
+remain unavailable. Native editing stays disabled in locked previews; the
+qualified Web producer owns the display-only pressure replan. Exact default
+catalog 1.15.0 source selection is additive to 1.14.0; it does not imply a
+1.15 runtime, workspace registration, scene replacement or clean installation.

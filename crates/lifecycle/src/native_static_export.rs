@@ -21,6 +21,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56"
             || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd"
             || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59"
+            || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0"
             || isolated_saved_head_runtime_allowed(manifest))
 }
 fn isolated_saved_head_runtime_allowed(manifest: &str) -> bool {
@@ -3207,6 +3208,16 @@ mod detail_tests {
         assert!(!owned_child_group_absent(0));
         fs::remove_dir_all(root).unwrap();
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn disabled_preview_pressure_saved_head_export_stays_ordinary_only() {
+        let target = crate::native_payload::DISABLED_PREVIEW_PRESSURE_TARGET.2;
+        assert!(saved_head_runtime_allowed(target));
+        assert!(!isolated_saved_head_runtime_allowed(target));
+        assert!(!saved_head_runtime_allowed(&target.to_uppercase()));
+        assert!(!saved_head_runtime_allowed(&"f".repeat(64)));
+    }
+
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn selected_find_bounds_saved_head_export_stays_ordinary_only() {
