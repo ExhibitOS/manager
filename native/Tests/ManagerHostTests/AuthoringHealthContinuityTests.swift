@@ -31,8 +31,8 @@ final class AuthoringHealthContinuityTests: XCTestCase {
         try decode(AuthoringSession.self, ["tenantId": tenant, "userId": user, "role": "admin", "csrfToken": "fixture", "expiresAt": expiry])
     }
     private func binding(api: AuthoringAPI, session: AuthoringSession, port: UInt16 = 57841) throws -> ManagerModel.RetainedAuthoring {
-        .init(selectedOex: false, selectionToken: "selection", installationId: "installation", runtimeJobId: "job", nodePid: 101, postgresPid: 102,
-              manifest: String(repeating: "1", count: 64), port: port, credentials: try credentials(port: port), session: session, api: api)
+        .init(selectedOex: false, selectionToken: "selection", installationId: "installation", runtimeJobId: "job", nodePid: 101, postgresPid: 102, auxiliaryPid: nil,
+              manifest: String(repeating: "1", count: 64), port: port, apiPort: 57842, databasePort: 57843, credentials: try credentials(port: port), session: session, api: api)
     }
     func testHealthSamplesPreserveOnlyExactUnexpiredIdentity() throws {
         let api = try AuthoringAPI(port: 57841, tenantId: tenant)
@@ -49,7 +49,7 @@ final class AuthoringHealthContinuityTests: XCTestCase {
         for changed in [
             try status(changes: ["busy": true]), try status(changes: ["selectedOex": true]),
             try status(runtimeChanges: ["jobId": "other"]), try status(runtimeChanges: ["nodePid": 201]),
-            try status(runtimeChanges: ["postgresPid": 202]), try status(runtimeChanges: ["nodePid": NSNull()]),
+            try status(runtimeChanges: ["postgresPid": 202]), try status(runtimeChanges: ["auxiliaryPid": 203]), try status(runtimeChanges: ["nodePid": NSNull()]),
             try status(runtimeChanges: ["state": "stopping"]), try status(runtimeChanges: ["failureCode": "NATIVE_PROCESS_EXITED"]),
             try status(configChanges: ["tenantId": user]), try status(configChanges: ["manifestSha256": String(repeating: "2", count: 64)]),
             try status(configChanges: ["ports": ["web": 57840, "api": 57842, "database": 57843]])

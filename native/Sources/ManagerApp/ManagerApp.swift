@@ -73,8 +73,11 @@ final class ManagerModel: ObservableObject {
         let runtimeJobId: String
         let nodePid: UInt32
         let postgresPid: UInt32
+        let auxiliaryPid: UInt32?
         let manifest: String
         let port: UInt16
+        let apiPort: UInt16
+        let databasePort: UInt16
         let credentials: LocalAuthoringSession
         let session: AuthoringSession
         let api: AuthoringAPI
@@ -83,7 +86,8 @@ final class ManagerModel: ObservableObject {
                   !status.busy, status.selectedOex == selectedOex, config.kind == "personal",
                   (runtime.state == "ready" || (!requireReady && runtime.state == "unavailable")),
                   (!requireReady || runtime.readiness.ready), runtime.errorCode == nil, runtime.failureCode == nil,
-                  runtime.nodePid == nodePid, runtime.postgresPid == postgresPid, nodePid > 0, postgresPid > 0,
+                  runtime.nodePid == nodePid, runtime.postgresPid == postgresPid, runtime.auxiliaryPid == auxiliaryPid, nodePid > 0, postgresPid > 0,
+                  config.ports.api == apiPort, config.ports.database == databasePort,
                   runtime.ports.web == config.ports.web, runtime.ports.api == config.ports.api, runtime.ports.database == config.ports.database,
                   context.selectionToken == selectionToken, context.activeId == installationId,
                   runtime.jobId == runtimeJobId, config.manifestSha256 == manifest, config.ports.web == port,
@@ -310,7 +314,7 @@ final class ManagerModel: ObservableObject {
                           authoring.exhibitionAPI === api, let current = authoring.session,
                           Self.sameSession(current, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                     let candidate = RetainedAuthoring(selectedOex: true, selectionToken: context.selectionToken, installationId: context.activeId,
-                        runtimeJobId: jobId, nodePid: nodePid, postgresPid: postgresPid, manifest: config.manifestSha256, port: config.ports.web,
+                        runtimeJobId: jobId, nodePid: nodePid, postgresPid: postgresPid, auxiliaryPid: checked.runtime?.auxiliaryPid, manifest: config.manifestSha256, port: config.ports.web, apiPort: config.ports.api, databasePort: config.ports.database,
                         credentials: credentials, session: session, api: api)
                     guard verifiedStatus.selectedOex == true, candidate.matches(context: self.context, status: verifiedStatus) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                     retainedAuthoring = candidate
@@ -378,7 +382,7 @@ final class ManagerModel: ObservableObject {
                           authoring.exhibitionAPI === api, authoring.session == session,
                           exhibitions.retainsAuthoring(api: api, session: session, credentials: credentials) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                     let candidate = RetainedAuthoring(selectedOex: false, selectionToken: context.selectionToken, installationId: context.activeId,
-                        runtimeJobId: jobId, nodePid: nodePid, postgresPid: postgresPid, manifest: config.manifestSha256, port: config.ports.web,
+                        runtimeJobId: jobId, nodePid: nodePid, postgresPid: postgresPid, auxiliaryPid: checked.runtime?.auxiliaryPid, manifest: config.manifestSha256, port: config.ports.web, apiPort: config.ports.api, databasePort: config.ports.database,
                         credentials: credentials, session: session, api: api)
                     guard candidate.matches(context: self.context, status: checked) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                     retainedAuthoring = candidate

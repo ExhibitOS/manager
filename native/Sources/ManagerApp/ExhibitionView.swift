@@ -1597,6 +1597,8 @@ final class ExhibitionModel: ObservableObject {
     func retainsAuthoring(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession) -> Bool {
         self.api === api && self.session == session && viewportCredentials?.origin == credentials.origin
             && viewportCredentials?.token == credentials.token
+            && viewportCredentials?.tenantId.lowercased() == credentials.tenantId.lowercased()
+            && viewportCredentials?.principalId.lowercased() == credentials.principalId.lowercased()
             && state?.tenantId.lowercased() == session.tenantId.lowercased()
             && state?.principalId.lowercased() == session.userId.lowercased()
     }

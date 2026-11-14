@@ -357,7 +357,7 @@ struct NativeExhibitionView: View {
             } else if !model.notice.isEmpty && !model.dirty { Text(model.notice).foregroundStyle(.secondary).lineLimit(1) }
             if model.entrancePreviewActive && !model.entrancePreviewStatus.isEmpty { Text(model.entrancePreviewStatus).foregroundStyle(.secondary).lineLimit(2) }
             if !ready || (model.failure != nil && model.failure?.code != "PLACEMENT_INVALID") || model.entranceHostRecovering || !controller.diagnostic.isEmpty {
-                Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
+                Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!(runtimeReady ?? ready) || model.busy)
             }
         }.font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 12).padding(.vertical, 6)
     }
@@ -486,7 +486,7 @@ struct NativeExhibitionView: View {
             Text("내보내기·공개").font(.headline)
             Text("내보내기·공개 화면에서 공개용 저장본과 정적 전시 파일을 준비합니다.").foregroundStyle(.secondary)
             Button("내보내기·공개로 이동", systemImage: "globe") { publish() }.disabled(model.entrancePreviewActive || model.pending || model.busy)
-            Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!ready || model.busy)
+            Button("작업 공간 다시 연결") { Task { await connect() } }.disabled(!(runtimeReady ?? ready) || model.busy)
         }
     }
 }
