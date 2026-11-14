@@ -1108,7 +1108,8 @@ pub(crate) fn current_image_thumbnail_transition(pair: (&str, &str)) -> bool {
             (COMBINED_THUMBNAIL_TARGET.2, STATIC_DETAIL_PHASE_TARGET.2),
             (STATIC_DETAIL_PHASE_TARGET.2, CONTACT_EMITTER_CARD_TARGET.2),
             (CONTACT_EMITTER_CARD_TARGET.2, METRIC_FRAME_TARGET.2),
-            (CURRENT52_INTERRUPTED_TARGET.2, PASSIVE_CEILING_RAIL_TARGET.2)].contains(&pair);
+            (CURRENT52_INTERRUPTED_TARGET.2, PASSIVE_CEILING_RAIL_TARGET.2),
+            (METRIC_FRAME_TARGET.2, PASSIVE_CEILING_RAIL_TARGET.2)].contains(&pair);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = pair; false }
 }
@@ -1535,7 +1536,7 @@ impl FurnishingTransition {
             if (source == COMBINED_THUMBNAIL_TARGET && target == STATIC_DETAIL_PHASE_TARGET)
                 || (source == STATIC_DETAIL_PHASE_TARGET && target == CONTACT_EMITTER_CARD_TARGET)
                 || (source == CONTACT_EMITTER_CARD_TARGET && target == METRIC_FRAME_TARGET)
-                || (source == CURRENT52_INTERRUPTED_TARGET && target == PASSIVE_CEILING_RAIL_TARGET))
+                || ([METRIC_FRAME_TARGET, CURRENT52_INTERRUPTED_TARGET].contains(&source) && target == PASSIVE_CEILING_RAIL_TARGET))
     }
 
     pub(crate) fn is_current52_interrupted_recovery(self) -> bool {
@@ -1544,8 +1545,9 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
-        if pair == (CURRENT52_INTERRUPTED_TARGET.2, PASSIVE_CEILING_RAIL_TARGET.2) {
-            return Some(Self::SameCatalog { source: CURRENT52_INTERRUPTED_TARGET, target: PASSIVE_CEILING_RAIL_TARGET,
+        if let Some(source) = [METRIC_FRAME_TARGET, CURRENT52_INTERRUPTED_TARGET].into_iter()
+            .find(|source| pair == (source.2, PASSIVE_CEILING_RAIL_TARGET.2)) {
+            return Some(Self::SameCatalog { source, target: PASSIVE_CEILING_RAIL_TARGET,
                 catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
         }
         if pair == (METRIC_FRAME_TARGET.2, CURRENT52_INTERRUPTED_TARGET.2) {
@@ -2346,28 +2348,29 @@ pub(crate) mod normal_oex_release_declaration_tests {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn passive_ceiling_rail_is_exact_clean_refresh_with_unchanged_ledger() {
-        let source = CURRENT52_INTERRUPTED_TARGET;
-        let target = PASSIVE_CEILING_RAIL_TARGET;
-        assert!(combined_thumbnail_host_matches(target));
-        assert!(!combined_thumbnail_fresh_host_matches(target));
-        assert!(!current52_interrupted_host_matches(target));
-        let pair = (source.2, target.2);
-        assert!(saved_workspace_transition_target(target.2));
-        assert!(current_image_thumbnail_transition(pair));
-        assert!(saved_workspace_transition_supported(pair));
-        let step = FurnishingTransition::from_manifests(pair).unwrap();
-        assert!(step.is_combined_thumbnail_runtime_refresh());
-        assert!(!step.is_current52_interrupted_recovery());
-        assert!(!step.upgrades_catalog());
-        let before = combined_thumbnail_payload(source).workspace_furnishing_ledger(step.source_catalog()).unwrap();
-        let after = combined_thumbnail_payload(target).workspace_furnishing_ledger(step.target_catalog()).unwrap();
-        assert_eq!(before, after); assert_eq!(after.lines().count(), 47);
-        for denied in [(target.2, source.2), (target.2, target.2), (METRIC_FRAME_TARGET.2, target.2)] {
-            assert!(FurnishingTransition::from_manifests(denied).is_none());
-            assert!(!saved_workspace_transition_supported(denied));
-        }
-        for mixed in [(source.0, target.1, target.2), (target.0, source.1, target.2), (target.0, target.1, source.2)] {
-            assert!(!combined_thumbnail_host_matches(mixed));
+        for source in [METRIC_FRAME_TARGET, CURRENT52_INTERRUPTED_TARGET] {
+            let target = PASSIVE_CEILING_RAIL_TARGET;
+            assert!(combined_thumbnail_host_matches(target));
+            assert!(!combined_thumbnail_fresh_host_matches(target));
+            assert!(!current52_interrupted_host_matches(target));
+            let pair = (source.2, target.2);
+            assert!(saved_workspace_transition_target(target.2));
+            assert!(current_image_thumbnail_transition(pair));
+            assert!(saved_workspace_transition_supported(pair));
+            let step = FurnishingTransition::from_manifests(pair).unwrap();
+            assert!(step.is_combined_thumbnail_runtime_refresh());
+            assert!(!step.is_current52_interrupted_recovery());
+            assert!(!step.upgrades_catalog());
+            let before = combined_thumbnail_payload(source).workspace_furnishing_ledger(step.source_catalog()).unwrap();
+            let after = combined_thumbnail_payload(target).workspace_furnishing_ledger(step.target_catalog()).unwrap();
+            assert_eq!(before, after); assert_eq!(after.lines().count(), 47);
+            for denied in [(target.2, source.2), (target.2, target.2), (CONTACT_EMITTER_CARD_TARGET.2, target.2)] {
+                assert!(FurnishingTransition::from_manifests(denied).is_none());
+                assert!(!saved_workspace_transition_supported(denied));
+            }
+            for mixed in [(source.0, target.1, target.2), (target.0, source.1, target.2), (target.0, target.1, source.2)] {
+                assert!(!combined_thumbnail_host_matches(mixed));
+            }
         }
     }
 

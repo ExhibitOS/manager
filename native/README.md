@@ -1771,9 +1771,8 @@ report and reconcile through the existing owner lifecycle.
 The development client consumes the additive `workspace-ceiling-rail-v1` session
 capability only with room-visual and reusable source-fit capabilities. The exact
 qualified Spec35 runtime is admitted in DEBUG owner validation; older runtime
-capabilities do not imply rail support. Its only new retained-profile transition
-is a clean same-catalog refresh from the qualified interrupted-preservation
-successor. Interrupted recovery and fresh-profile admission retain their prior
+capabilities do not imply rail support. Its retained-profile transitions are clean same-catalog refreshes from the
+qualified metric-frame runtime or its interrupted-preservation successor. Interrupted recovery and fresh-profile admission retain their prior
 scope. Catalog52 and the SQL47 ledger remain unchanged.
 
 Default furnishings 1.13 exposes `linear-track` as an ordinary local GLB source.

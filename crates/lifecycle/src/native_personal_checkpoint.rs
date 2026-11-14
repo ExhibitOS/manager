@@ -413,6 +413,8 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         (crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2,
          crate::native_payload::METRIC_FRAME_TARGET.2),
         (crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2,
+         crate::native_payload::PASSIVE_CEILING_RAIL_TARGET.2),
+        (crate::native_payload::METRIC_FRAME_TARGET.2,
          crate::native_payload::PASSIVE_CEILING_RAIL_TARGET.2)].contains(&pair) && proof.is_none() {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
     }
@@ -2473,8 +2475,9 @@ mod tests {
             let rail_pair = (crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2,
                              crate::native_payload::PASSIVE_CEILING_RAIL_TARGET.2);
             assert_eq!(checkpoint_inventory_limit(rail_pair, None), CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES);
+            assert_eq!(checkpoint_inventory_limit((crate::native_payload::METRIC_FRAME_TARGET.2, rail_pair.1), None), CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES);
             for denied in [(rail_pair.1, rail_pair.0), (rail_pair.1, rail_pair.1),
-                           (crate::native_payload::METRIC_FRAME_TARGET.2, rail_pair.1)] {
+                           (crate::native_payload::CONTACT_EMITTER_CARD_TARGET.2, rail_pair.1)] {
                 assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
             }
         }
