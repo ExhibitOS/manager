@@ -1941,3 +1941,35 @@ a changed frame, navigation or host retirement invalidate pending Native state;
 subsequent frame acceptance reconciles the Web's actual mapping. Older Web
 runtimes without the capability retain their previous object controls.
 Actual packaged-app camera and appearance observations remain separate checks.
+
+### Backed bench visual replacement
+
+The standalone SDK exposes `workspace-bench-visual-check` and
+`workspace-bench-visual-replace` for an already linked backed bench. The command
+contains the current `etag`, `benchId`, `placementId`, `expectedModelSha256`,
+`furnishingId`, `furnishingVersion: 1`, `modelSha256` and the completed ordinary
+`intakeId`, with the usual current document revision envelope. The registered
+replacement must be a bench with current display/export permission and an exact
+original intake/model match. Check returns a prospective draft without a local
+write; replace repeats the same validation and stages it, leaving normal Save
+and saved-version comparison separate.
+
+The existing functional bench and visual placement identities, room, position,
+yaw, unit scale, seat dimensions, viewpoint and model-forward basis stay exact.
+Only the linked visual reference/hash and registered descriptor change. An old
+descriptor still used elsewhere stays in the current scene; an unreferenced old
+descriptor is removed only from this scene snapshot, preserving workspace
+registration and prior saved versions. This operation neither creates a second
+bench nor converts a backed seat to a slab. Full server viewport/Save checks and
+actual affected Viewer/seat/collision/appearance qualification remain required.
+
+The debug owner-validation helper also admits the exact reviewed
+`9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0`
+payload (source `df43d2efd8c63989a3cd581b393b46d1f5b93925`, producer
+`8fb986110af35269b8345e233df517ec506f69bad1a58a373ba2114c3dc679e0`)
+only as the existing directed clean refresh from `899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59`, with the same
+catalog and carried restoration authority. Reverse, self and skipped refreshes
+remain unavailable. Native editing stays disabled in locked previews; the
+qualified Web producer owns the display-only pressure replan. Exact default
+catalog 1.15.0 source selection is additive to 1.14.0; it does not imply a
+1.15 runtime, workspace registration, scene replacement or clean installation.

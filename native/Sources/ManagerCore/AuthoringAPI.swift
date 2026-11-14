@@ -1095,7 +1095,8 @@ public actor AuthoringAPI {
          "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156",
          "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56",
          "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd",
-         "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59"].contains(manifest)
+         "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59",
+         "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0"].contains(manifest)
         #else
         false
         #endif
@@ -2938,7 +2939,7 @@ public actor AuthoringAPI {
 
     public nonisolated static func supportsPassiveCeilingRailRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59"
+        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59" || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0"
         #else
         false
         #endif
@@ -3632,6 +3633,46 @@ public actor AuthoringAPI {
         return policy
     }
 
+    /// A registered, reviewed replacement changes only the existing backed
+    /// bench visual link. Validation is repeated for check and Apply; Save is
+    /// still a separate normal server operation.
+    public func prepareWorkspaceBenchVisualReplacement(_ replacement: WorkspaceBenchVisualReplacement,
+                                                        intakeId: String,
+                                                        in document: NativeDocumentState) async throws -> NativeExhibitionDraft {
+        let held = generation
+        let policy = try await workspaceBenchSeatPolicy(in: document)
+        guard let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
+        let saved = try await exhibition(draft.id)
+        guard saved.draft == draft, saved.etag == etag, saved.revision == policy.revision else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let intake = try await workspaceFurnishingIntake(intakeId)
+        let furnishing = try await workspaceFurnishing(replacement.furnishingId, version: 1)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard intake.phase == .registered, intake.preparationPolicy == nil, intake.fitProfile == nil,
+              intake.furnishing == furnishing, intake.declaration == furnishing.details,
+              furnishing.details.rights.permissions.display, furnishing.details.rights.permissions.export else {
+            throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED")
+        }
+        let next = try replacement.applying(furnishing, to: draft,
+            supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        _ = try await workspaceFurnishingModel(furnishing)
+        try await validateNativeViewportEdit(next, etag: etag)
+        let latest = try await workspaceBenchSeatPolicy(in: document)
+        let current = try await exhibition(draft.id)
+        let registered = try await workspaceFurnishingIntake(intakeId)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard latest.etag == etag, latest.revision == policy.revision, current.etag == etag,
+              current.revision == saved.revision, current.draft == draft,
+              registered.phase == .registered, registered.furnishing == furnishing,
+              registered.declaration == furnishing.details else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        return next
+    }
+
     public func prepareWorkspaceBenchSeat(_ attachment: WorkspaceBenchSeatAttachment,
                                          in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
         let heldGeneration = generation
@@ -3709,7 +3750,7 @@ public actor AuthoringAPI {
             || supportsPreReadyPreservationReadback(manifest: manifest)
             || manifest == selectedArtworkThumbnailRuntimePin
             || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
-            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59"
+            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59" || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0"
         #else
         false
         #endif

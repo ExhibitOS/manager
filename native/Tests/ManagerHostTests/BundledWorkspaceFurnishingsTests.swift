@@ -42,6 +42,41 @@ final class BundledWorkspaceFurnishingsTests: XCTestCase {
         XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: root))
     }
 
+    func testExactCatalog115AddsBenchOriginalWithoutChangingEarlierSeatOrHood() async throws {
+        guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_115_FIXTURE"] else {
+            throw XCTSkip("Set EXHIBITOS_DEFAULT_115_FIXTURE to exact reviewed source checkout")
+        }
+        let source = URL(fileURLWithPath: path), files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? files.removeItem(at: root) }
+        let prefix = "assets/furnishings/exhibitos-authored-20261114/sculpture-bench-refined-v6/"
+        try files.createDirectory(at: root.appendingPathComponent(prefix), withIntermediateDirectories: true)
+        let manifest = root.appendingPathComponent("assets/furnishings/default-manifest.json")
+        try files.copyItem(at: source.appendingPathComponent("manifest.json"), to: manifest)
+        for name in ["model.glb", "LICENSE-NOTICE.txt"] {
+            try files.copyItem(at: source.appendingPathComponent(prefix + name), to: root.appendingPathComponent(prefix + name))
+        }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: root)
+        XCTAssertEqual(catalog.version, "1.15.0"); XCTAssertEqual(catalog.items.count, 12)
+        let item = try XCTUnwrap(catalog.items.first { $0.id == "sculpture-bench-refined-v6" })
+        XCTAssertEqual(item.kind, .bench); XCTAssertEqual(item.provenance.recipe, "original-v1")
+        XCTAssertTrue(catalog.items.contains { $0.id == "sculpture-gallery-bench" && $0.kind == .bench })
+        XCTAssertTrue(catalog.items.contains { $0.id == "hayes-clear-protective-hood" && $0.kind == .displayCase })
+        let snapshot = try await BundledWorkspaceFurnishings.load(item.id, from: catalog)
+        XCTAssertEqual(snapshot.data.count, 345892)
+        XCTAssertEqual(snapshot.sha256, "28e980f60dfa50c0dd68b6bcf20f34df29957bf50a824262fe91db9d24279f60")
+        for name in ["model.glb", "LICENSE-NOTICE.txt"] {
+            let target = root.appendingPathComponent(prefix + name)
+            let original = try Data(contentsOf: target)
+            var changed = original; changed[changed.startIndex] ^= 1; try changed.write(to: target)
+            do { _ = try await BundledWorkspaceFurnishings.load(item.id, from: catalog); XCTFail("Changed \(name) admitted") } catch { }
+            try original.write(to: target)
+        }
+        var changed = try Data(contentsOf: manifest); changed[changed.startIndex] ^= 1
+        try changed.write(to: manifest)
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: root))
+    }
+
     private func catalogFixture(variable: String = "EXHIBITOS_DEFAULT_111_FIXTURE") throws -> (source: URL, root: URL) {
         guard let input = ProcessInfo.processInfo.environment[variable] else {
             throw XCTSkip("Set \(variable) to the exact default source checkout")
