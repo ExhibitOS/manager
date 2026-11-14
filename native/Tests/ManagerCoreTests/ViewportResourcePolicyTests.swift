@@ -134,6 +134,54 @@ final class ViewportResourcePolicyTests: XCTestCase {
             XCTAssertFalse(allows(denied), denied)
         }
     }
+    func testApprovedModelPreviewAdmitsOnlyExactSelectedQueryAndPositiveInt32Revision() async throws {
+        let origin = "http://127.0.0.1:13200", tenant = UUID().uuidString.lowercased()
+        let artwork = UUID().uuidString.lowercased(), asset = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+        let encoded = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant)
+        let store = WKContentRuleListStore.default()!, identifier = "ExhibitOSSelectedModel-" + UUID().uuidString
+        _ = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: encoded)
+        try await store.removeContentRuleList(forIdentifier: identifier)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+        let filters = try rules.dropFirst().map { rule -> NSRegularExpression in
+            let pattern = try XCTUnwrap((rule["trigger"] as? [String: Any])?["url-filter"] as? String)
+            XCTAssertFalse(pattern.contains("|"))
+            return try NSRegularExpression(pattern: pattern)
+        }
+        func allows(_ url: String) -> Bool {
+            filters.contains { $0.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil }
+        }
+        let path = "/api/v1/tenants/\(tenant)/cms/artworks/\(artwork)/preview"
+        for revision in [1, 9, 10, 999_999_999, 1_000_000_000, 1_999_999_999, 2_000_000_000,
+                         2_099_999_999, 2_100_000_000, 2_139_999_999, 2_140_000_000, 2_146_999_999,
+                         2_147_000_000, 2_147_399_999, 2_147_400_000, 2_147_479_999, 2_147_480_000,
+                         2_147_482_999, 2_147_483_000, 2_147_483_599, 2_147_483_600, 2_147_483_639,
+                         2_147_483_640, 2_147_483_647] {
+            XCTAssertTrue(allows(origin + path + "?expectedRevision=\(revision)&assetId=\(asset)"), String(revision))
+        }
+        let query = "?expectedRevision=7&assetId=\(asset)"
+        var badVersion = Array(asset); badVersion[14] = "0"
+        var badVariant = Array(asset); badVariant[19] = "0"
+        for revision in ["0", "00", "01", "-1", "+1", "1.0", "1e1", "2147483648", "3000000000", "9999999999", "10000000000"] {
+            XCTAssertFalse(allows(origin + path + "?expectedRevision=\(revision)&assetId=\(asset)"), revision)
+        }
+        for denied in [
+            "http://127.0.0.1:13201" + path + query, "https://127.0.0.1:13200" + path + query,
+            "https://attacker.invalid" + path + query, "http://localhost:13200" + path + query,
+            origin + path.replacingOccurrences(of: tenant, with: UUID().uuidString.lowercased()) + query,
+            origin + path.replacingOccurrences(of: artwork, with: "not-a-uuid") + query,
+            origin + path.replacingOccurrences(of: "/preview", with: "/display") + query,
+            origin + path + "?assetId=\(asset)&expectedRevision=7",
+            origin + path + "?assetId=\(asset)", origin + path + query + "&extra=1",
+            origin + path + query + "&assetId=\(asset)", origin + path + query + "&expectedRevision=8",
+            origin + path + query + "/extra", origin + path + "?expectedRevision=7&assetId=invalid",
+            origin + path + "?expectedRevision=7&assetId=\(asset.uppercased())",
+            origin + path + "?expectedRevision=7&assetId=\(String(badVersion))",
+            origin + path + "?expectedRevision=7&assetId=\(String(badVariant))"
+        ] { XCTAssertFalse(allows(denied), denied) }
+        // Existing callers retain their original primary-preview grammar.
+        XCTAssertTrue(allows(origin + path + "?expectedRevision=7"))
+        XCTAssertFalse(allows(origin + path + "?expectedRevision=7&unknown=1"))
+    }
     func testCaptureSavedSourceReadIsBoundToOneExhibitionAndDefaultStillBlocksIt() async throws {
         let origin = "http://127.0.0.1:13200", tenant = UUID().uuidString.lowercased(), exhibition = UUID().uuidString.lowercased()
         let path = "/api/v1/tenants/\(tenant)/studio/exhibitions/\(exhibition)"
