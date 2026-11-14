@@ -1902,3 +1902,17 @@ source journals and failed native-original intents remain preserved.
 The approved-model variant preview validation runtime is pinned to `ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd` (source `bb0b171690cc6e9e53f0d7dc0cf4d976237fbc50`, producer `e62f672a7a31d53deeab77f5333c3545da36f83d934d2b5c68e6c28eb46a2d3d`). Only a clean `abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56` → this exact tuple same-catalog52 refresh is admitted. The existing 47-row furnishing ledger is retained; fresh/interrupted admission, reverse/self/skipped refresh, and isolated/private export remain excluded. This pin and selected-preview URL allowance do not establish actual selected-tier appearance, rail contact, or public adoption.
 
 The selected-Find bounds validation runtime is pinned to `899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59` (source `94f62fd55198e8f95e05e4bd16b9d7f0c04c1bef`, producer `e62f672a7a31d53deeab77f5333c3545da36f83d934d2b5c68e6c28eb46a2d3d`). Only the clean approved-model preview `ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd` → this exact tuple same-catalog52 refresh is added. Catalog52 and the existing47-row ledger remain unchanged; fresh/interrupted, skipped/reverse/self refresh and isolated export remain excluded. The existing selected-Find/orbit bounds correction belongs to the shared renderer. This pin establishes no actual framing, chosen-tier appearance, artwork front direction or public adoption. Current qualified validation App activation is a separate continuation after preserving its then-current saved original data.
+
+### Camera-only rotation
+
+The native workbench's **보기 회전** uses the existing negotiated
+`cameraInteractionV1` mapping; **대상 회전** still edits an object's pose.
+The camera action requires a current enabled 3D frame and matches every field
+of the mapping acknowledgement. **대상 편집** returns to object interaction.
+Neither mapping changes the draft or establishes actual focus, camera motion,
+model quality or appearance. Rejected/late mappings are not presented as a
+successful object reset. Current-frame hidden/unavailable reset notifications,
+a changed frame, navigation or host retirement invalidate pending Native state;
+subsequent frame acceptance reconciles the Web's actual mapping. Older Web
+runtimes without the capability retain their previous object controls.
+Actual packaged-app camera and appearance observations remain separate checks.
