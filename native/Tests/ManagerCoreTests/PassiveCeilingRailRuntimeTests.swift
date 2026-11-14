@@ -3,6 +3,14 @@ import XCTest
 @testable import ManagerCore
 
 final class PassiveCeilingRailRuntimeTests: XCTestCase {
+    func testSelectedFindBoundsSuccessorRetainsExistingFeatures() {
+        let qualified = "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59"
+        XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: qualified))
+        XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: qualified))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: qualified))
+        XCTAssertFalse(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: qualified.uppercased()))
+        XCTAssertFalse(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: String(repeating: "f", count: 64)))
+    }
     func testApprovedModelVariantPreviewSuccessorRetainsExistingFeatures() {
         let qualified = "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd"
         XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: qualified))

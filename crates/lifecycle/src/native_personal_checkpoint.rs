@@ -421,7 +421,9 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         (crate::native_payload::FURNISHING_READINESS_TARGET.2,
          crate::native_payload::WORKSPACE_FAILURE_READOUT_TARGET.2),
         (crate::native_payload::WORKSPACE_FAILURE_READOUT_TARGET.2,
-         crate::native_payload::APPROVED_MODEL_VARIANT_PREVIEW_TARGET.2)].contains(&pair) && proof.is_none() {
+         crate::native_payload::APPROVED_MODEL_VARIANT_PREVIEW_TARGET.2),
+        (crate::native_payload::APPROVED_MODEL_VARIANT_PREVIEW_TARGET.2,
+         crate::native_payload::SELECTED_FIND_BOUNDS_TARGET.2)].contains(&pair) && proof.is_none() {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
     }
 
@@ -3066,6 +3068,18 @@ mod tests {
             checkpoint.files.len()
         );
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn selected_find_bounds_checkpoint_budget_is_only_the_directed_clean_pair() {
+        let source = crate::native_payload::APPROVED_MODEL_VARIANT_PREVIEW_TARGET.2;
+        let target = crate::native_payload::SELECTED_FIND_BOUNDS_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES);
+        for denied in [(crate::native_payload::WORKSPACE_FAILURE_READOUT_TARGET.2, target), (target, source), (target, target), (source, source),
+                       (crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2, target), (crate::native_payload::FURNISHING_READINESS_TARGET.2, target), (crate::native_payload::PASSIVE_CEILING_RAIL_TARGET.2, target), ("unknown", target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+    }
+
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn approved_model_variant_preview_checkpoint_budget_is_only_the_directed_clean_pair() {
