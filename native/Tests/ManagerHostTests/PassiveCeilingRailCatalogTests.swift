@@ -28,6 +28,7 @@ final class PassiveCeilingRailCatalogTests: XCTestCase {
         }
         let copied = try BundledWorkspaceFurnishings.catalog(root: root)
         let notice = root.appendingPathComponent(rail.rights.notice.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: notice.path)
         var bytes = try Data(contentsOf: notice); bytes[0] ^= 1; try bytes.write(to: notice)
         do { _ = try await BundledWorkspaceFurnishings.load(rail.id, from: copied); XCTFail("Changed notice accepted") }
         catch let error as AuthoringFailure { XCTAssertEqual(error.code, "FURNISHING_CATALOG_INVALID") }
