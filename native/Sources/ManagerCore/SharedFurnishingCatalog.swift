@@ -19,6 +19,18 @@ public enum SharedFurnishingCatalog {
               let item = items.first(where: { $0["catalogId"].string == catalogId }) else { throw AuthoringFailure("FURNISHING_INVALID") }
         return item
     }
+    /// Only compiled catalogue model reads can extend the Native WK policy.
+    /// No exhibition path, listing, notice or arbitrary catalogue ID is admitted.
+    static func modelResourcePaths(tenantId: String) throws -> [String] {
+        guard let items = try source()["catalog"]["items"].items else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+        var ids = [FurnishingCatalog.id]
+        for item in items {
+            guard let id = item["catalogId"].string, item["catalogVersion"] == .integer(1),
+                  id.range(of: "^[a-z0-9]+(-[a-z0-9]+)*$", options: .regularExpression) != nil else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+            ids.append(id)
+        }
+        return ids.map { "api/v1/tenants/\(tenantId)/studio/furnishings/\($0)/1/model" }
+    }
     /// Require all eight exact known records, independently of server ordering.
     /// A future/changed record is not silently made editable.
     public static func checkedCatalog(_ value: DocumentValue) throws -> [DocumentValue] {

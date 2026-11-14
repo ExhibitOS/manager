@@ -38,6 +38,16 @@ public enum SceneSnapshotCamera: Sendable {
 public struct SceneSnapshotViewportRequest: Sendable {
     public static let width = 640, height = 360, maximumPNGBytes = 512 * 1024
     public static let maximumBase64Bytes = 699_052
+    public static let maximumFurnishingEvidenceBytes = 128 * 1024
+    public static let maximumReplyBytes = 710_000 + maximumFurnishingEvidenceBytes
+    /// Only the exact pre-encoding WebKit JavaScript exception is transient.
+    /// WKErrorJavaScriptExceptionOccurred is4 in the platform WKError.h.
+    public static func isNotReadyJavaScriptError(_ error: Error) -> Bool {
+        let error = error as NSError
+        guard error.domain == "WKErrorDomain", error.code == 4,
+              let message = error.userInfo["WKJavaScriptExceptionMessage"] as? String else { return false }
+        return message == "SCENE_SNAPSHOT_NOT_READY" || message == "Error: SCENE_SNAPSHOT_NOT_READY"
+    }
     public let frame: ViewportFrame
     public let value: DocumentValue
     public let saved: NativeStudioResponse
@@ -89,7 +99,9 @@ public struct SceneSnapshotViewportRequest: Sendable {
             guard let numbers = value.items, numbers.count == 3 else { return false }
             return numbers.allSatisfy { $0.double.map { $0.isFinite && abs($0) <= 1_000_000 } == true }
         }
-        guard closed(reply, ["version", "epoch", "sequence", "tenantId", "principalId", "requestId", "expectedETag", "saved", "candidateSha256", "camera", "width", "height", "target", "pngBase64"]),
+        guard case .object(let root) = reply else { throw AuthoringFailure("SCENE_SNAPSHOT_INVALID") }
+        let hasFurnishings = root["furnishings"] != nil
+        guard closed(reply, ["version", "epoch", "sequence", "tenantId", "principalId", "requestId", "expectedETag", "saved", "candidateSha256", "camera", "width", "height", "target", "pngBase64"] + (hasFurnishings ? ["furnishings"] : [])),
               closed(reply["saved"], ["exhibitionId", "draftId", "revision", "etag"]),
               closed(reply["target"], ["placementId", "artworkRevisionId", "assetId", "ready", "inFrustum", "centerRay"]) else { throw AuthoringFailure("SCENE_SNAPSHOT_INVALID") }
         switch camera {
@@ -126,7 +138,8 @@ public struct SceneSnapshotViewportRequest: Sendable {
         // The shared viewpointPose resolver supplies WORLD coordinates, including
         // the authored room transform. Do not compare these to room-local values
         // or duplicate the shared affine engine in Swift.
-        return SceneSnapshotResult(png: bytes, candidateSha256: sha, camera: reply["camera"], target: reply["target"],
+        let furnishings = try hasFurnishings ? SceneSnapshotFurnishings.checked(reply["furnishings"], draft: saved.draft) : nil
+        return SceneSnapshotResult(png: bytes, candidateSha256: sha, camera: reply["camera"], target: reply["target"], furnishings: furnishings,
                                    savedRevision: saved.revision, savedETag: saved.etag,
                                    localEditVersion: saved.draft.document["editVersion"].integer!)
     }
@@ -137,6 +150,7 @@ public struct SceneSnapshotResult: Sendable {
     public let candidateSha256: String
     public let camera: DocumentValue
     public let target: DocumentValue
+    public let furnishings: DocumentValue?
     public let savedRevision: Int
     public let savedETag: String
     public let localEditVersion: Int64

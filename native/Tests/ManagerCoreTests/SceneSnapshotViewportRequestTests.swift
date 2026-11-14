@@ -32,12 +32,39 @@ final class SceneSnapshotViewportRequestTests: XCTestCase {
         XCTAssertEqual(result.localEditVersion, before.document["editVersion"].integer)
         XCTAssertEqual(result.savedRevision, 9); XCTAssertEqual(result.target["centerRay"].string, "unknown")
         XCTAssertEqual(result.camera["position"], .vector([10, 1.2, 2]))
+        XCTAssertNil(result.furnishings)
         XCTAssertEqual(q.frame.draft, before)
         let legacy = try JSONDecoder().decode(ViewportAcceptance.self, from: Data("{\"accepted\":true}".utf8))
         XCTAssertFalse(legacy.supportsSceneSnapshot)
         let current = try JSONDecoder().decode(ViewportAcceptance.self, from: Data("{\"accepted\":true,\"capabilities\":[\"scene-snapshot-v1\"]}".utf8))
         XCTAssertTrue(current.supportsSceneSnapshot)
         XCTAssertThrowsError(try fixture(disabled: true))
+    }
+    func testOptionalFurnishingEvidenceIsClosedAndGraphBoundWithoutChangingLegacyReplies() throws {
+        let q = try fixture()
+        var value = reply(q)
+        let empty: DocumentValue = .object(["catalog": .array([]), "workspace": .array([])])
+        value["furnishings"] = empty
+        XCTAssertEqual(try q.checkedReply(value).furnishings, empty)
+        value["furnishings"] = .null
+        XCTAssertThrowsError(try q.checkedReply(value))
+        value["furnishings"] = .object(["catalog": .array([]), "workspace": .array([]), "ready": .bool(true)])
+        XCTAssertThrowsError(try q.checkedReply(value))
+    }
+    func testOnlyExactPreEncodingWebKitNotReadyExceptionIsTransient() {
+        func error(_ domain: String = "WKErrorDomain", _ code: Int = 4, _ message: String?) -> NSError {
+            NSError(domain: domain, code: code, userInfo: message.map { ["WKJavaScriptExceptionMessage": $0] } ?? [:])
+        }
+        XCTAssertTrue(SceneSnapshotViewportRequest.isNotReadyJavaScriptError(error("WKErrorDomain", 4, "SCENE_SNAPSHOT_NOT_READY")))
+        XCTAssertTrue(SceneSnapshotViewportRequest.isNotReadyJavaScriptError(error("WKErrorDomain", 4, "Error: SCENE_SNAPSHOT_NOT_READY")))
+        for message in [nil, "SCENE_SNAPSHOT_STALE", "SCENE_SNAPSHOT_UNAVAILABLE", "Error: SCENE_SNAPSHOT_STALE",
+                        "Error: SCENE_SNAPSHOT_UNAVAILABLE", "TypeError: SCENE_SNAPSHOT_NOT_READY", "prefix SCENE_SNAPSHOT_NOT_READY",
+                        "Error: SCENE_SNAPSHOT_NOT_READY suffix", "Error: SCENE_SNAPSHOT_NOT_READY\n"] as [String?] {
+            XCTAssertFalse(SceneSnapshotViewportRequest.isNotReadyJavaScriptError(error("WKErrorDomain", 4, message)))
+        }
+        XCTAssertFalse(SceneSnapshotViewportRequest.isNotReadyJavaScriptError(error("OtherDomain", 4, "SCENE_SNAPSHOT_NOT_READY")))
+        XCTAssertFalse(SceneSnapshotViewportRequest.isNotReadyJavaScriptError(error("WKErrorDomain", 3, "SCENE_SNAPSHOT_NOT_READY")))
+        XCTAssertFalse(SceneSnapshotViewportRequest.isNotReadyJavaScriptError(AuthoringFailure("SCENE_SNAPSHOT_STALE")))
     }
     func testStaleSourceWrongTargetAndUnreadyOrOpenReplyAreRejected() throws {
         let q = try fixture(), good = reply(q)

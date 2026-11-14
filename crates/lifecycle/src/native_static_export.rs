@@ -17,6 +17,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             // This does not admit isolated/private protected-document exports.
             || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
             || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26"
+            || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156"
             || isolated_saved_head_runtime_allowed(manifest))
 }
 fn isolated_saved_head_runtime_allowed(manifest: &str) -> bool {
@@ -3202,5 +3203,14 @@ mod detail_tests {
         assert!(!journal.child_drained());
         assert!(!owned_child_group_absent(0));
         fs::remove_dir_all(root).unwrap();
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn furnishing_readiness_saved_head_export_stays_ordinary_only() {
+        let target = crate::native_payload::FURNISHING_READINESS_TARGET.2;
+        assert!(saved_head_runtime_allowed(target));
+        assert!(!isolated_saved_head_runtime_allowed(target));
+        assert!(!saved_head_runtime_allowed(&target.to_uppercase()));
+        assert!(!saved_head_runtime_allowed(&"f".repeat(64)));
     }
 }

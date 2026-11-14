@@ -80,7 +80,7 @@ final class NativeSceneCaptureRunner: ObservableObject {
     private static func writeReceipt(_ value: DocumentValue, directory: String) throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(value)
-        guard data.count <= 65_536 else { throw AuthoringFailure("NATIVE_SCENE_CAPTURE_OUTPUT_INVALID") }
+        guard data.count <= 192 * 1024 else { throw AuthoringFailure("NATIVE_SCENE_CAPTURE_OUTPUT_INVALID") }
         let parent = Darwin.open(directory, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard parent >= 0 else { throw AuthoringFailure("NATIVE_SCENE_CAPTURE_OUTPUT_INVALID") }
         defer { Darwin.close(parent) }
@@ -180,12 +180,22 @@ final class NativeSceneCaptureRunner: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             NSApp.windows.first(where: { $0.isVisible })?.makeKeyAndOrderFront(nil)
             let deadline = ContinuousClock.now.advanced(by: .seconds(60))
-            while !NSApp.isActive || !NSApp.windows.contains(where: { $0.isVisible && $0.occlusionState.contains(.visible) }) || !model.canCaptureSceneSnapshot || model.viewportController.loaded != saved.draft.placements.count {
+            while image == nil {
+                while !NSApp.isActive || !NSApp.windows.contains(where: { $0.isVisible && $0.occlusionState.contains(.visible) }) || !model.canCaptureSceneSnapshot || model.viewportController.loaded != saved.draft.placements.count {
+                    try Task.checkCancellation()
+                    guard ContinuousClock.now < deadline else { throw AuthoringFailure("NATIVE_SCENE_CAPTURE_ACK_TIMEOUT") }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
                 try Task.checkCancellation()
                 guard ContinuousClock.now < deadline else { throw AuthoringFailure("NATIVE_SCENE_CAPTURE_ACK_TIMEOUT") }
-                try await Task.sleep(for: .milliseconds(100))
+                do {
+                    image = try await model.captureSceneSnapshot(camera: .savedViewpoint(input.viewpointId), placementId: input.placementId)
+                } catch let error as AuthoringFailure where error.code == "SCENE_SNAPSHOT_NOT_READY" {
+                    // The renderer rejects before encoding while its furnishing
+                    // build is pending. Never retry stale/rights/integrity errors.
+                    try await Task.sleep(for: .milliseconds(100))
+                }
             }
-            image = try await model.captureSceneSnapshot(camera: .savedViewpoint(input.viewpointId), placementId: input.placementId)
             let after = try await owned.documentState(selected)
             try input.validate(document: after, saved: saved)
             guard try Self.stateBytes(after) == before else { throw AuthoringFailure("NATIVE_SCENE_CAPTURE_STATE_CHANGED") }
@@ -213,6 +223,7 @@ final class NativeSceneCaptureRunner: ObservableObject {
                 guard current == outputIdentity else { throw AuthoringFailure("NATIVE_SCENE_CAPTURE_OUTPUT_INVALID") }
                 if failure == nil, let image, let document {
                     try await image.writeNewPNG(to: URL(fileURLWithPath: request.outputDirectory).appendingPathComponent("scene.png"))
+                    if let furnishings = image.furnishings { receipt["furnishings"] = furnishings }
                     receipt.merge(["status": .string("succeeded"), "workspaceId": .string(document.workspaceId),
                         "tenantId": .string(document.tenantId), "principalId": .string(document.principalId),
                         "nativeRevision": .integer(Int64(request.expectedNativeRevision)), "editVersion": .integer(image.localEditVersion),

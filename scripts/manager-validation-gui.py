@@ -306,7 +306,7 @@ def check_capture_result(value, directory, pid):
     path = directory / "capture.json"
     info = path.lstat()
     require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
-            and info.st_size <= 65536 and info.st_mode & 0o077 == 0, "Capture receipt is not a private owned result.")
+            and info.st_size <= 192 * 1024 and info.st_mode & 0o077 == 0, "Capture receipt is not a private owned result.")
     result = json.loads(path.read_bytes())
     require(type(result) is dict, "Capture receipt has an unsupported shape.")
     require(type(result.get("version")) is int and result.get("version") == 1 and result.get("requestId") == value["requestId"] and result.get("pid") == pid

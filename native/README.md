@@ -721,6 +721,35 @@ and reports success only after receipt verification and normal App exit.
 Cancellation requests normal cleanup. A timeout retains the live App and its
 resources for inspection; inspect retained evidence before another invocation.
 
+An authenticated renderer can additionally return `furnishings` with exactly
+`catalog` and `workspace` arrays. Native validates the complete set against the
+saved graph, including host/asset IDs, furnishing versions and model SHA-256.
+Catalog rows cover every shared furnishing-visual binding, including its bench
+bindings; legacy benches without such a binding add no row. Workspace rows
+cover placements, frame attachments and opening attachments. Ceiling
+attachments reuse their placement row. Catalog `ready`/`fallback` and workspace
+`ready`/`pending`/`failed` remain explicit in the CLI receipt. They do not establish
+geometric contact or framing. Older renderer replies without this optional
+evidence remain compatible. The evidence is bounded to128KiB and the complete
+private receipt to192KiB; the request and PNG limits are unchanged.
+The Native WK policy admits only compiled catalogue IDs at the existing exact
+same-origin, same-tenant `/studio/furnishings/<catalogId>/1/model` read path.
+It adds no listing, notice, arbitrary catalogue, alternate-version or query
+exception. Server session/role checks and renderer model integrity checks remain
+required. While the renderer is still preparing furnishing resources, the CLI
+waits within its existing readiness budget for `SCENE_SNAPSHOT_NOT_READY` only;
+stale, rights and integrity failures are not retried.
+
+The DEBUG owner-validation consumer pins the authenticated catalogue/readiness
+successor to manifest
+`4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156`
+from Platform source `97395688f8da9c95ce646b9586b54b04fc386a71` and producer
+`e62f672a7a31d53deeab77f5333c3545da36f83d934d2b5c68e6c28eb46a2d3d`.
+Only a clean refresh from the existing `f27857e0` runtime is added; catalogue52,
+the47-row ledger and existing owner/preservation checks remain unchanged. Use
+the reviewed Native/runtime pair: older closed Native reply readers reject the
+new optional field. This adds no fresh-workspace or interrupted recovery route.
+
 `--legal-resources /absolute/prepared-directory` copies an existing license/source
 index and its files to `Contents/Resources/NativeRuntime-Legal`. The Help menu's
 “라이선스 및 소스 보기” command opens that local `index.html`; it is disabled when

@@ -1084,10 +1084,16 @@ struct NativeViewport: NSViewRepresentable {
                     throw AuthoringFailure("SCENE_SNAPSHOT_STALE")
                 }
                 content.remove(baseRule)
-                let response = try await withTaskCancellationHandler {
-                    try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.sceneSnapshot !== 'function') throw new Error('SCENE_SNAPSHOT_NOT_READY'); return await window.exhibitosViewport.sceneSnapshot(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
-                } onCancel: { [weak self] in
-                    Task { @MainActor in self?.restoreSnapshotPolicy(policyId) }
+                let response: Any?
+                do {
+                    response = try await withTaskCancellationHandler {
+                        try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.sceneSnapshot !== 'function') throw new Error('SCENE_SNAPSHOT_NOT_READY'); return await window.exhibitosViewport.sceneSnapshot(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                    } onCancel: { [weak self] in
+                        Task { @MainActor in self?.restoreSnapshotPolicy(policyId) }
+                    }
+                } catch {
+                    if SceneSnapshotViewportRequest.isNotReadyJavaScriptError(error) { throw AuthoringFailure("SCENE_SNAPSHOT_NOT_READY") }
+                    throw error
                 }
                 try Task.checkCancellation()
                 guard self.active, self.controller.owner == self.epoch, self.generation == generation,
@@ -1096,7 +1102,7 @@ struct NativeViewport: NSViewRepresentable {
                       png.utf8.count <= SceneSnapshotViewportRequest.maximumBase64Bytes,
                       JSONSerialization.isValidJSONObject(fields) else { throw AuthoringFailure("SCENE_SNAPSHOT_STALE") }
                 let bytes = try JSONSerialization.data(withJSONObject: fields)
-                guard bytes.count <= 710_000 else { throw AuthoringFailure("SCENE_SNAPSHOT_INVALID") }
+                guard bytes.count <= SceneSnapshotViewportRequest.maximumReplyBytes else { throw AuthoringFailure("SCENE_SNAPSHOT_INVALID") }
                 let result = try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes))
                 guard let image = CGImageSourceCreateWithData(result.png as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
                       CGImageSourceGetCount(image) == 1, let decoded = CGImageSourceCreateImageAtIndex(image, 0, nil),
