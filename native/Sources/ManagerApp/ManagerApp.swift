@@ -118,7 +118,10 @@ final class ManagerModel: ObservableObject {
     private var retainedAuthoring: RetainedAuthoring?
     private var retainedAuthoringGeneration = UUID()
     private func invalidateRetainedAuthoring() {
-        if retainedAuthoring != nil { authoringHealthPending = true; exhibitions.viewportController.runtimeAvailable = false }
+        if let binding = retainedAuthoring {
+            if !binding.selectedOex { automaticAuthoringRecoveryBlocked = true }
+            authoringHealthPending = true; exhibitions.viewportController.runtimeAvailable = false
+        }
         retainedAuthoring = nil; retainedAuthoringGeneration = UUID()
         exhibitions.invalidateCatalogThumbnailAuthority()
     }
@@ -471,6 +474,9 @@ final class ManagerModel: ObservableObject {
     }
     private func replaceWorkspaceModels() {
         invalidateRetainedAuthoring()
+        // Explicit workspace replacement creates new models, not a recovery of
+        // the old editor authority. Its first connection retains bootstrap.
+        automaticAuthoringRecoveryBlocked = false; authoringHealthPending = false
         authoring = AuthoringModel(); exhibitions = ExhibitionModel()
         exhibitions.viewportController.editingContextActive = presentation?.step == .select
         publication = PublicationModel(); staticExport = StaticExportModel()
