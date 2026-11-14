@@ -11,7 +11,7 @@ public struct NativeBoundedOEXJob: Decodable, Sendable {
     public let state: String
 }
 
-public struct AuthoringSession: Decodable, Sendable {
+public struct AuthoringSession: Decodable, Equatable, Sendable {
     public let userId: String
     public let tenantId: String
     public let role: String

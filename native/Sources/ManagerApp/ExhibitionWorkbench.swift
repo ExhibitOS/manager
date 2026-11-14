@@ -11,6 +11,9 @@ struct NativeExhibitionView: View {
     @ObservedObject var controller: NativeViewportController
     @ObservedObject var oexImport: OEXImportModel
     let ready: Bool
+    var runtimeReady: Bool? = nil
+    var retainViewport = false
+    var resume: (() async -> Void)? = nil
     var freshOEXOperationActive = false
     let mode: Mode
     let connect: () async -> Void
@@ -163,7 +166,7 @@ struct NativeExhibitionView: View {
                 VStack(spacing: 0) {
                     // This node stays at the same structural position for all
                     // modes, purposes, sidebar and inspector presentations.
-                    NativeViewportArea(model: model, ready: ready, editable: active && !readOnly && NativeViewportAccess.frameMayBeEditable(immutable: model.viewportReadOnly, boundedAdmission: model.boundedPlacementCapability != nil), controller: controller, workbench: true, mode: mode, catalogDrag: catalogDrag)
+                    NativeViewportArea(model: model, ready: ready, retainWhileUnavailable: retainViewport, editable: active && !readOnly && NativeViewportAccess.frameMayBeEditable(immutable: model.viewportReadOnly, boundedAdmission: model.boundedPlacementCapability != nil), controller: controller, workbench: true, mode: mode, catalogDrag: catalogDrag)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     if coverPurpose {
                         Divider()
@@ -240,11 +243,11 @@ struct NativeExhibitionView: View {
         .onChange(of: model.viewportSelection) { _, value in if value != nil && !model.entrancePreviewActive { showSelection() } }
         .onChange(of: model.draft?.id) { _, id in if id != nil { browserVisible = false } }
         .onChange(of: model.entrancePreviewActive) { _, value in if !value && returningToScene { returnToScene() } }
-        .onChange(of: oexScopeInterrupted(ready: ready, freshOperation: freshOEXOperationActive, importBusy: oexImport.busy)) { _, interrupted in
+        .onChange(of: oexScopeInterrupted(ready: runtimeReady ?? ready, freshOperation: freshOEXOperationActive, importBusy: oexImport.busy)) { _, interrupted in
             if interrupted { needsConnection = true; oexImport.invalidate() }
         }
-        .task(id: ready && active && connectionAllowed && !oexImport.busy) {
-            if ready && active && connectionAllowed && !oexImport.busy && needsConnection { needsConnection = false; await connect() }
+        .task(id: (runtimeReady ?? ready) && active && connectionAllowed && !oexImport.busy) {
+            if (runtimeReady ?? ready) && active && connectionAllowed && !oexImport.busy && needsConnection { needsConnection = false; await (resume ?? connect)() }
         }
         .onChange(of: model.roomId) { _, _ in model.selectRoom() }
         .onChange(of: model.placementId) { _, _ in model.selectPlacement() }

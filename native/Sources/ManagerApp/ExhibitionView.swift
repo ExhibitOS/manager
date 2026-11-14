@@ -1594,6 +1594,12 @@ final class ExhibitionModel: ObservableObject {
         }
         return true
     }
+    func retainsAuthoring(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession) -> Bool {
+        self.api === api && self.session == session && viewportCredentials?.origin == credentials.origin
+            && viewportCredentials?.token == credentials.token
+            && state?.tenantId.lowercased() == session.tenantId.lowercased()
+            && state?.principalId.lowercased() == session.userId.lowercased()
+    }
     func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, selectedBoundedPolicy: Bool = false, ordinaryBoundedRuntime: Bool = false, boundedRuntimeQualified: Bool = false, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState, readThumbnailCheckpoint: (() async throws -> NativeFurnishingThumbnailState)? = nil, writeThumbnailCheckpoint: ((NativeFurnishingThumbnailState) async throws -> NativeFurnishingThumbnailState)? = nil) async {
         // Explicit reconnect during a preview has a separate acknowledgement
         // boundary. Never run the ordinary access-change reset on this path.

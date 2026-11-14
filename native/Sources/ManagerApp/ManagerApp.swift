@@ -21,9 +21,11 @@ final class ManagerModel: ObservableObject {
                 exhibitions.invalidateCatalogThumbnailAuthority()
             }
             if let binding = retainedAuthoring, let current = native, !current.busy,
-               !binding.matches(context: context, status: current) { invalidateRetainedAuthoring() }
+               !binding.matches(context: context, status: current, requireReady: false) { invalidateRetainedAuthoring() }
+            if retainedAuthoring != nil, !ready { authoringHealthPending = true }
+            exhibitions.viewportController.runtimeAvailable = authoringReady
             exhibitions.configurePublicationWatermark(native?.configuration, ready: ready)
-            exhibitions.configureFloorRuntime(native?.configuration, ready: ready)
+            exhibitions.configureFloorRuntime(native?.configuration, ready: ready || retainsAuthoringViewport)
             publication.configureWatermarkRuntime(native?.configuration, ready: ready)
             if oldValue?.runtime?.hasOwnedProcesses == true, native?.runtime?.hasOwnedProcesses == false,
                native?.needsShutdown == false, native?.busy == false,
@@ -64,7 +66,8 @@ final class ManagerModel: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var authoringConnection: (jobID: String?, task: Task<Void, Never>)?
     @Published private(set) var authoringConnectionStatus: String?
-    private struct RetainedAuthoring {
+    struct RetainedAuthoring {
+        let selectedOex: Bool
         let selectionToken: String
         let installationId: String
         let runtimeJobId: String
@@ -75,22 +78,43 @@ final class ManagerModel: ObservableObject {
         let credentials: LocalAuthoringSession
         let session: AuthoringSession
         let api: AuthoringAPI
-        func matches(context: Context?, status: NativeHostStatus) -> Bool {
+        func matches(context: Context?, status: NativeHostStatus, requireReady: Bool = true, now: Date = Date()) -> Bool {
             guard let context, let config = status.configuration, let runtime = status.runtime,
-                  !status.busy, config.kind == "personal",
-                  runtime.state == "ready", runtime.readiness.ready, runtime.nodePid == nodePid, runtime.postgresPid == postgresPid,
+                  !status.busy, status.selectedOex == selectedOex, config.kind == "personal",
+                  (runtime.state == "ready" || (!requireReady && runtime.state == "unavailable")),
+                  (!requireReady || runtime.readiness.ready), runtime.errorCode == nil, runtime.failureCode == nil,
+                  runtime.nodePid == nodePid, runtime.postgresPid == postgresPid, nodePid > 0, postgresPid > 0,
+                  runtime.ports.web == config.ports.web, runtime.ports.api == config.ports.api, runtime.ports.database == config.ports.database,
                   context.selectionToken == selectionToken, context.activeId == installationId,
                   runtime.jobId == runtimeJobId, config.manifestSha256 == manifest, config.ports.web == port,
                   config.tenantId?.lowercased() == credentials.tenantId.lowercased(),
                   credentials.origin == "http://127.0.0.1:\(port)",
                   session.tenantId.lowercased() == credentials.tenantId.lowercased(),
                   session.userId.lowercased() == credentials.principalId.lowercased() else { return false }
+            let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            guard let expiry = formatter.date(from: session.expiresAt) ?? ISO8601DateFormatter().date(from: session.expiresAt), expiry > now else { return false }
             return true
         }
+        @MainActor
+        func revalidate(context: () -> Context?, status: () async throws -> NativeHostStatus,
+                        current: () -> Bool) async throws {
+            let before = try await status()
+            guard current(), matches(context: context(), status: before) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+            let verified = try await api.verifyRetainedSession(session)
+            let after = try await status()
+            guard current(), verified == session, matches(context: context(), status: after) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+        }
+    }
+    @Published private(set) var authoringHealthPending = false
+    var authoringReady: Bool { ready && !authoringHealthPending }
+    var retainsAuthoringViewport: Bool {
+        guard let binding = retainedAuthoring, !binding.selectedOex, let native else { return false }
+        return binding.matches(context: context, status: native, requireReady: false)
     }
     private var retainedAuthoring: RetainedAuthoring?
     private var retainedAuthoringGeneration = UUID()
     private func invalidateRetainedAuthoring() {
+        if retainedAuthoring != nil { authoringHealthPending = true; exhibitions.viewportController.runtimeAvailable = false }
         retainedAuthoring = nil; retainedAuthoringGeneration = UUID()
         exhibitions.invalidateCatalogThumbnailAuthority()
     }
@@ -147,7 +171,7 @@ final class ManagerModel: ObservableObject {
         } catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED") }
     }
 
-    func connectPersonalAuthoring() async {
+    func connectPersonalAuthoring(revalidateExisting: Bool = false) async {
         guard !exhibitions.oexImport.busy, !exhibitions.catalogThumbnailSaving else { return }
         let jobID = native?.runtime?.jobId
         while let connection = authoringConnection {
@@ -165,14 +189,37 @@ final class ManagerModel: ObservableObject {
                 // The OEX picker also gates on this task, independently of published readiness.
                 self.exhibitions.oexImport.objectWillChange.send()
             }
-            await self.connectPersonalAuthoringOwned(runtimeJobID: jobID)
+            await self.connectPersonalAuthoringOwned(runtimeJobID: jobID, revalidateExisting: revalidateExisting)
         }
         authoringConnection = (jobID, connection)
         await connection.value
     }
-    private func connectPersonalAuthoringOwned(runtimeJobID: String?) async {
+    private func connectPersonalAuthoringOwned(runtimeJobID: String?, revalidateExisting: Bool) async {
         guard !busy, !quitting, ready, native?.runtime?.jobId == runtimeJobID,
               !exhibitions.oexImport.busy, !exhibitions.catalogThumbnailSaving, let bridge, let context else { return }
+        // A recovered health sample is not a new editor identity. Revalidate
+        // the existing server session and both process/owner snapshots without
+        // minting credentials or rebinding the document/renderer/Preview.
+        if revalidateExisting, let binding = retainedAuthoring, !binding.selectedOex {
+            let generation = retainedAuthoringGeneration
+            busy = true
+            defer { busy = false }
+            do {
+                try await binding.revalidate(context: { self.context }, status: { try await bridge.nativeStatus(context) }, current: {
+                    !self.quitting && self.ready && generation == self.retainedAuthoringGeneration
+                        && self.native.map { binding.matches(context: self.context, status: $0) } == true
+                        && self.authoring.exhibitionAPI === binding.api && self.authoring.session == binding.session
+                        && self.exhibitions.retainsAuthoring(api: binding.api, session: binding.session, credentials: binding.credentials)
+                })
+                authoringHealthPending = false
+                exhibitions.viewportController.runtimeAvailable = authoringReady
+                return
+            } catch {
+                invalidateRetainedAuthoring()
+                failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED")
+                return
+            }
+        }
         if native?.selectedOex == true, retainedAuthoring != nil, exhibitions.entrancePreviewActive {
             failure = BridgeFailure("NATIVE_OEX_SESSION_BOUND"); return
         }
@@ -262,7 +309,7 @@ final class ManagerModel: ObservableObject {
                           self.context?.selectionToken == context.selectionToken, self.context?.activeId == context.activeId,
                           authoring.exhibitionAPI === api, let current = authoring.session,
                           Self.sameSession(current, session) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
-                    let candidate = RetainedAuthoring(selectionToken: context.selectionToken, installationId: context.activeId,
+                    let candidate = RetainedAuthoring(selectedOex: true, selectionToken: context.selectionToken, installationId: context.activeId,
                         runtimeJobId: jobId, nodePid: nodePid, postgresPid: postgresPid, manifest: config.manifestSha256, port: config.ports.web,
                         credentials: credentials, session: session, api: api)
                     guard verifiedStatus.selectedOex == true, candidate.matches(context: self.context, status: verifiedStatus) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
@@ -322,6 +369,22 @@ final class ManagerModel: ObservableObject {
                     exhibitions.confirmCatalogThumbnailAuthority(api: api, session: session, credentials: credentials,
                                                                   manifestSHA256: native?.configuration?.manifestSha256)
                 }
+                if !selected {
+                    let verified = try await api.verifyRetainedSession(session)
+                    let checked = try await bridge.nativeStatus(context)
+                    guard let config = checked.configuration, let jobId = checked.runtime?.jobId,
+                          let nodePid = checked.runtime?.nodePid, let postgresPid = checked.runtime?.postgresPid,
+                          !quitting, connectionGeneration == retainedAuthoringGeneration, verified == session,
+                          authoring.exhibitionAPI === api, authoring.session == session,
+                          exhibitions.retainsAuthoring(api: api, session: session, credentials: credentials) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                    let candidate = RetainedAuthoring(selectedOex: false, selectionToken: context.selectionToken, installationId: context.activeId,
+                        runtimeJobId: jobId, nodePid: nodePid, postgresPid: postgresPid, manifest: config.manifestSha256, port: config.ports.web,
+                        credentials: credentials, session: session, api: api)
+                    guard candidate.matches(context: self.context, status: checked) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
+                    retainedAuthoring = candidate
+                }
+                authoringHealthPending = false
+                exhibitions.viewportController.runtimeAvailable = authoringReady
             } else { exhibitions.entranceCredentialRenewalFailed() }
         } catch {
             invalidateRetainedAuthoring()
@@ -758,7 +821,9 @@ struct ManagerView: View {
             .allowsHitTesting(!workbenchActive)
             .accessibilityHidden(workbenchActive)
             NativeExhibitionView(model: model.exhibitions, authoring: model.authoring, controller: model.exhibitions.viewportController,
-                                 oexImport: model.exhibitions.oexImport, ready: model.ready,
+                                 oexImport: model.exhibitions.oexImport, ready: model.authoringReady,
+                                 runtimeReady: model.ready, retainViewport: model.retainsAuthoringViewport,
+                                 resume: { await model.connectPersonalAuthoring(revalidateExisting: true) },
                                  freshOEXOperationActive: model.native?.busy == true && model.native?.selectedOex == true && model.native?.operation == "importing_oex",
                                  mode: model.presentation?.mode ?? .beginner,
                                  connect: { await model.connectPersonalAuthoring() }, authoringConfiguration: model.native?.configuration,
