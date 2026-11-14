@@ -167,6 +167,11 @@ public struct ViewportAcceptance: Decodable, Sendable {
     /// Absence is unknown, not evidence that a bounded frame is editable.
     public let boundedReadOnly: Bool?
     public let editingCapability: NativeBoundedEditCapability?
+    public let cameraInteractionMode: ViewportCameraInteractionMode?
+    public var supportsCameraInteraction: Bool {
+        accepted && capabilities?.contains(ViewportCameraInteractionRequest.capability) == true
+            && cameraInteractionMode != nil
+    }
     public var supportsArtworkThumbnail: Bool { accepted && capabilities?.contains("artwork-thumbnail-v1") == true }
     public var supportsFurnishingThumbnail: Bool {
         accepted && boundedReadOnly == false && editingCapability == nil

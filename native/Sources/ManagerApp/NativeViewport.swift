@@ -47,7 +47,7 @@ final class NativeViewportController: ObservableObject {
     // queued candidate callback can act on the former editing purpose.
     private(set) var editingContextGeneration = UUID()
     @Published var editingContextActive = true {
-        didSet { if oldValue != editingContextActive { editingContextGeneration = UUID(); displayReadout = "" } }
+        didSet { if oldValue != editingContextActive { editingContextGeneration = UUID(); displayReadout = ""; retireCameraInteraction() } }
     }
     @Published var connected = false
     /// Restriction from an acknowledged frame; retained until a newer exact
@@ -62,6 +62,50 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var sceneSnapshotSupported = false
     @Published fileprivate(set) var sceneSnapshotInspectionSupported = false
     @Published fileprivate(set) var findSelectionSupported = false
+    @Published fileprivate(set) var cameraInteractionSupported = false
+    @Published fileprivate(set) var cameraInteractionMode: ViewportCameraInteractionMode?
+    @Published fileprivate(set) var changingCameraInteraction = false
+    private var cameraInteractionAttempt = UUID()
+    fileprivate var cameraInteractionAction: ((ViewportCameraInteractionMode) async throws -> Void)?
+    var canChangeCameraInteraction: Bool {
+        connected && editingContextActive && cameraInteractionSupported && !changingCameraInteraction
+            && acknowledgedBoundedReadOnly == false
+            && acknowledgedFrame?.presentation == .threeD && acknowledgedFrame?.disabled == false
+    }
+    var objectInteractionConfirmed: Bool {
+        connected && !changingCameraInteraction && (!cameraInteractionSupported || cameraInteractionMode == .object)
+    }
+    fileprivate func retireCameraInteraction() {
+        cameraInteractionAttempt = UUID(); changingCameraInteraction = false
+        cameraInteractionSupported = false; cameraInteractionMode = nil
+    }
+    fileprivate func acceptCameraInteraction(_ acceptance: ViewportAcceptance) {
+        cameraInteractionAttempt = UUID(); changingCameraInteraction = false
+        cameraInteractionSupported = acceptance.supportsCameraInteraction
+        cameraInteractionMode = acceptance.supportsCameraInteraction ? acceptance.cameraInteractionMode : nil
+    }
+    fileprivate func cameraInteractionReset() {
+        cameraInteractionAttempt = UUID(); changingCameraInteraction = false
+        cameraInteractionMode = .object
+        message = "화면 보기 조작이 종료됐습니다. 현재 연결에서 보기 회전을 다시 선택할 수 있습니다."
+    }
+    func setCameraInteraction(_ mode: ViewportCameraInteractionMode) async {
+        guard canChangeCameraInteraction, let cameraInteractionAction else { return }
+        let attempt = UUID(); cameraInteractionAttempt = attempt; changingCameraInteraction = true
+        do {
+            try await cameraInteractionAction(mode)
+            guard cameraInteractionAttempt == attempt, connected, editingContextActive else { return }
+            changingCameraInteraction = false; cameraInteractionMode = mode
+            message = mode == .object ? "대상 편집 조작을 확인했습니다." : "보기 회전 조작을 확인했습니다. 화면을 끌어 시점을 돌릴 수 있습니다."
+        } catch {
+            guard cameraInteractionAttempt == attempt else { return }
+            changingCameraInteraction = false
+            // A rejection does not prove the previous Web mapping was reset.
+            cameraInteractionMode = nil
+            message = "화면 보기 조작을 확인하지 못했습니다. 조작을 다시 선택하거나 편집 화면을 다시 열어 주세요."
+            diagnose("CAMERA_INTERACTION", error)
+        }
+    }
     @Published fileprivate(set) var catalogDropSupported = false
     @Published fileprivate(set) var placementSupported = false
     @Published fileprivate(set) var furnishingVisualsSupported = false
@@ -429,12 +473,14 @@ struct NativeViewport: NSViewRepresentable {
         private var latest: ViewportFrame?
         private var placementIntent: ArtworkPlacementIntent?
         private var inspectorPending = false
+        private var cameraResetFrame: Int?
         private var entranceOperation: UUID?
         var sendTask: Task<Void, Never>?
         init(_ parent: NativeViewport) { self.parent = parent; super.init() }
         func attach(_ web: WKWebView) {
             // A coordinator owns the controller only once its actual view exists.
             self.web = web
+            controller.retireCameraInteraction()
             controller.owner = epoch
             #if DEBUG
             controller.snapshotPolicyObservation = { [weak self] in self?.snapshotPolicy != nil }
@@ -442,6 +488,7 @@ struct NativeViewport: NSViewRepresentable {
         }
         func invalidate() {
             guard active else { return }
+            if controller.owner == epoch { controller.retireCameraInteraction(); controller.cameraInteractionAction = nil }
             restoreSnapshotPolicy()
             endPlacement()
             entranceOperation = nil
@@ -484,6 +531,7 @@ struct NativeViewport: NSViewRepresentable {
                 return
             }
             if installedToken == nil {
+                controller.retireCameraInteraction()
                 controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil
                 controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""
@@ -510,6 +558,8 @@ struct NativeViewport: NSViewRepresentable {
             // invalidates the transient operation before any late callback.
             endPlacement()
             entranceOperation = nil
+            controller.retireCameraInteraction()
+            cameraResetFrame = nil
             fingerprint = hash; sequence += 1
             if latest?.draft != value.draft { controller.sceneProgress = .preparing }
             if !controller.displayReadout.isEmpty { controller.displayReadout = "" }
@@ -552,9 +602,10 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.retireCameraInteraction(); controller.cameraInteractionAction = nil; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
+            controller.retireCameraInteraction()
             controller.sceneProgress = nil
             controller.message = "3D 화면을 열지 못했습니다. 로컬 제작 상태를 확인하세요."
             controller.diagnose("PAGE_LOAD", error)
@@ -579,6 +630,12 @@ struct NativeViewport: NSViewRepresentable {
                         if frame.workspaceId != nil, frame.sequence != self.sequence { self.sent = frame.sequence; continue }
                         guard let response, JSONSerialization.isValidJSONObject(response),
                               let acceptance = try? JSONDecoder().decode(ViewportAcceptance.self, from: JSONSerialization.data(withJSONObject: response)), acceptance.accepted else { throw BridgeFailure("VIEWPORT_ACCEPT_INVALID") }
+                        if acceptance.capabilities?.contains(ViewportCameraInteractionRequest.capability) == true,
+                           acceptance.cameraInteractionMode == nil { throw BridgeFailure("VIEWPORT_ACCEPT_INVALID") }
+                        if acceptance.cameraInteractionMode != nil,
+                           acceptance.capabilities?.contains(ViewportCameraInteractionRequest.capability) != true {
+                            throw BridgeFailure("VIEWPORT_ACCEPT_INVALID")
+                        }
                         if frame.workspaceId != nil {
                             guard self.parent.acceptBoundedAck(frame, acceptance),
                                   let capability = self.parent.boundedEdit, acceptance.editingCapability == capability else {
@@ -617,6 +674,14 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
                         self.controller.surfaceMaterialTexturesSupported = acceptance.supportsSurfaceMaterialTextures
                         self.controller.entrancePreviewSupported = acceptance.supportsEntrancePreview
+                        if frame.sequence == self.sequence {
+                            self.controller.acceptCameraInteraction(acceptance)
+                            // A current reset arriving while accept() was in flight
+                            // supersedes its older mapping snapshot.
+                            if acceptance.supportsCameraInteraction && self.cameraResetFrame == frame.sequence {
+                                self.controller.cameraInteractionReset()
+                            }
+                        }
                         self.controller.acknowledgedFrame = frame
                         self.controller.displayReadout = ""
                         self.controller.acceptedSequence = frame.sequence
@@ -1158,6 +1223,39 @@ struct NativeViewport: NSViewRepresentable {
                 guard bytes.count <= 710_000 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
                 return (try JSONDecoder().decode(ViewportThumbnailReply.self, from: bytes), request)
             }
+            controller.cameraInteractionAction = { [weak self] mode in
+                guard let self, let web = self.web, let frame = self.latest else { throw AuthoringFailure("CAMERA_INTERACTION_UNAVAILABLE") }
+                let generation = self.generation, context = self.controller.editingContextGeneration
+                @MainActor func current() throws {
+                    guard self.active, self.prepared, self.web === web, self.isPage(web.url),
+                          self.generation == generation, self.controller.owner == self.epoch,
+                          self.controller.editingContextActive, self.controller.editingContextGeneration == context,
+                          self.controller.connected, self.controller.cameraInteractionSupported,
+                          self.sent == frame.sequence, self.latest?.sequence == frame.sequence,
+                          self.controller.acceptedSequence == frame.sequence,
+                          self.controller.acknowledgedFrame?.epoch == frame.epoch,
+                          self.controller.acknowledgedFrame?.draft == frame.draft,
+                          self.controller.acknowledgedFrame?.selection == frame.selection,
+                          !frame.disabled, frame.presentation == .threeD,
+                          !self.parent.disabled, !self.parent.interactionDisabled,
+                          self.parent.draft == frame.draft, self.parent.selection == frame.selection,
+                          self.parent.credentials.tenantId == frame.tenantId,
+                          self.parent.credentials.principalId == frame.principalId,
+                          self.installedToken == self.parent.credentials.token,
+                          self.placementIntent == nil, !self.inspectorPending, self.entranceOperation == nil,
+                          self.snapshotPolicy == nil else { throw AuthoringFailure("CAMERA_INTERACTION_STALE") }
+                }
+                try current()
+                let request = try ViewportCameraInteractionRequest(frame: frame, mode: mode)
+                let value = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
+                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.setCameraInteraction !== 'function') throw new Error('CAMERA_INTERACTION_UNAVAILABLE'); return await window.exhibitosViewport.setCameraInteraction(JSON.parse(requestJSON));", arguments: ["requestJSON": value], in: nil, contentWorld: .page)
+                try Task.checkCancellation(); try current()
+                guard let response, JSONSerialization.isValidJSONObject(response),
+                      let bytes = try? JSONSerialization.data(withJSONObject: response), bytes.count <= 2048,
+                      let reply = try? JSONDecoder().decode(DocumentValue.self, from: bytes), request.matches(reply) else {
+                    throw AuthoringFailure("CAMERA_INTERACTION_INVALID")
+                }
+            }
             controller.findSelectionAction = { [weak self] in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.findSelectionSupported,
                       let web = self.web, let frame = self.latest, self.prepared, self.sent == frame.sequence,
@@ -1205,6 +1303,10 @@ struct NativeViewport: NSViewRepresentable {
                   JSONSerialization.isValidJSONObject(message.body), let bytes = try? JSONSerialization.data(withJSONObject: message.body), bytes.count <= 1_100_000,
                   let envelope = try? JSONDecoder().decode(Envelope.self, from: bytes), envelope.version == 1, envelope.epoch == epoch, envelope.sequence == sequence, let frame = latest else { return }
             switch envelope.type {
+            case "camera-interaction-reset":
+                guard ViewportCameraInteractionReset.valid(envelope.body) else { return }
+                cameraResetFrame = frame.sequence
+                controller.cameraInteractionReset()
             case "placement-target":
                 guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, !frame.disabled, let intent = placementIntent,
                       (try? ViewportPlacementTarget(value: envelope.body, intent: intent)) != nil else { return }
@@ -1219,7 +1321,7 @@ struct NativeViewport: NSViewRepresentable {
                 if parent.boundedEdit != nil && selection.kind != "placement" { return }
                 guard selection.kind != "light" || controller.lightObjectSupported else { return }
                 parent.onSelect(selection)
-            case "candidate": guard controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, placementIntent == nil, !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
+            case "candidate": guard controller.objectInteractionConfirmed, controller.editingContextActive, editingContextGeneration == controller.editingContextGeneration, placementIntent == nil, !frame.disabled, !parent.interactionDisabled else { return }; parent.onCandidate(envelope.body, frame.draft)
             case "status":
                 guard let report = try? JSONDecoder().decode(Report.self, from: JSONEncoder().encode(envelope.body)), report.loaded >= 0, report.failed >= 0, report.message.count <= 2048 else { return }
                 let total = frame.draft.placements.count
@@ -1274,6 +1376,7 @@ struct NativeViewportArea: View {
                 }.pickerStyle(.segmented)
                     .disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                     .accessibilityHint("같은 전시와 선택을 유지하며 편집 화면을 전환합니다.")
+                if controller.cameraInteractionSupported { Menu("보기 조작") { cameraInteractionTools } }
                 if !controller.planSupported { Text("이 제작 서비스는 3D 화면을 제공합니다. 2D 평면 지원 연결을 확인하세요.").foregroundStyle(.secondary) }
                 HStack {
                     Button("전체 공간") { model.requestViewportView("isometric") }.disabled(controller.planSupported && model.viewportPresentation == .plan)
@@ -1281,6 +1384,7 @@ struct NativeViewportArea: View {
                     Button("정면 보기") { model.requestViewportView("front") }.disabled(controller.planSupported && model.viewportPresentation == .plan)
                     if editable {
                         Picker("대상 편집", selection: $model.viewportMode) { Text("대상 이동").tag("translate"); Text("대상 회전").tag("rotate"); Text("대상 크기").tag("dimensions") }
+                        .disabled(!controller.objectInteractionConfirmed)
                     }
                 }.disabled(model.placingArtwork || model.entrancePreviewActive)
                 Button("편집 화면 다시 열기") {
@@ -1409,6 +1513,22 @@ struct NativeViewportArea: View {
             .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
             .disabled(model.architectureDirty || model.architectureApplying)
     }
+    @ViewBuilder private var cameraInteractionTools: some View {
+        if controller.cameraInteractionSupported {
+            Button("보기 회전", systemImage: "rotate.3d") {
+                Task { await controller.setCameraInteraction(.cameraRotate) }
+            }
+            .disabled(!controller.canChangeCameraInteraction || controller.cameraInteractionMode == .cameraRotate)
+            .help("작품 선택과 배치를 유지하며 카메라로 공간을 둘러봅니다.")
+            if controller.cameraInteractionMode != .object {
+                Button("대상 편집") { Task { await controller.setCameraInteraction(.object) } }
+                    .disabled(!controller.canChangeCameraInteraction)
+            }
+            if controller.changingCameraInteraction { ProgressView().controlSize(.small).accessibilityLabel("보기 조작 확인 중") }
+            else if controller.cameraInteractionMode == .cameraRotate { Text("보기 회전 중").font(.caption).foregroundStyle(.secondary) }
+            else if controller.cameraInteractionMode == nil { Text("조작 확인 필요").font(.caption).foregroundStyle(.secondary) }
+        }
+    }
     private var workbenchViewTools: some View {
         HStack(spacing: 8) {
             Picker("편집 화면", selection: Binding(get: { controller.planSupported ? model.viewportPresentation : .threeD }, set: { value in
@@ -1421,10 +1541,12 @@ struct NativeViewportArea: View {
                 .accessibilityHint("같은 전시와 선택을 유지하며 편집 화면을 전환합니다.")
             if editable {
                 Picker("대상 편집", selection: $model.viewportMode) { Text("대상 이동").tag("translate"); Text("대상 회전").tag("rotate"); Text("대상 크기").tag("dimensions") }
+                        .disabled(!controller.objectInteractionConfirmed)
                     .labelsHidden().fixedSize().disabled(model.placingArtwork || model.entrancePreviewActive)
             }
             Spacer(minLength: 0)
             Menu {
+                cameraInteractionTools
                 Button("전체 공간") { model.requestViewportView("isometric") }.disabled(model.placingArtwork || model.entrancePreviewActive || (controller.planSupported && model.viewportPresentation == .plan))
                 Button("위에서 보기") { model.requestViewportView("top") }.disabled(model.placingArtwork || model.entrancePreviewActive || (controller.planSupported && model.viewportPresentation == .plan))
                 Button("정면 보기") { model.requestViewportView("front") }.disabled(model.placingArtwork || model.entrancePreviewActive || (controller.planSupported && model.viewportPresentation == .plan))
@@ -1434,7 +1556,7 @@ struct NativeViewportArea: View {
                     if model.entrancePreviewActive { model.recoverEntrancePreviewHost { identity = UUID() } }
                     else { identity = UUID() }
                 }.disabled(model.entrancePreviewActive ? !model.canRecoverEntranceHost : (model.placingArtwork || model.busy || model.pending || model.architectureApplying))
-            } label: { Label("보기", systemImage: "eye") }
+            } label: { Label(controller.cameraInteractionMode == .cameraRotate ? "보기 회전 중" : "보기", systemImage: "eye") }
                 .menuStyle(.borderlessButton).fixedSize()
             if editable {
                 Menu {
