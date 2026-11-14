@@ -1049,7 +1049,7 @@ final class ExhibitionModel: ObservableObject {
     var canEditSharedFurnishing: Bool {
         !entrancePreviewActive && !viewingPlanDirty && viewingPointInput == nil && !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !spaceLightingDirty && !architectureApplying && furnishing == furnishingBaseline && viewportController.editingContextActive && viewportController.connected && viewportController.sharedFurnishingVisualsSupported && sharedFurnishingCatalogReady && sharedFurnishingCatalogAccessID == viewportAccessID && sharedFurnishing != nil
     }
-    var canPreviewSharedFurnishing: Bool { canEditSharedFurnishing && sharedFurnishing != sharedFurnishingBaseline && sharedFurnishingPreview == nil && (sharedFurnishing?.selected == true || sharedFurnishingBaseline?.selected == true) }
+    var canPreviewSharedFurnishing: Bool { (sharedFurnishingTarget?.0 != .light || !lightObjectProposalAvailable || lightObjectAuthorityAvailable) && canEditSharedFurnishing && sharedFurnishing != sharedFurnishingBaseline && sharedFurnishingPreview == nil && (sharedFurnishing?.selected == true || sharedFurnishingBaseline?.selected == true) }
     var canApplySharedFurnishing: Bool {
         if lightObjectSharedForm != nil { return canApplyLight }
         guard canEditSharedFurnishing, sharedFurnishingPreviewAccessID == viewportAccessID, let preview = sharedFurnishingPreview,
@@ -1230,10 +1230,15 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var lightStatus = ""
     var lightDirty: Bool { light != lightBaseline || lightObjectPreview != nil }
     var lightPreviewing: Bool { lightPreview != nil || lightObjectPreview != nil }
-    private var lightObjectAuthorityAvailable: Bool {
-        session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+    // This advertises the existing Native SDK/API route, independently of the
+    // optional Web lightObject receiver. Server session/profile checks still authorize it.
+    var lightObjectProposalAvailable: Bool {
+        viewportCredentials != nil && api != nil
+            && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             && session?.nativeLightObjectAuthoringProposalProfile == LightObjectAuthoring.profile
-            && viewportController.editingContextActive && viewportController.connected && viewportController.lightObjectSupported
+    }
+    private var lightObjectAuthorityAvailable: Bool {
+        lightObjectProposalAvailable && viewportController.editingContextActive && viewportController.connected
             && state?.dirty == false && state?.etag != nil
     }
     var canPreviewLightObjectAction: Bool {
@@ -1256,14 +1261,18 @@ final class ExhibitionModel: ObservableObject {
     var canSelectLight: Bool { canSelectCatalog }
     var canPreviewLight: Bool {
         !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && lightDirty && !lightPreviewing && viewportController.connected
-            && (lightObjectAuthorityAvailable || (viewportController.lightInspectorSupported && (light?.detailsChanged != true || viewportController.lightFixtureSupported)))
+            && (lightObjectProposalAvailable ? lightObjectAuthorityAvailable : (viewportController.lightInspectorSupported && (light?.detailsChanged != true || viewportController.lightFixtureSupported)))
+    }
+    private func lightObjectDisplayAcknowledged(_ display: NativeExhibitionDraft) -> Bool {
+        guard let credentials = viewportCredentials else { return false }
+        return viewportController.confirmsMetadataPreview(display, tenantId: credentials.tenantId, principalId: credentials.principalId)
     }
     var canApplyLight: Bool {
         if let preview = lightObjectPreview, let display = lightObjectDisplayDraft {
-            return lightObjectAuthorityAvailable && !busy && !pending && !placingArtwork && !formDirty && !positionDirty
+            return lightObjectAuthorityAvailable && !immutable && !busy && !pending && !placingArtwork && !formDirty && !positionDirty
                 && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !plaqueDirty && lightObjectFurnishingInputMatches
                 && !spaceLightingDirty && !architectureApplying && lightObjectPreviewAccessID == viewportAccessID
-                && preview.base == draft && !editingLocked(acknowledging: display)
+                && preview.base == draft && !editingLocked(acknowledging: display) && lightObjectDisplayAcknowledged(display)
         }
         // The renderer acknowledges the temporary light document while the
         // saved draft and the preview's base remain the source of edit authority.
@@ -2968,16 +2977,17 @@ final class ExhibitionModel: ObservableObject {
     func applyLight() async {
         guard canApplyLight else { return }
         if let preview = lightObjectPreview {
-            let access = viewportAccessID
+            let access = viewportAccessID, context = viewportController.editingContextGeneration
             await work {
                 guard lightObjectAuthorityAvailable, roomBaseCommandAvailable(preview.command), lightObjectPreviewAccessID == access, viewportAccessID == access,
                       let api, await api.admitsNativeLightObjectAuthoringProposal,
                       let base = draft, preview.base == base, let etag = state?.etag,
-                      let display = lightObjectDisplayDraft, !editingLocked(acknowledging: display) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                      let display = lightObjectDisplayDraft, !editingLocked(acknowledging: display), lightObjectDisplayAcknowledged(display) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let saved = try await api.exhibition(base.id)
                 guard saved.draft == base, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
                 let policy = try await publishedEditingAccess(base.id, api: api, expected: saved)
-                guard !policy.immutable, viewportAccessID == access, draft == base, state?.etag == etag,
+                guard !policy.immutable, self.api === api, viewportAccessID == access, draft == base, state?.etag == etag,
+                      viewportController.editingContextGeneration == context, lightObjectDisplayAcknowledged(display),
                       lightObjectAuthorityAvailable, lightObjectPreviewAccessID == access, lightObjectFurnishingInputMatches,
                       let currentPreview = lightObjectPreview, currentPreview.command == preview.command,
                       var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
@@ -3031,23 +3041,34 @@ final class ExhibitionModel: ObservableObject {
                       [x, y, gap].allSatisfy({ $0.isFinite }), !lightMountSurfaceId.isEmpty else { throw AuthoringFailure("LIGHT_FIELDS_INVALID") }
                 attachment = .object(["surfaceId": .string(lightMountSurfaceId), "anchor": .vector([x, y]), "gap": .number(gap)])
             }
-            let command = try viewportController.lightMountCommand(lightId: selectedLightId, attachment: attachment)
+            guard let document = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            let frame = try viewportController.nativeLightObjectFrame(in: document)
+            let command = try LightObjectRequest.mountCommand(lightId: selectedLightId, attachment: attachment, frame: frame)
             await previewLightObject(command)
         } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("LIGHT_FIELDS_INVALID") }
     }
     private func previewLightObject(_ command: DocumentValue, allowingFormInput: Bool = false, sharedForm: SharedFurnishingFormBuffer? = nil) async {
         guard lightObjectContext(allowingShared: sharedForm != nil), lightObjectAuthorityAvailable, !lightPreviewing,
               allowingFormInput || !lightDirty, roomBaseCommandAvailable(command), command["lightId"] == .string(selectedLightId),
-              let api, let base = draft, let etag = state?.etag else { return }
+              let api, let base = draft, let document = state, let etag = document.etag,
+              let credentials = viewportCredentials, let capturedSession = session else { return }
         let access = viewportAccessID, selected = selectedLightId, fields = light
+        let context = viewportController.editingContextGeneration
         architectureApplying = true
         defer { architectureApplying = false }
         do {
             guard await api.admitsNativeLightObjectAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
             let saved = try await api.exhibition(base.id)
             guard saved.draft == base, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
-            let preview = try await viewportController.lightObject(command)
-            guard lightObjectAuthorityAvailable, roomBaseCommandAvailable(command), viewportAccessID == access, draft == base, state?.etag == etag,
+            let frame = try viewportController.nativeLightObjectFrame(in: document)
+            let request = try LightObjectRequest(command: command, frame: frame)
+            let preview = try await api.prepareNativeLightObject(request, in: document, saved: saved)
+            guard self.api === api, viewportCredentials?.token == credentials.token, viewportCredentials?.origin == credentials.origin,
+                  session?.tenantId == capturedSession.tenantId, session?.userId == capturedSession.userId,
+                  session?.csrfToken == capturedSession.csrfToken, session?.expiresAt == capturedSession.expiresAt,
+                  session?.role == capturedSession.role, state?.revision == document.revision,
+                  viewportController.confirmsNativeLightObjectFrame(frame, in: document, context: context),
+                  lightObjectAuthorityAvailable, roomBaseCommandAvailable(command), viewportAccessID == access, draft == base, state?.etag == etag,
                   selectedLightId == selected, light == fields, preview.base == base,
                   sharedForm == nil || sharedFurnishing == sharedForm else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             let display = try preview.apply(to: base)

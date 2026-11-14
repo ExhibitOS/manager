@@ -71,6 +71,103 @@ final class LightObjectRequestTests: XCTestCase {
         var result = candidate; result["extensions"] = without(result["extensions"], key); return result
     }
 
+    func testNativeTransportBindsOrdinaryACKWithoutInventingWebCapability() throws {
+        let draft = try fixture(), ack = frame(draft)
+        var document = NativeDocumentState(format: 1, revision: 1, workspaceId: UUID().uuidString.lowercased(),
+            tenantId: ack.tenantId, principalId: ack.principalId, draft: draft, etag: "\"studio-r1-" + String(repeating: "a", count: 64) + "\"",
+            savedEditVersion: draft.document["editVersion"].integer, pending: nil)
+        func bind(_ frame: ViewportFrame? = nil, owner: String? = nil, sequence: Int = 1, readOnly: Bool? = false,
+                  bounded: NativeBoundedEditCapability? = nil) throws -> ViewportFrame {
+            try LightObjectRequest.nativeFrame(acknowledged: frame ?? ack, document: document, ownerEpoch: owner ?? ack.epoch,
+                acceptedSequence: sequence, readOnly: readOnly, boundedEdit: bounded)
+        }
+        let bound = try bind()
+        XCTAssertNil(ack.workspaceId); XCTAssertNil(ack.baseETag)
+        XCTAssertEqual(bound.workspaceId, document.workspaceId); XCTAssertEqual(bound.baseETag, document.etag)
+        XCTAssertEqual(bound.draft, draft); XCTAssertEqual(bound.sequence, ack.sequence)
+        XCTAssertThrowsError(try bind(owner: UUID().uuidString.lowercased()))
+        XCTAssertThrowsError(try bind(sequence: 2)); XCTAssertThrowsError(try bind(sequence: 0))
+        XCTAssertThrowsError(try bind(readOnly: nil)); XCTAssertThrowsError(try bind(readOnly: true))
+        let bounded = NativeBoundedEditCapability(version: 1, kind: "native-bounded-edit-v1", tenantId: ack.tenantId,
+            principalId: ack.principalId, workspaceId: document.workspaceId, exhibitionId: draft.id, revision: 1, etag: document.etag!)
+        XCTAssertThrowsError(try bind(bounded: bounded))
+        func changedFrame(draft candidate: NativeExhibitionDraft? = nil, tenant: String? = nil, principal: String? = nil,
+                          disabled: Bool = false, workspace: String? = nil, etag: String? = nil) -> ViewportFrame {
+            ViewportFrame(epoch: ack.epoch, sequence: 1, tenantId: tenant ?? ack.tenantId, principalId: principal ?? ack.principalId,
+                draft: candidate ?? draft, selection: nil, mode: "translate", view: "isometric", disabled: disabled, workspaceId: workspace, baseETag: etag)
+        }
+        XCTAssertThrowsError(try bind(changedFrame(disabled: true)))
+        XCTAssertThrowsError(try bind(changedFrame(tenant: UUID().uuidString.lowercased())))
+        XCTAssertThrowsError(try bind(changedFrame(principal: UUID().uuidString.lowercased())))
+        XCTAssertThrowsError(try bind(changedFrame(draft: NativeExhibitionDraft.new())))
+        XCTAssertThrowsError(try bind(changedFrame(workspace: document.workspaceId)))
+        XCTAssertThrowsError(try bind(changedFrame(workspace: UUID().uuidString.lowercased(), etag: document.etag)))
+        XCTAssertThrowsError(try bind(changedFrame(workspace: document.workspaceId, etag: "stale")))
+        _ = try bind(changedFrame(workspace: document.workspaceId, etag: document.etag))
+        let clean = document
+        document.etag = nil; XCTAssertThrowsError(try bind()); document = clean
+        document.savedEditVersion = -1; XCTAssertThrowsError(try bind()); document = clean
+        document.pending = .init(etag: clean.etag, draft: draft); XCTAssertThrowsError(try bind())
+    }
+
+    @MainActor
+    func testNativeSDKTransportChecksSavedAuthorityHTTPAndCompleteReplyWithoutSaving() async throws {
+        let base = try fixture(), owner = UUID().uuidString.lowercased(), epoch = UUID().uuidString.lowercased()
+        let etag = "\"studio-r1-" + String(repeating: "a", count: 64) + "\""
+        let document = NativeDocumentState(format: 1, revision: 1, workspaceId: UUID().uuidString.lowercased(),
+            tenantId: owner, principalId: owner, draft: base, etag: etag,
+            savedEditVersion: base.document["editVersion"].integer, pending: nil)
+        let ack = ViewportFrame(epoch: epoch, sequence: 3, tenantId: owner, principalId: owner, draft: base,
+            selection: nil, mode: "translate", view: "isometric", disabled: false)
+        let bound = try LightObjectRequest.nativeFrame(acknowledged: ack, document: document, ownerEpoch: epoch,
+            acceptedSequence: 3, readOnly: false, boundedEdit: nil)
+        let proposal = try LightObjectRequest(command: .object(["type": .string("set-light-fixture"),
+            "lightId": .string(source), "visual": .null]), frame: bound)
+        var expected = base.candidate, settings = try XCTUnwrap(base.candidate["extensions"][details]["lights"].items)
+        settings[0]["fixture"] = .string("none"); expected["extensions"][details]["lights"] = .array(settings)
+        expected["extensions"][visuals]["bindings"] = .array([base.candidate["extensions"][visuals]["bindings"].items![1]])
+        expected = changed(expected)
+        let saved = NativeStudioResponse(revision: 1, etag: etag, draft: base)
+        defer { LightTransportProtocol.reset() }
+        for scenario in ["valid", "unrelated-graph", "stale-response-etag", "dirty-document", "wrong-principal", "stale-saved", "missing-profile"] {
+            var response = reply(proposal, candidate: expected)
+            if scenario == "unrelated-graph" { response["candidate"]["title"] = .string("unrelated mutation") }
+            try LightTransportProtocol.configure(owner: owner, reply: response,
+                etag: scenario == "stale-response-etag" ? "stale" : etag, profile: scenario != "missing-profile")
+            let api = try AuthoringAPI(port: 18091, tenantId: owner,
+                nativeRuntimeManifestSHA256: "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26",
+                protocolClasses: [LightTransportProtocol.self])
+            _ = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner,
+                origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+            var input = document
+            if scenario == "dirty-document" { input.savedEditVersion = -1 }
+            if scenario == "wrong-principal" {
+                input = NativeDocumentState(format: 1, revision: 1, workspaceId: document.workspaceId, tenantId: owner,
+                    principalId: UUID().uuidString.lowercased(), draft: base, etag: etag,
+                    savedEditVersion: document.savedEditVersion, pending: nil)
+            }
+            let comparison = scenario == "stale-saved" ? NativeStudioResponse(revision: 1, etag: "stale", draft: base) : saved
+            do {
+                let preview = try await api.prepareNativeLightObject(proposal, in: input, saved: comparison)
+                XCTAssertEqual(scenario, "valid"); XCTAssertEqual(preview.candidate, expected)
+                XCTAssertEqual(try preview.apply(to: base).candidate, expected)
+            } catch { XCTAssertNotEqual(scenario, "valid", "\(error)") }
+            let requests = LightTransportProtocol.requests()
+            let admitted = ["valid", "unrelated-graph", "stale-response-etag"].contains(scenario)
+            XCTAssertEqual(requests.map(\.httpMethod), admitted ? ["GET", "POST"] : ["GET"])
+            if let post = requests.last, admitted {
+                XCTAssertEqual(post.value(forHTTPHeaderField: "If-Match"), etag)
+                XCTAssertEqual(post.value(forHTTPHeaderField: "x-csrf-token"), "synthetic-csrf")
+                XCTAssertEqual(post.value(forHTTPHeaderField: "Origin"), "http://127.0.0.1:18091")
+                XCTAssertTrue(post.url!.path.hasSuffix("/exhibitions/\(base.id)/native-authoring-proposal"))
+                let body = try JSONDecoder().decode(DocumentValue.self, from: LightTransportProtocol.body())
+                XCTAssertEqual(body["expectedRevision"], .integer(1)); XCTAssertEqual(body["request"], proposal.value)
+            }
+            XCTAssertEqual(document.draft, base); XCTAssertEqual(document.etag, etag); XCTAssertFalse(document.dirty)
+            await api.endLocalAuthoringSession()
+        }
+    }
+
     func testCloneRemapsOnlyOwnedBindingsAndSharesTheAsset() throws {
         let base = try fixture(), request = try makeRequest("duplicate-light-object", base)
         var expected = base.candidate
@@ -331,4 +428,46 @@ final class LightObjectRequestTests: XCTestCase {
         XCTAssertThrowsError(try LightObjectRequest.mountCommand(lightId: source, attachment: .null, frame: frame(base, disabled: true)))
         XCTAssertThrowsError(try LightObjectRequest.mountCommand(lightId: clone, attachment: attachment, frame: frame(base)))
     }
+}
+
+private final class LightTransportProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var session = Data(), reply = Data(), etag = ""
+    nonisolated(unsafe) private static var observed: [URLRequest] = []
+    nonisolated(unsafe) private static var postedBody = Data()
+    static func configure(owner: String, reply value: DocumentValue, etag responseETag: String, profile: Bool) throws {
+        var fields = ["tenantId": owner, "userId": owner, "role": "owner", "csrfToken": "synthetic-csrf",
+            "expiresAt": "2099-01-01T00:00:00Z", "nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
+        if profile { fields["nativeLightObjectAuthoringProposalProfile"] = LightObjectAuthoring.profile }
+        let sessionData = try JSONSerialization.data(withJSONObject: fields), replyData = try JSONEncoder().encode(value)
+        lock.lock(); defer { lock.unlock() }
+        session = sessionData; reply = replyData; etag = responseETag; observed = []; postedBody = Data()
+    }
+    static func reset() { lock.lock(); defer { lock.unlock() }; session = Data(); reply = Data(); observed = []; postedBody = Data() }
+    static func requests() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return observed }
+    static func body() -> Data { lock.lock(); defer { lock.unlock() }; return postedBody }
+    private static func response(_ request: URLRequest) -> (Data, String) {
+        lock.lock(); defer { lock.unlock() }; observed.append(request)
+        if request.httpMethod == "GET" { return (session, etag) }
+        postedBody = request.httpBody ?? Data()
+        if let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                guard count > 0 else { break }; postedBody.append(contentsOf: buffer.prefix(count))
+            }
+        }
+        return (reply, etag)
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let (data, etag) = Self.response(request)
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json", "ETag": etag])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }

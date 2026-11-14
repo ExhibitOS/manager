@@ -10,25 +10,37 @@ public struct BenchSettings: Equatable, Sendable {
     private static let upholsteredBenchModelSHA256 = "6924041a37702eb8233bf39da973f2235ff951f4b1f31ab564d4ad125542b3de"
     public enum Kind: String, CaseIterable, Sendable { case slab, backed }
     public struct WorkspaceVisual: Equatable, Sendable {
+        public enum ModelForward: String, Sendable { case positiveZ = "positive-z", negativeZ = "negative-z" }
         public let placementId: String, modelSha256: String
+        /// Source-model basis, not host yaw. Absence retains the legacy basis.
+        public let modelForward: ModelForward?
 
-        public init(placementId: String, modelSha256: String) throws {
+        public init(placementId: String, modelSha256: String, modelForward: ModelForward? = nil) throws {
             guard workspaceFurnishingID(placementId),
                   modelSha256.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil else {
                 throw BenchSettings.invalid()
             }
-            self.placementId = placementId; self.modelSha256 = modelSha256
+            self.placementId = placementId; self.modelSha256 = modelSha256; self.modelForward = modelForward
         }
 
         init(value: DocumentValue) throws {
-            guard case .object(let fields) = value, Set(fields.keys) == ["placementId", "modelSha256"],
+            guard case .object(let fields) = value, Set(fields.keys).subtracting(["modelForward"]) == ["placementId", "modelSha256"],
                   let placementId = value["placementId"].string, let modelSha256 = value["modelSha256"].string else {
                 throw BenchSettings.invalid()
             }
-            try self.init(placementId: placementId, modelSha256: modelSha256)
+            let forward: ModelForward?
+            if let value = fields["modelForward"] {
+                guard let raw = value.string, let known = ModelForward(rawValue: raw) else { throw BenchSettings.invalid() }
+                forward = known
+            } else { forward = nil }
+            try self.init(placementId: placementId, modelSha256: modelSha256, modelForward: forward)
         }
 
-        var value: DocumentValue { .object(["placementId": .string(placementId), "modelSha256": .string(modelSha256)]) }
+        var value: DocumentValue {
+            var fields: [String: DocumentValue] = ["placementId": .string(placementId), "modelSha256": .string(modelSha256)]
+            if let modelForward { fields["modelForward"] = .string(modelForward.rawValue) }
+            return .object(fields)
+        }
     }
 
     public let id: String, name: String, roomId: String, viewpointId: String
@@ -42,6 +54,7 @@ public struct BenchSettings: Equatable, Sendable {
     public init(id: String, name: String, roomId: String, kind: Kind, position: [Double], yaw: Double,
                 width: Double, depth: Double, height: Double, material: InstallationSettings.Material, viewpointId: String,
                 workspaceVisual: WorkspaceVisual? = nil) throws {
+        guard workspaceVisual?.modelForward == nil || kind == .backed else { throw Self.invalid() }
         guard Self.uuid(id), Self.uuid(roomId), Self.uuid(viewpointId), !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.utf16.count <= 128,
               Self.point(position), yaw.isFinite, (-Double.pi...Double.pi).contains(yaw),
               Self.ordinarySize(width: width, depth: depth, height: height)

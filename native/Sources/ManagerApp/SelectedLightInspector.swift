@@ -50,9 +50,9 @@ struct SelectedLightInspector: View {
     @State private var colorDetails = false
     @State private var aimDetails = false
     @State private var mountDetails = false
-    private var detailsSupported: Bool { controller.lightFixtureSupported || controller.lightObjectSupported }
+    private var detailsSupported: Bool { controller.lightFixtureSupported || model.lightObjectProposalAvailable }
     private var editable: Bool {
-        ready && controller.connected && (controller.lightInspectorSupported || controller.lightObjectSupported) && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.furnishingDirty && !model.spaceLightingDirty && !model.architectureApplying
+        ready && controller.connected && (controller.lightInspectorSupported || model.lightObjectProposalAvailable) && !model.busy && !model.pending && !model.immutable && !model.placingArtwork && !model.formDirty && !model.positionDirty && !model.architectureGeometryDirty && !model.surfaceMaterialDirty && !model.benchDirty && !model.plaqueDirty && !model.furnishingDirty && !model.spaceLightingDirty && !model.architectureApplying
     }
     private var selected: DocumentValue? {
         model.draft?.candidate["lights"].items?.first { $0["id"].string == model.selectedLightId }
@@ -222,7 +222,7 @@ struct SelectedLightInspector: View {
                             Button("조명 적용") { Task { await model.applyLight() } }.disabled(!ready || !model.canApplyLight)
                             Button("조명 입력 취소") { model.discardLight() }.disabled(!model.lightDirty || model.busy || model.pending || model.architectureApplying)
                         }
-                        if controller.lightObjectSupported {
+                        if model.lightObjectProposalAvailable {
                             DisclosureGroup("천장 부착 위치", isExpanded: $mountDetails) {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Picker("천장 표면", selection: $model.lightMountSurfaceId) {
@@ -248,7 +248,7 @@ struct SelectedLightInspector: View {
                         }
                         if model.lightDirty && !model.lightPreviewing { Text("미리보기 후 적용하세요. 적용 전 입력은 아직 보관되지 않았습니다.").font(.caption).foregroundStyle(.secondary) }
                     }
-                    if !controller.lightInspectorSupported && !controller.lightObjectSupported { Text("현재 연결에서는 조명을 확인할 수 있습니다. 편집 가능한 제작 서비스에 다시 연결하세요.").font(.caption).foregroundStyle(.secondary) }
+                    if !controller.lightInspectorSupported && !model.lightObjectProposalAvailable { Text("현재 연결에서는 조명을 확인할 수 있습니다. 편집 가능한 제작 서비스에 다시 연결하세요.").font(.caption).foregroundStyle(.secondary) }
                 } else { Text("조명 목록에서 대상을 선택하세요.").foregroundStyle(.secondary) }
                 if !model.lightStatus.isEmpty { Text(model.lightStatus).foregroundStyle(.secondary) }
                 SharedFurnishingCatalogView(model: model, viewport: controller, ready: ready)
