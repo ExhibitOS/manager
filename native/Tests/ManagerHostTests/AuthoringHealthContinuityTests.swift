@@ -51,12 +51,33 @@ final class AuthoringHealthContinuityTests: XCTestCase {
             try status(runtimeChanges: ["jobId": "other"]), try status(runtimeChanges: ["nodePid": 201]),
             try status(runtimeChanges: ["postgresPid": 202]), try status(runtimeChanges: ["auxiliaryPid": 203]), try status(runtimeChanges: ["nodePid": NSNull()]),
             try status(runtimeChanges: ["state": "stopping"]), try status(runtimeChanges: ["failureCode": "NATIVE_PROCESS_EXITED"]),
+            try status(runtimeChanges: ["ports": ["web": 57841, "api": 57844, "database": 57845]], configChanges: ["ports": ["web": 57841, "api": 57844, "database": 57845]]),
             try status(configChanges: ["tenantId": user]), try status(configChanges: ["manifestSha256": String(repeating: "2", count: 64)]),
             try status(configChanges: ["ports": ["web": 57840, "api": 57842, "database": 57843]])
         ] { XCTAssertFalse(held.matches(context: owner, status: changed, requireReady: false)) }
         for expiry in ["2000-01-01T00:00:00Z", "invalid"] {
             XCTAssertFalse(try binding(api: api, session: session(expiry: expiry)).matches(context: owner, status: status(), requireReady: false))
         }
+    }
+    func testFailedRevalidationBlocksMintAndConnectOnLaterReadyCycles() async {
+        let model = ManagerModel()
+        var mintCalls = 0, connectCalls = 0
+        // This is the same entry gate used by connectPersonalAuthoring before
+        // obtaining any bridge credentials or invoking the full connect path.
+        model.requireExplicitAuthoringReconnect()
+        for _ in [true, false, true, false, true] {
+            await model.performPermittedAuthoringConnection(automatic: true) {
+                mintCalls += 1; connectCalls += 1
+            }
+        }
+        XCTAssertEqual(mintCalls, 0)
+        XCTAssertEqual(connectCalls, 0)
+        await model.performPermittedAuthoringConnection(automatic: false) {
+            mintCalls += 1; connectCalls += 1
+        }
+        XCTAssertEqual(mintCalls, 1)
+        XCTAssertEqual(connectCalls, 1)
+        XCTAssertTrue(model.automaticAuthoringRecoveryBlocked, "An explicit attempt alone must not reopen automatic recovery")
     }
     func testHealthGateDoesNotRotatePreviewPurposeButNavigationDoes() {
         let controller = NativeViewportController()

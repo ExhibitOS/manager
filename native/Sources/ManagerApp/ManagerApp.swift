@@ -175,7 +175,21 @@ final class ManagerModel: ObservableObject {
         } catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED") }
     }
 
+    private(set) var automaticAuthoringRecoveryBlocked = false
+    func requireExplicitAuthoringReconnect() {
+        automaticAuthoringRecoveryBlocked = true
+        invalidateRetainedAuthoring()
+    }
+    func performPermittedAuthoringConnection(automatic: Bool, operation: () async -> Void) async {
+        guard !automatic || !automaticAuthoringRecoveryBlocked else { return }
+        await operation()
+    }
     func connectPersonalAuthoring(revalidateExisting: Bool = false) async {
+        await performPermittedAuthoringConnection(automatic: revalidateExisting) {
+            await connectPersonalAuthoringAllowed(revalidateExisting: revalidateExisting)
+        }
+    }
+    private func connectPersonalAuthoringAllowed(revalidateExisting: Bool) async {
         guard !exhibitions.oexImport.busy, !exhibitions.catalogThumbnailSaving else { return }
         let jobID = native?.runtime?.jobId
         while let connection = authoringConnection {
@@ -219,7 +233,7 @@ final class ManagerModel: ObservableObject {
                 exhibitions.viewportController.runtimeAvailable = authoringReady
                 return
             } catch {
-                invalidateRetainedAuthoring()
+                requireExplicitAuthoringReconnect()
                 failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED")
                 return
             }
@@ -387,6 +401,7 @@ final class ManagerModel: ObservableObject {
                     guard candidate.matches(context: self.context, status: checked) else { throw BridgeFailure("NATIVE_OEX_SESSION_BOUND") }
                     retainedAuthoring = candidate
                 }
+                automaticAuthoringRecoveryBlocked = false
                 authoringHealthPending = false
                 exhibitions.viewportController.runtimeAvailable = authoringReady
             } else { exhibitions.entranceCredentialRenewalFailed() }
