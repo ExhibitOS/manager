@@ -1091,7 +1091,8 @@ public actor AuthoringAPI {
          "ce4d4446197c9e1c15f54cd2409517334cd8a90339da510b379d9d0b0affbb41",
          "76200d7f27776a9e0060c1f071cc66deeffe5de271d92a02ef4048c56493bdbd",
          "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c",
-         "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26"].contains(manifest)
+         "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26",
+         "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156"].contains(manifest)
         #else
         false
         #endif
@@ -2841,7 +2842,7 @@ public actor AuthoringAPI {
 
     public nonisolated static func supportsPassiveCeilingRailRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26"
+        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156"
         #else
         false
         #endif
@@ -3612,7 +3613,7 @@ public actor AuthoringAPI {
             || supportsPreReadyPreservationReadback(manifest: manifest)
             || manifest == selectedArtworkThumbnailRuntimePin
             || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
-            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26"
+            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156"
         #else
         false
         #endif

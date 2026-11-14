@@ -230,6 +230,12 @@ class ManagerSceneCaptureTests(unittest.TestCase):
                 png=dict(file="scene.png", bytes=len(png), sha256=hashlib.sha256(png).hexdigest(), width=640, height=360))
             receipt = directory / "capture.json"; receipt.write_text(json.dumps(result)); receipt.chmod(0o600)
             self.assertEqual(launcher.check_capture_result(value, directory, 77), result)
+            # The signed Native consumer validates graph completeness and keeps
+            # non-ready renderer evidence; the CLI must retain that distinction.
+            result["furnishings"] = dict(catalog=[dict(kind="light", id=value["placementId"],
+                assetId=value["viewpointId"], modelSha256="d" * 64, status="fallback")], workspace=[])
+            receipt.write_text(json.dumps(result))
+            self.assertEqual(launcher.check_capture_result(value, directory, 77)["furnishings"], result["furnishings"])
             for key, wrong in [("pid", 88), ("etag", "stale"), ("documentUnchanged", False), ("runtimeDrained", False),
                                ("nativeRevision", 8), ("camera", {}), ("candidateSha256", "bad")]:
                 broken = dict(result); broken[key] = wrong; receipt.write_text(json.dumps(broken))

@@ -311,6 +311,36 @@ final class ViewportResourcePolicyTests: XCTestCase {
         }
     }
 
+    func testCompiledCatalogModelReadsUseExactOwnerOriginAndPaths() async throws {
+        let origin = "http://127.0.0.1:13200", tenant = UUID().uuidString.lowercased()
+        let encoded = try ViewportResourcePolicy.encodedRules(origin: origin, tenantId: tenant)
+        let store = WKContentRuleListStore.default()!, identifier = "ExhibitOSCatalogModelRules-" + UUID().uuidString
+        _ = try await store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: encoded)
+        try await store.removeContentRuleList(forIdentifier: identifier)
+        let rules = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [[String: Any]])
+        let patterns = try rules.dropFirst().map { row in
+            try NSRegularExpression(pattern: XCTUnwrap((row["trigger"] as? [String: Any])?["url-filter"] as? String))
+        }
+        func allows(_ value: String) -> Bool {
+            patterns.contains { $0.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil }
+        }
+        let base = origin + "/api/v1/tenants/" + tenant + "/studio/furnishings"
+        for id in ["canted-display-pedestal", "backless-oak-bench", "sculpture-bench-refined", "museum-track-spot",
+                   "recessed-downlight", "museum-wallwasher", "museum-wallwasher-rear-relief", "gallery-open-portal", "rectangular-plinth"] {
+            XCTAssertTrue(allows(base + "/" + id + "/1/model"), id)
+        }
+        for value in [base, base + "/museum-track-spot/1", base + "/museum-track-spot/1/notice",
+                      base + "/unknown/1/model", base + "/museum-track-spot/2/model", base + "/museum-track-spot/01/model",
+                      base + "/museum-track-spot/1/model/", base + "/museum-track-spot/1/model?extra=1",
+                      base + "/Museum-track-spot/1/model", base + "/museum-track-spot/1/complete",
+                      (base + "/museum-track-spot/1/model").replacingOccurrences(of: tenant, with: UUID().uuidString.lowercased()),
+                      (base + "/museum-track-spot/1/model").replacingOccurrences(of: ":13200", with: ":13201"),
+                      (base + "/museum-track-spot/1/model").replacingOccurrences(of: "127.0.0.1", with: "localhost"),
+                      (base + "/museum-track-spot/1/model").replacingOccurrences(of: "http:", with: "https:")] {
+            XCTAssertFalse(allows(value), value)
+        }
+    }
+
     func testActualWebKitCompilerAcceptsPinnedSeparateRulesAndRefusesOriginalDisjunction() async throws {
         let tenant = UUID().uuidString.lowercased()
         let encoded = try ViewportResourcePolicy.encodedRules(origin: "http://127.0.0.1:13200", tenantId: tenant)
