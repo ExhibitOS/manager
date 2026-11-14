@@ -53,6 +53,7 @@ public struct AuthoringSession: Decodable, Sendable {
     public var workspaceFurnishingThumbnailProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
     public var workspacePortalFinishProfile: String? = nil
+    public var workspaceCeilingRailProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
     public var roomBaseLightPlacementProfile: String? = nil
 
@@ -70,6 +71,11 @@ public struct AuthoringSession: Decodable, Sendable {
 
     public var advertisesWorkspacePortalFinish: Bool {
         advertisesWorkspaceArtworkFrameModels && workspacePortalFinishProfile == "workspace-portal-finish-v1"
+    }
+
+    public var advertisesWorkspaceCeilingRail: Bool {
+        advertisesWorkspaceFurnishingRoomVisual && workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
+            && workspaceCeilingRailProfile == "workspace-ceiling-rail-v1"
     }
 
     public var advertisesWorkspaceRectangularPortalFit: Bool {
@@ -1084,7 +1090,8 @@ public actor AuthoringAPI {
          "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902",
          "ce4d4446197c9e1c15f54cd2409517334cd8a90339da510b379d9d0b0affbb41",
          "76200d7f27776a9e0060c1f071cc66deeffe5de271d92a02ef4048c56493bdbd",
-         "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"].contains(manifest)
+         "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c",
+         "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26"].contains(manifest)
         #else
         false
         #endif
@@ -2832,6 +2839,23 @@ public actor AuthoringAPI {
             && ["admin", "artist", "curator"].contains(session?.role ?? "")
     }
 
+    public nonisolated static func supportsPassiveCeilingRailRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26"
+        #else
+        false
+        #endif
+    }
+
+    public nonisolated var workspaceCeilingRailRuntimeQualified: Bool {
+        Self.supportsPassiveCeilingRailRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+    }
+
+    public var admitsWorkspaceCeilingRail: Bool {
+        admitsWorkspaceFurnishings && session?.advertisesWorkspaceCeilingRail == true
+            && Self.supportsPassiveCeilingRailRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+    }
+
     public var admitsWorkspaceArtworkFrames: Bool {
         admitsWorkspaceFurnishings && session?.advertisesWorkspaceArtworkFrame == true
     }
@@ -2884,6 +2908,7 @@ public actor AuthoringAPI {
 
     private var supportedFurnishingExtensionVersion: Int64 {
         guard admitsWorkspaceFurnishings, let session else { return 0 }
+        if admitsWorkspaceCeilingRail { return 11 }
         if admitsFrameImageFitReconciliation { return 10 }
         if admitsWorkspaceStraightMiterFrameFit { return 9 }
         if admitsWorkspaceModularPortalFit || admitsWorkspaceRectangularPortalFit { return 7 }
@@ -2912,6 +2937,7 @@ public actor AuthoringAPI {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         if let fitProfile {
+            guard details.kind != .ceilingRail else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
             let admitted = fitProfile == .straightMiterRing ? admitsWorkspaceStraightMiterFrameFit
                 : fitProfile == .modularPortal ? admitsWorkspaceModularPortalFit
                 : fitProfile == .rectangularPortal && admitsWorkspaceRectangularPortalFit
@@ -3363,6 +3389,21 @@ public actor AuthoringAPI {
         return next
     }
 
+    public func prepareWorkspaceCeilingRail(_ attachment: WorkspaceCeilingRailAttachment, furnishingId: String,
+                                            in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspaceCeilingRail, document.pending == nil, document.tenantId == tenant,
+              session?.userId == document.principalId, let draft = document.draft else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        let held = generation
+        let furnishing = try await workspaceFurnishing(furnishingId, version: 1)
+        let next = try WorkspaceCeilingRail.applying(attachment, furnishing: furnishing, to: draft,
+                                                     supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        _ = try await workspaceFurnishingModel(furnishing)
+        guard generation == held, admitsWorkspaceCeilingRail else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
+    }
+
     public var admitsWorkspaceInfoStandReplacement: Bool {
         admitsWorkspaceFurnishings && session?.advertisesWorkspaceInfoStandReplacement == true
     }
@@ -3571,6 +3612,7 @@ public actor AuthoringAPI {
             || supportsPreReadyPreservationReadback(manifest: manifest)
             || manifest == selectedArtworkThumbnailRuntimePin
             || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
+            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26"
         #else
         false
         #endif
@@ -3849,7 +3891,8 @@ public actor AuthoringAPI {
                                                       admitsModularFit: admitsWorkspaceModularPortalFit,
                                                       admitsRectangularFit: admitsWorkspaceRectangularPortalFit,
                                                       admitsMiterFrames: admitsWorkspaceStraightMiterFrameFit,
-                                                      admitsFrameImageFit: admitsFrameImageFitReconciliation)
+                                                      admitsFrameImageFit: admitsFrameImageFitReconciliation,
+                                                      admitsCeilingRail: admitsWorkspaceCeilingRail)
         if next != nil || furnishing != nil { try await validateNativeViewportEdit(next ?? draft, etag: etag) }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return next

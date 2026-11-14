@@ -87,7 +87,7 @@ enum CatalogDragItem: Sendable {
             switch entry.kind {
             case .pedestal, .bench, .stool, .partition, .barrier, .displayCase, .artworkFrame:
                 self = .workspace(entry)
-            case .infoStand, .portalFinish:
+            case .infoStand, .portalFinish, .ceilingRail:
                 return nil
             }
         case .shared("museum-track-spot", _, .light):

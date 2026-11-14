@@ -49,6 +49,7 @@ enum BundledWorkspaceFurnishings {
         "portal-pale-mineral": .portalFinish, "portal-warm-oak": .portalFinish
     ]
     private static let manifests = [
+        20463: (version: "1.13.0", digest: "3b7f67ab30b5537b7d2355fa76518569859d986e834f3f8c1b05cb8b5354ef9f"),
         7079: (version: "1.2.0", digest: "db9427c19ecaaceb3029c49bd4700955fa9a0b2cb568b422d5238f589e44f4e1"),
         9246: (version: "1.4.0", digest: "7073f8f6dfd7a1c44e8e2b7206b503a35fa1a59eb992d08191dde5f6c6e86e6e"),
         10119: (version: "1.5.0", digest: "c62c8e910e7f2920e989b2d1d76d37ab959d04c2c443dc5631d4478ed5056b0f"),
@@ -62,11 +63,12 @@ enum BundledWorkspaceFurnishings {
         switch version {
         case "1.2.0": return allowed
         case "1.4.0": return allowed.merging(generated) { first, _ in first }
-        case "1.5.0", "1.6.0", "1.7.0", "1.11.0", "1.12.0":
+        case "1.5.0", "1.6.0", "1.7.0", "1.11.0", "1.12.0", "1.13.0":
             var items = allowed.merging(generated) { first, _ in first }
             items[sculptureBench] = .bench
             if version != "1.5.0" { items.merge(portals) { first, _ in first } }
-            if version == "1.7.0" || version == "1.11.0" || version == "1.12.0" { items[compactStand] = .infoStand }
+            if version == "1.7.0" || version == "1.11.0" || version == "1.12.0" || version == "1.13.0" { items[compactStand] = .infoStand }
+            if version == "1.13.0" { items["linear-track"] = .ceilingRail }
             return items
         default: return [:]
         }
@@ -79,7 +81,7 @@ enum BundledWorkspaceFurnishings {
         defer { try? handle.close() }
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              let size = Int(exactly: before.st_size), sizes.contains(size), (1...19_618).contains(size),
+              let size = Int(exactly: before.st_size), sizes.contains(size), (1...20_463).contains(size),
               let data = try handle.read(upToCount: size + 1), data.count == size,
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,

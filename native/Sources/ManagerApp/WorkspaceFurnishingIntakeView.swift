@@ -45,6 +45,10 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var reviewedInfoStand: (furnishing: WorkspaceFurnishing, intakeId: String)?
     @State private var room = ""
     @State private var portalOpening = ""
+    @State private var ceilingSurface = ""
+    @State private var ceilingU = "0"
+    @State private var ceilingV = "0"
+    @State private var ceilingGap = "0"
     @State private var x = "0"
     @State private var y = "0"
     @State private var z = "0"
@@ -74,6 +78,7 @@ struct WorkspaceFurnishingIntakeView: View {
         case .partition, .infoStand, .barrier, .displayCase: model.workspaceFurnishingRoomVisualAvailable
         case .artworkFrame: model.workspaceArtworkFrameAvailable
         case .portalFinish: model.workspacePortalFinishAvailable
+        case .ceilingRail: model.workspaceCeilingRailAvailable
         }
     }
 
@@ -108,6 +113,7 @@ struct WorkspaceFurnishingIntakeView: View {
                     switch target.kind {
                     case .artworkFrame: artworkFrameSection
                     case .portalFinish: portalSection
+                    case .ceilingRail: ceilingRailSection
                     default: placementSection(target)
                     }
                     if target.kind == .bench, let seatPolicyETag, seatPolicyETag == model.state?.etag {
@@ -218,6 +224,9 @@ struct WorkspaceFurnishingIntakeView: View {
                 }
                 if model.workspacePortalFinishAvailable {
                     Text("출입구 마감").tag(WorkspaceFurnishingKind.portalFinish)
+                }
+                if model.workspaceCeilingRailAvailable {
+                    Text("천장 레일").tag(WorkspaceFurnishingKind.ceilingRail)
                 }
             }
             if kind == .portalFinish && model.workspacePortalRectangularFitAvailable {
@@ -391,6 +400,47 @@ struct WorkspaceFurnishingIntakeView: View {
                 }
             } else {
                 Button("전시에 배치") { Task { await place(entry) } }.disabled(room.isEmpty)
+            }
+        }
+    }
+
+    private var ceilingRailSection: some View {
+        Section("천장 레일 배치") {
+            if let draft = model.draft {
+                let ceilings = (draft.candidate["surfaces"].items ?? []).filter { $0["type"].string == "ceiling" }
+                Picker("대상 천장", selection: $ceilingSurface) {
+                    Text("천장 선택").tag("")
+                    ForEach(Array(ceilings.enumerated()), id: \.offset) { index, ceiling in
+                        if let id = ceiling["id"].string {
+                            let room = draft.rooms.first { $0["id"].string == ceiling["roomId"].string }
+                            Text("\(room?["name"].string ?? "공간") · 천장 \(index + 1)").tag(id)
+                        }
+                    }
+                }
+                HStack {
+                    TextField("천장 가로 (m)", text: $ceilingU)
+                    TextField("천장 세로 (m)", text: $ceilingV)
+                }
+                TextField("방향 (°)", text: $yaw)
+                TextField("천장 간격 (m)", text: $ceilingGap)
+                Button("천장에 레일 배치") { Task { await placeCeilingRail() } }
+                    .disabled(ceilingSurface.isEmpty || !model.workspaceCeilingRailAvailable)
+            }
+        }
+    }
+
+    private func placeCeilingRail() async {
+        await perform {
+            guard let target, target.kind == .ceilingRail,
+                  let u = Double(ceilingU), let v = Double(ceilingV), let angle = Double(yaw),
+                  let gap = Double(ceilingGap), [u, v, angle, gap].allSatisfy(\.isFinite) else {
+                throw AuthoringFailure("CEILING_RAIL_INVALID")
+            }
+            let attachment = WorkspaceCeilingRailAttachment(placementId: placementId, surfaceId: ceilingSurface,
+                anchor: [u, v], yaw: angle * .pi / 180, gap: gap)
+            if try await model.placeWorkspaceCeilingRail(attachment, furnishingId: target.id, access: access) {
+                self.target = nil
+                placementStaged = true
             }
         }
     }

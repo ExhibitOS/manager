@@ -43,7 +43,9 @@ public struct FrameImageFitReconciliationRequest: Sendable {
         if previous.fit == nil {
             var rows = previous.rows
             rows[previous.index]["imageFit"] = newFit
-            expected["extensions"][WorkspaceFurnishingPlacement.namespace]["version"] = .integer(10)
+            if base["extensions"][WorkspaceFurnishingPlacement.namespace]["version"] != .integer(11) {
+                expected["extensions"][WorkspaceFurnishingPlacement.namespace]["version"] = .integer(10)
+            }
             expected["extensions"][WorkspaceFurnishingPlacement.namespace]["frameAttachments"] = .array(rows)
         }
         guard FrameImageFitCheck.exact(candidate, expected) else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
@@ -79,17 +81,18 @@ private enum FrameImageFitCheck {
     }
     static func validate(_ candidate: DocumentValue, target: String) throws -> Target {
         let ext = candidate["extensions"][namespace]
-        guard fields(ext, ["version", "furnishings", "placements", "frameAttachments", "openingAttachments"]),
-              let version = ext["version"].integer, [7, 9, 10].contains(version),
+        guard let version = ext["version"].integer, [7, 9, 10, 11].contains(version),
+              fields(ext, version == 11 ? ["version", "furnishings", "placements", "frameAttachments", "openingAttachments", "ceilingAttachments"] : ["version", "furnishings", "placements", "frameAttachments", "openingAttachments"]),
               ext["placements"].items != nil, ext["openingAttachments"].items != nil,
               ext["furnishings"].items != nil, let rows = ext["frameAttachments"].items,
               rows.count <= 128 else { throw fail("FRAME_IMAGE_FIT_INVALID") }
+        if version == 11 { try WorkspaceCeilingRail.validate(candidate: candidate) }
         let indices = rows.indices.filter { rows[$0]["placementId"] == .string(target) }
         guard indices.count == 1 else { throw fail("FRAME_IMAGE_FIT_STALE") }
         var seen: [String: DocumentValue] = [:]
         for row in rows {
             if let fit = present(row, "imageFit") {
-                guard version == 10 else { throw fail("FRAME_IMAGE_FIT_INVALID") }
+                guard version == 10 || version == 11 else { throw fail("FRAME_IMAGE_FIT_INVALID") }
                 let identity = try validateRow(row, candidate: candidate, fit: fit)
                 if let old = seen[identity], !exact(old, fit) { throw fail("FRAME_IMAGE_FIT_CONFLICT") }
                 seen[identity] = fit
