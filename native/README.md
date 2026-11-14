@@ -670,7 +670,9 @@ observation in the rendered view.
 Scene snapshots are returned in-process by the existing live native exhibition
 model's `captureSceneSnapshot(camera:placementId:)` method, before the optional
 GUI save panel. It requires that model's authenticated, clean saved document and
-exact acknowledged WK frame; it is not a renderer-free server or CLI endpoint.
+exact acknowledged WK frame. The local `capture` CLI below launches the normal
+foreground App host; it still requires a visible, active macOS desktop and WK
+renderer. It does not provide a renderer-free HTTP endpoint.
 The original `scene-snapshot-v1` saved-viewpoint request keeps its same-room
 requirement. The separate `scene-snapshot-inspection-v1` capability accepts a
 temporary room-local camera for an existing placement without editing the saved
@@ -684,6 +686,40 @@ actual host execution, including when a fixture is supplied: a CLI process may
 remain inactive and occluded despite an activation request. Compilation or a
 skipped test does not qualify live WK capture, restoration or artwork framing;
 these need an actual visible application host and its returned PNG.
+
+For programmatic capture of an already saved named viewpoint, prepare the
+reviewed fixed App with `scripts/manager-validation-gui.py prepare
+--scene-capture-cli` and the usual artifact/profile pins. Then run
+`scripts/manager-validation-gui.py capture --request /absolute/request.json`
+with the same `--profile`, `--gui-sha`, `--helper-sha`, and
+`--runtime-manifest-sha`. Reserve the existing profile, runtime ports, desktop
+and rendering resources for this invocation. An older App without explicit
+signed CLI admission is rejected before launch.
+
+The private UTF-8 JSON request has exactly these fields: `version` (1),
+`requestId`, `workspaceId`, `tenantId`, `principalId`,
+`runtimeManifestSHA256`, `expectedNativeRevision`, `expectedEditVersion`,
+`exhibitionId`, `serverRevision`, `expectedETag`, `placementId`, `viewpointId`,
+and `outputDirectory`. IDs are UUID strings; the runtime pin is lowercase
+SHA-256. Revisions are positive integers, with native/edit revisions at most
+Int64.max and server revision at most Int32.max. The ETag is the exact quoted
+`studio-r<serverRevision>-<sha256>` value. Read these bindings from the existing
+owned, clean saved document. The placement must reference an artwork and the
+named viewpoint must belong to the same room. The request contains no session
+token or credentials.
+
+Use an existing canonical UID-owned mode0700 output directory outside the
+profile and App. The request must be a private, owned regular file, without
+symlinks or hardlinks, at most64KiB. Existing `launch.json`, `scene.png`, or
+`capture.json` is rejected. The App rechecks owner, runtime, native/edit/saved
+revisions, ETag, resource rights and current frame ACK through the existing
+snapshot path. It does not save or stage document edits. Normal helper/runtime
+shutdown precedes exclusive output of the640×360 `scene.png` and a private
+`capture.json` receipt binding the PNG digest, camera, target and saved state.
+The launcher retains `launch.json` with the actual App PID and artifact pins,
+and reports success only after receipt verification and normal App exit.
+Cancellation requests normal cleanup. A timeout retains the live App and its
+resources for inspection; inspect retained evidence before another invocation.
 
 `--legal-resources /absolute/prepared-directory` copies an existing license/source
 index and its files to `Contents/Resources/NativeRuntime-Legal`. The Help menu's

@@ -160,5 +160,83 @@ class ManagerValidationGuiTests(unittest.TestCase):
                 launcher.verify_legal_resources(legal, files, inventory=inventory)
 
 
+class ManagerSceneCaptureTests(unittest.TestCase):
+    def capture_fixture(self, root):
+        profile, app, directory = root / "profile", root / "app", root / "output"
+        for path in (profile, app, directory): path.mkdir(mode=0o700)
+        value = dict(version=1, requestId="11111111-1111-4111-8111-111111111111",
+            workspaceId="22222222-2222-4222-8222-222222222222", tenantId="33333333-3333-4333-8333-333333333333",
+            principalId="44444444-4444-4444-8444-444444444444", runtimeManifestSHA256="a" * 64,
+            expectedNativeRevision=7, expectedEditVersion=2, exhibitionId="55555555-5555-4555-8555-555555555555",
+            serverRevision=3, expectedETag='"studio-r3-' + "b" * 64 + '"',
+            placementId="66666666-6666-4666-8666-666666666666", viewpointId="77777777-7777-4777-8777-777777777777",
+            outputDirectory=str(directory))
+        request = root / "request.json"; request.write_text(json.dumps(value)); request.chmod(0o600)
+        return profile, app, directory, request, value
+
+    def test_capture_request_scope_and_private_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); profile, app, directory, request, value = self.capture_fixture(root)
+            with patch.object(launcher, "APP", app):
+                actual, destination = launcher.capture_request(request, profile, dict(runtimeManifest="a" * 64))
+                self.assertEqual(actual, value); self.assertEqual(destination, directory)
+                for key, wrong in [("extra", True), ("expectedNativeRevision", True), ("expectedETag", '"studio-r2-' + "b" * 64 + '"'),
+                                   ("runtimeManifestSHA256", "c" * 64), ("outputDirectory", str(profile)),
+                                   ("outputDirectory", str(directory) + "/")]:
+                    broken = dict(value); broken[key] = wrong; request.write_text(json.dumps(broken))
+                    with self.assertRaises(launcher.ValidationError):
+                        launcher.capture_request(request, profile, dict(runtimeManifest="a" * 64))
+                request.write_text(json.dumps(value)); request.chmod(0o644)
+                with self.assertRaises(launcher.ValidationError): launcher.capture_request(request, profile, dict(runtimeManifest="a" * 64))
+
+    def test_capture_rejects_redirected_or_existing_output_before_launch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); profile, app, directory, request, value = self.capture_fixture(root)
+            with patch.object(launcher, "APP", app):
+                (directory / "scene.png").write_bytes(b"retained")
+                with self.assertRaises(launcher.ValidationError): launcher.capture_request(request, profile, dict(runtimeManifest="a" * 64))
+                (directory / "scene.png").unlink()
+                link = root / "redirected"; link.symlink_to(directory)
+                value["outputDirectory"] = str(link); request.write_text(json.dumps(value))
+                with self.assertRaises(launcher.ValidationError): launcher.capture_request(request, profile, dict(runtimeManifest="a" * 64))
+
+    def test_capture_requires_explicit_signed_gui_admission(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); profile, app, directory, request, value = self.capture_fixture(root)
+            (app / launcher.INFO).parent.mkdir(); (app / launcher.INFO).write_bytes(plistlib.dumps({}))
+            with patch.object(launcher, "preflight"), patch.object(launcher, "launch") as start:
+                with self.assertRaisesRegex(launcher.ValidationError, "not been admitted"):
+                    launcher.capture(app, profile, dict(unsignedGUI="c" * 64), request)
+                start.assert_not_called()
+
+    def test_launch_passes_only_capture_request_to_fixed_app(self):
+        with patch.object(launcher, "preflight"), patch.object(launcher, "pids", side_effect=[set(), {77}]), \
+             patch.object(launcher, "launch_services_has_app", side_effect=[False, True]), patch.object(launcher, "output") as run:
+            result = launcher.launch(launcher.APP, Path("/owned-profile"), {}, capture_request=Path("/owned-request.json"))
+            self.assertEqual(result, 77)
+            run.assert_called_once_with("/usr/bin/open", "-a", str(launcher.APP), "--args", "--native-scene-capture-request", "/owned-request.json")
+
+    def test_result_binds_image_camera_saved_state_and_cleanup(self):
+        import hashlib
+        import struct
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); profile, app, directory, request, value = self.capture_fixture(root)
+            png = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + struct.pack(">II", 640, 360)
+            image = directory / "scene.png"; image.write_bytes(png); image.chmod(0o600)
+            result = {key: value[key] for key in ("workspaceId", "tenantId", "principalId", "runtimeManifestSHA256", "exhibitionId", "serverRevision", "placementId", "viewpointId")}
+            result.update(version=1, requestId=value["requestId"], pid=77, bundleId=launcher.BUNDLE_ID, status="succeeded",
+                nativeRevision=7, editVersion=2, etag=value["expectedETag"], documentUnchanged=True, runtimeDrained=True, helperClosed=True,
+                candidateSha256="c" * 64, camera=dict(viewpointId=value["viewpointId"]), target=dict(placementId=value["placementId"]),
+                png=dict(file="scene.png", bytes=len(png), sha256=hashlib.sha256(png).hexdigest(), width=640, height=360))
+            receipt = directory / "capture.json"; receipt.write_text(json.dumps(result)); receipt.chmod(0o600)
+            self.assertEqual(launcher.check_capture_result(value, directory, 77), result)
+            for key, wrong in [("pid", 88), ("etag", "stale"), ("documentUnchanged", False), ("runtimeDrained", False),
+                               ("nativeRevision", 8), ("camera", {}), ("candidateSha256", "bad")]:
+                broken = dict(result); broken[key] = wrong; receipt.write_text(json.dumps(broken))
+                with self.assertRaises(launcher.ValidationError): launcher.check_capture_result(value, directory, 77)
+            receipt.write_text(json.dumps(result)); image.write_bytes(png + b"changed")
+            with self.assertRaises(launcher.ValidationError): launcher.check_capture_result(value, directory, 77)
+
+
 if __name__ == "__main__":
     unittest.main()
