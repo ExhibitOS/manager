@@ -633,8 +633,16 @@ private enum NativeBrandImages {
 @MainActor
 final class ManagerDelegate: NSObject, NSApplicationDelegate {
     weak var model: ManagerModel?
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    weak var capture: NativeSceneCaptureRunner?
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        if let capture, capture.requested { capture.cancel() }
+        return false
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let capture, capture.requested {
+            if capture.mayTerminate { return .terminateNow }
+            capture.cancel(); return .terminateCancel
+        }
         guard let model, model.mayHaveServices || model.hasUnsavedAuthoring || model.presentationPending || model.authoring.gpuPreviewPending else { return .terminateNow }
         if model.quitting { return .terminateCancel }
         if model.mayHaveServices || model.hasUnsavedAuthoring {
@@ -656,20 +664,25 @@ final class ManagerDelegate: NSObject, NSApplicationDelegate {
 struct ManagerApp: App {
     @NSApplicationDelegateAdaptor(ManagerDelegate.self) private var delegate
     @StateObject private var model = ManagerModel()
+    @StateObject private var capture = NativeSceneCaptureRunner()
     private var legalIndexURL: URL? {
         Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "NativeRuntime-Legal")
     }
     var body: some Scene {
         Window("ExhibitOS Manager", id: "manager") {
-            ManagerView(model: model).task { delegate.model = model; await model.refresh() }
+            if capture.requested {
+                NativeSceneCaptureView(runner: capture).onAppear { delegate.capture = capture; capture.start() }
+            } else {
+                ManagerView(model: model).task { delegate.model = model; await model.refresh() }
+            }
         }
         .defaultSize(width: 960, height: 680)
         .commands {
             CommandMenu("작업") {
                 Button("상태 다시 확인") { Task { await model.refresh() } }
-                    .keyboardShortcut("r").disabled(model.busy)
-                Button("로컬 제작 시작") { Task { await model.prepareAndStart() } }.disabled(!model.canStart)
-                Button("로컬 제작 정지") { Task { await model.stop() } }.disabled(!model.canStop)
+                    .keyboardShortcut("r").disabled(capture.requested || model.busy)
+                Button("로컬 제작 시작") { Task { await model.prepareAndStart() } }.disabled(capture.requested || !model.canStart)
+                Button("로컬 제작 정지") { Task { await model.stop() } }.disabled(capture.requested || !model.canStop)
                 Divider()
                 ForEach(Step.allCases, id: \.self) { step in
                     Button(step.title) { model.change(step: step) }
@@ -677,8 +690,8 @@ struct ManagerApp: App {
                 }
             }
             CommandMenu("보기") {
-                Button("일반 모드") { model.change(mode: .beginner) }
-                Button("전문가 모드") { model.change(mode: .expert) }
+                Button("일반 모드") { model.change(mode: .beginner) }.disabled(capture.requested)
+                Button("전문가 모드") { model.change(mode: .expert) }.disabled(capture.requested)
             }
             CommandGroup(after: .help) {
                 Button("라이선스 및 소스 보기") {

@@ -10,6 +10,8 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import stat
+import struct
 import subprocess
 import tempfile
 import time
@@ -169,7 +171,7 @@ def launch_services_has_app():
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None):
+def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, scene_capture_cli=False):
     pinned_legal = "legalInventory" in pins
     require((legal is not None) == pinned_legal and (inventory is not None) == pinned_legal,
             "Legal resources, inventory and its reviewed SHA-256 must be supplied together.")
@@ -183,7 +185,9 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None):
         except (ValidationError, OSError, ValueError, subprocess.CalledProcessError):
             pass
         else:
-            return
+            existing = plistlib.loads((APP / INFO).read_bytes())
+            if not scene_capture_cli or existing.get("ExhibitOSValidationSceneCaptureCLI") == pins["unsignedGUI"]:
+                return
     require(all(path.is_absolute() and path.resolve(strict=True) == path for path in (gui, helper, runtime)),
             "Supply the canonical paths of the reviewed GUI executable, helper and runtime.")
     require(sha(gui) == pins["unsignedGUI"] and sha(helper) == pins["unsignedHelper"]
@@ -211,6 +215,8 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None):
         info.update(CFBundleIdentifier=BUNDLE_ID, CFBundleName="ExhibitOS Manager Validation",
                     CFBundleDisplayName="ExhibitOS Manager Validation", ExhibitOSValidationProfile=str(profile),
                     CFBundleExecutable=GUI.name, ExhibitOSValidationInputs=pins)
+        if scene_capture_cli:
+            info["ExhibitOSValidationSceneCaptureCLI"] = pins["unsignedGUI"]
         info_path.write_bytes(plistlib.dumps(info))
         require(sha(candidate / GUI) == pins["unsignedGUI"] and sha(candidate / HELPER) == pins["unsignedHelper"],
                 "Assembled executable hashes differ from the reviewed build.")
@@ -239,11 +245,14 @@ def preflight(bundle, profile, pins):
     verify_bundle(bundle, profile, pins)
 
 
-def launch(bundle, profile, pins):
+def launch(bundle, profile, pins, capture_request=None):
     preflight(bundle, profile, pins)
     require(not pids() and not launch_services_has_app(),
             "The validation app is already open. Verify and attach to its owned PID instead of opening it again.")
-    output("/usr/bin/open", "-a", str(bundle))
+    if capture_request is None:
+        output("/usr/bin/open", "-a", str(bundle))
+    else:
+        output("/usr/bin/open", "-a", str(bundle), "--args", "--native-scene-capture-request", str(capture_request))
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         running = pids()
@@ -254,9 +263,100 @@ def launch(bundle, profile, pins):
     raise ValidationError("The fixed validation process did not register. Inspect the current app before retrying.")
 
 
+CAPTURE_KEYS = frozenset(("version", "requestId", "workspaceId", "tenantId", "principalId", "runtimeManifestSHA256",
+    "expectedNativeRevision", "expectedEditVersion", "exhibitionId", "serverRevision", "expectedETag",
+    "placementId", "viewpointId", "outputDirectory"))
+
+
+def capture_request(path, profile, pins):
+    require(path.is_absolute() and path.resolve(strict=True) == path, "Use a canonical owned capture request file.")
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        item = os.fstat(stream.fileno())
+        require(stat.S_ISREG(item.st_mode) and item.st_uid == os.getuid() and item.st_nlink == 1
+                and item.st_mode & 0o077 == 0 and 0 < item.st_size <= 65536, "Capture request must be a small private owned regular file.")
+        value = json.load(stream)
+    require(type(value) is dict and set(value) == CAPTURE_KEYS and type(value["version"]) is int and value["version"] == 1,
+            "Capture request has an unsupported shape or version.")
+    for key in ("requestId", "workspaceId", "tenantId", "principalId", "exhibitionId", "placementId", "viewpointId"):
+        require(type(value[key]) is str and re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value[key]),
+                "Capture request identifiers must be UUIDs.")
+    require(type(value["expectedNativeRevision"]) is int and 0 < value["expectedNativeRevision"] <= 2**63 - 1
+            and type(value["expectedEditVersion"]) is int and 0 < value["expectedEditVersion"] <= 2**63 - 1
+            and type(value["serverRevision"]) is int and 0 < value["serverRevision"] <= 2**31 - 1,
+            "Capture revisions must be positive integers in the supported range.")
+    require(value["runtimeManifestSHA256"] == pins["runtimeManifest"] and type(value["expectedETag"]) is str
+            and re.fullmatch(r'"studio-r' + str(value["serverRevision"]) + r'-[0-9a-f]{64}"', value["expectedETag"]),
+            "Capture manifest or saved revision/ETag differs from the admitted request.")
+    require(type(value["outputDirectory"]) is str, "Capture output must be a private directory.")
+    directory = Path(value["outputDirectory"])
+    require(directory.is_absolute() and str(directory) == value["outputDirectory"] and directory.resolve(strict=True) == directory and directory.is_dir(),
+            "Use a canonical existing capture output directory.")
+    info = directory.stat()
+    require(info.st_uid == os.getuid() and stat.S_IMODE(info.st_mode) == 0o700,
+            "Capture output directory must be private and owned.")
+    for protected in (profile.resolve(strict=True), APP.resolve(strict=True)):
+        require(directory != protected and protected not in directory.parents, "Capture output must be outside the profile and App.")
+    require(not any((directory / name).exists() or (directory / name).is_symlink() for name in ("scene.png", "capture.json", "launch.json")),
+            "Capture output already contains a result; do not overwrite or retry it.")
+    return value, directory
+
+
+def check_capture_result(value, directory, pid):
+    path = directory / "capture.json"
+    info = path.lstat()
+    require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
+            and info.st_size <= 65536 and info.st_mode & 0o077 == 0, "Capture receipt is not a private owned result.")
+    result = json.loads(path.read_bytes())
+    require(type(result) is dict, "Capture receipt has an unsupported shape.")
+    require(type(result.get("version")) is int and result.get("version") == 1 and result.get("requestId") == value["requestId"] and result.get("pid") == pid
+            and result.get("bundleId") == BUNDLE_ID, "Capture receipt is not bound to the owned App invocation.")
+    require(result.get("status") == "succeeded", "Native scene capture failed: " + str(result.get("errorCode", "NATIVE_SCENE_CAPTURE_FAILED")))
+    bindings = {key: value[key] for key in ("workspaceId", "tenantId", "principalId", "runtimeManifestSHA256", "exhibitionId", "serverRevision", "placementId", "viewpointId")}
+    bindings.update(nativeRevision=value["expectedNativeRevision"], editVersion=value["expectedEditVersion"], etag=value["expectedETag"])
+    require(all(result.get(key) == expected for key, expected in bindings.items())
+            and all(result.get(key) is True for key in ("documentUnchanged", "runtimeDrained", "helperClosed")),
+            "Capture scope or normal preservation/cleanup proof does not match.")
+    png = directory / "scene.png"
+    item = png.lstat()
+    require(stat.S_ISREG(item.st_mode) and item.st_uid == os.getuid() and item.st_nlink == 1
+            and item.st_mode & 0o077 == 0 and 0 < item.st_size <= 512 * 1024, "Capture PNG is not a bounded private owned file.")
+    body = png.read_bytes()
+    require(len(body) >= 24 and body[:8] == b"\x89PNG\r\n\x1a\n" and body[12:16] == b"IHDR"
+            and struct.unpack(">II", body[16:24]) == (640, 360), "Capture PNG dimensions or signature differ from the protocol.")
+    require(type(result.get("candidateSha256")) is str and re.fullmatch(r"[0-9a-f]{64}", result["candidateSha256"]), "Capture scene digest is invalid.")
+    expected_png = dict(file="scene.png", bytes=len(body), sha256=hashlib.sha256(body).hexdigest(), width=640, height=360)
+    require(type(result.get("camera")) is dict and type(result.get("target")) is dict, "Capture camera/target metadata has an unsupported shape.")
+    require(result.get("png") == expected_png and result.get("camera", {}).get("viewpointId") == value["viewpointId"]
+            and result.get("target", {}).get("placementId") == value["placementId"], "Capture image or camera/placement binding failed integrity checks.")
+    return result
+
+
+def capture(bundle, profile, pins, path):
+    preflight(bundle, profile, pins)
+    info = plistlib.loads((bundle / INFO).read_bytes())
+    require(info.get("ExhibitOSValidationSceneCaptureCLI") == pins["unsignedGUI"],
+            "This reviewed App has not been admitted for scene-capture CLI; prepare the qualified artifact explicitly.")
+    value, directory = capture_request(path, profile, pins)
+    pid = launch(bundle, profile, pins, capture_request=path)
+    started = dict(app=str(bundle), bundleId=BUNDLE_ID, profile=str(profile), pins=pins, pid=pid, requestId=value["requestId"])
+    fd = os.open(directory / "launch.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        json.dump(started, stream, indent=2); stream.write("\n"); stream.flush(); os.fsync(stream.fileno())
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        running = pids()
+        require(not running or running == {pid}, "Capture App identity changed; preserve the current process for owner inspection.")
+        if not running and not launch_services_has_app():
+            require((directory / "capture.json").exists(), "Capture App exited without a receipt. Do not blindly relaunch.")
+            return {**started, "capture": check_capture_result(value, directory, pid), "normalAppExit": True}
+        time.sleep(.25)
+    raise ValidationError("Capture is still active; preserve the owned App and resources for inspection. No timeout kill was issued.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "verify", "launch", "attach"))
+    parser.add_argument("action", choices=("prepare", "verify", "launch", "attach", "capture"))
     parser.add_argument("--app", type=Path, default=APP)
     parser.add_argument("--profile", type=Path, required=True)
     for option in ("gui-sha", "helper-sha", "runtime-manifest-sha"):
@@ -267,8 +367,12 @@ def main():
     parser.add_argument("--legal-inventory", type=Path)
     parser.add_argument("--legal-inventory-sha")
     parser.add_argument("--pid", type=int)
+    parser.add_argument("--request", type=Path)
+    parser.add_argument("--scene-capture-cli", action="store_true")
     args = parser.parse_args()
     try:
+        require(not args.scene_capture_cli or args.action == "prepare", "--scene-capture-cli is a reviewed prepare-only admission.")
+        require((args.request is not None) == (args.action == "capture"), "Only capture requires --request.")
         check_fixed_path(args.app)
         pins = dict(unsignedGUI=args.gui_sha, unsignedHelper=args.helper_sha, runtimeManifest=args.runtime_manifest_sha)
         require(all(re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins.values()),
@@ -296,9 +400,11 @@ def main():
             if args.action == "prepare":
                 require(args.profile.resolve(strict=True) == args.profile and args.profile.is_dir(),
                         "Use the canonical existing validation profile.")
-                prepare(args.profile, pins, args.gui, args.helper, args.runtime, *legal_paths)
+                prepare(args.profile, pins, args.gui, args.helper, args.runtime, *legal_paths, scene_capture_cli=args.scene_capture_cli)
             result = dict(app=str(APP), bundleId=BUNDLE_ID, profile=str(args.profile), pins=pins)
-            if args.action == "launch":
+            if args.action == "capture":
+                result = capture(args.app, args.profile, pins, args.request)
+            elif args.action == "launch":
                 result["pid"] = launch(args.app, args.profile, pins)
             else:
                 preflight(args.app, args.profile, pins)
