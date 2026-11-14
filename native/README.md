@@ -1790,3 +1790,13 @@ These are source capabilities pending queued checks and actual registration,
 placement, Save/reopen and matched output/Viewer observation. They do not establish
 mechanical/electrical support, length scaling, a moving fixture joint or acceptance
 of an illumination change. Existing public exhibition validation remains separate.
+
+
+The qualified current52 interrupted-preservation runtime also admits ordinary
+saved-head static export in the native helper, matching the client readiness
+projection. This exact DEBUG owner-validation pin does not extend isolated or
+protected-document export, native-original detail authority, fresh installation,
+or runtime transition admission. Existing saved-head owner/session/publication
+receipt, saved-document and output-parent checks remain mandatory. A failed
+attempt can resume only through its existing identical durable request binding;
+source journals and failed native-original intents remain preserved.
