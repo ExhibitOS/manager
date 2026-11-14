@@ -1782,7 +1782,9 @@ server-derived `passive-ceiling-rail-v1` source bounds without a caller fit requ
 The placement form selects an existing ceiling and accepts a local two-coordinate
 anchor, yaw and gap. It derives a unit-scale placement and validates all eight
 measured corners against the actual ceiling and room. Generic floor drag placement
-is unavailable for rails. The extension writes namespace v11 `ceilingAttachments`
+is unavailable for rails. The exact rail runtime also admits ordinary saved-head static export in the
+helper; isolated/protected-document and native-original detail scope remain
+separate. The extension writes namespace v11 `ceilingAttachments`
 and preserves existing frame image-fit and portal attachments.
 
 These are source capabilities pending queued checks and actual registration,
