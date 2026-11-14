@@ -101,7 +101,8 @@ final class PlacedExitDoorDepthCorrectionTests: XCTestCase {
                 XCTAssertEqual(check.value(forHTTPHeaderField: "If-Match"), state.etag)
                 XCTAssertEqual(check.value(forHTTPHeaderField: "x-csrf-token"), "fixture")
             }
-            if mode == "valid" { XCTAssertEqual(calls.filter { $0.httpMethod == "POST" }.count, 1) }
+            let expectedChecks = ["valid", "late-policy", "capability", "server-refusal"].contains(mode) ? 1 : 0
+            XCTAssertEqual(calls.filter { $0.httpMethod == "POST" }.count, expectedChecks, mode)
             if ["foreign", "dirty"].contains(mode) { XCTAssertEqual(calls.count, 1) }
         }
     }
