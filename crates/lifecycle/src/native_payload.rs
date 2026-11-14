@@ -2441,9 +2441,9 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(!combined_thumbnail_fresh_host_matches(target));
         assert!(!current52_interrupted_host_matches(target));
         assert!(saved_workspace_transition_target(target.2));
-        assert!(crate::native_static_export::saved_head_runtime_allowed(target.2));
-        assert!(!crate::native_static_export::saved_head_runtime_allowed(&target.2.to_uppercase()));
-        assert!(!crate::native_static_export::saved_head_runtime_allowed(&"f".repeat(64)));
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(&target.2.to_uppercase()));
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(&"f".repeat(64)));
         let pair = (source.2, target.2);
         assert!(current_image_thumbnail_transition(pair));
         assert!(saved_workspace_transition_supported(pair));
