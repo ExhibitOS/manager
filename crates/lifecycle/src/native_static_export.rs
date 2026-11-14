@@ -12,7 +12,11 @@ pub(crate) const SAVED_HEAD_RUNTIME: &str =
     "cfc795c35628e15a9f91b71dcca0587023a0b249b2984a2615973b72bc6ed32f";
 pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
     cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))
-        && (manifest == SAVED_HEAD_RUNTIME || isolated_saved_head_runtime_allowed(manifest))
+        && (manifest == SAVED_HEAD_RUNTIME
+            // The qualified current52 producer advertises ordinary saved-head export.
+            // This does not admit isolated/private protected-document exports.
+            || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
+            || isolated_saved_head_runtime_allowed(manifest))
 }
 fn isolated_saved_head_runtime_allowed(manifest: &str) -> bool {
     cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))
@@ -2536,6 +2540,23 @@ mod detail_tests {
         assert!(head.receipt_query(JOB, JOB, JOB, &session_hash).is_err());
         wire["savedHeadVerified"] = true.into();
         assert!(serde_json::from_value::<Input>(wire).is_err());
+    }
+
+    #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]
+    #[test]
+    fn current52_saved_head_export_is_ordinary_only_and_exact() {
+        let current = crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2;
+        assert!(saved_head_runtime_allowed(current));
+        assert!(!isolated_saved_head_runtime_allowed(current));
+        assert!(!saved_head_runtime_allowed(crate::native_payload::METRIC_FRAME_TARGET.2));
+        assert!(!saved_head_runtime_allowed(&"f".repeat(64)));
+        let plain: SavedHead = serde_json::from_value(serde_json::json!({"exhibitionId":JOB,"requestId":JOB,
+            "etag":format!("\"studio-r4-{}\"","a".repeat(64)),"revision":13,"editVersion":4,"revisionSha256":"b".repeat(64)})).unwrap();
+        assert!(plain.isolated_runtime_allowed(current));
+        assert!(plain.receipt_query(JOB, JOB, JOB, &"c".repeat(64)).is_ok());
+        let mut protected = plain.clone();
+        protected.protected_document = Some(ProtectedDocument { exhibition_id: JOB.into(), etag: "saved".into(), revision: 1, edit_version: 1 });
+        assert!(!protected.isolated_runtime_allowed(current));
     }
 
     #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]
