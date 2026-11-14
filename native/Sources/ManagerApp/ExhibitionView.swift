@@ -2133,6 +2133,29 @@ final class ExhibitionModel: ObservableObject {
         guard access == viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return result
     }
+    var workspaceCeilingRailAvailable: Bool {
+        workspaceFurnishingIntakeAvailable && session?.advertisesWorkspaceCeilingRail == true
+            && api?.workspaceCeilingRailRuntimeQualified == true
+    }
+    func placeWorkspaceCeilingRail(_ attachment: WorkspaceCeilingRailAttachment, furnishingId: String,
+                                   access: UUID) async throws -> Bool {
+        try await withWorkspaceFurnishingAccess(access) { api in
+            guard workspaceCeilingRailAvailable, !immutable, !formDirty, !positionDirty, !architectureDirty,
+                  viewportController.editingContextActive, var current = state else {
+                throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED")
+            }
+            let next = try await api.prepareWorkspaceCeilingRail(attachment, furnishingId: furnishingId, in: current)
+            guard access == viewportAccessID, state?.revision == current.revision, state?.draft == current.draft else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard let next else { return false }
+            current.draft = next
+            try await persist(current)
+            syncFields()
+            notice = "천장 레일 배치를 이 Mac에 보관했습니다. 전시를 저장하세요."
+            return true
+        }
+    }
     func placeWorkspaceFurnishing(_ placement: WorkspaceFurnishingPlacement, access: UUID,
                                  expectedModelSHA256: String? = nil, infoStandIntakeId: String? = nil) async throws -> Bool {
         try await withWorkspaceFurnishingAccess(access) { api in

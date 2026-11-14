@@ -13,7 +13,8 @@ public enum WorkspacePortalFinish {
     // The client carries the server's registered fit descriptor into the visual delta.
     static func applying(to draft: NativeExhibitionDraft, openingId: String,
                          furnishing: WorkspaceFurnishing?, admitsModularFit: Bool = false,
-                         admitsRectangularFit: Bool = false, admitsMiterFrames: Bool = false, admitsFrameImageFit: Bool = false) throws -> NativeExhibitionDraft? {
+                         admitsRectangularFit: Bool = false, admitsMiterFrames: Bool = false, admitsFrameImageFit: Bool = false,
+                         admitsCeilingRail: Bool = false) throws -> NativeExhibitionDraft? {
         let openingId = openingId.lowercased()
         let hosts = draft.candidate["openings"].items?.filter { $0["id"].string?.lowercased() == openingId }
         guard workspaceFurnishingID(openingId), hosts?.count == 1, hosts?.first?["type"].string == "door" else {
@@ -29,17 +30,19 @@ public enum WorkspacePortalFinish {
         var placements: [DocumentValue] = []
         var frames: [DocumentValue] = []
         var openings: [DocumentValue] = []
+        var ceilings: [DocumentValue] = []
         if let existing = extensions[namespace] {
             guard case .object(let fields) = existing, let version = existing["version"].integer,
                   version == 3 || version == 5 || version == 6 || (version == 7 && (admitsModularFit || admitsRectangularFit))
-                    || (version == 9 && admitsMiterFrames) || (version == 10 && admitsFrameImageFit),
+                    || (version == 9 && admitsMiterFrames) || (version == 10 && admitsFrameImageFit) || (version == 11 && admitsCeilingRail),
                   let listed = existing["furnishings"].items,
                   let placed = existing["placements"].items else {
                 throw AuthoringFailure("VIEWPORT_COMMAND_DENIED")
             }
             let common: Set<String> = ["version", "furnishings", "placements", "frameAttachments"]
-            let expected: Set<String> = version == 3 ? ["version", "furnishings", "placements"]
+            var expected: Set<String> = version == 3 ? ["version", "furnishings", "placements"]
                 : version >= 6 ? common.union(["openingAttachments"]) : common
+            if version == 11 { expected.insert("ceilingAttachments"); try WorkspaceCeilingRail.validate(candidate: candidate) }
             guard Set(fields.keys) == expected,
                   version != 3 || (!listed.isEmpty && listed.count <= 64 && !placed.isEmpty && placed.count <= 128
                     && listed.allSatisfy({ item in
@@ -55,6 +58,7 @@ public enum WorkspacePortalFinish {
             placements = placed
             frames = existing["frameAttachments"].items ?? []
             openings = existing["openingAttachments"].items ?? []
+            ceilings = existing["ceilingAttachments"].items ?? []
         }
         let targets = openings.compactMap { $0["openingId"].string?.lowercased() }
         guard targets.count == openings.count, Set(targets).count == targets.count else {
@@ -96,15 +100,18 @@ public enum WorkspacePortalFinish {
         } else {
             let hasMiter = furnishings.contains { $0["fit"]["geometry"]["profile"].string == WorkspaceFurnishingFitProfile.straightMiterRing.rawValue }
             let legacyVersion: Int64 = hasMiter ? 9 : furnishings.contains { $0["fit"] != .null } ? 7 : openings.isEmpty ? 5 : 6
-            let version = max(candidate["extensions"][namespace]["version"].integer == 10 ? 10 : 0, legacyVersion)
+            let current = candidate["extensions"][namespace]["version"].integer ?? 0
+            let version = max(current == 11 ? 11 : current == 10 ? 10 : 0, legacyVersion)
             var fields: [String: DocumentValue] = [
                 "version": .integer(version), "furnishings": .array(furnishings),
                 "placements": .array(placements), "frameAttachments": .array(frames)
             ]
             if version >= 6 { fields["openingAttachments"] = .array(openings) }
+            if version == 11 { fields["ceilingAttachments"] = .array(ceilings) }
             extensions[namespace] = .object(fields)
         }
         candidate["extensions"] = .object(extensions)
+        if candidate["extensions"][namespace]["version"] == .integer(11) { try WorkspaceCeilingRail.validate(candidate: candidate) }
         var next = draft
         try next.replaceCandidate(candidate)
         return next

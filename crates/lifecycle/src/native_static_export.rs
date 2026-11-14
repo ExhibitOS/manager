@@ -16,6 +16,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             // The qualified current52 producer advertises ordinary saved-head export.
             // This does not admit isolated/private protected-document exports.
             || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
+            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26"
             || isolated_saved_head_runtime_allowed(manifest))
 }
 fn isolated_saved_head_runtime_allowed(manifest: &str) -> bool {
@@ -2540,6 +2541,16 @@ mod detail_tests {
         assert!(head.receipt_query(JOB, JOB, JOB, &session_hash).is_err());
         wire["savedHeadVerified"] = true.into();
         assert!(serde_json::from_value::<Input>(wire).is_err());
+    }
+
+    #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]
+    #[test]
+    fn passive_ceiling_rail_saved_head_admission_matches_ordinary_client_scope() {
+        let target = crate::native_payload::PASSIVE_CEILING_RAIL_TARGET.2;
+        assert!(saved_head_runtime_allowed(target));
+        assert!(!isolated_saved_head_runtime_allowed(target));
+        assert!(!saved_head_runtime_allowed(crate::native_payload::METRIC_FRAME_TARGET.2));
+        assert!(!saved_head_runtime_allowed(&"f".repeat(64)));
     }
 
     #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]

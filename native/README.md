@@ -1766,6 +1766,32 @@ old content automatically, change other installation settings, unlock the GUI,
 or publish an exhibition. A rejected server check or Save remains a failure to
 report and reconcile through the existing owner lifecycle.
 
+### Passive ceiling rail and namespace v11
+
+The development client consumes the additive `workspace-ceiling-rail-v1` session
+capability only with room-visual and reusable source-fit capabilities. The exact
+qualified Spec35 runtime is admitted in DEBUG owner validation; older runtime
+capabilities do not imply rail support. Its retained-profile transitions are clean same-catalog refreshes from the
+qualified metric-frame runtime or its interrupted-preservation successor. Interrupted recovery and fresh-profile admission retain their prior
+scope. Catalog52 and the SQL47 ledger remain unchanged.
+
+Default furnishings 1.13 exposes `linear-track` as an ordinary local GLB source.
+Selection verifies the pinned catalog, original model and license notice; it does
+not synthesize a registered furnishing ID. Ordinary registration obtains the
+server-derived `passive-ceiling-rail-v1` source bounds without a caller fit request.
+The placement form selects an existing ceiling and accepts a local two-coordinate
+anchor, yaw and gap. It derives a unit-scale placement and validates all eight
+measured corners against the actual ceiling and room. Generic floor drag placement
+is unavailable for rails. The exact rail runtime also admits ordinary saved-head static export in the
+helper; isolated/protected-document and native-original detail scope remain
+separate. The extension writes namespace v11 `ceilingAttachments`
+and preserves existing frame image-fit and portal attachments.
+
+These are source capabilities pending queued checks and actual registration,
+placement, Save/reopen and matched output/Viewer observation. They do not establish
+mechanical/electrical support, length scaling, a moving fixture joint or acceptance
+of an illumination change. Existing public exhibition validation remains separate.
+
 
 The qualified current52 interrupted-preservation runtime also admits ordinary
 saved-head static export in the native helper, matching the client readiness

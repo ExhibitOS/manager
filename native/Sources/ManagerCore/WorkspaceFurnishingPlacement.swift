@@ -25,7 +25,8 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
     func applying(_ furnishing: WorkspaceFurnishing, to draft: NativeExhibitionDraft,
                   supportedExtensionVersion: Int64 = 1) throws -> NativeExhibitionDraft? {
         var version = furnishing.details.kind.minimumExtensionVersion
-        guard furnishing.details.kind != .artworkFrame, furnishing.details.kind != .portalFinish, version <= supportedExtensionVersion else {
+        guard furnishing.details.kind != .artworkFrame, furnishing.details.kind != .portalFinish,
+              furnishing.details.kind != .ceilingRail, version <= supportedExtensionVersion else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         let matches = draft.rooms.filter { $0["id"].string == roomId }
@@ -63,9 +64,10 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
         var placements: [DocumentValue] = []
         var frameAttachments: [DocumentValue]?
         var openingAttachments: [DocumentValue]?
+        var ceilingAttachments: [DocumentValue]?
         if let existing = extensions[Self.namespace] {
             guard case .object(let fields) = existing,
-                  let existingVersion = existing["version"].integer, ((1...7).contains(existingVersion) || existingVersion == 9 || existingVersion == 10),
+                  let existingVersion = existing["version"].integer, ((1...7).contains(existingVersion) || existingVersion == 9 || existingVersion == 10 || existingVersion == 11),
                   let assets = existing["furnishings"].items,
                   let rows = existing["placements"].items, !assets.isEmpty,
                   assets.count <= 64, rows.count <= 128 else {
@@ -74,7 +76,9 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
             var expected: Set<String> = ["version", "furnishings", "placements"]
             if existingVersion >= 4 { expected.insert("frameAttachments") }
             if existingVersion >= 6 { expected.insert("openingAttachments") }
+            if existingVersion == 11 { expected.insert("ceilingAttachments"); try WorkspaceCeilingRail.validate(candidate: candidate) }
             openingAttachments = existing["openingAttachments"].items
+            ceilingAttachments = existing["ceilingAttachments"].items
             guard Set(fields.keys) == expected, existingVersion < 6 || openingAttachments != nil,
                   existingVersion != 6 || openingAttachments?.isEmpty == false else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_INVALID")
@@ -112,7 +116,9 @@ public struct WorkspaceFurnishingPlacement: Codable, Equatable, Sendable {
         ]
         if let frameAttachments { fields["frameAttachments"] = .array(frameAttachments) }
         if let openingAttachments { fields["openingAttachments"] = .array(openingAttachments) }
+        if let ceilingAttachments { fields["ceilingAttachments"] = .array(ceilingAttachments) }
         candidate["extensions"][Self.namespace] = .object(fields)
+        if version == 11 { try WorkspaceCeilingRail.validate(candidate: candidate) }
         var result = draft
         try result.replaceCandidate(candidate)
         return result

@@ -8,6 +8,7 @@ public enum WorkspaceFurnishingKind: String, Codable, CaseIterable, Sendable {
     case displayCase = "display-case"
     case artworkFrame = "artwork-frame"
     case portalFinish = "portal-finish"
+    case ceilingRail = "ceiling-rail"
 
     var minimumExtensionVersion: Int64 {
         switch self {
@@ -16,6 +17,7 @@ public enum WorkspaceFurnishingKind: String, Codable, CaseIterable, Sendable {
         case .partition, .infoStand, .barrier, .displayCase: 3
         case .artworkFrame: 4
         case .portalFinish: 6
+        case .ceilingRail: 11
         }
     }
 }
@@ -171,11 +173,12 @@ public enum WorkspaceFurnishingFitProfile: String, Codable, Sendable {
     case continuousPortal = "continuous-portal-v1"
     case modularPortal = "modular-portal-v1"
     case rectangularPortal = "rectangular-portal-v1"
+    case passiveCeilingRail = "passive-ceiling-rail-v1"
 
-    var minimumExtensionVersion: Int64 { self == .straightMiterRing ? 9 : 7 }
+    var minimumExtensionVersion: Int64 { self == .passiveCeilingRail ? 11 : self == .straightMiterRing ? 9 : 7 }
 
     func matches(_ kind: WorkspaceFurnishingKind) -> Bool {
-        kind == ((self == .straightRing || self == .straightMiterRing) ? .artworkFrame : .portalFinish)
+        kind == (self == .passiveCeilingRail ? .ceilingRail : (self == .straightRing || self == .straightMiterRing) ? .artworkFrame : .portalFinish)
     }
 }
 
@@ -198,7 +201,7 @@ public struct WorkspaceFurnishingFit: Codable, Equatable, Sendable {
         sourceBytes = try fields.decode(Int.self, forKey: .sourceBytes)
         sourceSha256 = try fields.decode(String.self, forKey: .sourceSha256)
         geometry = try fields.decode(DocumentValue.self, forKey: .geometry)
-        if profile == .straightMiterRing {
+        if profile == .straightMiterRing || profile == .passiveCeilingRail {
             let raw = try decoder.container(keyedBy: Field.self)
             guard Set(raw.allKeys.map(\.stringValue)) == ["version", "sourceBytes", "sourceSha256", "geometry"] else {
                 throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
@@ -213,6 +216,17 @@ public struct WorkspaceFurnishingFit: Codable, Equatable, Sendable {
     func matches(_ details: WorkspaceFurnishingDetails) -> Bool {
         guard version == 1, sourceBytes == details.model.bytes, sourceSha256 == details.model.sha256,
               profile?.matches(details.kind) == true else { return false }
+        if profile == .passiveCeilingRail {
+            guard case .object(let fields) = geometry, Set(fields.keys) == ["profile", "min", "max"],
+                  let lo = geometry["min"].items, let hi = geometry["max"].items,
+                  lo.count == 3, hi.count == 3 else { return false }
+            let lower = lo.compactMap(\.double), upper = hi.compactMap(\.double)
+            guard lower.count == 3, upper.count == 3,
+                  (lower + upper).allSatisfy({ $0.isFinite && abs($0) <= 100 }),
+                  (0..<3).allSatisfy({ lower[$0] < upper[$0] }),
+                  abs(upper[1]) <= 0.000001, lower[1] < -0.000001 else { return false }
+            return true
+        }
         if profile == .straightMiterRing {
             guard case .object(let fields) = geometry,
                   Set(fields.keys) == ["profile", "openingWidth", "openingHeight", "imagePlaneZ"],
@@ -261,6 +275,7 @@ public struct WorkspaceFurnishing: Codable, Equatable, Sendable {
         details = try WorkspaceFurnishingDetails(from: decoder)
         fit = fields.contains(.fit) ? try fields.decode(WorkspaceFurnishingFit.self, forKey: .fit) : nil
         guard workspaceFurnishingID(id), version == 1, details.isValid,
+              details.kind != .ceilingRail || fit?.profile == .passiveCeilingRail,
               fit.map({ $0.matches(details) }) ?? true else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
@@ -381,7 +396,9 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
               details.map({ $0 == declaration && expectedPolicy == preparationPolicy && expectedFit == fitProfile }) ?? true,
               fitProfile.map({ supportedExtensionVersion >= $0.minimumExtensionVersion && preparationPolicy == nil && $0.matches(declaration.kind) }) ?? true,
               fitProfile != .rectangularPortal || admitsRectangularFit,
-              furnishing.map({ $0.fit?.profile == fitProfile }) ?? true,
+              furnishing.map({ declaration.kind == .ceilingRail
+                  ? fitProfile == nil && $0.fit?.profile == .passiveCeilingRail
+                  : $0.fit?.profile == fitProfile }) ?? true,
               received.map({ $0.bytes == declaration.model.bytes && $0.sha256 == declaration.model.sha256 }) ?? true,
               !retryable || (phase == .failed && received != nil),
               phase != .validating || received != nil,
