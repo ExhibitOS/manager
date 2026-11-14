@@ -117,7 +117,8 @@ private final class ExitDepthProtocol: URLProtocol, @unchecked Sendable {
         let draft = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state.draft!))
         let prefix = "/api/v1/tenants/\(state.tenantId)/studio/exhibitions/\(state.draft!.id)"
         let session: [String: Any] = ["tenantId": state.tenantId, "userId": state.principalId, "role": "admin", "csrfToken": "fixture",
-            "expiresAt": "2099-01-01T00:00:00Z", "workspaceFurnishingProfile": "workspace-furnishing-intake-v1"]
+            "expiresAt": "2099-01-01T00:00:00Z", "workspaceFurnishingProfile": "workspace-furnishing-intake-v1",
+            "workspaceFurnishingStoolProfile": "workspace-furnishing-stool-v1", "workspaceFurnishingRoomVisualProfile": "workspace-furnishing-room-visual-v1"]
         let policy: [String: Any] = ["exhibitionId": state.draft!.id, "revision": 1, "etag": mode == "stale-policy" ? "stale" : state.etag!,
             "boundedReadOnly": mode == "read-only", "boundedProfile": true, "boundedEditRequired": false]
         let saved: [String: Any] = ["revision": 1, "etag": mode == "stale-saved" ? "stale" : state.etag!, "draft": draft]
