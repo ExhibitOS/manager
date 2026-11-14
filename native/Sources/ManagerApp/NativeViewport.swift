@@ -46,8 +46,16 @@ final class NativeViewportController: ObservableObject {
     // Synchronously updated by native navigation, before a delayed WK frame or
     // queued candidate callback can act on the former editing purpose.
     private(set) var editingContextGeneration = UUID()
-    @Published var editingContextActive = true {
-        didSet { if oldValue != editingContextActive { editingContextGeneration = UUID(); displayReadout = ""; retireCameraInteraction() } }
+    @Published private var editingPurposeActive = true
+    // Health gates actions without replacing the document/host identity. A real
+    // purpose change retains the existing generation invalidation boundary.
+    @Published var runtimeAvailable = true
+    var editingContextActive: Bool {
+        get { editingPurposeActive && runtimeAvailable }
+        set {
+            if editingPurposeActive != newValue { editingContextGeneration = UUID(); displayReadout = ""; retireCameraInteraction() }
+            editingPurposeActive = newValue
+        }
     }
     @Published var connected = false
     /// Restriction from an acknowledged frame; retained until a newer exact
@@ -1358,6 +1366,7 @@ struct NativeViewport: NSViewRepresentable {
 struct NativeViewportArea: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
+    var retainWhileUnavailable = false
     var editable = true
     @ObservedObject var controller: NativeViewportController
     var workbench = false
@@ -1366,8 +1375,8 @@ struct NativeViewportArea: View {
     @State private var identity = UUID()
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let credentials = model.viewportCredentials, let draft = model.viewportDraft, ready {
-                if workbench { workbenchViewTools } else {
+            if let credentials = model.viewportCredentials, let draft = model.viewportDraft, (ready || retainWhileUnavailable) {
+                if workbench { workbenchViewTools.disabled(!ready) } else {
                 Picker("편집 화면", selection: Binding(get: { controller.planSupported ? model.viewportPresentation : .threeD }, set: { value in
                     if value == .threeD || controller.planSupported { model.viewportPresentation = value }
                 })) {
@@ -1504,14 +1513,14 @@ struct NativeViewportArea: View {
         return identity.uuidString + digest.map { String(format: "%02x", $0) }.joined()
     }
     private func renderer(credentials: LocalAuthoringSession, draft: NativeExhibitionDraft) -> some View {
-        let selectionBlocked = !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing || model.placingArtwork
+        let selectionBlocked = !ready || !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing || model.placingArtwork
         let workspaceFurnishings = model.workspaceFurnishingIntakeAvailable
         let workspaceMaterialMultimap = model.workspaceMaterialMultimapAvailable
-        return NativeViewport(credentials: credentials, privateFloor: model.privateFloorRuntimeAvailable, workspaceMaterials: model.workspaceMaterialPreviewAvailable, workspaceMaterialMultimap: workspaceMaterialMultimap, workspaceFurnishings: workspaceFurnishings, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !editable || model.entrancePreviewActive || model.busy || model.pending || model.viewportFormDirty || model.positionDirty || model.wallFinishPreviewing || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing, interactionDisabled: selectionBlocked || NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: model.boundedPlacementCapability != nil, acknowledged: model.boundedPlacementReady), selectionDisabled: selectionBlocked, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+        return NativeViewport(credentials: credentials, privateFloor: model.privateFloorRuntimeAvailable, workspaceMaterials: model.workspaceMaterialPreviewAvailable, workspaceMaterialMultimap: workspaceMaterialMultimap, workspaceFurnishings: workspaceFurnishings, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !ready || !editable || model.entrancePreviewActive || model.busy || model.pending || model.viewportFormDirty || model.positionDirty || model.wallFinishPreviewing || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing, interactionDisabled: selectionBlocked || NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: model.boundedPlacementCapability != nil, acknowledged: model.boundedPlacementReady), selectionDisabled: selectionBlocked, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
             .id(rendererIdentity(credentials) + String(model.privateFloorRuntimeAvailable) + String(model.workspaceMaterialPreviewAvailable) + String(workspaceMaterialMultimap) + String(workspaceFurnishings))
             .clipShape(RoundedRectangle(cornerRadius: 8))
-            .allowsHitTesting(!model.architectureDirty && !model.architectureApplying && !model.placementApplying)
-            .disabled(model.architectureDirty || model.architectureApplying)
+            .allowsHitTesting(ready && !model.architectureDirty && !model.architectureApplying && !model.placementApplying)
+            .disabled(!ready || model.architectureDirty || model.architectureApplying)
     }
     @ViewBuilder private var cameraInteractionTools: some View {
         if controller.cameraInteractionSupported {
