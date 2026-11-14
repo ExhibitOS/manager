@@ -55,6 +55,20 @@ public enum ViewportResourcePolicy {
         suffixes += try SharedFurnishingCatalog.modelResourcePaths(tenantId: tenant)
             .map { NSRegularExpression.escapedPattern(for: $0) + "$" }
         let workspaceResourceId = uuidPattern(hex: "[a-f0-9]", variant: "[89ab]")
+        // The selected model branch uses the same authenticated preview route.
+        // The server requires the live Native owner, current approved qualified
+        // pair, rights and integrity; this URL filter grants none of those.
+        // Separate ranges avoid disjunction unsupported by WK rule filters.
+        func digits(_ count: Int) -> String { String(repeating: "[0-9]", count: count) }
+        let positiveInt32 = [
+            "[1-9]" + String(repeating: "[0-9]?", count: 8),
+            "1" + digits(9), "20" + digits(8), "21[0-3]" + digits(7),
+            "214[0-6]" + digits(6), "2147[0-3]" + digits(5), "21474[0-7]" + digits(4),
+            "214748[0-2]" + digits(3), "2147483[0-5]" + digits(2),
+            "21474836[0-3]" + digits(1), "214748364[0-7]"
+        ]
+        let selectedPreview = "api/v1/tenants/\(tenant)/cms/artworks/\(exhibitionId)/preview\\?expectedRevision="
+        suffixes += positiveInt32.map { selectedPreview + $0 + "&assetId=\(workspaceResourceId)$" }
         if workspaceMaterials {
             let version = "[1-9]" + String(repeating: "[0-9]?", count: 9)
             let material = "api/v1/tenants/\(tenant)/workspace/materials/\(workspaceResourceId)/versions/\(version)"

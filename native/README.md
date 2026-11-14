@@ -688,6 +688,17 @@ reservation attempt. These are not physical memory measurements or visual
 acceptance. The existing frame/ACK guard and expert readout action remain in use;
 no capture, camera, save, SDK or HTTP operation is added.
 
+The ordinary Native renderer may read an existing approved model variant through
+the same authenticated CMS preview path with exactly
+`?expectedRevision=<positive Int32>&assetId=<canonical UUID>`, in that order.
+The WK exception is limited to the registered loopback origin and current tenant;
+the server enforces live Native ownership, current revision, qualified declared
+pair membership, display rights and source integrity. Without `assetId`, primary
+preview behavior is unchanged. This does not grant original, download, public,
+detail, export or thumbnail authority. Actual selected asset/revision stages use
+the existing display readout; attachment and a render request are not appearance
+acceptance.
+
 Scene snapshots are returned in-process by the existing live native exhibition
 model's `captureSceneSnapshot(camera:placementId:)` method, before the optional
 GUI save panel. It requires that model's authenticated, clean saved document and
@@ -1887,3 +1898,5 @@ or runtime transition admission. Existing saved-head owner/session/publication
 receipt, saved-document and output-parent checks remain mandatory. A failed
 attempt can resume only through its existing identical durable request binding;
 source journals and failed native-original intents remain preserved.
+
+The approved-model variant preview validation runtime is pinned to `ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd` (source `bb0b171690cc6e9e53f0d7dc0cf4d976237fbc50`, producer `e62f672a7a31d53deeab77f5333c3545da36f83d934d2b5c68e6c28eb46a2d3d`). Only a clean `abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56` → this exact tuple same-catalog52 refresh is admitted. The existing 47-row furnishing ledger is retained; fresh/interrupted admission, reverse/self/skipped refresh, and isolated/private export remain excluded. This pin and selected-preview URL allowance do not establish actual selected-tier appearance, rail contact, or public adoption.
