@@ -1436,6 +1436,45 @@ public actor AuthoringAPI {
         return draft
     }
 
+    public nonisolated var supportsPlacedExitDoorDepthCorrection: Bool {
+        #if DEBUG
+        nativeRuntimeManifestSHA256 == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b"
+        #else
+        false
+        #endif
+    }
+
+    public func preparePlacedExitDoorDepth(_ correction: PlacedExitDoorDepthCorrection,
+                                          in document: NativeDocumentState) async throws -> NativeExhibitionDraft {
+        guard supportsPlacedExitDoorDepthCorrection, nativeSession, !authenticationBusy,
+              document.tenantId == tenant, session?.userId == document.principalId,
+              !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag,
+              let heldSession = session else { throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE") }
+        let heldGeneration = generation
+        _ = try await verifyRetainedSession(heldSession)
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard policy.etag == etag, policy.confirmsOrdinaryDraft || Self.admitsImportedExitDoorEdit(policy) else {
+            throw AuthoringFailure("PLACED_EXIT_DOOR_UNAVAILABLE")
+        }
+        let door = try await workspaceFurnishing(correction.door.furnishingId, version: 1)
+        let sign = try await workspaceFurnishing(correction.sign.furnishingId, version: 1)
+        let saved = try await exhibition(draft.id)
+        guard generation == heldGeneration, session == heldSession,
+              saved.etag == etag, saved.draft == draft, saved.revision == policy.revision else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let next = try correction.applying(to: draft, registeredDoor: door, registeredSign: sign)
+        try await validateNativeViewportEdit(next, etag: etag)
+        let latest = try await nativeViewportPolicy(draft.id)
+        let verified = try await verifyRetainedSession(heldSession)
+        guard generation == heldGeneration, session == heldSession, verified == heldSession,
+              latest.etag == etag, latest.revision == saved.revision,
+              latest.confirmsOrdinaryDraft || Self.admitsImportedExitDoorEdit(latest) else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        return next
+    }
+
     static func admitsImportedExitDoorEdit(_ policy: NativeViewportPolicy) -> Bool {
         policy.boundedProfile == true && policy.boundedEditRequired == false
             && !policy.boundedReadOnly && policy.editingCapability == nil
