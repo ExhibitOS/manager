@@ -297,6 +297,11 @@ struct NativeExhibitionView: View {
                 Button { Task { await model.refresh() } } label: { Label("검색", systemImage: "magnifyingglass") }.labelStyle(.iconOnly)
             }.disabled(!ready || model.busy)
             Button("새 전시", systemImage: "plus") { requestOpen(nil) }.disabled(!ready || readOnly || model.boundedNavigationLocked || model.busy || model.pending || model.placingArtwork || model.entrancePreviewActive)
+            if let id = model.draft?.id, model.state?.etag != nil {
+                Button("저장본 다시 열기", systemImage: "arrow.clockwise") { requestOpen(id) }
+                    .disabled(!ready || model.busy || model.pending || model.placingArtwork || model.entrancePreviewActive || model.infoStandPreviewing)
+                    .help("현재 전시의 저장본을 다시 엽니다. 저장하지 않은 입력이 있으면 바꾸기 전에 확인합니다.")
+            }
             OEXImportControls(model: model.oexImport, ready: ready && active && !editRestricted && !model.pending && !model.entrancePreviewActive)
             Button("새 작업 공간에서 OEX 가져오기") { confirmOEXWorkspace = true }
                 .disabled(!active || readOnly || !canCreateOEXWorkspace)
