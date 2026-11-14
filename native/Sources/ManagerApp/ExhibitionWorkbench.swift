@@ -326,6 +326,13 @@ struct NativeExhibitionView: View {
                 HStack { Text("공개용 저장본").foregroundStyle(.secondary); Button("복제해서 편집") { Task { await model.copyForEditing() } }.disabled(!ready || readOnly || !model.canCopyForEditing) }
             } else if model.dirty {
                 Text(model.infoStandPreviewing ? "안내대·명판 미리보기입니다. 적용 전에는 전시에 보관되지 않습니다." : "아직 저장하지 않은 입력이 있습니다.").foregroundStyle(.secondary)
+            } else if model.canCopySavedForEditing {
+                HStack {
+                    Text(model.reusablePublicationId != nil ? "편집 초안은 저장해도 공개본을 바꾸지 않습니다." : "전시 저장됨").foregroundStyle(.secondary)
+                    Button("편집 사본 만들기") { Task { await model.copySavedForEditing() } }
+                        .disabled(!ready || readOnly || !model.canCopySavedForEditing)
+                        .accessibilityHint("저장된 전시는 유지하고 별도의 편집 사본을 이 Mac에 만듭니다.")
+                }
             } else if model.reusablePublicationId != nil {
                 Text("편집 초안은 저장해도 공개본을 바꾸지 않습니다.").foregroundStyle(.secondary)
             } else if model.notice.isEmpty {
