@@ -169,3 +169,38 @@ public struct ApprovedRoomAudioTrack: Identifiable, Sendable {
         }
     }
 }
+
+/// An exact server audio record, kept separate from assigning it to a room.
+public struct NativeRoomAudioReceipt: Sendable {
+    public let value: DocumentValue
+    public let id: String
+    public var mediaAsset: DocumentValue { value["mediaAsset"] }
+    public var state: String { value["state"].string! }
+    init(_ value: DocumentValue, expectedId: String? = nil, expectedMedia: DocumentValue? = nil) throws {
+        guard case .object(let fields) = value,
+              Set(fields.keys) == ["id", "state", "revision", "revoked", "durationSeconds", "mediaAsset"],
+              let id = value["id"].string, UUID(uuidString: id) != nil,
+              expectedId == nil || expectedId == id,
+              ["uploading", "validated", "approved"].contains(value["state"].string ?? ""),
+              value["revision"] == .integer(1), case .bool = value["revoked"],
+              value["mediaAsset"]["id"] == .string(id),
+              value["mediaAsset"]["path"] == .string("media/\(id)/audio.wav"),
+              value["mediaAsset"]["mime"] == .string("audio/wav"),
+              let count = value["mediaAsset"]["bytes"].integer, (44...12_582_912).contains(count),
+              let hash = value["mediaAsset"]["sha256"].string, nativeImportDigest(hash),
+              expectedMedia == nil || expectedMedia == value["mediaAsset"] else {
+            throw AuthoringFailure("ROOM_AUDIO_RESPONSE_INVALID")
+        }
+        if value["state"] != .string("uploading") {
+            guard let duration = value["durationSeconds"].double, duration > 0, duration <= 60 else {
+                throw AuthoringFailure("ROOM_AUDIO_RESPONSE_INVALID")
+            }
+        }
+        self.value = value; self.id = id
+    }
+    func requireAssignableRights() throws {
+        let item = ApprovedRoomAudioTrack.CatalogItem(id: id, state: "approved", revision: 1,
+            revoked: value["revoked"] != .bool(false), mediaAsset: mediaAsset)
+        guard item.eligible(at: Date()) != nil else { throw AuthoringFailure("ROOM_AUDIO_TRACK_UNAVAILABLE") }
+    }
+}

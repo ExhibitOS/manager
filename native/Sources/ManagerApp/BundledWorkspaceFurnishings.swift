@@ -49,6 +49,7 @@ enum BundledWorkspaceFurnishings {
         "portal-pale-mineral": .portalFinish, "portal-warm-oak": .portalFinish
     ]
     private static let manifests = [
+        21376: (version: "1.14.0", digest: "9cae93c4ec7a0051e9ac0d6ffb3a877dc02c9652399ee3f31bb72680b638690d"),
         20463: (version: "1.13.0", digest: "3b7f67ab30b5537b7d2355fa76518569859d986e834f3f8c1b05cb8b5354ef9f"),
         7079: (version: "1.2.0", digest: "db9427c19ecaaceb3029c49bd4700955fa9a0b2cb568b422d5238f589e44f4e1"),
         9246: (version: "1.4.0", digest: "7073f8f6dfd7a1c44e8e2b7206b503a35fa1a59eb992d08191dde5f6c6e86e6e"),
@@ -63,12 +64,13 @@ enum BundledWorkspaceFurnishings {
         switch version {
         case "1.2.0": return allowed
         case "1.4.0": return allowed.merging(generated) { first, _ in first }
-        case "1.5.0", "1.6.0", "1.7.0", "1.11.0", "1.12.0", "1.13.0":
+        case "1.5.0", "1.6.0", "1.7.0", "1.11.0", "1.12.0", "1.13.0", "1.14.0":
             var items = allowed.merging(generated) { first, _ in first }
             items[sculptureBench] = .bench
             if version != "1.5.0" { items.merge(portals) { first, _ in first } }
-            if version == "1.7.0" || version == "1.11.0" || version == "1.12.0" || version == "1.13.0" { items[compactStand] = .infoStand }
-            if version == "1.13.0" { items["linear-track"] = .ceilingRail }
+            if version == "1.7.0" || version == "1.11.0" || version == "1.12.0" || version == "1.13.0" || version == "1.14.0" { items[compactStand] = .infoStand }
+            if version == "1.13.0" || version == "1.14.0" { items["linear-track"] = .ceilingRail }
+            if version == "1.14.0" { items["hayes-clear-protective-hood"] = .displayCase }
             return items
         default: return [:]
         }
@@ -81,7 +83,7 @@ enum BundledWorkspaceFurnishings {
         defer { try? handle.close() }
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              let size = Int(exactly: before.st_size), sizes.contains(size), (1...20_463).contains(size),
+              let size = Int(exactly: before.st_size), sizes.contains(size), (1...21_376).contains(size),
               let data = try handle.read(upToCount: size + 1), data.count == size,
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,
@@ -98,7 +100,8 @@ enum BundledWorkspaceFurnishings {
     }
     private static func directory(for id: String) -> String {
         let source: String
-        if id == compactStand { source = "exhibitos-authored-20261111" }
+        if id == "hayes-clear-protective-hood" { source = "exhibitos-authored-20261114" }
+        else if id == compactStand { source = "exhibitos-authored-20261111" }
         else if portals[id] != nil { source = "exhibitos-authored-20261109" }
         else if id == sculptureBench { source = "generated-20261110" }
         else { source = generated[id] == nil ? "user-authored-20261027" : "generated-20261109" }

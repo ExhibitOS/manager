@@ -1359,25 +1359,40 @@ public actor AuthoringAPI {
             }
             guard track != nil else { throw AuthoringFailure("ROOM_AUDIO_TRACK_UNAVAILABLE") }
         }
-        let saved = try await exhibition(draft.id)
+        let current = try await roomAudioHead(document)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        guard saved.etag == document.etag, saved.draft == draft else {
-            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
-        }
+        guard current == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
         let candidate = try settings.proposedCandidate(in: draft, roomId: roomId, approvedTrack: track)
         guard candidate != draft.candidate else { return nil }
         try draft.replaceCandidate(candidate)
         return draft
     }
 
+    /// Room audio may edit a server-confirmed ordinary-size saved head while
+    /// retaining its bounded provenance. This does not grant bounded editing or
+    /// change the stricter ordinary-publication/export policy.
+    nonisolated static func admitsRoomAudioEdit(_ policy: NativeViewportPolicy) -> Bool {
+        policy.boundedProfile != nil && policy.boundedEditRequired == false
+            && !policy.boundedReadOnly && policy.editingCapability == nil
+    }
+
     private func roomAudioHead(_ document: NativeDocumentState) async throws -> NativeExhibitionDraft {
-        guard nativeSession, document.tenantId == tenant, session?.userId == document.principalId,
-              !document.dirty, let draft = document.draft, let etag = document.etag else {
+        guard nativeSession, !authenticationBusy,
+              document.tenantId == tenant, session?.userId == document.principalId,
+              !document.dirty, document.pending == nil,
+              let draft = document.draft, let etag = document.etag else {
             throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED")
         }
+        let heldGeneration = generation
         let policy = try await nativeViewportPolicy(draft.id)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard policy.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
-        guard policy.confirmsOrdinaryDraft else { throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED") }
+        guard Self.admitsRoomAudioEdit(policy) else { throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED") }
+        let saved = try await exhibition(draft.id)
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard saved.etag == etag, saved.draft == draft, saved.revision == policy.revision else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
         return draft
     }
 
@@ -1422,6 +1437,84 @@ public actor AuthoringAPI {
     static func admitsImportedExitDoorEdit(_ policy: NativeViewportPolicy) -> Bool {
         policy.boundedProfile == true && policy.boundedEditRequired == false
             && !policy.boundedReadOnly && policy.editingCapability == nil
+    }
+
+    /// Registration and byte validation only. Approval is a separate call.
+    /// Reuse requestId and immutable input after an uncertain response; never
+    /// change rights on replay or infer that a track was approved.
+    public func intakeRoomAudio(_ file: ImportFileSnapshot, requestId: String, rights: DocumentValue,
+                                in document: NativeDocumentState) async throws -> NativeRoomAudioReceipt {
+        let held = generation
+        let draft = try await roomAudioHead(document)
+        guard file.mime == "audio/wav", (44...12_582_912).contains(file.data.count),
+              nativeImportDigest(file.sha256),
+              SHA256.hash(data: file.data).map({ String(format: "%02x", $0) }).joined() == file.sha256 else {
+            throw AuthoringFailure("AUDIO_INVALID")
+        }
+        let requestId = try identifier(requestId)
+        let payload: DocumentValue = .object(["requestId": .string(requestId), "mime": .string(file.mime),
+            "bytes": .integer(Int64(file.data.count)), "sha256": .string(file.sha256), "rights": rights])
+        let prefix = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/audio"
+        // Validate the declared rights before creating an immutable record.
+        let placeholder = requestId
+        let expected: DocumentValue = .object(["id": .string(placeholder), "path": .string("media/\(placeholder)/audio.wav"),
+            "mime": .string(file.mime), "bytes": .integer(Int64(file.data.count)),
+            "sha256": .string(file.sha256), "rights": rights])
+        guard ApprovedRoomAudioTrack.CatalogItem(id: placeholder, state: "approved", revision: 1,
+            revoked: false, mediaAsset: expected).eligible(at: Date()) != nil else {
+            throw AuthoringFailure("ROOM_AUDIO_TRACK_UNAVAILABLE")
+        }
+        let created: DocumentValue = try await request(prefix, method: "POST", body: encoded(payload))
+        let record = try NativeRoomAudioReceipt(created)
+        var media = expected; media["id"] = .string(record.id); media["path"] = .string("media/\(record.id)/audio.wav")
+        _ = try NativeRoomAudioReceipt(created, expectedId: record.id, expectedMedia: media)
+        try record.requireAssignableRights()
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        _ = try await roomAudioHead(document)
+        let uploaded: DocumentValue = try await request(prefix + "/" + record.id + "/bytes", method: "PUT",
+            body: file.data, contentType: "application/octet-stream", timeout: 120)
+        let validated = try NativeRoomAudioReceipt(uploaded, expectedId: record.id, expectedMedia: media)
+        guard validated.state == "validated" || validated.state == "approved" else {
+            throw AuthoringFailure("ROOM_AUDIO_RESPONSE_INVALID")
+        }
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let current = try await roomAudioStatus(record.id, expectedMedia: media, in: document)
+        guard current.state == "validated" || current.state == "approved" else {
+            throw AuthoringFailure("ROOM_AUDIO_RESPONSE_INVALID")
+        }
+        try current.requireAssignableRights()
+        return current
+    }
+
+    public func roomAudioStatus(_ id: String, expectedMedia: DocumentValue? = nil,
+                                in document: NativeDocumentState) async throws -> NativeRoomAudioReceipt {
+        let draft = try await roomAudioHead(document)
+        let id = try identifier(id)
+        let response: DocumentValue = try await request(studioPrefix + "/exhibitions/" + identifier(draft.id) + "/audio/" + id)
+        return try NativeRoomAudioReceipt(response, expectedId: id, expectedMedia: expectedMedia)
+    }
+
+    /// The caller explicitly reviews this exact validated media snapshot. No
+    /// intake, room assignment or Save is implied by this separate approval.
+    public func approveRoomAudio(_ id: String, expectedMedia: DocumentValue,
+                                 in document: NativeDocumentState) async throws -> NativeRoomAudioReceipt {
+        let held = generation
+        let before = try await roomAudioStatus(id, expectedMedia: expectedMedia, in: document)
+        try before.requireAssignableRights()
+        guard before.state == "validated" || before.state == "approved", let draft = document.draft else {
+            throw AuthoringFailure("AUDIO_NOT_READY")
+        }
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let response: DocumentValue = try await request(studioPrefix + "/exhibitions/" + identifier(draft.id)
+            + "/audio/" + identifier(id) + "/approve", method: "POST", body: encoded(DocumentValue.object(["revision": .integer(1)])))
+        let approved = try NativeRoomAudioReceipt(response, expectedId: id, expectedMedia: expectedMedia)
+        guard approved.state == "approved" else { throw AuthoringFailure("ROOM_AUDIO_RESPONSE_INVALID") }
+        try approved.requireAssignableRights()
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let current = try await roomAudioStatus(id, expectedMedia: expectedMedia, in: document)
+        guard current.state == "approved" else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
+        try current.requireAssignableRights()
+        return current
     }
 
     private func approvedRoomAudioTracks(exhibitionId: String) async throws -> [ApprovedRoomAudioTrack] {
