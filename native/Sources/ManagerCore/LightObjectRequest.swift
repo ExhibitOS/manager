@@ -21,6 +21,27 @@ public struct LightObjectRequest: Sendable {
         guard let value else { return false }; return UUID(uuidString: value) != nil
     }
 
+    /// Bind an ordinary acknowledged rendering frame to the owned saved Native
+    /// document. Ordinary Web ACKs omit workspace/ETag; the existing Native
+    /// session and saved-head API supply and verify that separate authority.
+    public static func nativeFrame(acknowledged frame: ViewportFrame, document: NativeDocumentState,
+                                   ownerEpoch: String?, acceptedSequence: Int, readOnly: Bool?,
+                                   boundedEdit: NativeBoundedEditCapability?) throws -> ViewportFrame {
+        guard !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag,
+              UUID(uuidString: document.workspaceId) != nil,
+              frame.epoch == ownerEpoch, frame.sequence == acceptedSequence, acceptedSequence > 0,
+              readOnly == false, boundedEdit == nil, !frame.disabled, frame.draft == draft,
+              frame.tenantId == document.tenantId, frame.principalId == document.principalId,
+              (frame.workspaceId == nil) == (frame.baseETag == nil),
+              frame.workspaceId == nil || frame.workspaceId == document.workspaceId,
+              frame.baseETag == nil || frame.baseETag == etag else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+        return ViewportFrame(epoch: frame.epoch, sequence: frame.sequence, tenantId: frame.tenantId,
+            principalId: frame.principalId, draft: frame.draft, selection: frame.selection,
+            mode: frame.mode, view: frame.view, disabled: false, cameraSequence: frame.cameraSequence,
+            transparent: frame.transparent, presentation: frame.presentation,
+            workspaceId: document.workspaceId, baseETag: etag)
+    }
+
     /// Construct the coupled command with the existing admitted ceiling-mount
     /// adapter's transform. Detach is explicit and does not move or retune light.
     public static func mountCommand(lightId: String, attachment: DocumentValue, frame: ViewportFrame) throws -> DocumentValue {

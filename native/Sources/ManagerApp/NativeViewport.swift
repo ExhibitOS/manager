@@ -220,6 +220,20 @@ final class NativeViewportController: ObservableObject {
         guard editingContextActive, connected, lightObjectSupported, editingContextGeneration == context else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
         return preview
     }
+    /// Native saved-head proposals use the already negotiated API transport;
+    /// they do not claim that the Web page implements lightObject.
+    func nativeLightObjectFrame(in document: NativeDocumentState) throws -> ViewportFrame {
+        guard editingContextActive, connected, let frame = acknowledgedFrame else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+        return try LightObjectRequest.nativeFrame(acknowledged: frame, document: document,
+            ownerEpoch: owner, acceptedSequence: acceptedSequence,
+            readOnly: acknowledgedBoundedReadOnly, boundedEdit: acknowledgedBoundedEdit)
+    }
+    func confirmsNativeLightObjectFrame(_ frame: ViewportFrame, in document: NativeDocumentState, context: UUID) -> Bool {
+        guard editingContextGeneration == context, let current = try? nativeLightObjectFrame(in: document) else { return false }
+        return current.epoch == frame.epoch && current.sequence == frame.sequence
+            && current.workspaceId == frame.workspaceId && current.baseETag == frame.baseETag
+            && current.draft == frame.draft
+    }
     func lightMountCommand(lightId: String, attachment: DocumentValue) throws -> DocumentValue {
         guard editingContextActive, connected, lightObjectSupported, let frame = acknowledgedFrame,
               !frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }

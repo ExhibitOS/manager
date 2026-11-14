@@ -29,6 +29,37 @@ final class BenchSettingsTests: XCTestCase {
         try draft.replaceCandidate(candidate)
         return (draft, fields.id, fields.freshViewpointId)
     }
+    func testWorkspaceModelBasisRoundTripsAndDoesNotBlockUnrelatedLightCatalog() throws {
+        let (base, _, _) = try fixture()
+        let placement = UUID().uuidString.lowercased(), light = UUID().uuidString.lowercased(), asset = UUID().uuidString.lowercased()
+        for forward: DocumentValue? in [nil, .string("positive-z"), .string("negative-z")] {
+            var candidate = base.candidate, row = try XCTUnwrap(candidate["extensions"][BenchSettings.namespace]["benches"].items?.first)
+            row["workspaceVisual"] = .object(["placementId": .string(placement), "modelSha256": .string(String(repeating: "a", count: 64))])
+            if let forward { row["workspaceVisual"]["modelForward"] = forward }
+            let parsed = try BenchSettings(value: row)
+            XCTAssertEqual(parsed.value, row)
+            XCTAssertEqual(parsed.yaw, try BenchSettings.list(in: base)[0].yaw)
+            candidate["extensions"][BenchSettings.namespace]["benches"] = .array([row])
+            candidate["lights"] = .array([.object(["id": .string(light)])])
+            candidate["extensions"][FurnishingCatalog.namespace] = .object(["version": .integer(1),
+                "assets": .array([try SharedFurnishingCatalog.asset(catalogId: "museum-wallwasher-rear-relief", id: asset)]),
+                "bindings": .array([.object(["hostKind": .string("light"), "hostId": .string(light), "assetId": .string(asset),
+                    "pose": .object(["position": .vector([0, 0.106, 0.05]), "yaw": .number(0), "scale": .number(1)])])])])
+            var draft = base; try draft.replaceCandidate(candidate)
+            let form = try SharedFurnishingFormBuffer(draft: draft, host: .light, hostId: light)
+            XCTAssertEqual(form.catalogId, "museum-wallwasher-rear-relief")
+            XCTAssertEqual(try BenchFormBuffer(draft: draft, benchId: parsed.id).settings().workspaceVisual, parsed.workspaceVisual)
+            XCTAssertEqual(try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(draft)), draft)
+            var invalid = row; invalid["kind"] = .string("slab")
+            if forward != nil { XCTAssertThrowsError(try BenchSettings(value: invalid)) }
+            for value: DocumentValue in [.null, .string("forward-z"), .integer(1)] {
+                invalid = row; invalid["workspaceVisual"]["modelForward"] = value
+                XCTAssertThrowsError(try BenchSettings(value: invalid))
+            }
+            invalid = row; invalid["workspaceVisual"]["unknown"] = .bool(true)
+            XCTAssertThrowsError(try BenchSettings(value: invalid))
+        }
+    }
     func testLegacyAbsenceAndFreshEmptyExhibitionCreateStableStandardCameraAtomically() throws {
         let draft = try NativeExhibitionDraft.new()
         XCTAssertEqual(try BenchSettings.list(in: draft), [])

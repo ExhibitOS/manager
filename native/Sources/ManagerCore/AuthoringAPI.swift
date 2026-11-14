@@ -3788,6 +3788,23 @@ public actor AuthoringAPI {
             && session?.nativeLightObjectAuthoringProposalProfile == LightObjectAuthoring.profile
     }
 
+    /// Reuse the existing typed saved-head SDK transport for a Native preview.
+    /// This is a pure proposal: it never writes the draft or saves an exhibition.
+    public func prepareNativeLightObject(_ proposal: LightObjectRequest, in document: NativeDocumentState,
+                                        saved: NativeStudioResponse) async throws -> LightObjectPreview {
+        guard admitsNativeLightObjectAuthoringProposal, let session,
+              !document.dirty, document.pending == nil, let draft = document.draft,
+              document.tenantId == tenant, document.principalId == session.userId,
+              proposal.frame.tenantId == document.tenantId, proposal.frame.principalId == document.principalId,
+              proposal.frame.workspaceId == document.workspaceId, proposal.frame.baseETag == document.etag,
+              draft == proposal.frame.draft, saved.draft == draft, saved.etag == document.etag else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
+            etag: saved.etag, proposal: proposal.value)
+        return try proposal.checkedReply(reply)
+    }
+
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
