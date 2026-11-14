@@ -3949,6 +3949,15 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     var canCopyForEditing: Bool { !busy && copySourceAvailable }
+    /// A native saved draft may be copied without turning input buffers or a
+    /// temporary preview into a new exhibition. Existing readonly-copy policy stays separate.
+    var canCopySavedForEditing: Bool { !busy && savedCopySourceAvailable }
+    private var savedCopySourceAvailable: Bool {
+        viewportCredentials != nil && !ordinaryBoundedRuntime && !selectedBoundedPolicy
+            && !immutable && !dirty && !entrancePreviewActive && draft != nil && state?.etag != nil
+            && copySourceAvailable
+            && viewportController.acknowledges(draft: draft, tenantId: state?.tenantId, principalId: state?.principalId)
+    }
     private var copySourceAvailable: Bool {
         guard !pending, !boundedReadOnly, !boundedPolicyPending,
               !viewportController.boundedReadOnly, viewportController.editingContextActive else { return false }
@@ -3962,10 +3971,12 @@ final class ExhibitionModel: ObservableObject {
         }
         return !selectedBoundedPolicy || state?.etag == nil || acknowledged
     }
-    func copyForEditing() async {
-        guard canCopyForEditing, let source = state else { return }
+    func copyForEditing() async { await copyForEditing(requireCleanSaved: false) }
+    func copySavedForEditing() async { await copyForEditing(requireCleanSaved: true) }
+    private func copyForEditing(requireCleanSaved: Bool) async {
+        guard canCopyForEditing, !requireCleanSaved || savedCopySourceAvailable, let source = state else { return }
         await work {
-            guard copySourceAvailable, state?.revision == source.revision,
+            guard copySourceAvailable, !requireCleanSaved || savedCopySourceAvailable, state?.revision == source.revision,
                   state?.draft == source.draft, state?.etag == source.etag else {
                 throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
             }
