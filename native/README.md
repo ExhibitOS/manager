@@ -1341,7 +1341,13 @@ independently. Apply the room settings and save the exhibition. A visitor's
 previous choices still take precedence.
 
 The private automation operation `room-audio-apply` stages the same edit on a
-clean, ordinary saved draft. Pass `expectedRevision` and
+clean saved draft whose current server policy explicitly confirms no bounded
+edit is required, no read-only restriction and no bounded editing capability.
+A retained bounded-provenance flag alone does not exclude room audio; missing
+policy fields do. The current saved draft, revision, ETag and account are checked
+again after track lookup. This admission neither changes provenance nor grants
+ordinary publication/export or bypasses server Save validation.
+Pass `expectedRevision` and
 `expectedEditVersion` in the request envelope, and `etag`, `roomId` and
 `settings` in its command. Include the room's existing `reverb` value in
 `settings` (zero for a room with no prior row). An asset selection is
@@ -1349,6 +1355,25 @@ clean, ordinary saved draft. Pass `expectedRevision` and
 soundtrack. Omit `bgm` to leave it unset. Each of `bgmOn`, `footstepsOn`
 and `reverbOn` accepts a boolean or can be omitted to inherit the default.
 After applying, use `save`, `reopen-saved` and the normal export command.
+
+The standalone private SDK also exposes `room-audio-intake`, `room-audio-status`
+and the separate `room-audio-approve` operation on the same owned saved head.
+All carry the usual current `expectedRevision`/`expectedEditVersion` envelope
+and a command `etag`. Intake requires `inputPath` pinned in configuration
+`inputs`, plus a stable command `requestId` and explicit `rights` (current
+`display` and `export` permissions). It registers immutable WAV metadata and
+uploads the exact bytes to the existing server validator; it never approves.
+The file limit is 12 MiB and the existing server PCM16 WAV/60-second validation
+remains authoritative. Status takes `audioId`. Approval takes `audioId`,
+`revision: 1` and the exact reviewed `mediaAsset` from intake/status, checks the
+current record and rights, approves separately and reads it back. These calls
+do not assign a room, save a scene or export credentials. After an uncertain
+intake response, reuse the same request ID, bytes and rights; do not create a
+new request or assume validation/approval succeeded. All three operations bypass
+historical SDK response replay and recheck the current head/record on retry;
+the existing exact-envelope request-ID fence still rejects changed requests.
+Existing server ownership,
+CSRF, session and Save constraints remain authoritative.
 
 ### Workspace furnishing registration (source integration)
 

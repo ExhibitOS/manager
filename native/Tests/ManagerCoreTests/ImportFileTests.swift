@@ -25,6 +25,17 @@ final class ImportFileTests: XCTestCase {
         try Data("changed".utf8).write(to: source)
         XCTAssertTrue(snapshot.data == Data("abc".utf8))
     }
+    func testWAVRequiresExplicitOptInAndKeepsPinnedBytes() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).WAV")
+        let original = Data("synthetic WAV transport; server validates the codec".utf8)
+        try original.write(to: url); defer { try? FileManager.default.removeItem(at: url) }
+        do { _ = try await ImportFileSnapshot.load(url); XCTFail("Default file selection must not admit WAV") }
+        catch let error as AuthoringFailure { XCTAssertEqual(error.code, "FILE_FORMAT_UNSUPPORTED") }
+        let held = try await ImportFileSnapshot.load(url, byteLimit: 12_582_912, allowWAV: true)
+        try Data("changed source".utf8).write(to: url)
+        XCTAssertEqual(held.mime, "audio/wav"); XCTAssertEqual(held.data, original)
+        XCTAssertEqual(held.sha256, nativeImportSHA256(original))
+    }
     func testJPEGRequiresExplicitRecipeOptInAndKeepsOriginalBytes() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).JpEg")
         let original = Data("synthetic JPEG transport bytes; reader does not decode".utf8)

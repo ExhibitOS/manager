@@ -7,6 +7,7 @@ import Darwin
 /// used by ManagerApp. Each installed CLI admits only its scoped commands.
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
+        "room-audio-intake", "room-audio-status", "room-audio-approve",
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
@@ -2601,6 +2602,39 @@ public actor NativeAutomationSession {
                 selectedOEXFormat = nil
             }
             result = .object(["document": storedValue, "receipt": recorded])
+        case "room-audio-intake", "room-audio-status", "room-audio-approve":
+            try checkedRevision(request, current)
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId",
+                "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == (operation == "room-audio-intake" ? common.union(["inputPath"]) : common),
+                  selectedOEXFormat == nil, let etag = current.etag else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let keys: Set<String> = operation == "room-audio-intake" ? ["etag", "requestId", "rights"]
+                : operation == "room-audio-status" ? ["etag", "audioId"] : ["etag", "audioId", "revision", "mediaAsset"]
+            let command = try NativeAutomationArtworkRules.command(request, keys: keys)
+            guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let receipt: NativeRoomAudioReceipt
+            if operation == "room-audio-intake" {
+                guard let path = request["inputPath"].string, let hash = inputs[path],
+                      let requestId = command["requestId"].string else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                let url = URL(fileURLWithPath: path)
+                guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                let snapshot = try await ImportFileSnapshot.load(url, byteLimit: 12_582_912, allowWAV: true)
+                guard snapshot.sha256 == hash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+                receipt = try await api.intakeRoomAudio(snapshot, requestId: requestId, rights: command["rights"], in: current)
+            } else {
+                guard let audioId = command["audioId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                if operation == "room-audio-approve" {
+                    guard command["revision"] == .integer(1) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+                    receipt = try await api.approveRoomAudio(audioId, expectedMedia: command["mediaAsset"], in: current)
+                } else {
+                    receipt = try await api.roomAudioStatus(audioId, in: current)
+                }
+            }
+            let (_, _, latest) = try await checked(request)
+            guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            result = .object(["audio": receipt.value, "document": try value(current)])
         case "room-audio-apply":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["roomId", "etag", "settings"])

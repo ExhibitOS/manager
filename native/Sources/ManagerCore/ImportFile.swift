@@ -44,21 +44,24 @@ public struct ImportFileSnapshot: Sendable {
     public let data: Data
 
     public static func load(_ url: URL, allowJPEG: Bool = false, byteLimit: Int = limit,
-                            allowLargeModel: Bool = false) async throws -> Self {
+                            allowLargeModel: Bool = false, allowWAV: Bool = false) async throws -> Self {
         guard (1...limit).contains(byteLimit) else { throw AuthoringFailure("FILE_SIZE_INVALID") }
         let maximumBytes = allowLargeModel && url.pathExtension.lowercased() == "glb"
             ? NativeModelPreparationIntent.largeSourceLimit : byteLimit
-        let worker = Task.detached(priority: .userInitiated) { try read(url, allowJPEG: allowJPEG, limit: maximumBytes) }
+        let worker = Task.detached(priority: .userInitiated) { try read(url, allowJPEG: allowJPEG, allowWAV: allowWAV, limit: maximumBytes) }
         return try await withTaskCancellationHandler {
             let snapshot = try await worker.value
             try Task.checkCancellation()
             return snapshot
         } onCancel: { worker.cancel() }
     }
-    private static func read(_ url: URL, allowJPEG: Bool, limit: Int) throws -> Self {
+    private static func read(_ url: URL, allowJPEG: Bool, allowWAV: Bool, limit: Int) throws -> Self {
         guard url.isFileURL else { throw AuthoringFailure("FILE_LOCAL_REQUIRED") }
         let mime: String
         switch url.pathExtension.lowercased() {
+        case "wav":
+            guard allowWAV else { throw AuthoringFailure("FILE_FORMAT_UNSUPPORTED") }
+            mime = "audio/wav"
         case "glb": mime = "model/gltf-binary"
         case "png": mime = "image/png"
         case "jpg", "jpeg":

@@ -5,6 +5,43 @@ import XCTest
 @testable import ManagerApp
 
 final class BundledWorkspaceFurnishingsTests: XCTestCase {
+    func testExactCatalog114HoodAndNoticeStayBoundToReviewedOriginal() async throws {
+        guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_114_FIXTURE"] else {
+            throw XCTSkip("Set EXHIBITOS_DEFAULT_114_FIXTURE to exact reviewed source checkout")
+        }
+        let source = URL(fileURLWithPath: path), files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? files.removeItem(at: root) }
+        let prefix = "assets/furnishings/exhibitos-authored-20261114/hayes-clear-protective-hood/"
+        try files.createDirectory(at: root.appendingPathComponent(prefix), withIntermediateDirectories: true)
+        let manifest = root.appendingPathComponent("assets/furnishings/default-manifest.json")
+        try files.copyItem(at: source.appendingPathComponent("manifest.json"), to: manifest)
+        for name in ["model.glb", "LICENSE-NOTICE.txt"] {
+            try files.copyItem(at: source.appendingPathComponent(prefix + name), to: root.appendingPathComponent(prefix + name))
+        }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: root)
+        XCTAssertEqual(catalog.version, "1.14.0"); XCTAssertEqual(catalog.items.count, 11)
+        let item = try XCTUnwrap(catalog.items.first { $0.id == "hayes-clear-protective-hood" })
+        XCTAssertEqual(item.kind, .displayCase)
+        XCTAssertEqual(item.provenance.recipe, "original-v1"); XCTAssertNil(item.provenance.source)
+        XCTAssertTrue(catalog.items.contains { $0.id == "linear-track" && $0.kind == .ceilingRail })
+        let snapshot = try await BundledWorkspaceFurnishings.load(item.id, from: catalog)
+        XCTAssertEqual(snapshot.data.count, 8156)
+        XCTAssertEqual(snapshot.sha256, "1ddb8e0c5101cfaf035adde25cc0ec5bb88d01dba720441f143cca8d9c455819")
+        for name in ["model.glb", "LICENSE-NOTICE.txt"] {
+            let target = root.appendingPathComponent(prefix + name)
+            let original = try Data(contentsOf: target)
+            var changed = original; changed[changed.startIndex] ^= 1; try changed.write(to: target)
+            do { _ = try await BundledWorkspaceFurnishings.load(item.id, from: catalog); XCTFail("Changed \(name) admitted") } catch { }
+            try files.removeItem(at: target)
+            do { _ = try await BundledWorkspaceFurnishings.load(item.id, from: catalog); XCTFail("Missing \(name) admitted") } catch { }
+            try original.write(to: target)
+        }
+        var changed = try Data(contentsOf: manifest); changed[changed.startIndex] ^= 1
+        try changed.write(to: manifest)
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: root))
+    }
+
     private func catalogFixture(variable: String = "EXHIBITOS_DEFAULT_111_FIXTURE") throws -> (source: URL, root: URL) {
         guard let input = ProcessInfo.processInfo.environment[variable] else {
             throw XCTSkip("Set \(variable) to the exact default source checkout")
