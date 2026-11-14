@@ -8,6 +8,7 @@ import Darwin
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "room-audio-intake", "room-audio-status", "room-audio-approve",
+        "workspace-bench-visual-check",
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
@@ -2277,6 +2278,27 @@ public actor NativeAutomationSession {
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
+            }
+        case "workspace-bench-visual-check", "workspace-bench-visual-replace":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "benchId", "placementId",
+                "expectedModelSha256", "furnishingId", "furnishingVersion", "modelSha256", "intakeId"])
+            guard selectedOEXFormat == nil, request["inputPath"] == .null, request["outputPath"] == .null,
+                  let etag = current.etag, command["etag"] == .string(etag), command["furnishingVersion"] == .integer(1),
+                  let benchId = command["benchId"].string, let placementId = command["placementId"].string,
+                  let expected = command["expectedModelSha256"].string,
+                  let furnishingId = command["furnishingId"].string, let hash = command["modelSha256"].string,
+                  let intakeId = command["intakeId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let replacement = try WorkspaceBenchVisualReplacement(benchId: benchId, placementId: placementId,
+                expectedModelSHA256: expected, furnishingId: furnishingId, modelSHA256: hash)
+            let prospective = try await api.prepareWorkspaceBenchVisualReplacement(replacement, intakeId: intakeId, in: current)
+            let (_, _, refreshed) = try await checked(request)
+            guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            if operation == "workspace-bench-visual-check" {
+                result = .object(["document": try value(current), "prospectiveDraft": try value(prospective)])
+            } else {
+                var next = current; next.draft = prospective
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             }
         case "workspace-bench-seat-attach":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }

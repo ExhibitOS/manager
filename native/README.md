@@ -1941,3 +1941,24 @@ a changed frame, navigation or host retirement invalidate pending Native state;
 subsequent frame acceptance reconciles the Web's actual mapping. Older Web
 runtimes without the capability retain their previous object controls.
 Actual packaged-app camera and appearance observations remain separate checks.
+
+### Backed bench visual replacement
+
+The standalone SDK exposes `workspace-bench-visual-check` and
+`workspace-bench-visual-replace` for an already linked backed bench. The command
+contains the current `etag`, `benchId`, `placementId`, `expectedModelSha256`,
+`furnishingId`, `furnishingVersion: 1`, `modelSha256` and the completed ordinary
+`intakeId`, with the usual current document revision envelope. The registered
+replacement must be a bench with current display/export permission and an exact
+original intake/model match. Check returns a prospective draft without a local
+write; replace repeats the same validation and stages it, leaving normal Save
+and saved-version comparison separate.
+
+The existing functional bench and visual placement identities, room, position,
+yaw, unit scale, seat dimensions, viewpoint and model-forward basis stay exact.
+Only the linked visual reference/hash and registered descriptor change. An old
+descriptor still used elsewhere stays in the current scene; an unreferenced old
+descriptor is removed only from this scene snapshot, preserving workspace
+registration and prior saved versions. This operation neither creates a second
+bench nor converts a backed seat to a slab. Full server viewport/Save checks and
+actual affected Viewer/seat/collision/appearance qualification remain required.

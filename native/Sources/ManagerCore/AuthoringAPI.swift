@@ -3632,6 +3632,46 @@ public actor AuthoringAPI {
         return policy
     }
 
+    /// A registered, reviewed replacement changes only the existing backed
+    /// bench visual link. Validation is repeated for check and Apply; Save is
+    /// still a separate normal server operation.
+    public func prepareWorkspaceBenchVisualReplacement(_ replacement: WorkspaceBenchVisualReplacement,
+                                                        intakeId: String,
+                                                        in document: NativeDocumentState) async throws -> NativeExhibitionDraft {
+        let held = generation
+        let policy = try await workspaceBenchSeatPolicy(in: document)
+        guard let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
+        let saved = try await exhibition(draft.id)
+        guard saved.draft == draft, saved.etag == etag, saved.revision == policy.revision else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let intake = try await workspaceFurnishingIntake(intakeId)
+        let furnishing = try await workspaceFurnishing(replacement.furnishingId, version: 1)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard intake.phase == .registered, intake.preparationPolicy == nil, intake.fitProfile == nil,
+              intake.furnishing == furnishing, intake.declaration == furnishing.details,
+              furnishing.details.rights.permissions.display, furnishing.details.rights.permissions.export else {
+            throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED")
+        }
+        let next = try replacement.applying(furnishing, to: draft,
+            supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        _ = try await workspaceFurnishingModel(furnishing)
+        try await validateNativeViewportEdit(next, etag: etag)
+        let latest = try await workspaceBenchSeatPolicy(in: document)
+        let current = try await exhibition(draft.id)
+        let registered = try await workspaceFurnishingIntake(intakeId)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        guard latest.etag == etag, latest.revision == policy.revision, current.etag == etag,
+              current.revision == saved.revision, current.draft == draft,
+              registered.phase == .registered, registered.furnishing == furnishing,
+              registered.declaration == furnishing.details else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        return next
+    }
+
     public func prepareWorkspaceBenchSeat(_ attachment: WorkspaceBenchSeatAttachment,
                                          in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
         let heldGeneration = generation
