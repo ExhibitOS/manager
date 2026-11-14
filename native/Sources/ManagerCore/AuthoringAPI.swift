@@ -1092,7 +1092,8 @@ public actor AuthoringAPI {
          "76200d7f27776a9e0060c1f071cc66deeffe5de271d92a02ef4048c56493bdbd",
          "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c",
          "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26",
-         "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156"].contains(manifest)
+         "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156",
+         "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56"].contains(manifest)
         #else
         false
         #endif
@@ -2842,7 +2843,7 @@ public actor AuthoringAPI {
 
     public nonisolated static func supportsPassiveCeilingRailRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156"
+        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56"
         #else
         false
         #endif
@@ -3613,7 +3614,7 @@ public actor AuthoringAPI {
             || supportsPreReadyPreservationReadback(manifest: manifest)
             || manifest == selectedArtworkThumbnailRuntimePin
             || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
-            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156"
+            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56"
         #else
         false
         #endif

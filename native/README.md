@@ -1,5 +1,13 @@
 # Native macOS application (in progress)
 
+The immutable workspace first-failure readout runtime
+`abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56`
+retains catalog52 and its existing47-row ledger. DEBUG validation admits only the
+clean directed `4931` to this exact successor refresh; no fresh workspace,
+interrupted recovery, reverse transition or isolated export is added. The
+existing display readout remains unavailable until the furnishing sequence is
+settled and its host counts and identities match the current saved draft.
+
 The debug-only combined catalog52 target is the final qualified Spec32 producer
 with twenty wall-finish rows and the unchanged 8192-byte namespace budget. It
 supersedes the unconsumed cap8 target; no intermediate adoption is needed. The
@@ -666,6 +674,19 @@ inspect the loaded map status. Check the entrance and the adjacent floor in
 **걸어보기**. A `fallback` status cannot qualify the intended material.
 The readout reports requests and loaded maps. Visual scale and direction need
 observation in the rendered view.
+
+The same display readout can retain a bounded `workspaceFurnishingFailures`
+sample from a compatible renderer. It accepts at most32 first-host failures in
+32KiB, attributed to the current saved host, descriptor version and model hash.
+Unsettled, missing or malformed evidence is unavailable, not zero failures. Finite failure
+stages/codes and HTTP status omit raw errors, URLs and credentials. Draw and
+triangle counters describe the remaining scene allowance before an attempted
+reservation. Byte counters describe conservative ledger accounting before
+cleanup: `bytesUsed` includes the failing model's current `bytesReserved` hold;
+`requestedBytes` is its attempted replacement size, or null outside a byte
+reservation attempt. These are not physical memory measurements or visual
+acceptance. The existing frame/ACK guard and expert readout action remain in use;
+no capture, camera, save, SDK or HTTP operation is added.
 
 Scene snapshots are returned in-process by the existing live native exhibition
 model's `captureSceneSnapshot(camera:placementId:)` method, before the optional

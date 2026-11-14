@@ -698,6 +698,7 @@ struct NativeViewport: NSViewRepresentable {
                         }
                     } catch { /* No exact attribution is available. */ }
                 }
+                \(WorkspaceFurnishingFailureReadout.samplingScript)
                 return result;
                 """
                 let response = try await web.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
@@ -705,9 +706,13 @@ struct NativeViewport: NSViewRepresentable {
                 guard let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let bytes = try JSONSerialization.data(withJSONObject: response)
                 guard bytes.count <= 65_536, case .object(let fields) = try JSONDecoder().decode(DocumentValue.self, from: bytes),
-                      Set(fields.keys) == Set(["floorView", "cameraProjection", "floorTextures", "viewerState"]) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                      Set(fields.keys) == Set(["floorView", "cameraProjection", "floorTextures", "viewerState", "workspaceFurnishingFailures"]) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 var datasets: [String: DocumentValue] = [:]
                 for (key, value) in fields {
+                    if key == "workspaceFurnishingFailures" {
+                        datasets[key] = WorkspaceFurnishingFailureReadout.projected(value.string, in: frame.draft)
+                        continue
+                    }
                     if key == "viewerState" {
                         datasets[key] = AssetPreparationReadout.projected(value.string, in: frame.draft)
                         continue
