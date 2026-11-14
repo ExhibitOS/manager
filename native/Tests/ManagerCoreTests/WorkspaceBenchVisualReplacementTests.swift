@@ -14,9 +14,11 @@ final class WorkspaceBenchVisualReplacementTests: XCTestCase {
         let manifest = "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0"
         #if DEBUG
         XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
-        XCTAssertTrue(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
         #else
         XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
         XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
         #endif
         XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: String(repeating: "f", count: 64)))
@@ -42,7 +44,10 @@ final class WorkspaceBenchVisualReplacementTests: XCTestCase {
         var rows: [DocumentValue] = [.object(["id": .string(placement), "roomId": .string(room),
             "furnishingId": .string(oldId), "furnishingVersion": .integer(1), "position": .vector([0,0,2]), "yaw": .number(0), "scale": .number(1)])]
         if shared { var other = rows[0]; other["id"] = .string("66666666-6666-4666-8666-666666666666"); rows.append(other) }
+        let view = try BenchViewpoint(id: seat.viewpointId, name: "Synthetic seating view", roomId: room,
+            position: [0,1.2,2], target: [0,1.2,0], fov: 50)
         candidate["extensions"] = .object([
+            BenchSettings.presentationNamespace: .object(["version": .integer(1), "viewpoints": .array([view.value]), "credits": .string("")]),
             BenchSettings.namespace: .object(["version": .integer(1), "benches": .array([seat.value])]),
             WorkspaceFurnishingPlacement.namespace: .object(["version": .integer(1), "furnishings": .array([descriptor(oldId, hash: oldHash)]), "placements": .array(rows)]),
             "fixture/collision-and-viewpoint": .object(["unchanged": .bool(true)])])
