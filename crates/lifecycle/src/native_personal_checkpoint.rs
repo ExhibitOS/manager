@@ -80,6 +80,10 @@ const CATALOG45_ADOPTION_CHECKPOINT_MAX_BYTES: u64 = 6 * 1024 * 1024 * 1024;
 // Only its exact clean selected-PNG successor receives this bounded capacity.
 #[cfg(feature = "workspace-v5-owner-validation")]
 const CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+// The exact retained camera-pose refresh has a cold inventory above 8 GiB.
+// Reuse the existing 256 MiB margin only for that directed pair; no old bound grows.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES: u64 = CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES + 256 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024 * 1024;
 const DATA_DIRECTORIES: &[&str] = &["native-database", "blobs", "config"];
 const MEMBERS: &[&str] = &["native-database", "blobs", "config", "runtime.env", RECORD];
@@ -449,6 +453,10 @@ fn transition_source_ledger(payload: &crate::native_payload::Payload, transition
 }
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::native_camera_pose_retained_dirty_transition(pair) {
+        return NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES;
+    }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && FurnishingTransition::from_manifests(pair).is_some_and(|step| step.is_current52_interrupted_recovery()) {
         return CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES;
@@ -3299,6 +3307,31 @@ mod tests {
             checkpoint.files.len()
         );
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn native_camera_pose_checkpoint_capacity_is_only_the_exact_retained_pair_without_startup_proof() {
+        let source = crate::native_payload::SHARED_RAIL_DEFAULT115_TARGET.2;
+        let target = crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2;
+        let limit = checkpoint_inventory_limit((source, target), None);
+        assert_eq!(limit, 8 * 1024 * 1024 * 1024 + 256 * 1024 * 1024);
+        // A redistributable scalar fixture above the old 8 GiB ceiling; no giant file allocation.
+        let retained_fixture_bytes = 8 * 1024 * 1024 * 1024 + 210 * 1024 * 1024;
+        assert!(retained_fixture_bytes > CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES);
+        assert!(retained_fixture_bytes <= limit);
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(), hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64), saved_etag: "\"studio-r204-synthetic\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
+        for denied in [(target,source),(target,target),(source,source),("unknown",target),
+            (crate::native_payload::DISABLED_PREVIEW_PRESSURE_TARGET.2,target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+        assert_eq!(checkpoint_inventory_limit((crate::native_payload::DISABLED_PREVIEW_PRESSURE_TARGET.2, source), None),
+            CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES);
+    }
+
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn shared_rail_default115_checkpoint_budget_is_only_the_directed_clean_pair() {

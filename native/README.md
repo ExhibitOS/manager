@@ -4,7 +4,10 @@ The exact debug Native camera-pose successor (manifest `9e18823b…`) retains
 catalog52, SQL47 and existing scoped authoring readers. Only the directed
 `9cc5b331…` predecessor refresh can retain one unsaved edit. Its private saved
 transition input can carry a typed clean saved-head baseline, sealed inside the
-existing authenticated checkpoint. The server trial still compares header/body
+existing authenticated checkpoint. Only that exact pair without a startup
+cancellation proof has an 8.25 GiB inventory bound for the current retained data;
+older pairs keep their existing limits, and physical/space checks remain.
+The server trial still compares header/body
 ETag and the complete saved draft; the current working DocumentState has a
 separate full digest and unchanged physical inventory. Baseline input on clean,
 reverse or other transitions is refused. No Save, discard, fresh initialization
