@@ -18,6 +18,15 @@ replays and changed source/request/path remain refused. Actual sealed-payload
 opener/recheck, compiled helper/SDK, stage reconciliation, adoption and output
 require separate qualification; source tests alone do not establish them.
 
+The same repair pair can preserve an unclaimed native-original pending publication
+through the existing clean checkpoint. The checkpoint owner authenticates the full
+current saved document, owner, pending snapshot/ETag/request/attempt and seals the
+exact publication journal digest inside its existing encrypted envelope. Activation
+and recovery require that sealed digest and the same complete state. Generic
+pending-writer refusal, original-model/upload checks and checkpoint limits remain;
+no publication is executed, cleared or rebound by this retention check. Actual
+transition and subsequent readiness/output still require separate evidence.
+
 ## Native Viewer budget client source
 
 The qualified rectangle/fixed64/default1.17 candidate (`7af55e9e…`, source

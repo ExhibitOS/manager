@@ -131,6 +131,9 @@ struct Checkpoint {
     files: BTreeMap<PathBuf, Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     saved_document_sha256: Option<String>,
+    // Exact raw publication journal, sealed only for the API-only repair pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_publication_sha256: Option<String>,
     // Saved API head is distinct from the full working-document digest above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retained_saved_head: Option<super::installations::native_document::DocumentState>,
@@ -322,6 +325,11 @@ impl Checkpoint {
 
     fn check_host(&self, saved_workspace_host: bool) -> Result<()> {
         let pair = (self.old_manifest.as_str(), self.new_manifest.as_str());
+        if self.retained_publication_sha256.as_deref().is_some_and(|sha| {
+            !saved_workspace_host || self.saved_document_sha256.is_none() || !hash_valid(sha)
+                || !crate::native_payload::fixed64_publication_repair_clean_transition(pair)
+                || self.startup_cancellation_045.is_some()
+        }) { return Err(invalid()); }
         if self.retained_saved_head.is_some()
             && (!saved_workspace_host || self.saved_document_sha256.is_none()
                 || !crate::native_payload::native_camera_pose_retained_dirty_transition(pair))
@@ -1587,6 +1595,7 @@ impl LifecycleService {
         staging: &Path,
         key: &[u8; 32],
         saved_document_sha256: Option<String>,
+        retained_publication_sha256: Option<String>,
         retained_saved_head: Option<&super::installations::native_document::DocumentState>,
         retained: TransitionRetention<'_>,
         startup_cancellation_045: Option<&StartupCancellation045>,
@@ -1691,6 +1700,7 @@ impl LifecycleService {
             new_manifest: target.manifest_sha256,
             files,
             saved_document_sha256,
+            retained_publication_sha256,
             retained_saved_head: retained_saved_head.cloned(),
             retained_product_image: retained.image().cloned(),
             retained_gpu_variant: retained.gpu().cloned(),
@@ -1762,9 +1772,77 @@ fn current52_png_checkpoint_matches(
     Ok(true)
 }
 
+#[cfg(feature = "workspace-v5-owner-validation")]
+pub(crate) fn fixed64_pending_publication_matches(
+    pair: (&str, &str), document: &crate::installations::native_document::DocumentState,
+    publication: &crate::installations::native_publication::PublicationState,
+    owner: (&str, &str, &str), journal_sha256: &str, sealed_sha256: Option<&str>,
+) -> Result<bool> {
+    if publication.pending.is_none() && sealed_sha256.is_none() { return Ok(false); }
+    let reject = || err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING");
+    if !crate::native_payload::fixed64_publication_repair_clean_transition(pair)
+        || document.pending.is_some() || !hash_valid(journal_sha256)
+        || sealed_sha256.is_some_and(|sealed| sealed != journal_sha256)
+        || (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str()) != owner
+        || (publication.workspace_id.as_str(), publication.tenant_id.as_str(), publication.principal_id.as_str()) != owner
+    { return Err(reject()); }
+    crate::installations::native_publication::validate(publication)?;
+    let pending = publication.pending.as_ref().ok_or_else(reject)?;
+    let draft = document.draft.as_ref().ok_or_else(reject)?;
+    let etag = document.etag.as_deref().ok_or_else(reject)?;
+    let version = draft.get("editVersion").and_then(serde_json::Value::as_u64);
+    if version.is_none() || version != document.saved_edit_version || pending.mode.as_deref() != Some("native-original-v1")
+        || &pending.snapshot != draft || pending.source_exhibition_id != draft["exhibitionId"].as_str().unwrap_or("")
+        || pending.source_etag != etag || pending.snapshot_etag.as_deref() != Some(etag)
+        || pending.save_request_id != pending.publish_request_id
+        || publication.completed.as_ref().is_some_and(|completed| completed.publish_request_id == pending.publish_request_id)
+        || !publication.native_original_attempts.get(&pending.publish_request_id).is_some_and(|attempt| {
+            !attempt.export_claimed && Some(&attempt.plan_binding_sha256) == pending.plan_binding_sha256.as_ref()
+        })
+    { return Err(reject()); }
+    Ok(true)
+}
+
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn fixed64_sealed_pending_publication_matches(
+    pair: (&str, &str), document: &crate::installations::native_document::DocumentState,
+    publication: &crate::installations::native_publication::PublicationState,
+    owner: (&str, &str, &str), journal_sha256: &str, sealed_sha256: Option<&str>,
+) -> Result<bool> {
+    if publication.pending.is_some() && sealed_sha256.is_none() {
+        return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+    }
+    fixed64_pending_publication_matches(pair, document, publication, owner, journal_sha256, sealed_sha256)
+}
+
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn check_sealed_publication_retention(
+    checkpoint: &Checkpoint, source: &Path, staging: &Path, target_manifest: Option<&str>,
+    document: &crate::installations::native_document::DocumentState,
+    publication: &crate::installations::native_publication::PublicationState,
+    owner: (&str, &str, &str), journal_sha256: &str,
+) -> Result<bool> {
+    // Unaffected ordinary checkpoints may have no saved-document commitment.
+    // Only a pending publication or a retained seal enters these new guards.
+    if publication.pending.is_none() && checkpoint.retained_publication_sha256.is_none() {
+        return Ok(false);
+    }
+    checkpoint.check_host(true)?;
+    if checkpoint.source != source || checkpoint.staged != staging
+        || target_manifest.is_some_and(|target| target != checkpoint.new_manifest)
+        || (checkpoint.workspace_id.as_str(), checkpoint.tenant_id.as_str(), checkpoint.principal_id.as_str()) != owner
+        || checkpoint.saved_document_sha256.as_deref() != Some(saved_document_digest(document)?.as_str())
+    { return Err(invalid()); }
+    fixed64_sealed_pending_publication_matches((&checkpoint.old_manifest, &checkpoint.new_manifest),
+        document, publication, owner, journal_sha256, checkpoint.retained_publication_sha256.as_deref())
+}
+
 // Scoped only to the existing checkpoint entry; this is not ordinary authoring
 // or a generic dirty-document authorization flag.
+#[derive(Clone, Copy)]
 enum RetainedSavedHeadCheck<'a> {
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    CleanStage { pair: (&'a str, &'a str) },
     #[cfg(feature = "workspace-v5-owner-validation")]
     Stage { pair: (&'a str, &'a str), saved: &'a super::installations::native_document::DocumentState },
     Sealed { target_manifest: Option<&'a str> },
@@ -1800,11 +1878,37 @@ impl InstallationController {
                         if checkpoint.staged != staging { return Err(invalid()); }
                         checkpoint.check_retained_saved_document(document, (&owner.0, &owner.1, &owner.2), target_manifest)
                     }
-                    None => Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")),
+                    Some(RetainedSavedHeadCheck::CleanStage { .. }) | None => Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")),
                 }
             }
             #[cfg(not(feature = "workspace-v5-owner-validation"))]
             { let _ = (service, profile, document, retained_saved_head_check); Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")) }
+        }, |service, profile, document, publication| {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            {
+                let owner = service.personal_identity()?;
+                let (file, _) = self.publication_unlocked(service)?;
+                let journal_sha256 = if publication.pending.is_some() {
+                    digest(&installation_backup::source_bytes(profile, &file, 2_200_000, true)?)
+                } else { String::new() };
+                match retained_saved_head_check {
+                    Some(RetainedSavedHeadCheck::CleanStage { pair }) |
+                    Some(RetainedSavedHeadCheck::Stage { pair, .. }) =>
+                        fixed64_pending_publication_matches(pair, document, publication,
+                            (&owner.0, &owner.1, &owner.2), &journal_sha256, None),
+                    Some(RetainedSavedHeadCheck::Sealed { target_manifest }) => {
+                        if key_path.starts_with(&service.root) { return Err(invalid()); }
+                        let key = Bytes(crate::profile_backup::external_key(profile, key_path)?);
+                        let envelope = installation_backup::source_bytes(staging, ENVELOPE, ENVELOPE_LIMIT as u64, true)?;
+                        let checkpoint = service.transition_checkpoint(&envelope, key.0.as_slice().try_into().map_err(|_| invalid())?)?;
+                        check_sealed_publication_retention(&checkpoint, &service.root, staging, target_manifest,
+                            document, publication, (&owner.0, &owner.1, &owner.2), &journal_sha256)
+                    }
+                    None => Ok(false),
+                }
+            }
+            #[cfg(not(feature = "workspace-v5-owner-validation"))]
+            { let _ = (service, profile, document, publication); Ok(false) }
         }, |service, profile, document, file, transfer| {
             #[cfg(feature = "workspace-v5-owner-validation")]
             {
@@ -1855,7 +1959,7 @@ impl InstallationController {
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny, None, |service, _, _, key| {
             if !present(staging, ENVELOPE)? {
-                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, TransitionRetention::None, None)?;
+                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, None, TransitionRetention::None, None)?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
@@ -1886,7 +1990,8 @@ impl InstallationController {
         self.with_transition_key(token, key_path, staging, retained, if FurnishingTransition::from_manifests(pair).is_some_and(|step| step.is_current52_interrupted_recovery()) {
             Current52PngRetention::SavedPair
         } else { Current52PngRetention::Deny },
-        retained_saved_head.map(|saved| RetainedSavedHeadCheck::Stage { pair, saved }), |service, profile, document, key| {
+        Some(retained_saved_head.map_or(RetainedSavedHeadCheck::CleanStage { pair },
+            |saved| RetainedSavedHeadCheck::Stage { pair, saved })), |service, profile, document, key| {
             if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
                 return Err(invalid());
             }
@@ -1926,14 +2031,29 @@ impl InstallationController {
                 checkpoint.check_host(true)?;
                 checkpoint.check_retained(retained)?;
                 checkpoint.check_saved_head_input(retained_saved_head)?;
+                let (publication_file, publication) = self.publication_unlocked(service)?;
+                let publication_sha256 = if publication.pending.is_some() {
+                    digest(&installation_backup::source_bytes(profile, &publication_file, 2_200_000, true)?)
+                } else { String::new() };
+                if publication.pending.is_some() && checkpoint.retained_publication_sha256.is_none() { return Err(invalid()); }
+                fixed64_sealed_pending_publication_matches(pair, document, &publication, (&owner.0, &owner.1, &owner.2),
+                    &publication_sha256, checkpoint.retained_publication_sha256.as_deref())?;
                 if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str())
                     || checkpoint.startup_cancellation_045.as_ref() != startup_cancellation_045
                 {
                     return Err(invalid());
                 }
             } else {
+                let (publication_file, publication) = self.publication_unlocked(service)?;
+                let publication_sha256 = if publication.pending.is_some() {
+                    digest(&installation_backup::source_bytes(profile, &publication_file, 2_200_000, true)?)
+                } else { String::new() };
+                let retained_publication = fixed64_pending_publication_matches(pair, document, &publication,
+                    (&owner.0, &owner.1, &owner.2), &publication_sha256, None)?
+                    .then_some(publication_sha256);
                 service.authenticate_local_personal_checkpoint(
-                    source, target, staging, key, Some(document_sha256), retained_saved_head, retained, startup_cancellation_045,
+                    source, target, staging, key, Some(document_sha256), retained_publication,
+                    retained_saved_head, retained, startup_cancellation_045,
                 )?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, true)
@@ -1950,7 +2070,7 @@ impl InstallationController {
         key_path: &Path,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny, None, |service, _, _, key| {
-            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, TransitionRetention::None, None)
+            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, None, TransitionRetention::None, None)
         })
     }
 
@@ -2133,6 +2253,157 @@ mod tests {
         working.draft.as_mut().unwrap()["editVersion"] = 192.into();
         working.draft.as_mut().unwrap()["candidate"]["rail"] = true.into();
         (saved, working)
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn exercise_pending_publication_enclosing_guard(
+        document: &crate::installations::native_document::DocumentState,
+        publication: &crate::installations::native_publication::PublicationState,
+    ) {
+        use crate::installations::{check_personal_transition_document, check_personal_transition_writers};
+        let pair = (crate::native_payload::RECTANGLE_FIXED64_TARGET.2, crate::native_payload::FIXED64_PUBLICATION_REPAIR_TARGET.2);
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        let doc_before = serde_json::to_vec(document).unwrap();
+        let pub_before = serde_json::to_vec(publication).unwrap();
+        let journal = digest(&pub_before);
+        crate::installations::native_document::validate(document).unwrap();
+        crate::installations::native_publication::validate(publication).unwrap();
+        assert!(check_personal_transition_document(document, true, || Ok(())).is_err());
+        let run = |doc: &crate::installations::native_document::DocumentState,
+                   state: &crate::installations::native_publication::PublicationState,
+                   pair: (&str, &str), sealed: bool, expected: Option<&str>| -> bool {
+            let accepted = check_personal_transition_writers(doc, state,
+                || Err(invalid()), || if sealed {
+                    fixed64_sealed_pending_publication_matches(pair, doc, state, owner, &journal, expected)
+                } else {
+                    fixed64_pending_publication_matches(pair, doc, state, owner, &journal, None)
+                });
+            accepted.is_ok()
+        };
+        assert!(run(document, publication, pair, false, None));
+        assert!(run(document, publication, pair, true, Some(&journal)));
+        assert!(!run(document, publication, pair, true, None));
+        assert!(!run(document, publication, pair, true, Some(&"f".repeat(64))));
+        for denied in [(pair.1, pair.0), (pair.0, pair.0),
+            (crate::native_payload::WHITE_RAIL_OPPOSITE_TARGET.2, pair.1), ("unknown", pair.1)] {
+            assert!(!run(document, publication, denied, false, None));
+            assert!(!run(document, publication, denied, true, Some(&journal)));
+        }
+        let id = publication.pending.as_ref().unwrap().publish_request_id.as_str();
+        let other = "20000000-0000-4000-8000-000000000001";
+        let doc_json = serde_json::to_value(document).unwrap();
+        let pub_json = serde_json::to_value(publication).unwrap();
+        for pointer in ["/workspaceId", "/tenantId", "/principalId", "/etag", "/draft/exhibitionId", "/draft/candidate/title"] {
+            let mut value = doc_json.clone();
+            if let Some(slot) = value.pointer_mut(pointer) { *slot = serde_json::json!(other); }
+            else { value["draft"]["candidate"]["title"] = serde_json::json!(other); }
+            let changed = serde_json::from_value(value).unwrap();
+            assert!(!run(&changed, publication, pair, false, None));
+        }
+        let mut dirty = document.clone(); dirty.saved_edit_version = Some(document.saved_edit_version.unwrap() - 1);
+        assert!(!run(&dirty, publication, pair, false, None));
+        let mut pending = document.clone();
+        pending.pending = Some(crate::installations::native_document::Pending {
+            request_id: other.into(), etag: document.etag.clone(), draft: document.draft.clone().unwrap(),
+            origin: None, model_candidate: None, product_image: None,
+        });
+        crate::installations::native_document::validate(&pending).unwrap();
+        assert!(!run(&pending, publication, pair, false, None));
+        for pointer in ["/workspaceId", "/tenantId", "/principalId", "/pending/sourceExhibitionId",
+            "/pending/sourceEtag", "/pending/snapshotEtag", "/pending/saveRequestId", "/pending/publishRequestId",
+            "/pending/planBindingSha256", "/pending/mode", "/pending/snapshot/exhibitionId"] {
+            let mut value = pub_json.clone(); *value.pointer_mut(pointer).unwrap() = serde_json::json!(other);
+            let changed = serde_json::from_value(value).unwrap();
+            assert!(!run(document, &changed, pair, false, None));
+            assert!(!run(document, &changed, pair, true, Some(&journal)));
+        }
+        let mut changed = pub_json.clone(); changed["pending"]["snapshot"]["candidate"]["title"] = serde_json::json!("changed");
+        assert!(!run(document, &serde_json::from_value(changed).unwrap(), pair, false, None));
+        let mut changed = pub_json.clone(); changed["pending"]["snapshot"]["updatedAt"] = serde_json::json!("changed");
+        assert!(!run(document, &serde_json::from_value(changed).unwrap(), pair, false, None));
+        let mut changed = publication.clone(); changed.native_original_attempts.get_mut(id).unwrap().export_claimed = true;
+        assert!(!run(document, &changed, pair, false, None));
+        let mut changed = publication.clone(); changed.native_original_attempts.get_mut(id).unwrap().plan_binding_sha256 = "b".repeat(64);
+        assert!(!run(document, &changed, pair, false, None));
+        let mut changed = publication.clone(); changed.native_original_attempts.remove(id);
+        assert!(!run(document, &changed, pair, false, None));
+        if publication.completed.is_some() {
+            let mut changed = publication.clone(); changed.completed.as_mut().unwrap().publish_request_id = id.into();
+            assert!(!run(document, &changed, pair, false, None));
+        }
+        let mut cleared = publication.clone(); cleared.pending = None;
+        assert!(!run(document, &cleared, pair, true, Some(&journal)));
+        assert!(serde_json::to_vec(document).unwrap() == doc_before);
+        assert!(serde_json::to_vec(publication).unwrap() == pub_before);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn ordinary_checkpoint_without_pending_or_publication_seal_keeps_existing_entry() {
+        let (document, _) = native_camera_pose_documents();
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        let publication = crate::installations::native_publication::PublicationState {
+            format: 1, revision: 0, workspace_id: owner.0.into(), tenant_id: owner.1.into(), principal_id: owner.2.into(),
+            pending: None, completed: None, native_original_attempts: BTreeMap::new(),
+        };
+        let checkpoint: Checkpoint = serde_json::from_value(serde_json::json!({
+            "source":"/synthetic/ordinary-source", "staged":"/synthetic/ordinary-stage",
+            "sourceIdentity":[1,2],"stagedIdentity":[1,3],"workspaceId":owner.0,"tenantId":owner.1,
+            "principalId":owner.2,"ownerUid":501,"oldManifest":"a".repeat(64),"newManifest":"b".repeat(64),
+            "files":{},"trial":false,"drainedFailure":null,"restore":null
+        })).unwrap();
+        assert!(checkpoint.saved_document_sha256.is_none());
+        assert!(checkpoint.retained_publication_sha256.is_none());
+        // The new saved-host check would reject this unrelated ordinary record.
+        assert!(checkpoint.check_host(true).is_err());
+        let before = serde_json::to_vec(&publication).unwrap();
+        installations::check_personal_transition_writers(&document, &publication, || Err(invalid()), || {
+            check_sealed_publication_retention(&checkpoint, Path::new("/synthetic/ordinary-source"),
+                Path::new("/synthetic/ordinary-stage"), None, &document, &publication, owner, "")
+        }).unwrap();
+        assert!(serde_json::to_vec(&publication).unwrap() == before);
+        // A retained seal without its publication is never treated as ordinary.
+        let mut removed = checkpoint;
+        removed.retained_publication_sha256 = Some("c".repeat(64));
+        assert!(installations::check_personal_transition_writers(&document, &publication, || Ok(()), || {
+            check_sealed_publication_retention(&removed, Path::new("/synthetic/ordinary-source"),
+                Path::new("/synthetic/ordinary-stage"), None, &document, &publication, owner, "")
+        }).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn fixed64_pending_publication_stage_and_sealed_enclosing_guards() {
+        let (document, _) = native_camera_pose_documents();
+        let id = "20000000-0000-4000-8000-000000000002";
+        let old_id = "20000000-0000-4000-8000-000000000003";
+        let plan = "d".repeat(64);
+        let publication = serde_json::json!({"format":1,"revision":7,
+            "workspaceId":document.workspace_id,"tenantId":document.tenant_id,"principalId":document.principal_id,
+            "pending":{"mode":"native-original-v1","sourceExhibitionId":document.draft.as_ref().unwrap()["exhibitionId"],
+                "sourceEtag":document.etag,"snapshot":document.draft,"saveRequestId":id,"publishRequestId":id,
+                "snapshotEtag":document.etag,"planBindingSha256":plan},
+            "completed":{"mode":"native-original-v1","sourceExhibitionId":document.draft.as_ref().unwrap()["exhibitionId"],
+                "sourceEtag":document.etag,"snapshotExhibitionId":document.draft.as_ref().unwrap()["exhibitionId"],
+                "publishRequestId":old_id,"planBindingSha256":"e".repeat(64),
+                "publication":{"publicationId":old_id,"publicUrl":format!("/p/{old_id}"),"revisionSha256":"f".repeat(64),"publishedAt":"2026-11-15T00:00:00Z","status":"published"}},
+            "nativeOriginalAttempts":{(id):{"planBindingSha256":plan,"exportClaimed":false},(old_id):{"planBindingSha256":"e".repeat(64),"exportClaimed":true}}});
+        exercise_pending_publication_enclosing_guard(&document, &serde_json::from_value(publication).unwrap());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires immutable retained document/publication fixtures; readonly enclosing transition guard only"]
+    fn fixed64_actual_pending_publication_stage_and_sealed_enclosing_guards() {
+        let doc_path = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FIXED64_PENDING_DOCUMENT").unwrap());
+        let pub_path = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FIXED64_PENDING_PUBLICATION").unwrap());
+        let document = fs::read(&doc_path).unwrap(); let publication = fs::read(&pub_path).unwrap();
+        let parsed_publication: crate::installations::native_publication::PublicationState = serde_json::from_slice(&publication).unwrap();
+        let physical_journal_sha256 = std::env::var("EXHIBITOS_TEST_FIXED64_PENDING_JOURNAL_SHA256").unwrap();
+        assert!(digest(&serde_json::to_vec(&parsed_publication).unwrap()) == physical_journal_sha256);
+        exercise_pending_publication_enclosing_guard(&serde_json::from_slice(&document).unwrap(), &parsed_publication);
+        assert!(fs::read(doc_path).unwrap() == document);
+        assert!(fs::read(pub_path).unwrap() == publication);
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
