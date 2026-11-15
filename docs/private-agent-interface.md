@@ -4,6 +4,12 @@
 bundled native helper. It does not expose HTTP, SQL, shell commands or raw local
 authentication. This development interface is not a signed distribution claim.
 
+Native-original static export waits up to 720 seconds of monotonic elapsed time,
+matching the existing helper's 600-second preparation and 120-second settlement
+bounds. Ordinary static export retains a 120-second client wait. Cancellation
+and exact job/publication/output terminal confirmation remain required; a wait
+timeout does not authorize replay or establish a completed output.
+
 Start with `exhibitos-automation --configuration /absolute/private/config.json`.
 The configuration contains exactly `helper`, `profile`, `ports`, `outputRoot`,
 `temporaryRoot`, and `inputs`, with at most one of `selectedOEX9: true` and

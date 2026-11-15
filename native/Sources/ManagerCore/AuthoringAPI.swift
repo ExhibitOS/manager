@@ -1101,7 +1101,9 @@ public actor AuthoringAPI {
          "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b",
          "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c",
          "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19",
-         "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"].contains(manifest)
+         "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319",
+         "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8",
+         "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"].contains(manifest)
         #else
         false
         #endif
@@ -1486,6 +1488,8 @@ public actor AuthoringAPI {
             || nativeRuntimeManifestSHA256 == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c"
             || nativeRuntimeManifestSHA256 == "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19"
             || nativeRuntimeManifestSHA256 == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
+            || nativeRuntimeManifestSHA256 == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
+            || nativeRuntimeManifestSHA256 == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
         #else
         false
         #endif
@@ -3028,6 +3032,8 @@ public actor AuthoringAPI {
         #if DEBUG
         manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59" || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0" || manifest == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b" || manifest == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c" || manifest == "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19"
             || manifest == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
+            || manifest == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
+            || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
         #else
         false
         #endif
@@ -3864,6 +3870,8 @@ public actor AuthoringAPI {
             || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
             || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59" || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0" || manifest == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b" || manifest == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c" || manifest == "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19"
             || manifest == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
+            || manifest == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
+            || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
         #else
         false
         #endif

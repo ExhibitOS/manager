@@ -1,5 +1,13 @@
 # Native macOS application (in progress)
 
+The exact white-rail opposite-heading successor (manifest `41e741a1…`, source
+`3e6210b8…`) admits only the directed clean `d81ad0bc…` refresh. It retains
+catalog 52, the 47-row ledger, source artwork, saved document and existing 8.5 GiB
+checkpoint inventory bound for this exact clean pair. Four existing Native
+readers and native-original export inherit this tuple only; fresh, dirty,
+interrupted, reverse and skipped transitions remain denied. Actual adoption,
+light Saves, output and viewing require separate evidence.
+
 The exact Native-only lifecycle successor (manifest `227b3723…`, source
 `d000e6e6…`) additionally permits only the directed `9e18823b…` refresh.
 It reuses the same typed saved-head/whole-working-document preservation and
@@ -2061,3 +2069,20 @@ remain unavailable. Native editing stays disabled in locked previews; the
 qualified Web producer owns the display-only pressure replan. Exact default
 catalog 1.15.0 source selection is additive to 1.14.0; it does not imply a
 1.15 runtime, workspace registration, scene replacement or clean installation.
+
+### Grouped rail contact corrective runtime
+
+The exact contact-only successor is source `94af8571b2bef3b666c65bf71e892f1bf8e895ea`,
+producer `70997c1105e539b8f3d4084839e8a34f54a2d257d014f840014d8999ac38438b`,
+manifest `d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8`.
+Only the clean saved `42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319`
+owner may transition directly to this tuple. Catalog 52, the existing 47-row
+ledger, default 1.16 and prior reader/export ownership checks remain unchanged.
+The same 8.5 GiB streamed checkpoint policy applies only to this directed clean,
+proof-free transition; it is a disk-inventory policy, not a memory or hardware
+performance claim. Dirty/pending, fresh/interrupted, reverse/self/skipped and
+mixed-source tuples gain no admission. The previous exact transitions retain
+their bounds. The new runtime corrects source-bound multi-segment rail contact;
+actual Native check, rail-only Save, lighting, output and rendered appearance
+remain separate from source/artifact qualification. No F03 budget feature is
+included in this corrective runtime or Native source unit.
