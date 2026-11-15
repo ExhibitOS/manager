@@ -8,7 +8,10 @@ The qualified rectangle/fixed64/default1.17 candidate (`7af55e9e…`, source
 bound. Its exact runtime manifest binds the default1.17 manifest
 `4751b398…` from source `cc477089…`. The exact final candidate also uses the
 existing `FreshEmpty` initializer and mandatory inherited owner channel for a
-new, absent profile. Fresh lineage, restore-proof, physical identity and signed
+new, absent profile. The existing fresh-v7 constructor has a separate exact
+catalog52 ordinary-authoring admission; it does not mark the payload as selected
+OEX or broaden the v7 OEX import classifier (catalog38/39/40). The existing
+ordinary v5 reopen classifier remains independent of that selected-import gate. Fresh lineage, restore-proof, physical identity and signed
 exchange checks remain unchanged; dirty, interrupted, reverse and skipped
 refreshes remain refused. The uninstalled `290fdd12…` budget component proof
 retains its historical clean/reopen record but is no longer a fresh shipping

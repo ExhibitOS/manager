@@ -1536,15 +1536,18 @@ impl Session {
     #[allow(dead_code)]
     pub(crate) fn prepare_selected_empty(proof: installations::NewSelectedRoot, payload: Arc<Payload>, ports: Ports) -> Result<Self> {
         let (service, guard, root_pin) = proof.into_parts();
-        if !payload.normal_oex_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+        let fresh_ordinary = payload.fresh_catalog52_constructor();
+        if fresh_ordinary {
+            payload.recheck()?;
+        } else if !payload.normal_oex_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
         check_selected_empty_root(&service, &guard, &root_pin)?;
         service.prepare_native_personal_locked(&payload, ports, &guard)?;
         root_pin.check_path(&service.root)?;
         let mut session = Self::new_with_guard(&service, payload, ports, guard)?;
         session.check_native_observation_fence()?;
-        session.normal_oex_selected = true;
-        if session.payload.workspace_furnishing_catalog()?.and_then(FurnishingStart::selected_import).is_some()
-            && session.payload.selected_workspace_import_version() == Some(crate::native_payload::WorkspaceImport::V7)
+        session.normal_oex_selected = !fresh_ordinary;
+        if fresh_ordinary || (session.payload.workspace_furnishing_catalog()?.and_then(FurnishingStart::selected_import).is_some()
+            && session.payload.selected_workspace_import_version() == Some(crate::native_payload::WorkspaceImport::V7))
         {
             session.authorize_fresh_workspace_furnishing(&root_pin)?;
         }
