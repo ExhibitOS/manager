@@ -1,5 +1,23 @@
 # Native macOS application (in progress)
 
+## Exact fixed64 publication API repair
+
+The API-only `09eacf46…` runtime (source `edaefab7…`, unchanged producer
+`9506cea2…`) has only the directed ordinary clean `7af55e9e…` refresh, with the
+same catalog52/ledger47 and existing 8.5 GiB checkpoint bound. Fresh, reverse,
+skipped and interrupted admission are unchanged. The exact unchanged reader
+features inherit this manifest; no Web, default catalogue or GUI change is required.
+
+A retained, unclaimed native-original pending intent can continue across only
+this repair pair. The SDK reconstructs the old plan from the current checked
+owner/document/ETag and full original request, including native revisions and
+output path, and requires full pending/immutable-attempt equality. It retains
+that original intent and plan without clearing or rebinding history. Fresh
+repair-runtime requests use their current manifest plan; completed/claimed
+replays and changed source/request/path remain refused. Actual sealed-payload
+opener/recheck, compiled helper/SDK, stage reconciliation, adoption and output
+require separate qualification; source tests alone do not establish them.
+
 ## Native Viewer budget client source
 
 The qualified rectangle/fixed64/default1.17 candidate (`7af55e9e…`, source
