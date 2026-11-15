@@ -1536,15 +1536,18 @@ impl Session {
     #[allow(dead_code)]
     pub(crate) fn prepare_selected_empty(proof: installations::NewSelectedRoot, payload: Arc<Payload>, ports: Ports) -> Result<Self> {
         let (service, guard, root_pin) = proof.into_parts();
-        if !payload.normal_oex_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+        let fresh_ordinary = payload.fresh_catalog52_constructor();
+        if fresh_ordinary {
+            payload.recheck()?;
+        } else if !payload.normal_oex_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
         check_selected_empty_root(&service, &guard, &root_pin)?;
         service.prepare_native_personal_locked(&payload, ports, &guard)?;
         root_pin.check_path(&service.root)?;
         let mut session = Self::new_with_guard(&service, payload, ports, guard)?;
         session.check_native_observation_fence()?;
-        session.normal_oex_selected = true;
-        if session.payload.workspace_furnishing_catalog()?.and_then(FurnishingStart::selected_import).is_some()
-            && session.payload.selected_workspace_import_version() == Some(crate::native_payload::WorkspaceImport::V7)
+        session.normal_oex_selected = !fresh_ordinary;
+        if fresh_ordinary || (session.payload.workspace_furnishing_catalog()?.and_then(FurnishingStart::selected_import).is_some()
+            && session.payload.selected_workspace_import_version() == Some(crate::native_payload::WorkspaceImport::V7))
         {
             session.authorize_fresh_workspace_furnishing(&root_pin)?;
         }
@@ -5181,17 +5184,17 @@ mod furnishing_thumbnail_upgrade_result_tests {
 
     #[test]
     fn contact_catalog52_initialize_inherits_required_hayes_channel_only_for_exact_host() {
-        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, VIEWER_BUDGET_TARGET,
+        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, VIEWER_BUDGET_TARGET,
             COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET};
         let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
-        for target in [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, VIEWER_BUDGET_TARGET] {
+        for target in [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET] {
         assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Initialize)));
         assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Reopen)));
         for start in [None, Some(FurnishingStart::Upgrade051To050051),
             Some(FurnishingStart::Upgrade045To051), Some(FurnishingStart::SelectedImport040)] {
             assert!(!ordinary_inherited_hayes(&make(target), start));
         }
-        for older in [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET] {
+        for older in [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET, VIEWER_BUDGET_TARGET] {
             assert!(!ordinary_inherited_hayes(&make(older), Some(FurnishingStart::Initialize)));
             assert!(ordinary_inherited_hayes(&make(older), Some(FurnishingStart::Reopen)));
             for mixed in [(older.0,target.1,target.2), (target.0,older.1,target.2), (target.0,target.1,older.2)] {

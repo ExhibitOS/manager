@@ -67,6 +67,46 @@ final class NativeAutomationFixtureTests: XCTestCase {
         XCTAssertEqual(try preview.apply(to: base), base)
         fields["requestId"] = .string(UUID().uuidString.lowercased())
         XCTAssertThrowsError(try NativeAutomationFixture.fixtureReply(.object(fields), request: request))
+        var replacement = input
+        replacement["catalogId"] = .string("recessed-downlight")
+        let replacementRequest = try NativeAutomationFixture.fixtureRequest(replacement, frame: frame(base))
+        XCTAssertEqual(replacementRequest.command.catalogId, "recessed-downlight")
+        for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"] { fields[key] = replacementRequest.value[key] }
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureReply(.object(fields), request: replacementRequest))
+        replacement["catalogId"] = .string("backless-oak-bench")
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureRequest(replacement, frame: frame(base)))
+        replacement["catalogId"] = .string("unqualified-fixture")
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureRequest(replacement, frame: frame(base)))
+        replacement["catalogId"] = .null
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureRequest(replacement, frame: frame(base)))
+        let removal = try NativeAutomationFixture.fixtureRequest(.object(["lightId": .string(lightId), "pose": .null]), frame: frame(base))
+        for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"] { fields[key] = removal.value[key] }
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureReply(.object(fields), request: removal))
+    }
+    func testFixtureRemovalUsesExistingVisualCommandAndAcceptsAbsentNoOp() throws {
+        let base = try fixture()
+        let input: DocumentValue = .object(["lightId": .string(lightId), "pose": .null])
+        let request = try NativeAutomationFixture.fixtureRequest(input, frame: frame(base))
+        XCTAssertNil(request.command.pose)
+        XCTAssertEqual(request.value["type"], .string("remove-furnishing-visual"))
+        XCTAssertEqual(request.value["hostKind"], .string("light"))
+        var fields: [String: DocumentValue] = [:]
+        for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"] { fields[key] = request.value[key] }
+        fields["candidate"] = base.candidate
+        let preview = try NativeAutomationFixture.fixtureReply(.object(fields), request: request)
+        XCTAssertEqual(try preview.apply(to: base), base)
+    }
+    func testFixed64CatalogueSelectionKeepsOriginalFixtureIdentity() throws {
+        let command: DocumentValue = .object(["lightId": .string(lightId), "catalogId": .string("museum-track-spot-fixed-64p1"),
+            "pose": .object(["position": .vector([0,0.15,0.0755]), "yaw": .number(0), "scale": .number(1)])])
+        let request = try NativeAutomationFixture.fixtureRequest(command, frame: frame(fixture()))
+        XCTAssertEqual(request.value["catalogId"], .string("museum-track-spot-fixed-64p1"))
+        let assetId = "cccccccc-0000-4000-8000-000000000003"
+        let selected = try SharedFurnishingCatalog.asset(catalogId: request.command.catalogId, id: assetId)
+        XCTAssertEqual(selected["sha256"], .string("3cbe71cf0c6ed28cb99f16c34094b43dc1cb5b3f293406b2cec54e9fcbf0783a"))
+        XCTAssertEqual(selected["bytes"], .integer(255228))
+        XCTAssertEqual(try SharedFurnishingCatalog.asset(catalogId: "museum-track-spot", id: assetId)["sha256"],
+            .string("4385cd058231a400b0e1bffd1f107ca3b0c7281a41671a8858f8fa7ed3721f90"))
     }
     func testAttachmentRejectsForgedTransformAndReplyFields() throws {
         let base = try fixture(), request = try NativeAutomationFixture.AttachmentRequest(input(), frame: frame(base))

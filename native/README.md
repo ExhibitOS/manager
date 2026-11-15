@@ -1,16 +1,50 @@
 # Native macOS application (in progress)
 
+## Exact fixed64 publication API repair
+
+The API-only `09eacf46…` runtime (source `edaefab7…`, unchanged producer
+`9506cea2…`) has only the directed ordinary clean `7af55e9e…` refresh, with the
+same catalog52/ledger47 and existing 8.5 GiB checkpoint bound. Fresh, reverse,
+skipped and interrupted admission are unchanged. The exact unchanged reader
+features inherit this manifest; no Web, default catalogue or GUI change is required.
+
+A retained, unclaimed native-original pending intent can continue across only
+this repair pair. The SDK reconstructs the old plan from the current checked
+owner/document/ETag and full original request, including native revisions and
+output path, and requires full pending/immutable-attempt equality. It retains
+that original intent and plan without clearing or rebinding history. Fresh
+repair-runtime requests use their current manifest plan; completed/claimed
+replays and changed source/request/path remain refused. Actual sealed-payload
+opener/recheck, compiled helper/SDK, stage reconciliation, adoption and output
+require separate qualification; source tests alone do not establish them.
+
+The same repair pair can preserve an unclaimed native-original pending publication
+through the existing clean checkpoint. The checkpoint owner authenticates the full
+current saved document, owner, pending snapshot/ETag/request/attempt and seals the
+exact publication journal digest inside its existing encrypted envelope. Activation
+and recovery require that sealed digest and the same complete state. Generic
+pending-writer refusal, original-model/upload checks and checkpoint limits remain;
+no publication is executed, cleared or rebound by this retention check. Actual
+transition and subsequent readiness/output still require separate evidence.
+
 ## Native Viewer budget client source
 
-The final qualified budget/working-set candidate (`290fdd12…`, source
-`1f7ae68a…`) is admitted as a directed clean refresh from `41e741a1…`, retaining
-catalog52, ledger47 and the existing 8.5 GiB checkpoint bound. The exact final
-candidate also uses the existing `FreshEmpty` initializer and mandatory inherited
-owner channel for a new, absent profile. Fresh lineage and restore-proof checks
-remain unchanged; dirty, interrupted, reverse and skipped refreshes remain
-refused. The uninstalled `7cfac368…` component proof remains historical and is not
-an admitted shipping target. First default1.16 adoption in a distinct clean
-workspace is separate from duplicating an official existing item. Policy-only Save retries retain a closed
+The qualified rectangle/fixed64/default1.17 candidate (`7af55e9e…`, source
+`ca347c30…`, producer `9506cea2…`) is admitted as a directed clean refresh from
+`41e741a1…`, retaining catalog52, ledger47 and the existing 8.5 GiB checkpoint
+bound. Its exact runtime manifest binds the default1.17 manifest
+`4751b398…` from source `cc477089…`. The exact final candidate also uses the
+existing `FreshEmpty` initializer and mandatory inherited owner channel for a
+new, absent profile. The existing fresh-v7 constructor has a separate exact
+catalog52 ordinary-authoring admission; it does not mark the payload as selected
+OEX or broaden the v7 OEX import classifier (catalog38/39/40). The existing
+ordinary v5 reopen classifier remains independent of that selected-import gate. Fresh lineage, restore-proof, physical identity and signed
+exchange checks remain unchanged; dirty, interrupted, reverse and skipped
+refreshes remain refused. The uninstalled `290fdd12…` budget component proof
+retains its historical clean/reopen record but is no longer a fresh shipping
+target; `7cfac368…` remains unadmitted. Actual new-item default1.17 adoption in a
+distinct clean workspace is separate from duplicating an official existing item.
+Policy-only Save retries retain a closed
 `viewer-budget-policy-v1` intent, original request ID and ETag; authenticated
 server comparison and ordinary CAS are required independently of GPU state.
 Actual source tests, App/helper/SDK qualification, adoption, UI/CLI use, Save,

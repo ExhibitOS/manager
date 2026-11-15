@@ -3720,12 +3720,16 @@ public actor NativeAutomationSession {
             // scope and all durable request fields still bind exact replay.
             let originalRequestSHA256 = nativeOriginal
                 ? Self.digest(try encoder.encode(DocumentValue.object(fields.filter { $0.key != "capability" }))) : nil
-            let planBinding = try runtimeManifest.map { try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
+            var planBinding = try runtimeManifest.map { try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
                 runtimeManifestSha256: $0, watermark: draft.publicationWatermark(), publicationProfile: publicationProfile,
                 nativeOriginalRequestSHA256: originalRequestSHA256) }
             if nativeOriginal {
-                guard let planBinding else { throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE") }
-                let intent = try NativePublicationPending(nativeOriginalSource: draft, etag: etag, requestId: id, planBindingSha256: planBinding)
+                guard let manifest = runtimeManifest, let requestSHA256 = originalRequestSHA256 else {
+                    throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+                }
+                let intent = try publication.nativeOriginalIntent(in: current, runtimeManifest: manifest,
+                    requestId: id, requestSHA256: requestSHA256)
+                planBinding = intent.planBindingSha256
                 if let completed = publication.completed, completed.publishRequestId == id {
                     try completed.refuseNativeOriginalExportReplay(intent)
                 }

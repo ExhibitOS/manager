@@ -250,4 +250,97 @@ final class WorkspaceCeilingRailTests: XCTestCase {
         }
     }
 
+    private var selectedRetirementLights: [String] {
+        (0..<9).map { String(format: "30000000-0000-4000-8000-%012d", $0 + 1) }
+    }
+    private func retirementReplacementBase() throws -> NativeExhibitionDraft {
+        var base = try replacementBase(), candidate = base.candidate
+        let lightIDs = selectedRetirementLights + (10..<16).map { String(format: "30000000-0000-4000-8000-%012d", $0) }
+        let assetID = "30000000-0000-4000-8000-000000000020"
+        let asset = try SharedFurnishingCatalog.asset(catalogId: "museum-track-spot", id: assetID)
+        candidate["lights"] = .array(lightIDs.map { id in
+            .object(["id": .string(id), "roomId": base.rooms[0]["id"], "type": .string("spot"),
+                "transform": NativeExhibitionDraft.identity, "castsShadow": .bool(false), "future": .string("preserve-" + id)])
+        })
+        candidate["extensions"]["org.exhibitos.studio/light-attachments"] = .object(["version": .integer(1), "lights": .array(lightIDs.map { id in
+            .object(["lightId": .string(id), "surfaceId": .string(ceiling), "anchor": .vector([0,0]), "gap": .number(0.2)])
+        })])
+        candidate["extensions"][FurnishingCatalog.namespace] = .object(["version": .integer(1), "assets": .array([asset]), "bindings": .array(lightIDs.map { id in
+            .object(["hostKind": .string("light"), "hostId": .string(id), "assetId": .string(assetID),
+                "pose": .object(["position": .vector([0,0.15,0.0755]), "yaw": .number(0), "scale": .number(1)])])
+        })])
+        // Nonempty synthetic artwork rows prove the rail replacement does not
+        // discard unrelated content. Full scene admission remains server-owned.
+        candidate["artworks"] = .array([.object(["id": .string("30000000-0000-4000-8000-000000000021"),
+            "revisionId": .string("30000000-0000-4000-8000-000000000022"), "future": .string("synthetic artwork")])])
+        candidate["placements"] = .array([.object(["id": .string("30000000-0000-4000-8000-000000000023"),
+            "roomId": base.rooms[0]["id"], "artworkRevisionId": .string("30000000-0000-4000-8000-000000000022"),
+            "assetId": .string("30000000-0000-4000-8000-000000000024"), "transform": NativeExhibitionDraft.identity])])
+        try base.replaceCandidate(candidate)
+        return base
+    }
+    private func retiringSelectedVisuals(in input: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
+        var base = input
+        for id in selectedRetirementLights {
+            let command = try SharedFurnishingCommand(host: .light, hostId: id, pose: nil)
+            var candidate = base.candidate
+            candidate["extensions"][FurnishingCatalog.namespace]["bindings"] = .array(try XCTUnwrap(candidate["extensions"][FurnishingCatalog.namespace]["bindings"].items).filter { $0["hostId"] != .string(id) })
+            let preview = try SharedFurnishingPreview(candidate: candidate, base: base, command: command)
+            base = try preview.apply(to: base, command: command)
+        }
+        return base
+    }
+    private func retirementReplacement(in base: NativeExhibitionDraft) throws -> WorkspaceCeilingRailReplacement {
+        var value = replacementValue(in: base)
+        value["preserveLightIds"] = .array(selectedRetirementLights.map(DocumentValue.string))
+        return try WorkspaceCeilingRailReplacement(value: value)
+    }
+    func testReplacementAfterNineVisualRetirementsPreservesWholeRemainingScene() throws {
+        let original = try retirementReplacementBase(), retired = try retiringSelectedVisuals(in: original)
+        XCTAssertEqual(retired.candidate["lights"], original.candidate["lights"])
+        XCTAssertEqual(retired.candidate["extensions"]["org.exhibitos.studio/light-attachments"], original.candidate["extensions"]["org.exhibitos.studio/light-attachments"])
+        XCTAssertEqual(retired.candidate["extensions"][FurnishingCatalog.namespace]["bindings"].items?.count, 6)
+        let command = try retirementReplacement(in: retired)
+        let result = try XCTUnwrap(WorkspaceCeilingRail.replacing(command, furnishing: furnishing(replacementDescriptor()), in: retired, supportedExtensionVersion: 11))
+        var restored = result.candidate
+        restored["extensions"][WorkspaceFurnishingPlacement.namespace] = retired.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]
+        XCTAssertEqual(restored, retired.candidate, "Only selected rail records may change; all lights, mounts, artworks and remaining six visuals stay exact")
+        let reopened = try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(result))
+        XCTAssertNil(try WorkspaceCeilingRail.replacing(command, furnishing: furnishing(replacementDescriptor()), in: reopened, supportedExtensionVersion: 11))
+    }
+    func testRetiredVisualReplacementStillRequiresUniqueLightsMountsAndRoom() throws {
+        let base = try retiringSelectedVisuals(in: retirementReplacementBase()), original = base.document
+        for variant in 0..<6 {
+            var altered = base, candidate = base.candidate
+            var lights = try XCTUnwrap(candidate["lights"].items)
+            var mounts = try XCTUnwrap(candidate["extensions"]["org.exhibitos.studio/light-attachments"]["lights"].items)
+            switch variant {
+            case 0: lights.removeFirst()
+            case 1: lights[1] = lights[0] // same total count cannot hide a missing selected ID
+            case 2: mounts.removeFirst()
+            case 3: mounts.append(mounts[0])
+            case 4: lights[0]["roomId"] = .string(replacementRail)
+            default: mounts[0]["surfaceId"] = .string(replacementRail)
+            }
+            candidate["lights"] = .array(lights)
+            candidate["extensions"]["org.exhibitos.studio/light-attachments"]["lights"] = .array(mounts)
+            try altered.replaceCandidate(candidate)
+            let snapshot = altered.document
+            XCTAssertThrowsError(try WorkspaceCeilingRail.replacing(retirementReplacement(in: altered), furnishing: furnishing(replacementDescriptor()), in: altered, supportedExtensionVersion: 11), "variant \(variant)")
+            XCTAssertEqual(altered.document, snapshot)
+        }
+        XCTAssertEqual(base.document, original)
+    }
+    func testReplacementAllowsRemainingSingleVisualButRejectsDuplicateVisual() throws {
+        var base = try retirementReplacementBase(), candidate = base.candidate
+        let command = try retirementReplacement(in: base)
+        XCTAssertNotNil(try WorkspaceCeilingRail.replacing(command, furnishing: furnishing(replacementDescriptor()), in: base, supportedExtensionVersion: 11))
+        var bindings = try XCTUnwrap(candidate["extensions"][FurnishingCatalog.namespace]["bindings"].items)
+        bindings.append(bindings[0]); candidate["extensions"][FurnishingCatalog.namespace]["bindings"] = .array(bindings)
+        try base.replaceCandidate(candidate)
+        let snapshot = base.document
+        XCTAssertThrowsError(try WorkspaceCeilingRail.replacing(command, furnishing: furnishing(replacementDescriptor()), in: base, supportedExtensionVersion: 11))
+        XCTAssertEqual(base.document, snapshot)
+    }
+
 }

@@ -207,10 +207,14 @@ public enum WorkspaceCeilingRail {
             let mounts = candidate["extensions"]["org.exhibitos.studio/light-attachments"]["lights"].items ?? []
             let visuals = candidate["extensions"]["org.exhibitos.studio/furnishing-visuals"]["bindings"].items ?? []
             guard selectedLights.count == replacement.preserveLightIds.count,
+                  Set(selectedLights.compactMap { $0["id"].string }).count == selectedLights.count,
                   selectedLights.allSatisfy({ light in
                       light["roomId"] == .string(roomId)
                           && mounts.filter({ $0["lightId"] == light["id"] && $0["surfaceId"] == .string(a.surfaceId) }).count == 1
-                          && visuals.filter({ $0["hostKind"] == .string("light") && $0["hostId"] == light["id"] }).count == 1
+                          // A normal visual retirement preserves the mounted
+                          // light. Replacement must not require recreating its
+                          // old fixture before the new rail can be applied.
+                          && visuals.filter({ $0["hostKind"] == .string("light") && $0["hostId"] == light["id"] }).count <= 1
                   }) else { throw failure }
             let selected = placements.filter { replacement.oldPlacementIds.contains($0["id"].string ?? "") }
             if selected.isEmpty,
