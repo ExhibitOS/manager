@@ -382,7 +382,9 @@ impl InstallationController {
         payload: std::sync::Arc<super::native_payload::Payload>,
         ports: super::native_installation::Ports,
     ) -> Result<(Self, super::native_runtime::Session)> {
-        if !payload.normal_oex_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
+        if payload.fresh_catalog52_constructor() {
+            payload.recheck()?;
+        } else if !payload.normal_oex_selected_input()? { return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE")); }
         let (profile_path, anchor) = super::profile_backup::anchor_lock(&requested, true)?;
         // mkdir is the proof of creation: an existing path is never adopted.
         use std::os::unix::fs::DirBuilderExt;

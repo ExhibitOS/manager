@@ -82,6 +82,8 @@ pub struct Payload {
     manifest_sha256: String,
     workspace_v5_validation: bool,
     workspace_import: Option<(WorkspaceImport, bool)>,
+    // Constructor-only authority; never grants an OEX import version.
+    fresh_catalog52_constructor: bool,
 }
 const STATIC_DETAIL_MARKER: &str = "platform/scripts/native-detail-static-export-capability-v1.json";
 const STATIC_DETAIL_MARKER_SHA256: &str = "9663e0fb346c78ebbd1b9e883bbd2400a1b968368d101102f0e0285c8e7deaef";
@@ -2461,7 +2463,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
     }
 
     fn furnishing_ledger_fixture() -> Payload {
-        let mut payload = Payload { root: PathBuf::new(), manifest: local_fixture(), manifest_sha256: "a".repeat(64), workspace_v5_validation: false, workspace_import: None };
+        let mut payload = Payload { root: PathBuf::new(), manifest: local_fixture(), manifest_sha256: "a".repeat(64), workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false };
         for index in (1..=36).rev().filter(|index| !matches!(*index, 26 | 27)) {
             let dir = match index {
                 1..=25 => "migrations",
@@ -2599,6 +2601,57 @@ pub(crate) mod normal_oex_release_declaration_tests {
                 assert!(!combined_thumbnail_host_matches(mixed));
             }
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn fresh117_constructor_authority_is_exact_and_never_an_oex_import() {
+        let target = RECTANGLE_FIXED64_TARGET;
+        let mut payload = combined_thumbnail_payload(target);
+        assert!(!payload.fresh_catalog52_constructor());
+        payload.admit_fresh_catalog52_constructor().unwrap();
+        assert!(payload.fresh_catalog52_constructor());
+        assert!(payload.selected_workspace_import_version().is_none());
+        assert!(!payload.normal_oex_selected_input().unwrap());
+        assert!(Payload::classify_workspace_import_validation(combined_thumbnail_payload(target), WorkspaceImport::V7, true).is_err());
+        for denied in [VIEWER_BUDGET_TARGET, WHITE_RAIL_OPPOSITE_TARGET,
+            CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET,
+            (WHITE_RAIL_OPPOSITE_TARGET.0, target.1, target.2),
+            (target.0, WHITE_RAIL_OPPOSITE_TARGET.1, target.2),
+            (target.0, target.1, VIEWER_BUDGET_TARGET.2)] {
+            let mut rejected = combined_thumbnail_payload(denied);
+            assert!(rejected.admit_fresh_catalog52_constructor().is_err());
+            assert!(!rejected.fresh_catalog52_constructor());
+        }
+        payload.manifest.producer_sha256 = WHITE_RAIL_OPPOSITE_TARGET.1.into();
+        assert!(!payload.fresh_catalog52_constructor());
+        payload.manifest.producer_sha256 = target.1.into();
+        payload.workspace_import = Some((WorkspaceImport::V7, true));
+        assert!(!payload.fresh_catalog52_constructor());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed default1.17 rectangle/fixed64 runtime; readonly payload openers only"]
+    fn fresh117_actual_runtime_constructor_and_ordinary_reopen_keep_import_separate() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DEFAULT117_RUNTIME").unwrap());
+        let target = RECTANGLE_FIXED64_TARGET;
+        // This is the unchanged official-profile SDK opener. It does not use
+        // the legacy v7 selected-import catalog38/39/40 classifier.
+        let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        ordinary.recheck().unwrap();
+        assert_eq!((ordinary.manifest.source_commit.as_str(), ordinary.producer_sha256(), ordinary.manifest_sha256.as_str()), target);
+        assert_eq!(ordinary.workspace_furnishing_catalog().unwrap(), Some(WorkspaceFurnishingCatalog::CombinedThumbnails052));
+        assert!(!ordinary.fresh_catalog52_constructor());
+        assert!(!ordinary.workspace_import_selected_input());
+        let fresh = Payload::open_fresh_workspace_v7_validation(&root).unwrap();
+        fresh.recheck().unwrap();
+        assert_eq!((fresh.manifest.source_commit.as_str(), fresh.producer_sha256(), fresh.manifest_sha256.as_str()), target);
+        assert!(fresh.fresh_catalog52_constructor());
+        assert!(fresh.workspace_import_version().is_none());
+        assert!(!fresh.normal_oex_selected_input().unwrap());
+        assert_eq!(fresh.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).unwrap().lines().count(), 47);
+        assert_eq!(Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -5275,7 +5328,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
 
         let mut payload = Payload {
             root: PathBuf::new(), manifest, manifest_sha256: pinned_manifest.to_string(),
-            workspace_v5_validation: false, workspace_import: Some((WorkspaceImport::V7, false)),
+            workspace_v5_validation: false, workspace_import: Some((WorkspaceImport::V7, false)), fresh_catalog52_constructor: false,
         };
         assert!(payload.workspace_import_version() == Some(WorkspaceImport::V7));
         assert!(!payload.workspace_import_selected_input());
@@ -5327,7 +5380,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
         let mut manifest = local_fixture();
         manifest.source_commit = source.into();
         manifest.producer_sha256 = producer.into();
-        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into(), workspace_v5_validation: false, workspace_import: None };
+        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into(), workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false };
         assert!(payload.normal_oex_030_concrete_tuple());
         assert!(!payload.normal_oex_029_floor_tuple());
         assert!(!normal_oex_030_concrete_inventory_matches(&payload.manifest));
@@ -5765,7 +5818,7 @@ impl Payload {
             root,
             manifest,
             manifest_sha256: digest(&bytes),
-            workspace_v5_validation: false, workspace_import: None,
+            workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false,
         })
     }
     /// Available only to the fresh selected validation entry. The normal
@@ -6696,7 +6749,10 @@ impl Payload {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn open_workspace_import_validation(root: &Path, version: WorkspaceImport, selected: bool) -> Result<Self> {
-        let mut payload = Self::open(root)?;
+        Self::classify_workspace_import_validation(Self::open(root)?, version, selected)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn classify_workspace_import_validation(mut payload: Self, version: WorkspaceImport, selected: bool) -> Result<Self> {
         let approved = match version {
             WorkspaceImport::V6 => WORKSPACE_V6_VALIDATION_PROVENANCE,
             WorkspaceImport::V7 => WORKSPACE_V7_VALIDATION_PROVENANCE,
@@ -6722,6 +6778,36 @@ impl Payload {
         }
         payload.workspace_import = Some((version, selected));
         Ok(payload)
+    }
+    /// Fresh catalog52 is ordinary authoring, not selected OEX import. Only
+    /// this existing fresh-v7 constructor can seal that in-memory authority.
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn open_fresh_workspace_v7_validation(root: &Path) -> Result<Self> {
+        let mut payload = Self::open(root)?;
+        if payload.workspace_furnishing_catalog()? == Some(WorkspaceFurnishingCatalog::CombinedThumbnails052) {
+            payload.admit_fresh_catalog52_constructor()?;
+            return Ok(payload);
+        }
+        Self::classify_workspace_import_validation(payload, WorkspaceImport::V7, true)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn admit_fresh_catalog52_constructor(&mut self) -> Result<()> {
+        let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
+        if tuple != RECTANGLE_FIXED64_TARGET || !combined_thumbnail_fresh_host_matches(tuple)
+            || self.workspace_import.is_some() || self.workspace_v5_validation
+            || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CombinedThumbnails052)
+        { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052)?;
+        self.fresh_catalog52_constructor = true;
+        Ok(())
+    }
+    pub(crate) fn fresh_catalog52_constructor(&self) -> bool {
+        if !self.fresh_catalog52_constructor { return false; }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        return (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256) == RECTANGLE_FIXED64_TARGET
+            && self.workspace_import.is_none() && !self.workspace_v5_validation;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        false
     }
     pub(crate) fn workspace_import_version(&self) -> Option<WorkspaceImport> {
         self.workspace_import.map(|(version, _)| version)

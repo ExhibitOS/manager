@@ -252,7 +252,7 @@ impl Host {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     pub fn new_fresh_workspace_v7_validation(profile: PathBuf, resources: PathBuf, ports: Ports) -> Result<Self> {
         ports.validate()?;
-        let payload = Arc::new(Payload::open_workspace_import_validation(&resources, crate::native_payload::WorkspaceImport::V7, true)?);
+        let payload = Arc::new(Payload::open_fresh_workspace_v7_validation(&resources)?);
         Self::from_fresh_selected_payload(profile, resources, ports, payload)
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -314,6 +314,7 @@ impl Host {
         Ok(host)
     }
     fn from_fresh_selected_payload(profile: PathBuf, resources: PathBuf, ports: Ports, payload: Arc<Payload>) -> Result<Self> {
+        let fresh_ordinary = payload.fresh_catalog52_constructor();
         let (controller, session) = InstallationController::with_fresh_selected(profile, payload.clone(), ports)?;
         let token = controller.context()?.selection_token;
         let root = controller.with_current(&token, |s| Ok(s.root.clone()))?;
@@ -324,7 +325,7 @@ impl Host {
             state.root = Some(root);
             state.payload = Some(payload);
             state.session = Some(session);
-            state.selected_oex = true;
+            state.selected_oex = !fresh_ordinary;
             state.configuration = configuration;
             state.account_required = false;
         }
