@@ -1625,7 +1625,7 @@ mod tests {
     #[test]
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn contact_catalog52_fresh_binding_retains_fresh_invariants_and_reopens() {
-        for target in [crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET] {
+        for target in [crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET, crate::native_payload::VIEWER_BUDGET_TARGET] {
         let mut fresh = binding(GENERATION);
         fresh.catalog = 52;
         fresh.source_commit = target.0.into();

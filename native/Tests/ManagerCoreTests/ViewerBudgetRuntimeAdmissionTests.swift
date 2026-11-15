@@ -4,7 +4,7 @@ import XCTest
 
 final class ViewerBudgetRuntimeAdmissionTests: XCTestCase {
     func testExactBudgetSuccessorPreservesExistingReaderEligibility() throws {
-        for manifest in ["7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"] {
+        for manifest in ["290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"] {
             #if DEBUG
             XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
             XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
@@ -21,7 +21,8 @@ final class ViewerBudgetRuntimeAdmissionTests: XCTestCase {
             XCTAssertFalse(api.supportsPlacedExitDoorDepthCorrection)
             #endif
             XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
-            for unknown in [manifest.uppercased(), String(repeating: "f", count: 64)] {
+            for unknown in [manifest.uppercased(), String(repeating: "f", count: 64),
+                            "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"] {
                 XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: unknown))
                 XCTAssertFalse(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: unknown))
                 XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: unknown))

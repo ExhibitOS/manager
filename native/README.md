@@ -2,10 +2,15 @@
 
 ## Native Viewer budget client source
 
-The qualified budget candidate (`7cfac368…`, source `1a7deed2…`) is admitted only
-as a directed clean refresh from `41e741a1…`, retaining catalog52, ledger47 and
-the existing 8.5 GiB checkpoint bound. Fresh, dirty, interrupted, reverse and
-skipped transitions remain refused. Policy-only Save retries retain a closed
+The final qualified budget/working-set candidate (`290fdd12…`, source
+`1f7ae68a…`) is admitted as a directed clean refresh from `41e741a1…`, retaining
+catalog52, ledger47 and the existing 8.5 GiB checkpoint bound. The exact final
+candidate also uses the existing `FreshEmpty` initializer and mandatory inherited
+owner channel for a new, absent profile. Fresh lineage and restore-proof checks
+remain unchanged; dirty, interrupted, reverse and skipped refreshes remain
+refused. The uninstalled `7cfac368…` component proof remains historical and is not
+an admitted shipping target. First default1.16 adoption in a distinct clean
+workspace is separate from duplicating an official existing item. Policy-only Save retries retain a closed
 `viewer-budget-policy-v1` intent, original request ID and ETag; authenticated
 server comparison and ordinary CAS are required independently of GPU state.
 Actual source tests, App/helper/SDK qualification, adoption, UI/CLI use, Save,

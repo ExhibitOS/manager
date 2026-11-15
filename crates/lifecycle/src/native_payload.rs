@@ -595,9 +595,9 @@ pub(crate) const WHITE_RAIL_OPPOSITE_TARGET: RuntimeTuple = (
 // Exact qualified Viewer-budget successor; clean directed refresh only.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const VIEWER_BUDGET_TARGET: RuntimeTuple = (
-    "1a7deed2dd3ad6483d2a4e9d800abbb4adae7e37",
+    "1f7ae68ab8bf2b22f6ba651bf4f14a1b8ef17882",
     "70997c1105e539b8f3d4084839e8a34f54a2d257d014f840014d8999ac38438b",
-    "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a",
+    "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354",
 );
 pub(crate) fn viewer_budget_clean_transition(pair: (&str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -646,7 +646,7 @@ pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool
 // exact set. Earlier combined targets retain their reopen/transition scope.
 pub(crate) fn combined_thumbnail_fresh_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET].contains(&tuple);
+    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, VIEWER_BUDGET_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2583,12 +2583,32 @@ pub(crate) mod normal_oex_release_declaration_tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
+    fn default116_final_fresh_entry_is_only_the_exact_qualified_budget_tuple() {
+        let target = VIEWER_BUDGET_TARGET;
+        assert!(combined_thumbnail_host_matches(target));
+        assert!(combined_thumbnail_fresh_host_matches(target));
+        assert!(!current52_interrupted_host_matches(target));
+        for denied in [WHITE_RAIL_OPPOSITE_TARGET, GROUPED_RAIL_CONTACT_TARGET,
+            AUTHORED_SHADOW_TRACK116_TARGET, NATIVE_CAMERA_POSE_LIFECYCLE_TARGET,
+            COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET,
+            ("1a7deed2dd3ad6483d2a4e9d800abbb4adae7e37", "70997c1105e539b8f3d4084839e8a34f54a2d257d014f840014d8999ac38438b", "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"),
+            (WHITE_RAIL_OPPOSITE_TARGET.0, target.1, target.2),
+            (target.0, "invalid", target.2), (target.0, target.1, WHITE_RAIL_OPPOSITE_TARGET.2)] {
+            assert!(!combined_thumbnail_fresh_host_matches(denied));
+        }
+        let ledger = combined_thumbnail_payload(target)
+            .workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).unwrap();
+        assert_eq!(ledger.lines().count(), 47);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
     fn viewer_budget_is_exact_directed_clean_refresh_without_new_ledger() {
         let source = WHITE_RAIL_OPPOSITE_TARGET;
         let target = VIEWER_BUDGET_TARGET;
         assert!(combined_thumbnail_host_matches(source));
         assert!(combined_thumbnail_host_matches(target));
-        assert!(!combined_thumbnail_fresh_host_matches(target));
+        assert!(combined_thumbnail_fresh_host_matches(target));
         assert!(!current52_interrupted_host_matches(target));
         assert!(saved_workspace_transition_target(target.2));
         assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));

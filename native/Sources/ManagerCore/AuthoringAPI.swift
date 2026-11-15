@@ -1104,7 +1104,7 @@ public actor AuthoringAPI {
          "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319",
          "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8",
          "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1",
-         "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"].contains(manifest)
+         "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"].contains(manifest)
         #else
         false
         #endif
@@ -1511,7 +1511,7 @@ public actor AuthoringAPI {
             || nativeRuntimeManifestSHA256 == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || nativeRuntimeManifestSHA256 == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || nativeRuntimeManifestSHA256 == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
-            || nativeRuntimeManifestSHA256 == "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"
+            || nativeRuntimeManifestSHA256 == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
         #else
         false
         #endif
@@ -3056,7 +3056,7 @@ public actor AuthoringAPI {
             || manifest == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || manifest == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
-            || manifest == "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"
+            || manifest == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
         #else
         false
         #endif
@@ -3895,7 +3895,7 @@ public actor AuthoringAPI {
             || manifest == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || manifest == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
-            || manifest == "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"
+            || manifest == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
         #else
         false
         #endif
