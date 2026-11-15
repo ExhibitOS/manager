@@ -517,6 +517,21 @@ impl InstallationController {
         })
     }
 
+    /// Checkpoint-only read under the caller's existing personal-transition
+    /// profile lock. Keep publication_unlocked inside its installations owner.
+    #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
+    pub(crate) fn personal_transition_publication(
+        &self, service: &LifecycleService, profile: &Path,
+    ) -> Result<(native_publication::PublicationState, Option<String>)> {
+        let selected = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+        if selected.root != profile { return Err(err("NATIVE_PUBLICATION_SCOPE_CHANGED")); }
+        let (file, publication) = self.publication_unlocked(service)?;
+        let journal_sha256 = if publication.pending.is_some() {
+            Some(digest(&installation_backup::source_bytes(profile, &file, 2_200_000, true)?))
+        } else { None };
+        Ok((publication, journal_sha256))
+    }
+
     #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
     pub(crate) fn personal_transition_journal_digests(&self, service: &LifecycleService, profile: &Path) -> Result<Vec<Option<String>>> {
         let mut journals = vec![

@@ -1887,10 +1887,8 @@ impl InstallationController {
             #[cfg(feature = "workspace-v5-owner-validation")]
             {
                 let owner = service.personal_identity()?;
-                let (file, _) = self.publication_unlocked(service)?;
-                let journal_sha256 = if publication.pending.is_some() {
-                    digest(&installation_backup::source_bytes(profile, &file, 2_200_000, true)?)
-                } else { String::new() };
+                let (_, journal_sha256) = self.personal_transition_publication(service, profile)?;
+                let journal_sha256 = journal_sha256.unwrap_or_default();
                 match retained_saved_head_check {
                     Some(RetainedSavedHeadCheck::CleanStage { pair }) |
                     Some(RetainedSavedHeadCheck::Stage { pair, .. }) =>
@@ -2031,10 +2029,8 @@ impl InstallationController {
                 checkpoint.check_host(true)?;
                 checkpoint.check_retained(retained)?;
                 checkpoint.check_saved_head_input(retained_saved_head)?;
-                let (publication_file, publication) = self.publication_unlocked(service)?;
-                let publication_sha256 = if publication.pending.is_some() {
-                    digest(&installation_backup::source_bytes(profile, &publication_file, 2_200_000, true)?)
-                } else { String::new() };
+                let (publication, publication_sha256) = self.personal_transition_publication(service, profile)?;
+                let publication_sha256 = publication_sha256.unwrap_or_default();
                 if publication.pending.is_some() && checkpoint.retained_publication_sha256.is_none() { return Err(invalid()); }
                 fixed64_sealed_pending_publication_matches(pair, document, &publication, (&owner.0, &owner.1, &owner.2),
                     &publication_sha256, checkpoint.retained_publication_sha256.as_deref())?;
@@ -2044,10 +2040,8 @@ impl InstallationController {
                     return Err(invalid());
                 }
             } else {
-                let (publication_file, publication) = self.publication_unlocked(service)?;
-                let publication_sha256 = if publication.pending.is_some() {
-                    digest(&installation_backup::source_bytes(profile, &publication_file, 2_200_000, true)?)
-                } else { String::new() };
+                let (publication, publication_sha256) = self.personal_transition_publication(service, profile)?;
+                let publication_sha256 = publication_sha256.unwrap_or_default();
                 let retained_publication = fixed64_pending_publication_matches(pair, document, &publication,
                     (&owner.0, &owner.1, &owner.2), &publication_sha256, None)?
                     .then_some(publication_sha256);
