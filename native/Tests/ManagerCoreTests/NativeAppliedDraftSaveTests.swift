@@ -120,6 +120,24 @@ final class NativeAppliedDraftSaveTests: XCTestCase {
         XCTAssertThrowsError(try NativeAutomationSession.sharedBenchReply(root: root, path: path.path, expectedSHA256: String(repeating: "f", count: 64)))
     }
 
+    func testSameSessionAnchorOnlyUsesExactRetainedOptInApplyResponse() throws {
+        let (_, pending, _) = try fixture()
+        let response = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(pending))
+        let original: DocumentValue = .object(["operation": .string("fixture-apply"), "requestId": .string(requestId),
+            "workspaceId": .string(pending.workspaceId), "tenantId": .string(pending.tenantId),
+            "principalId": .string(pending.principalId), "expectedRevision": .integer(40),
+            "expectedEditVersion": .integer(1), "retainSaveIntent": .bool(true)])
+        let anchor = try NativeAppliedDraftSave.Anchor.sameSession(request: original, response: response, manifest: manifest)
+        XCTAssertEqual(anchor.originalDraft, pending.draft)
+        for (key, value) in [("operation", DocumentValue.string("fixture-prepare")),
+                             ("retainSaveIntent", .bool(false)), ("workspaceId", .string(UUID().uuidString.lowercased()))] {
+            var wrong = original; wrong[key] = value
+            XCTAssertThrowsError(try NativeAppliedDraftSave.Anchor.sameSession(request: wrong, response: response, manifest: manifest))
+        }
+        var unretained = response; unretained["pending"] = .null
+        XCTAssertThrowsError(try NativeAppliedDraftSave.Anchor.sameSession(request: original, response: unretained, manifest: manifest))
+    }
+
     func testCleanReplayWithoutOriginalReceiptCannotCreateNewRevision() async throws {
         let (source, pending, input) = try fixture(originalBody: true), anchor = try NativeAppliedDraftSave.Anchor(input)
         let api = try await connect(source, pending: pending)

@@ -782,10 +782,24 @@ public actor NativeAutomationSession {
     private func resumeAppliedDraftSave(_ request: DocumentValue, id: String, context: Context,
                                        api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
         try checkedRevision(request, current)
-        guard existingWorkspaceV5 != nil, let path = request["inputPath"].string,
-              let pin = inputs[path], nativeImportDigest(pin), selectedOEXFormat == nil,
+        guard existingWorkspaceV5 != nil, selectedOEXFormat == nil,
               let manifest = runtimeManifest else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
-        let anchor = try NativeAppliedDraftSave.Anchor(Self.sharedBenchReply(root: root, path: path, expectedSHA256: pin))
+        let anchor: NativeAppliedDraftSave.Anchor
+        if request["command"] != .null {
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["applyRequestId"])
+            guard appliedDraftRecovery == nil, let applyId = command["applyRequestId"].string,
+                  let seen = seenRequests[applyId], let recorded = replay[applyId], recorded.0 == seen else {
+                throw BridgeFailure("APPLIED_DRAFT_SAME_SESSION_INTENT_UNAVAILABLE")
+            }
+            let original = try JSONDecoder().decode(DocumentValue.self, from: seen)
+            guard original["capability"] == .string(capability) else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            anchor = try .sameSession(request: original, response: recorded.1, manifest: manifest)
+        } else {
+            guard let path = request["inputPath"].string, let pin = inputs[path], nativeImportDigest(pin) else {
+                throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+            }
+            anchor = try NativeAppliedDraftSave.Anchor(Self.sharedBenchReply(root: root, path: path, expectedSHA256: pin))
+        }
         guard id != anchor.requestId, appliedDraftRecovery == nil || anchor == appliedDraftRecovery else {
             throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT")
         }
@@ -1940,7 +1954,8 @@ public actor NativeAutomationSession {
                   existingWorkspaceV5 != nil, selectedOEXFormat == nil else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if operation == "applied-draft-save-resume" {
-            guard Set(fields.keys) == ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath"] else {
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
+            guard Set(fields.keys) == common.union(["inputPath"]) || Set(fields.keys) == common.union(["command"]) else {
                 throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
             }
         }

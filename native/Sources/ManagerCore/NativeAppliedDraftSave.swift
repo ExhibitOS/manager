@@ -41,6 +41,36 @@ enum NativeAppliedDraftSave {
             } else { originalDraft = nil }
         }
 
+        /// Only the Session's retained successful apply response supplies this
+        /// body. The resume caller may name its apply UUID, never replace it.
+        static func sameSession(request: DocumentValue, response: DocumentValue, manifest: String) throws -> Self {
+            guard let operation = request["operation"].string, applyOperations.contains(operation),
+                  request["retainSaveIntent"] == .bool(true),
+                  let id = request["requestId"].string,
+                  let revision = request["expectedRevision"].integer,
+                  let edit = request["expectedEditVersion"].integer else {
+                throw BridgeFailure("APPLIED_DRAFT_SAME_SESSION_INTENT_UNAVAILABLE")
+            }
+            let document = try JSONDecoder().decode(NativeDocumentState.self, from: JSONEncoder().encode(response))
+            guard let draft = document.draft, let pending = document.pending, pending.requestId == id,
+                  let etag = pending.etag,
+                  request["workspaceId"] == .string(document.workspaceId),
+                  request["tenantId"] == .string(document.tenantId),
+                  request["principalId"] == .string(document.principalId) else {
+                throw BridgeFailure("APPLIED_DRAFT_SAME_SESSION_INTENT_UNAVAILABLE")
+            }
+            let anchor = try Self(.object(["version": .integer(1), "requestId": .string(id),
+                "workspaceId": .string(document.workspaceId), "tenantId": .string(document.tenantId),
+                "principalId": .string(document.principalId), "exhibitionId": .string(draft.id),
+                "runtimeManifestSHA256": .string(manifest), "etag": .string(etag),
+                "sourceNativeRevision": .integer(revision), "sourceEditVersion": .integer(edit),
+                "candidate": draft.candidate, "originalDraft": draft.document]))
+            guard try anchor.state(document, manifest: manifest) == .pending else {
+                throw BridgeFailure("APPLIED_DRAFT_SAME_SESSION_INTENT_UNAVAILABLE")
+            }
+            return anchor
+        }
+
         static func serverRevision(_ etag: String) -> Int? {
             guard etag.hasPrefix("\"studio-r"), etag.hasSuffix("\"") else { return nil }
             let parts = etag.dropFirst(9).dropLast().split(separator: "-", maxSplits: 1)

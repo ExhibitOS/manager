@@ -12,9 +12,20 @@ the resulting draft and its exact Save intent together. The existing Pending
 uses origin `automation-applied-draft-v1` and the apply request ID as the durable
 server Save ID. A no-op creates no intent. Omission preserves the old behavior.
 
-Before applying, retain the original input as a private JSON file directly
-inside the configured `outputRoot`, and pin its original bytes in the existing
-configuration `inputs` map. Its exact fields are:
+In the **same SDK session**, issue `applied-draft-save-resume` with a fresh RPC
+request ID, current scope/capability/versions, and
+`command: {"applyRequestId": "ORIGINAL_APPLY_UUID"}`. The SDK resolves only its
+own retained original request and successful opt-in apply response. No future
+input file or mutable input registry is needed, including when an external
+apply reply was lost. An already-saved retry in that same session also uses the
+retained exact body and returns without another local write. A no-op,
+non-opt-in request or UUID from another session cannot supply this handoff.
+
+For recovery **across sessions**, retain the caller's original intent in a
+private JSON file directly inside the recovery configuration's `outputRoot`,
+and pin its bytes in that new configuration's existing `inputs` map. This file
+can be prepared after the original prepare/apply; it need not be known when the
+original SDK session was constructed. Its exact fields are:
 
 | Field | Original value |
 | --- | --- |
@@ -34,9 +45,10 @@ AFTER envelope. A retained Pending supplies that exact original body. A retry
 after the final local confirmation has cleared Pending requires the caller's
 exact `originalDraft`; the SDK does not reconstruct it from a candidate.
 
-Issue `applied-draft-save-resume` with a **new RPC request ID**, the ordinary
-scope/capability/current `expectedRevision` and `expectedEditVersion`, and
-`inputPath` pointing to the pinned intent file. Do not dispatch ordinary `save`
+For the file route, issue `applied-draft-save-resume` with a **new RPC request
+ID**, the ordinary scope/capability/current `expectedRevision` and
+`expectedEditVersion`, and `inputPath` pointing to the pinned intent file.
+Supply either `command` or `inputPath`, never both. Do not dispatch ordinary `save`
 using the apply UUID: different RPC bytes under that UUID are a request conflict.
 The explicit resume calls the existing Save API internally using the retained
 original body, apply UUID and original ETag. It never reapplies the proposal.
