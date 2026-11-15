@@ -1,5 +1,19 @@
 # Native macOS application (in progress)
 
+The exact debug Native camera-pose successor (manifest `9e18823b…`) retains
+catalog52, SQL47 and existing scoped authoring readers. Only the directed
+`9cc5b331…` predecessor refresh can retain one unsaved edit. Its private saved
+transition input can carry a typed clean saved-head baseline, sealed inside the
+existing authenticated checkpoint. The server trial still compares header/body
+ETag and the complete saved draft; the current working DocumentState has a
+separate full digest and unchanged physical inventory. Baseline input on clean,
+reverse or other transitions is refused. No Save, discard, fresh initialization
+or general dirty recovery authority is added. Actual transition, signed App,
+current WebKit camera sample and rail contact require their own qualification.
+The optional read-only camera dataset reports actual world camera position and
+OrbitControls target only for the accepted current frame, or unavailable; it
+never substitutes the last requested camera pose.
+
 The immutable workspace first-failure readout runtime
 `abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56`
 retains catalog52 and its existing47-row ledger. DEBUG validation admits only the

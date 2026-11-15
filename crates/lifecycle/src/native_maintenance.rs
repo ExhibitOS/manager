@@ -46,6 +46,10 @@ pub enum LocalPersonalTransition {
     #[cfg(feature = "workspace-v5-owner-validation")]
     StageSaved {
         source_payload: PathBuf, staging: PathBuf, key_file: PathBuf,
+        // Only the exact Native camera-pose forward pair accepts this saved
+        // baseline; the current dirty document is independently byte-pinned.
+        #[serde(default)]
+        retained_saved_head: Option<super::native_document::DocumentState>,
         #[serde(default)]
         retained_product_image: Option<RetainedProductImage>,
         #[serde(default)]

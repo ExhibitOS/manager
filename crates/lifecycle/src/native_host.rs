@@ -608,11 +608,12 @@ impl Host {
                                     )?;
                                 }
                                 #[cfg(feature = "workspace-v5-owner-validation")]
-                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_product_image, retained_gpu_variant, retained_original_model, startup_cancellation_045 } => {
+                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_saved_head, retained_product_image, retained_gpu_variant, retained_original_model, startup_cancellation_045 } => {
                                     let source = Payload::open_saved_workspace_transition(&source_payload)?;
                                     let target = Payload::open_saved_workspace_transition(&resources)?;
                                     controller.prepare_saved_workspace_v5_transition(
                                         &token, &source, &target, &staging, &key_file,
+                                        retained_saved_head.as_ref(),
                                         TransitionRetention::from_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref(), retained_original_model.as_ref())?,
                                         startup_cancellation_045.as_ref(),
                                     )?;

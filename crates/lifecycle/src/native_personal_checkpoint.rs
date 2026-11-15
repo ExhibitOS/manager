@@ -122,6 +122,9 @@ struct Checkpoint {
     files: BTreeMap<PathBuf, Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     saved_document_sha256: Option<String>,
+    // Saved API head is distinct from the full working-document digest above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_saved_head: Option<super::installations::native_document::DocumentState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retained_product_image: Option<RetainedProductImage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,6 +180,39 @@ fn check_saved_transition_document(
     { return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED")); }
     if document.draft.is_none() || document.etag.is_none() {
         return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED"));
+    }
+    Ok(())
+}
+
+/// Retains one unsaved edit while separately authenticating its saved API head.
+/// The full working DocumentState digest and physical inventory remain mandatory.
+#[cfg(feature = "workspace-v5-owner-validation")]
+fn check_retained_saved_head(
+    pair: (&str, &str),
+    working: &super::installations::native_document::DocumentState,
+    saved: &super::installations::native_document::DocumentState,
+    owner: (&str, &str, &str),
+) -> Result<()> {
+    let mismatch = || err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
+    if !crate::native_payload::native_camera_pose_retained_dirty_transition(pair) {
+        return Err(mismatch());
+    }
+    super::installations::native_document::validate(working)?;
+    super::installations::native_document::validate(saved)?;
+    let working_draft = working.draft.as_ref().ok_or_else(mismatch)?;
+    let saved_draft = saved.draft.as_ref().ok_or_else(mismatch)?;
+    let version = saved.saved_edit_version.ok_or_else(mismatch)?;
+    if (working.workspace_id.as_str(), working.tenant_id.as_str(), working.principal_id.as_str()) != owner
+        || (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str()) != owner
+        || working.pending.is_some() || saved.pending.is_some()
+        || working.etag.is_none() || working.etag != saved.etag
+        || working.saved_edit_version != Some(version)
+        || saved_draft["editVersion"].as_u64() != Some(version)
+        || working_draft["editVersion"].as_u64() != version.checked_add(1)
+        || working_draft["id"] != saved_draft["id"]
+        || working_draft["exhibitionId"] != saved_draft["exhibitionId"]
+    {
+        return Err(mismatch());
     }
     Ok(())
 }
@@ -257,6 +293,10 @@ impl Checkpoint {
 
     fn check_host(&self, saved_workspace_host: bool) -> Result<()> {
         let pair = (self.old_manifest.as_str(), self.new_manifest.as_str());
+        if self.retained_saved_head.is_some()
+            && (!saved_workspace_host || self.saved_document_sha256.is_none()
+                || !crate::native_payload::native_camera_pose_retained_dirty_transition(pair))
+        { return Err(invalid()); }
         #[cfg(feature = "workspace-v5-owner-validation")]
         if FurnishingTransition::from_manifests(pair).is_some() != self.furnishing.is_some() {
             return Err(invalid());
@@ -1334,6 +1374,15 @@ impl LifecycleService {
         }
         #[cfg(not(feature = "workspace-v5-owner-validation"))]
         let _ = document;
+        if let Some(saved) = &checkpoint.retained_saved_head {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            check_retained_saved_head(
+                (&checkpoint.old_manifest, &checkpoint.new_manifest), document.ok_or_else(invalid)?, saved,
+                (&checkpoint.workspace_id, &checkpoint.tenant_id, &checkpoint.principal_id),
+            )?;
+            #[cfg(not(feature = "workspace-v5-owner-validation"))]
+            { let _ = saved; return Err(invalid()); }
+        }
         check_cold_transition_source(&self.root, (&checkpoint.old_manifest, &checkpoint.new_manifest))?;
         verify_unchanged(&self.root, &checkpoint, &pending)?;
         let binding = bindings(&checkpoint)?;
@@ -1423,7 +1472,9 @@ impl LifecycleService {
             #[cfg(not(feature = "workspace-v5-owner-validation"))]
             let empty_gpu_document = false;
             if checkpoint.saved_document_sha256.is_some() && !empty_gpu_document {
-                session.verify_transition_studio(&authoring, document)?;
+                session.verify_transition_studio(
+                    &authoring, checkpoint.retained_saved_head.as_ref().unwrap_or(document),
+                )?;
             }
             #[cfg(feature = "workspace-v5-owner-validation")]
             if let Some(proof) = retained.image() {
@@ -1494,6 +1545,7 @@ impl LifecycleService {
         staging: &Path,
         key: &[u8; 32],
         saved_document_sha256: Option<String>,
+        retained_saved_head: Option<&super::installations::native_document::DocumentState>,
         retained: TransitionRetention<'_>,
         startup_cancellation_045: Option<&StartupCancellation045>,
     ) -> Result<()> {
@@ -1597,6 +1649,7 @@ impl LifecycleService {
             new_manifest: target.manifest_sha256,
             files,
             saved_document_sha256,
+            retained_saved_head: retained_saved_head.cloned(),
             retained_product_image: retained.image().cloned(),
             retained_gpu_variant: retained.gpu().cloned(),
             retained_original_model: retained.original().cloned(),
@@ -1730,7 +1783,7 @@ impl InstallationController {
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny, |service, _, _, key| {
             if !present(staging, ENVELOPE)? {
-                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, TransitionRetention::None, None)?;
+                service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, TransitionRetention::None, None)?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, false)
         })
@@ -1744,6 +1797,7 @@ impl InstallationController {
         target: &Payload,
         staging: &Path,
         key_path: &Path,
+        retained_saved_head: Option<&super::installations::native_document::DocumentState>,
         retained: TransitionRetention<'_>,
         startup_cancellation_045: Option<&StartupCancellation045>,
     ) -> Result<()> {
@@ -1764,7 +1818,11 @@ impl InstallationController {
                 return Err(invalid());
             }
             let owner = service.personal_identity()?;
-            check_saved_transition_document(pair, document, (&owner.0, &owner.1, &owner.2))?;
+            if let Some(saved) = retained_saved_head {
+                check_retained_saved_head(pair, document, saved, (&owner.0, &owner.1, &owner.2))?;
+            } else {
+                check_saved_transition_document(pair, document, (&owner.0, &owner.1, &owner.2))?;
+            }
             if retained.gpu().is_some()
                 && (!crate::native_payload::gpu_model_wrapping_transition(pair)
                     || !gpu_empty_document(pair, document, (&owner.0, &owner.1, &owner.2))) {
@@ -1796,12 +1854,14 @@ impl InstallationController {
                 checkpoint.check_retained(retained)?;
                 if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str())
                     || checkpoint.startup_cancellation_045.as_ref() != startup_cancellation_045
+                    || checkpoint.retained_saved_head.as_ref().map(saved_document_digest).transpose()?
+                        != retained_saved_head.map(saved_document_digest).transpose()?
                 {
                     return Err(invalid());
                 }
             } else {
                 service.authenticate_local_personal_checkpoint(
-                    source, target, staging, key, Some(document_sha256), retained, startup_cancellation_045,
+                    source, target, staging, key, Some(document_sha256), retained_saved_head, retained, startup_cancellation_045,
                 )?;
             }
             service.stage_local_personal_runtime_transition(source, target, staging, key, true)
@@ -1818,7 +1878,7 @@ impl InstallationController {
         key_path: &Path,
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny, |service, _, _, key| {
-            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, TransitionRetention::None, None)
+            service.authenticate_local_personal_checkpoint(source, target, staging, key, None, None, TransitionRetention::None, None)
         })
     }
 
@@ -1980,6 +2040,67 @@ mod tests {
             principal_id: "10000000-0000-4000-8000-000000000003".into(),
             draft: None, etag: None, saved_edit_version: None, pending: None,
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn native_camera_pose_retains_distinct_saved_head_and_entire_working_document() {
+        let pair = (crate::native_payload::SHARED_RAIL_DEFAULT115_TARGET.2,
+                    crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2);
+        let mut saved = gpu_library_empty_document();
+        saved.revision = 619;
+        saved.saved_edit_version = Some(191);
+        saved.etag = Some(format!("\"studio-r204-{}\"", "a".repeat(64)));
+        saved.draft = Some(serde_json::json!({
+            "kind":"exhibition-draft", "schemaVersion":"1.0.0-draft.1",
+            "id":"10000000-0000-4000-8000-000000000004",
+            "exhibitionId":"10000000-0000-4000-8000-000000000005", "editVersion":191,
+            "candidate":{"id":"10000000-0000-4000-8000-000000000005", "rail":false}
+        }));
+        let mut working = saved.clone(); working.revision = 620;
+        working.draft.as_mut().unwrap()["editVersion"] = 192.into();
+        working.draft.as_mut().unwrap()["candidate"]["rail"] = true.into();
+        let owner = (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str());
+        check_retained_saved_head(pair, &working, &saved, owner).unwrap();
+        assert!(check_saved_transition_document(pair, &working, owner).is_err());
+        assert!(check_retained_saved_head(pair, &saved, &saved, owner).is_err());
+        let working_digest = saved_document_digest(&working).unwrap();
+        assert_ne!(working_digest, saved_document_digest(&saved).unwrap());
+        assert!(catalog45_activation_saved_document(pair, false, false, Some(&working_digest), &working).unwrap());
+        for denied in [(pair.1,pair.0), (pair.0,pair.0), (pair.1,pair.1),
+            (crate::native_payload::DISABLED_PREVIEW_PRESSURE_TARGET.2,pair.0)] {
+            assert!(check_retained_saved_head(denied, &working, &saved, owner).is_err());
+        }
+        for (field, value) in [("format",serde_json::json!(2)), ("workspaceId",serde_json::json!("10000000-0000-4000-8000-000000000099")),
+            ("etag",serde_json::json!(format!("\"studio-r205-{}\"", "b".repeat(64)))),
+            ("savedEditVersion",serde_json::json!(190)), ("draft",serde_json::Value::Null)] {
+            let mut value_document = serde_json::to_value(&working).unwrap(); value_document[field] = value;
+            let changed = serde_json::from_value(value_document).unwrap();
+            assert!(check_retained_saved_head(pair, &changed, &saved, owner).is_err());
+            assert_ne!(saved_document_digest(&changed).unwrap(), working_digest);
+        }
+        for version in [0,191,193] {
+            let mut changed = working.clone(); changed.draft.as_mut().unwrap()["editVersion"] = version.into();
+            assert!(check_retained_saved_head(pair, &changed, &saved, owner).is_err());
+        }
+        let mut wrong_head = saved.clone(); wrong_head.draft.as_mut().unwrap()["id"] = "10000000-0000-4000-8000-000000000099".into();
+        assert!(check_retained_saved_head(pair, &working, &wrong_head, owner).is_err());
+        let mut wrong_version = saved.clone(); wrong_version.draft.as_mut().unwrap()["editVersion"] = 190.into();
+        assert!(check_retained_saved_head(pair, &working, &wrong_version, owner).is_err());
+        let mut mutations = Vec::new();
+        let mut changed = working.clone(); changed.draft.as_mut().unwrap()["candidate"]["rail"] = false.into(); mutations.push(changed);
+        let mut changed = working.clone(); changed.revision += 1; mutations.push(changed);
+        let mut changed = working.clone(); changed.saved_edit_version = Some(190); mutations.push(changed);
+        let mut changed = working.clone(); changed.etag = Some(format!("\"studio-r205-{}\"", "b".repeat(64))); mutations.push(changed);
+        let mut changed = working.clone(); changed.principal_id = "10000000-0000-4000-8000-000000000099".into(); mutations.push(changed);
+        for changed in mutations {
+            assert!(catalog45_activation_saved_document(pair, false, false, Some(&working_digest), &changed).is_err());
+        }
+        // A real pending request is rejected even when its retained draft matches.
+        let mut pending = serde_json::to_value(&working).unwrap();
+        pending["pending"] = serde_json::json!({"requestId":"10000000-0000-4000-8000-000000000006","etag":working.etag,"draft":working.draft});
+        let pending = serde_json::from_value(pending).unwrap();
+        assert!(check_retained_saved_head(pair, &pending, &saved, owner).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
