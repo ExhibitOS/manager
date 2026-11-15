@@ -1,5 +1,13 @@
 # Native macOS application (in progress)
 
+The exact white-rail opposite-heading successor (manifest `41e741a1…`, source
+`3e6210b8…`) admits only the directed clean `d81ad0bc…` refresh. It retains
+catalog 52, the 47-row ledger, source artwork, saved document and existing 8.5 GiB
+checkpoint inventory bound for this exact clean pair. Four existing Native
+readers and native-original export inherit this tuple only; fresh, dirty,
+interrupted, reverse and skipped transitions remain denied. Actual adoption,
+light Saves, output and viewing require separate evidence.
+
 The exact Native-only lifecycle successor (manifest `227b3723…`, source
 `d000e6e6…`) additionally permits only the directed `9e18823b…` refresh.
 It reuses the same typed saved-head/whole-working-document preservation and
