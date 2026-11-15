@@ -1105,7 +1105,8 @@ public actor AuthoringAPI {
          "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8",
          "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1",
          "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354",
-         "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"].contains(manifest)
+         "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29",
+         "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"].contains(manifest)
         #else
         false
         #endif
@@ -1514,6 +1515,7 @@ public actor AuthoringAPI {
             || nativeRuntimeManifestSHA256 == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
             || nativeRuntimeManifestSHA256 == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
             || nativeRuntimeManifestSHA256 == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
+            || nativeRuntimeManifestSHA256 == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
         #else
         false
         #endif
@@ -3060,6 +3062,7 @@ public actor AuthoringAPI {
             || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
             || manifest == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
             || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
+            || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
         #else
         false
         #endif
@@ -3900,6 +3903,7 @@ public actor AuthoringAPI {
             || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
             || manifest == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
             || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
+            || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
         #else
         false
         #endif

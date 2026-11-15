@@ -463,7 +463,8 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
         || crate::native_payload::white_rail_opposite_clean_transition(pair)
         || crate::native_payload::viewer_budget_clean_transition(pair)
-        || crate::native_payload::rectangle_fixed64_clean_transition(pair)) {
+        || crate::native_payload::rectangle_fixed64_clean_transition(pair)
+        || crate::native_payload::fixed64_publication_repair_clean_transition(pair)) {
         return AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3377,6 +3378,23 @@ mod tests {
                        (crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2, target), (crate::native_payload::FURNISHING_READINESS_TARGET.2, target), (crate::native_payload::PASSIVE_CEILING_RAIL_TARGET.2, target), ("unknown", target)] {
             assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn fixed64_publication_repair_checkpoint_keeps_existing_clean_bound() {
+        let source = crate::native_payload::RECTANGLE_FIXED64_TARGET.2;
+        let target = crate::native_payload::FIXED64_PUBLICATION_REPAIR_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES);
+        for denied in [(target, source), (target, target), (source, source),
+                       (crate::native_payload::WHITE_RAIL_OPPOSITE_TARGET.2, target), ("unknown", target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(), hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64), saved_etag: "\"studio-r201-synthetic\"".into(), transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

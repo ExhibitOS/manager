@@ -174,6 +174,35 @@ public struct NativePublicationState: Codable, Equatable, Sendable {
         return try completed.publication.validated()
     }
 
+    /// Reconstruct from the current checked document and complete original wire
+    /// request. The qualified API-only repair preserves the old commitment;
+    /// neither the pending intent nor its immutable attempt is rebound.
+    func nativeOriginalIntent(in document: NativeDocumentState, runtimeManifest: String,
+                              requestId: String, requestSHA256: String) throws -> NativePublicationPending {
+        guard !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag,
+              workspaceId == document.workspaceId, tenantId == document.tenantId,
+              principalId == document.principalId else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        func intent(_ manifest: String) throws -> NativePublicationPending {
+            let plan = try nativePublicationPlanBinding(sourceExhibitionId: draft.id, etag: etag,
+                runtimeManifestSha256: manifest, watermark: draft.publicationWatermark(),
+                publicationProfile: "native-original-v1", nativeOriginalRequestSHA256: requestSHA256)
+            return try NativePublicationPending(nativeOriginalSource: draft, etag: etag,
+                requestId: requestId, planBindingSha256: plan)
+        }
+        let current = try intent(runtimeManifest)
+        #if DEBUG
+        if runtimeManifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
+           let pending, pending.planBindingSha256 != current.planBindingSha256 {
+            let original = try intent("7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29")
+            guard pending == original, let attempt = nativeOriginalAttempts?[requestId],
+                  !attempt.exportClaimed, attempt.planBindingSha256 == original.planBindingSha256,
+                  completed?.publishRequestId != requestId else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+            return pending
+        }
+        #endif
+        return current
+    }
+
     mutating func stageNativeOriginal(_ intent: NativePublicationPending) throws {
         guard intent.mode == "native-original-v1", let plan = intent.planBindingSha256,
               pending == nil || pending == intent else { throw AuthoringFailure("NATIVE_PUBLICATION_PENDING") }
