@@ -32,7 +32,8 @@ final class LightSettingsTests: XCTestCase {
         XCTAssertEqual(command.beamAngle, draft.candidate["lights"].items![0]["beamAngle"].double)
         XCTAssertEqual(candidate["lights"], draft.candidate["lights"])
         XCTAssertEqual(candidate["extensions"][template]["modified"], .bool(true))
-        XCTAssertFalse(ViewportSelection(kind: "light", id: first).belongs(to: draft), "Base strict-v1 selection must stay closed")
+        XCTAssertTrue(ViewportSelection(kind: "light", id: first).belongs(to: draft), "Existing light membership is separate from transport authority")
+        XCTAssertFalse(ViewportSelection(kind: "light", id: UUID().uuidString.lowercased()).belongs(to: draft))
         XCTAssertEqual(draft.document["editVersion"], .integer(2), "Form/proposal never mutates original")
     }
     func testEditedLightPreviewApplyAndUndoKeepOpaqueFieldsAndOtherLights() throws {
