@@ -2124,97 +2124,102 @@ mod tests {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn native_camera_pose_retains_distinct_saved_head_and_entire_working_document() {
-        let pair = (crate::native_payload::SHARED_RAIL_DEFAULT115_TARGET.2, crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2);
-        let (saved, working) = native_camera_pose_documents();
-        let owner = (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str());
-        check_retained_saved_head(pair, &working, &saved, owner).unwrap();
-        assert!(check_saved_transition_document(pair, &working, owner).is_err());
-        assert!(check_retained_saved_head(pair, &saved, &saved, owner).is_err());
-        let working_digest = saved_document_digest(&working).unwrap();
-        assert_ne!(working_digest, saved_document_digest(&saved).unwrap());
-        assert!(catalog45_activation_saved_document(pair, false, false, Some(&working_digest), &working).unwrap());
-        for denied in [(pair.1,pair.0), (pair.0,pair.0), (pair.1,pair.1),
-            (crate::native_payload::DISABLED_PREVIEW_PRESSURE_TARGET.2,pair.0)] {
-            assert!(check_retained_saved_head(denied, &working, &saved, owner).is_err());
+        for pair in [(crate::native_payload::SHARED_RAIL_DEFAULT115_TARGET.2, crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2),
+            (crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2, crate::native_payload::NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2)] {
+            let (saved, working) = native_camera_pose_documents();
+            let owner = (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str());
+            check_retained_saved_head(pair, &working, &saved, owner).unwrap();
+            assert!(check_saved_transition_document(pair, &working, owner).is_err());
+            assert!(check_retained_saved_head(pair, &saved, &saved, owner).is_err());
+            let working_digest = saved_document_digest(&working).unwrap();
+            assert_ne!(working_digest, saved_document_digest(&saved).unwrap());
+            assert!(catalog45_activation_saved_document(pair, false, false, Some(&working_digest), &working).unwrap());
+            for denied in [(pair.1,pair.0), (pair.0,pair.0), (pair.1,pair.1),
+                (crate::native_payload::DISABLED_PREVIEW_PRESSURE_TARGET.2,pair.0)] {
+                assert!(check_retained_saved_head(denied, &working, &saved, owner).is_err());
+            }
+            for (field, value) in [("format",serde_json::json!(2)), ("workspaceId",serde_json::json!("10000000-0000-4000-8000-000000000099")),
+                ("etag",serde_json::json!(format!("\"studio-r205-{}\"", "b".repeat(64)))),
+                ("savedEditVersion",serde_json::json!(190)), ("draft",serde_json::Value::Null)] {
+                let mut value_document = serde_json::to_value(&working).unwrap(); value_document[field] = value;
+                let changed = serde_json::from_value(value_document).unwrap();
+                assert!(check_retained_saved_head(pair, &changed, &saved, owner).is_err());
+                assert_ne!(saved_document_digest(&changed).unwrap(), working_digest);
+            }
+            for version in [0,191,193] {
+                let mut changed = working.clone(); changed.draft.as_mut().unwrap()["editVersion"] = version.into();
+                assert!(check_retained_saved_head(pair, &changed, &saved, owner).is_err());
+            }
+            let mut wrong_head = saved.clone(); wrong_head.draft.as_mut().unwrap()["id"] = "10000000-0000-4000-8000-000000000099".into();
+            assert!(check_retained_saved_head(pair, &working, &wrong_head, owner).is_err());
+            let mut wrong_version = saved.clone(); wrong_version.draft.as_mut().unwrap()["editVersion"] = 190.into();
+            assert!(check_retained_saved_head(pair, &working, &wrong_version, owner).is_err());
+            let mut mutations = Vec::new();
+            let mut changed = working.clone(); changed.draft.as_mut().unwrap()["candidate"]["rail"] = false.into(); mutations.push(changed);
+            let mut changed = working.clone(); changed.revision += 1; mutations.push(changed);
+            let mut changed = working.clone(); changed.saved_edit_version = Some(190); mutations.push(changed);
+            let mut changed = working.clone(); changed.etag = Some(format!("\"studio-r205-{}\"", "b".repeat(64))); mutations.push(changed);
+            let mut changed = working.clone(); changed.principal_id = "10000000-0000-4000-8000-000000000099".into(); mutations.push(changed);
+            for changed in mutations {
+                assert!(catalog45_activation_saved_document(pair, false, false, Some(&working_digest), &changed).is_err());
+            }
+            // A real pending request is rejected even when its retained draft matches.
+            let mut pending = serde_json::to_value(&working).unwrap();
+            pending["pending"] = serde_json::json!({"requestId":"10000000-0000-4000-8000-000000000006","etag":working.etag,"draft":working.draft});
+            let pending = serde_json::from_value(pending).unwrap();
+            assert!(check_retained_saved_head(pair, &pending, &saved, owner).is_err());
         }
-        for (field, value) in [("format",serde_json::json!(2)), ("workspaceId",serde_json::json!("10000000-0000-4000-8000-000000000099")),
-            ("etag",serde_json::json!(format!("\"studio-r205-{}\"", "b".repeat(64)))),
-            ("savedEditVersion",serde_json::json!(190)), ("draft",serde_json::Value::Null)] {
-            let mut value_document = serde_json::to_value(&working).unwrap(); value_document[field] = value;
-            let changed = serde_json::from_value(value_document).unwrap();
-            assert!(check_retained_saved_head(pair, &changed, &saved, owner).is_err());
-            assert_ne!(saved_document_digest(&changed).unwrap(), working_digest);
-        }
-        for version in [0,191,193] {
-            let mut changed = working.clone(); changed.draft.as_mut().unwrap()["editVersion"] = version.into();
-            assert!(check_retained_saved_head(pair, &changed, &saved, owner).is_err());
-        }
-        let mut wrong_head = saved.clone(); wrong_head.draft.as_mut().unwrap()["id"] = "10000000-0000-4000-8000-000000000099".into();
-        assert!(check_retained_saved_head(pair, &working, &wrong_head, owner).is_err());
-        let mut wrong_version = saved.clone(); wrong_version.draft.as_mut().unwrap()["editVersion"] = 190.into();
-        assert!(check_retained_saved_head(pair, &working, &wrong_version, owner).is_err());
-        let mut mutations = Vec::new();
-        let mut changed = working.clone(); changed.draft.as_mut().unwrap()["candidate"]["rail"] = false.into(); mutations.push(changed);
-        let mut changed = working.clone(); changed.revision += 1; mutations.push(changed);
-        let mut changed = working.clone(); changed.saved_edit_version = Some(190); mutations.push(changed);
-        let mut changed = working.clone(); changed.etag = Some(format!("\"studio-r205-{}\"", "b".repeat(64))); mutations.push(changed);
-        let mut changed = working.clone(); changed.principal_id = "10000000-0000-4000-8000-000000000099".into(); mutations.push(changed);
-        for changed in mutations {
-            assert!(catalog45_activation_saved_document(pair, false, false, Some(&working_digest), &changed).is_err());
-        }
-        // A real pending request is rejected even when its retained draft matches.
-        let mut pending = serde_json::to_value(&working).unwrap();
-        pending["pending"] = serde_json::json!({"requestId":"10000000-0000-4000-8000-000000000006","etag":working.etag,"draft":working.draft});
-        let pending = serde_json::from_value(pending).unwrap();
-        assert!(check_retained_saved_head(pair, &pending, &saved, owner).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn native_camera_pose_actual_entry_requires_exact_stage_or_authenticated_sealed_document() {
-        let (saved, working) = native_camera_pose_documents();
-        let owner = (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str());
-        let pair = (crate::native_payload::SHARED_RAIL_DEFAULT115_TARGET.2, crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2);
-        // Same entry helper called by with_personal_transition under its lock.
-        installations::check_personal_transition_document(&working, false,
-            || check_retained_saved_head(pair, &working, &saved, owner)).unwrap();
-        assert!(installations::check_personal_transition_document(&working, false,
-            || Err(invalid())).is_err()); // ordinary old caller remains clean-only
-        assert!(installations::check_personal_transition_document(&working, true,
-            || panic!("publication cannot be waived")).is_err());
-        let mut pending = serde_json::to_value(&working).unwrap();
-        pending["pending"] = serde_json::json!({"requestId":"10000000-0000-4000-8000-000000000006","etag":working.etag,"draft":working.draft});
-        let pending = serde_json::from_value(pending).unwrap();
-        assert!(installations::check_personal_transition_document(&pending, false,
-            || panic!("pending save cannot be waived")).is_err());
-        assert!(installations::check_personal_transition_document(&working, false,
-            || check_retained_saved_head((pair.1,pair.0), &working, &saved, owner)).is_err());
-        let value = serde_json::json!({
-            "source":"/synthetic/source", "staged":"/synthetic/staged",
-            "sourceIdentity":[1,2], "stagedIdentity":[1,3], "ownerUid":501,
-            "workspaceId":owner.0, "tenantId":owner.1, "principalId":owner.2,
-            "oldManifest":pair.0, "newManifest":pair.1, "files":{},
-            "savedDocumentSha256":saved_document_digest(&working).unwrap(), "retainedSavedHead":saved,
-            "trial":false, "drainedFailure":null, "restore":null
-        });
-        let checkpoint: Checkpoint = serde_json::from_value(value).unwrap();
-        let key = [9;32]; let sealed = seal(&checkpoint, &key).unwrap();
-        let reopened = open(&sealed, &key).unwrap();
-        reopened.check_saved_head_input(Some(&saved)).unwrap();
-        installations::check_personal_transition_document(&working, false,
-            || reopened.check_retained_saved_document(&working, owner, Some(pair.1))).unwrap();
-        assert!(reopened.check_retained_saved_document(&working, owner, Some(pair.0)).is_err());
-        let mut changed = working.clone(); changed.revision += 1;
-        assert!(installations::check_personal_transition_document(&changed, false,
-            || reopened.check_retained_saved_document(&changed, owner, Some(pair.1))).is_err());
-        let mut changed_baseline = saved.clone(); changed_baseline.draft.as_mut().unwrap()["candidate"]["rail"] = true.into();
-        assert!(reopened.check_saved_head_input(Some(&changed_baseline)).is_err());
-        assert!(reopened.check_saved_head_input(None).is_err());
-        assert!(open(&sealed, &[8;32]).is_err());
-        let mut tampered = sealed; let last = tampered.len()-1; tampered[last] ^= 1;
-        assert!(open(&tampered, &key).is_err());
-        // Physical source/staging/inventory/ownerUID remain checked by the
-        // existing transition_checkpoint before the sealed entry predicate.
+        for pair in [(crate::native_payload::SHARED_RAIL_DEFAULT115_TARGET.2, crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2),
+            (crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2, crate::native_payload::NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2)] {
+            let (saved, working) = native_camera_pose_documents();
+            let owner = (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str());
+
+            // Same entry helper called by with_personal_transition under its lock.
+            installations::check_personal_transition_document(&working, false,
+                || check_retained_saved_head(pair, &working, &saved, owner)).unwrap();
+            assert!(installations::check_personal_transition_document(&working, false,
+                || Err(invalid())).is_err()); // ordinary old caller remains clean-only
+            assert!(installations::check_personal_transition_document(&working, true,
+                || panic!("publication cannot be waived")).is_err());
+            let mut pending = serde_json::to_value(&working).unwrap();
+            pending["pending"] = serde_json::json!({"requestId":"10000000-0000-4000-8000-000000000006","etag":working.etag,"draft":working.draft});
+            let pending = serde_json::from_value(pending).unwrap();
+            assert!(installations::check_personal_transition_document(&pending, false,
+                || panic!("pending save cannot be waived")).is_err());
+            assert!(installations::check_personal_transition_document(&working, false,
+                || check_retained_saved_head((pair.1,pair.0), &working, &saved, owner)).is_err());
+            let value = serde_json::json!({
+                "source":"/synthetic/source", "staged":"/synthetic/staged",
+                "sourceIdentity":[1,2], "stagedIdentity":[1,3], "ownerUid":501,
+                "workspaceId":owner.0, "tenantId":owner.1, "principalId":owner.2,
+                "oldManifest":pair.0, "newManifest":pair.1, "files":{},
+                "savedDocumentSha256":saved_document_digest(&working).unwrap(), "retainedSavedHead":saved,
+                "trial":false, "drainedFailure":null, "restore":null
+            });
+            let checkpoint: Checkpoint = serde_json::from_value(value).unwrap();
+            let key = [9;32]; let sealed = seal(&checkpoint, &key).unwrap();
+            let reopened = open(&sealed, &key).unwrap();
+            reopened.check_saved_head_input(Some(&saved)).unwrap();
+            installations::check_personal_transition_document(&working, false,
+                || reopened.check_retained_saved_document(&working, owner, Some(pair.1))).unwrap();
+            assert!(reopened.check_retained_saved_document(&working, owner, Some(pair.0)).is_err());
+            let mut changed = working.clone(); changed.revision += 1;
+            assert!(installations::check_personal_transition_document(&changed, false,
+                || reopened.check_retained_saved_document(&changed, owner, Some(pair.1))).is_err());
+            let mut changed_baseline = saved.clone(); changed_baseline.draft.as_mut().unwrap()["candidate"]["rail"] = true.into();
+            assert!(reopened.check_saved_head_input(Some(&changed_baseline)).is_err());
+            assert!(reopened.check_saved_head_input(None).is_err());
+            assert!(open(&sealed, &[8;32]).is_err());
+            let mut tampered = sealed; let last = tampered.len()-1; tampered[last] ^= 1;
+            assert!(open(&tampered, &key).is_err());
+            // Physical source/staging/inventory/ownerUID remain checked by the
+            // existing transition_checkpoint before the sealed entry predicate.
+        }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3324,6 +3329,12 @@ mod tests {
             transfer_sha256: "b".repeat(64),
         };
         assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
+        let successor = crate::native_payload::NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((target, successor), None), limit);
+        assert_eq!(checkpoint_inventory_limit((target, successor), Some(&proof)), MAX_BYTES);
+        for denied in [(successor,target),(successor,successor),(source,successor),("unknown",successor)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
         for denied in [(target,source),(target,target),(source,source),("unknown",target),
             (crate::native_payload::DISABLED_PREVIEW_PRESSURE_TARGET.2,target)] {
             assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);

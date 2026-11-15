@@ -1,5 +1,14 @@
 # Native macOS application (in progress)
 
+The exact Native-only lifecycle successor (manifest `227b3723…`, source
+`d000e6e6…`) additionally permits only the directed `9e18823b…` refresh.
+It reuses the same typed saved-head/whole-working-document preservation and
+8.25 GiB bounded inventory checks; the prior `9cc5b331…` to `9e18823b…` pair
+remains admitted. No reverse, skipped, fresh, or general dirty recovery is added.
+The four existing authoring capability allowlists inherit this exact successor;
+App sampler, projector and UI behavior remain unchanged. Actual ordinary WebKit
+pose availability and visible rail contact still require separate qualification.
+
 The exact debug Native camera-pose successor (manifest `9e18823b…`) retains
 catalog52, SQL47 and existing scoped authoring readers. Only the directed
 `9cc5b331…` predecessor refresh can retain one unsaved edit. Its private saved

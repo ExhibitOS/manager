@@ -1098,7 +1098,8 @@ public actor AuthoringAPI {
          "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59",
          "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0",
          "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b",
-         "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c"].contains(manifest)
+         "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c",
+         "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19"].contains(manifest)
         #else
         false
         #endif
@@ -1441,6 +1442,7 @@ public actor AuthoringAPI {
         #if DEBUG
         nativeRuntimeManifestSHA256 == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b"
             || nativeRuntimeManifestSHA256 == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c"
+            || nativeRuntimeManifestSHA256 == "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19"
         #else
         false
         #endif
@@ -2981,7 +2983,7 @@ public actor AuthoringAPI {
 
     public nonisolated static func supportsPassiveCeilingRailRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59" || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0" || manifest == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b" || manifest == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c"
+        manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59" || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0" || manifest == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b" || manifest == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c" || manifest == "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19"
         #else
         false
         #endif
@@ -3792,7 +3794,7 @@ public actor AuthoringAPI {
             || supportsPreReadyPreservationReadback(manifest: manifest)
             || manifest == selectedArtworkThumbnailRuntimePin
             || manifest == "979489bc659e068e5cd4a24df36f500ca02e65c96c041cd2e9d88af127cb8c4c"
-            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59" || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0" || manifest == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b" || manifest == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c"
+            || manifest == "f27857e0acce017f8e9594b9b5cb6cba3a1fd9d12168cc000af8efa762f25f26" || manifest == "4931d9d9819541a93eec26f8b0e6b49b91138fee6f324eb3577d862d23042156" || manifest == "abe21aec0226f969d9d22bb297b17f402d7e6d0688f5a600c57088973fb33d56" || manifest == "ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd" || manifest == "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59" || manifest == "9d122f7fc6718601c5f7dea1b332dc744c604b6f71c11b32cf6f384c2d87cbc0" || manifest == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b" || manifest == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c" || manifest == "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19"
         #else
         false
         #endif
