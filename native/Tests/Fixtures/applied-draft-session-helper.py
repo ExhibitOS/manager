@@ -92,7 +92,7 @@ if sys.argv[1:] == ["--serve"]:
             server.handle_request()
     sys.exit(0)
 
-assert len(sys.argv) == 3 and sys.argv[1] == "--profile" and Path(sys.argv[2]) == ROOT / "profile"
+assert len(sys.argv) == 3 and sys.argv[1] == "--profile" and Path(sys.argv[2]).resolve(strict=True) == ROOT / "profile"
 port = json.loads((ROOT / "server-ready.json").read_bytes())["web"]
 ports = dict(web=port, api=18102 if port != 18102 else 18104, database=18103 if port != 18103 else 18105)
 document = copy.deepcopy(SOURCE)

@@ -109,7 +109,7 @@ final class NativeAppliedDraftSaveTests: XCTestCase {
 
     func testRetainedCallerIntentUsesExistingPrivatePinnedReader() throws {
         let (_, _, input) = try fixture()
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("intent.json"), bytes = try JSONEncoder().encode(input)
