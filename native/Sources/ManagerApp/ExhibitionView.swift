@@ -657,7 +657,8 @@ final class ExhibitionModel: ObservableObject {
     }
     /// Do not turn an uncertain selected-owner save into a generic PUT retry.
     var boundedPendingRecoveryBlocked: Bool {
-        NativeViewportAccess.blocksPendingReplay(selected: selectedBoundedPolicy, pending: pending, origin: state?.pending?.origin)
+        if !selectedBoundedPolicy, let state, ViewerBudgetPolicyRequest.isPending(in: state) { return false }
+        return NativeViewportAccess.blocksPendingReplay(selected: selectedBoundedPolicy, pending: pending, origin: state?.pending?.origin)
             || (pending && ordinaryBoundedRuntime)
     }
     @Published private(set) var boundedReadOnly = false
@@ -3945,6 +3946,13 @@ final class ExhibitionModel: ObservableObject {
             && !entrancePreviewActive && state?.etag != nil && draft != nil
     }
 
+    var canRetryViewerBudgetPolicy: Bool {
+        guard !selectedBoundedPolicy, api != nil, let state,
+              session?.nativeViewerBudgetPolicyProfile == "viewer-budget-policy-v1",
+              session?.tenantId == state.tenantId, session?.userId == state.principalId else { return false }
+        return ViewerBudgetPolicyRequest.isPending(in: state)
+    }
+
     private func matchesViewerBudgetSource(_ expected: NativeDocumentState) -> Bool {
         guard let state else { return false }
         return state.format == expected.format && state.revision == expected.revision
@@ -3974,10 +3982,11 @@ final class ExhibitionModel: ObservableObject {
             guard let api, var value = state else { return }
             guard value.pending?.productImage == nil else { throw AuthoringFailure("EXHIBITION_PENDING") }
             guard !boundedPendingRecoveryBlocked else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            let budgetPolicy = viewerBudgetPolicy != nil
+            let newBudgetPolicy = viewerBudgetPolicy != nil
+            let budgetPolicy = newBudgetPolicy || ViewerBudgetPolicyRequest.isPending(in: value)
             let bounded = !budgetPolicy && boundedPlacementCapability != nil
             let access = viewportAccessID, generation = boundedPolicyGeneration, token = viewportCredentials?.token
-            if budgetPolicy {
+            if newBudgetPolicy {
                 // This policy-only operation must also work when the viewport
                 // cannot render. Publication editability still comes from the
                 // authenticated server, independently of a viewport lock.
@@ -4019,7 +4028,8 @@ final class ExhibitionModel: ObservableObject {
                     value.draft = try appliedFields()
                 }
                 guard let draft = value.draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
-                value.pending = .init(etag: value.etag, draft: draft, origin: bounded ? "bounded-placement-v1" : nil)
+                value.pending = .init(etag: value.etag, draft: draft,
+                    origin: budgetPolicy ? ViewerBudgetPolicyRequest.pendingOrigin : bounded ? "bounded-placement-v1" : nil)
                 try await persist(value) // durable exact intent BEFORE the request
                 if bounded {
                     guard viewportAccessID == access, boundedPolicyGeneration == generation,
@@ -4030,6 +4040,13 @@ final class ExhibitionModel: ObservableObject {
                 syncPublicationWatermark()
             }
             guard let intent = state?.pending else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            if budgetPolicy {
+                guard let captured = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
+                try await api.validatePendingViewerBudgetPolicy(in: captured)
+                guard self.api === api, state?.revision == captured.revision,
+                      state.map({ ViewerBudgetPolicyRequest.isPending(in: $0) }) == true,
+                      state?.pending?.requestId == intent.requestId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            }
             if try intent.draft.publicationWatermark()?.requiresQualifiedRuntime == true, !publicationWatermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
             let saved: NativeStudioResponse
             do { saved = try await api.saveExhibition(intent.draft, requestId: intent.requestId, etag: intent.etag) }

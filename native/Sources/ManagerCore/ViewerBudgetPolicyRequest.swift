@@ -4,6 +4,42 @@ import Foundation
 /// A closed policy-only command. The shared Server producer remains the owner
 /// of validation and policy decisions; the client verifies an exact delta.
 public struct ViewerBudgetPolicyRequest: Sendable {
+    public static let pendingOrigin = "viewer-budget-policy-v1"
+
+    /// This only identifies a retained intent; authenticated server CAS remains
+    /// authoritative and the saved baseline is checked again before replay.
+    public static func isPending(in state: NativeDocumentState) -> Bool {
+        guard let pending = state.pending, pending.origin == pendingOrigin,
+              pending.modelCandidate == nil, pending.productImage == nil,
+              pending.etag != nil, pending.etag == state.etag,
+              pending.draft == state.draft, let saved = state.savedEditVersion,
+              saved >= 1, saved < 2_147_483_647 else { return false }
+        return pending.draft.document["editVersion"].integer == saved + 1
+    }
+
+    public static func requirePolicyOnlyChange(from saved: NativeExhibitionDraft,
+                                             to proposed: NativeExhibitionDraft) throws {
+        guard case .object(var before) = saved.document, case .object(var after) = proposed.document,
+              let version = before["editVersion"]?.integer, version < 2_147_483_647,
+              after["editVersion"]?.integer == version + 1 else { throw AuthoringFailure("VIEWER_BUDGET_POLICY_STALE") }
+        _ = try ViewerBudgetSettings(candidate: proposed.candidate)
+        func withoutPolicy(_ candidate: DocumentValue) throws -> DocumentValue {
+            guard case .object(var fields) = candidate else { throw AuthoringFailure("VIEWER_BUDGET_POLICY_STALE") }
+            if let value = fields["extensions"] {
+                guard case .object(var extensions) = value else { throw AuthoringFailure("VIEWER_BUDGET_POLICY_STALE") }
+                extensions.removeValue(forKey: ViewerBudgetSettings.namespace)
+                if extensions.isEmpty { fields.removeValue(forKey: "extensions") }
+                else { fields["extensions"] = .object(extensions) }
+            }
+            return .object(fields)
+        }
+        guard try withoutPolicy(saved.candidate) == withoutPolicy(proposed.candidate) else {
+            throw AuthoringFailure("VIEWER_BUDGET_POLICY_STALE")
+        }
+        for key in ["candidate", "editVersion", "updatedAt"] { before.removeValue(forKey: key); after.removeValue(forKey: key) }
+        guard before == after else { throw AuthoringFailure("VIEWER_BUDGET_POLICY_STALE") }
+    }
+
     public let frame: ViewportFrame
     public let value: DocumentValue
     public let candidate: DocumentValue

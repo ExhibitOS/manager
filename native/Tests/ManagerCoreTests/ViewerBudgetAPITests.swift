@@ -83,6 +83,30 @@ final class ViewerBudgetAPITests: XCTestCase {
             XCTAssertFalse(ViewerBudgetAPIProtocol.calls().contains { $0.httpMethod == "PUT" })
         }
     }
+
+    func testPolicyPendingInspectionRetainsOriginalIntentBeforeOrAfterCommitAndRejectsConflict() async throws {
+        let source = try document(), api = try await connect(source)
+        let proposal = try await api.prepareViewerBudgetPolicy(command, in: source)
+        let changed = try proposal.apply(to: XCTUnwrap(source.draft))
+        var pending = source; pending.draft = changed
+        let requestId = UUID().uuidString.lowercased()
+        pending.pending = .init(requestId: requestId, etag: source.etag, draft: changed, origin: ViewerBudgetPolicyRequest.pendingOrigin)
+        try await api.validatePendingViewerBudgetPolicy(in: pending)
+        var committed = pending; committed.pending = nil
+        committed.savedEditVersion = changed.document["editVersion"].integer
+        committed.etag = "\"studio-r214-" + String(repeating: "d", count: 64) + "\""
+        ViewerBudgetAPIProtocol.configure(committed, mode: "valid")
+        try await api.validatePendingViewerBudgetPolicy(in: pending)
+        XCTAssertEqual(pending.pending?.requestId, requestId)
+        XCTAssertEqual(pending.pending?.etag, source.etag)
+        XCTAssertFalse(ViewerBudgetAPIProtocol.calls().contains { $0.httpMethod != "GET" })
+        var foreign = changed.document; foreign["candidate"]["title"] = .string("Another editor")
+        committed.draft = try NativeExhibitionDraft(document: foreign)
+        ViewerBudgetAPIProtocol.configure(committed, mode: "valid")
+        do { try await api.validatePendingViewerBudgetPolicy(in: pending); XCTFail("Changed remote head must conflict") } catch { }
+        XCTAssertEqual(pending.pending?.requestId, requestId)
+        XCTAssertFalse(ViewerBudgetAPIProtocol.calls().contains { $0.httpMethod != "GET" })
+    }
 }
 
 private final class ViewerBudgetAPIProtocol: URLProtocol, @unchecked Sendable {
@@ -160,9 +184,9 @@ private final class ViewerBudgetAPIProtocol: URLProtocol, @unchecked Sendable {
         if path.hasSuffix("/" + draft.id) {
             savedReads += 1
             let etag = mode == "stale-final-head" && savedReads > 1 ? "\"studio-r214-" + String(repeating: "d", count: 64) + "\"" : state.etag!
-            let response: DocumentValue = .object(["revision": .integer(savedReads > 1 && mode == "stale-final-head" ? 214 : 213),
+            let response: DocumentValue = .object(["revision": .integer(etag.hasPrefix("\"studio-r214-") ? 214 : 213),
                 "etag": .string(etag), "draft": draft.document])
-            return (try JSONEncoder().encode(response), nil)
+            return (try JSONEncoder().encode(response), mode == "bad-etag" ? responseETag : etag)
         }
         throw URLError(.unsupportedURL)
     }

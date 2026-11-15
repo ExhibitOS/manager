@@ -41,4 +41,38 @@ final class ViewerBudgetPolicyRequestTests: XCTestCase {
         let bytes = Data("same request".utf8)
         XCTAssertNil(try NativeAutomationSession.replayResponse(for: "viewer-budget-inspect", prior: (bytes, .object(["old": .bool(true)])), matching: bytes))
     }
+
+    func testRetainedPolicyDeltaRejectsUnrelatedEditsAndWrongVersion() throws {
+        let frame = try frame()
+        let policy: DocumentValue = .object(["version": .integer(1), "policyVersion": .integer(1),
+            "targetProfile": .string("compact"), "profiles": .object([:])])
+        let request = try ViewerBudgetPolicyRequest(frame: frame, command: .object(["type": .string("set-viewer-budget-policy"), "policy": policy]))
+        let next = try request.apply(to: frame.draft)
+        XCTAssertNoThrow(try ViewerBudgetPolicyRequest.requirePolicyOnlyChange(from: frame.draft, to: next))
+        var changedBody = next.document; changedBody["candidate"]["title"] = .string("Unrelated edit")
+        let changed = try NativeExhibitionDraft(document: changedBody)
+        XCTAssertThrowsError(try ViewerBudgetPolicyRequest.requirePolicyOnlyChange(from: frame.draft, to: changed))
+        var body = next.document; body["id"] = .string(UUID().uuidString.lowercased())
+        XCTAssertThrowsError(try ViewerBudgetPolicyRequest.requirePolicyOnlyChange(from: frame.draft, to: NativeExhibitionDraft(document: body)))
+        XCTAssertThrowsError(try ViewerBudgetPolicyRequest.requirePolicyOnlyChange(from: next, to: next))
+    }
+
+    func testOnlyExactPolicyPendingIntentCanUseScopedReplay() throws {
+        let frame = try frame()
+        var next = frame.draft, candidate = frame.draft.candidate
+        candidate["extensions"][ViewerBudgetSettings.namespace] = .object(["version": .integer(1), "policyVersion": .integer(1), "targetProfile": .string("compact"), "profiles": .object([:])])
+        try next.replaceCandidate(candidate)
+        let etag = "\"studio-r1-" + String(repeating: "a", count: 64) + "\""
+        var state = NativeDocumentState(format: 1, revision: 3, workspaceId: UUID().uuidString.lowercased(),
+            tenantId: frame.tenantId, principalId: frame.principalId, draft: next, etag: etag,
+            savedEditVersion: frame.draft.document["editVersion"].integer,
+            pending: .init(etag: etag, draft: next, origin: ViewerBudgetPolicyRequest.pendingOrigin))
+        XCTAssertTrue(ViewerBudgetPolicyRequest.isPending(in: state))
+        state.pending = .init(etag: etag, draft: next, origin: "bounded-placement-v1")
+        XCTAssertFalse(ViewerBudgetPolicyRequest.isPending(in: state))
+        state.pending = .init(etag: etag, draft: frame.draft, origin: ViewerBudgetPolicyRequest.pendingOrigin)
+        XCTAssertFalse(ViewerBudgetPolicyRequest.isPending(in: state))
+        state.pending = .init(etag: nil, draft: next, origin: ViewerBudgetPolicyRequest.pendingOrigin)
+        XCTAssertFalse(ViewerBudgetPolicyRequest.isPending(in: state))
+    }
 }

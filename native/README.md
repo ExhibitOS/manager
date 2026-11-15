@@ -1,5 +1,17 @@
 # Native macOS application (in progress)
 
+## Native Viewer budget client source
+
+The qualified budget candidate (`7cfac368…`, source `1a7deed2…`) is admitted only
+as a directed clean refresh from `41e741a1…`, retaining catalog52, ledger47 and
+the existing 8.5 GiB checkpoint bound. Fresh, dirty, interrupted, reverse and
+skipped transitions remain refused. Policy-only Save retries retain a closed
+`viewer-budget-policy-v1` intent, original request ID and ETag; authenticated
+server comparison and ordinary CAS are required independently of GPU state.
+Actual source tests, App/helper/SDK qualification, adoption, UI/CLI use, Save,
+reopen and output need separate evidence.
+
+
 The exact white-rail opposite-heading successor (manifest `41e741a1…`, source
 `3e6210b8…`) admits only the directed clean `d81ad0bc…` refresh. It retains
 catalog 52, the 47-row ledger, source artwork, saved document and existing 8.5 GiB

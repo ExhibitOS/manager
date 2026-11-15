@@ -1103,7 +1103,8 @@ public actor AuthoringAPI {
          "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19",
          "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319",
          "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8",
-         "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"].contains(manifest)
+         "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1",
+         "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"].contains(manifest)
         #else
         false
         #endif
@@ -1344,6 +1345,26 @@ public actor AuthoringAPI {
         return checked
     }
 
+    /// Inspect the original policy Save without replacing its request ID or ETag.
+    /// A reply lost after commit is retried through the server's existing
+    /// idempotency path; a changed head with different content is a conflict.
+    public func validatePendingViewerBudgetPolicy(in document: NativeDocumentState) async throws {
+        guard admitsViewerBudgetPolicy, document.tenantId == tenant,
+              document.principalId == session?.userId,
+              ViewerBudgetPolicyRequest.isPending(in: document), let intent = document.pending else {
+            throw AuthoringFailure("VIEWER_BUDGET_POLICY_UNAVAILABLE")
+        }
+        let held = generation
+        let saved = try await exhibition(intent.draft.id)
+        if saved.etag == intent.etag {
+            try ViewerBudgetPolicyRequest.requirePolicyOnlyChange(from: saved.draft, to: intent.draft)
+        } else if saved.draft != intent.draft {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        try Task.checkCancellation()
+        guard generation == held, admitsViewerBudgetPolicy else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+    }
+
     /// Authenticated read-only analysis of the current (possibly dirty) draft.
     /// Older runtimes return unavailable; callers retain an unknown state and
     /// keep ordinary editing/Save independent of this advisory request.
@@ -1490,6 +1511,7 @@ public actor AuthoringAPI {
             || nativeRuntimeManifestSHA256 == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || nativeRuntimeManifestSHA256 == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || nativeRuntimeManifestSHA256 == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
+            || nativeRuntimeManifestSHA256 == "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"
         #else
         false
         #endif
@@ -3034,6 +3056,7 @@ public actor AuthoringAPI {
             || manifest == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || manifest == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
+            || manifest == "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"
         #else
         false
         #endif
@@ -3872,6 +3895,7 @@ public actor AuthoringAPI {
             || manifest == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || manifest == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
+            || manifest == "7cfac368536f4863e36b01625c29244ece5d3a2f26238eece1475002cec8310a"
         #else
         false
         #endif
