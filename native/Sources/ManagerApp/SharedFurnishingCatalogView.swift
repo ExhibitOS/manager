@@ -35,7 +35,7 @@ struct SharedFurnishingCatalogView: View {
     // Category and search are local presentation, not new catalogue authority.
     private var entries: [Entry] {
         model.sharedFurnishingCatalog.compactMap { item in
-            guard let id = item["catalogId"].string, let name = item["name"].string,
+            guard let id = item["catalogId"].string, id != NativeTrackSpotAim.catalogue, let name = item["name"].string,
                   let kinds = item["hostKinds"].items, kinds.count == 1,
                   let kind = kinds.first?.string, let host = SharedFurnishingCommand.Host(rawValue: kind) else { return nil }
             return Entry(id: id, name: name, host: host)

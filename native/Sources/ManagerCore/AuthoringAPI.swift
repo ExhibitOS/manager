@@ -35,6 +35,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
+    public var nativeTrackSpotAimProfile: String? = nil
     public var nativeFrameImageFitProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
@@ -231,7 +232,10 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     public let code: String
     public let role: String?
     public let field: String?
-    public init(_ code: String, status: Int = 0, role: String? = nil, field: String? = nil) {
+    public let trackSpotAimDiagnostic: NativeTrackSpotAimDiagnostic?
+    public init(_ code: String, status: Int = 0, role: String? = nil, field: String? = nil,
+                trackSpotAimDiagnostic: NativeTrackSpotAimDiagnostic? = nil) {
+        self.trackSpotAimDiagnostic = trackSpotAimDiagnostic
         self.code = code; self.status = status
         self.role = role.flatMap(WorkspaceMaterialRole.init(rawValue:))?.rawValue
         self.field = Self.safeField(field) ? field : nil
@@ -362,6 +366,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     }
 }
 private struct APIErrorEnvelope: Decodable { let code: String; let role: String?; let field: String? }
+private struct TrackSpotAimErrorMessage: Decodable { let message: String }
 private final class LocalRedirectBlocker: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -725,7 +730,8 @@ public actor AuthoringAPI {
         }
     }
 
-    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil, requiresNativeReadCSRF: Bool = false, gpuApprovalFence: (generation: UInt64, authority: NativeGPUPreviewApprovalAuthority)? = nil) async throws -> T {
+    private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil, requiresNativeReadCSRF: Bool = false, gpuApprovalFence: (generation: UInt64, authority: NativeGPUPreviewApprovalAuthority)? = nil,
+        trackSpotAimProposal: Bool = false) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -797,8 +803,10 @@ public actor AuthoringAPI {
             let code = envelope?.code ?? "REQUEST_FAILED"
             catalogThumbnail?.stage.recordResponse(http.statusCode, code: code)
             if http.statusCode == 401 { generation &+= 1; clear() }
+            let diagnostic = trackSpotAimProposal && http.statusCode == 422 && code == "AUTHORING_PROPOSAL_INVALID"
+                ? NativeTrackSpotAimDiagnostic.parse((try? JSONDecoder().decode(TrackSpotAimErrorMessage.self, from: data))?.message) : nil
             throw AuthoringFailure(AuthoringFailure.safeCode(code) ? code : "REQUEST_FAILED", status: http.statusCode,
-                                   role: envelope?.role, field: envelope?.field)
+                                   role: envelope?.role, field: envelope?.field, trackSpotAimDiagnostic: diagnostic)
         }
         catalogThumbnail?.stage.recordResponse(http.statusCode)
         if let expectedResponseETag, http.value(forHTTPHeaderField: "ETag") != expectedResponseETag {
@@ -821,7 +829,7 @@ public actor AuthoringAPI {
     }
     public func sharedFurnishings() async throws -> [DocumentValue] {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/furnishings")
-        return try SharedFurnishingCatalog.checkedCatalog(value)
+        return try SharedFurnishingCatalog.checkedCatalog(value, articulated: admitsNativeTrackSpotAim)
     }
     public func surfaceMaterials() async throws -> NativeSurfaceMaterialCatalog {
         let value: DocumentValue = try await request("/api/v1/tenants/\(tenant)/studio/materials")
@@ -4079,11 +4087,16 @@ public actor AuthoringAPI {
             && session?.nativeLightObjectAuthoringProposalProfile == LightObjectAuthoring.profile
     }
 
+    public var admitsNativeTrackSpotAim: Bool {
+        admitsNativeLightObjectAuthoringProposal && session?.nativeTrackSpotAimProfile == NativeTrackSpotAim.profile
+    }
+
     /// Reuse the existing typed saved-head SDK transport for a Native preview.
     /// This is a pure proposal: it never writes the draft or saves an exhibition.
     public func prepareNativeLightObject(_ proposal: LightObjectRequest, in document: NativeDocumentState,
                                         saved: NativeStudioResponse) async throws -> LightObjectPreview {
         guard admitsNativeLightObjectAuthoringProposal, let session,
+              (NativeTrackSpotAim.binding(in: proposal.frame.draft, lightId: proposal.sourceLightId) == .null || admitsNativeTrackSpotAim),
               !document.dirty, document.pending == nil, let draft = document.draft,
               document.tenantId == tenant, document.principalId == session.userId,
               proposal.frame.tenantId == document.tenantId, proposal.frame.principalId == document.principalId,
@@ -4109,6 +4122,7 @@ public actor AuthoringAPI {
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
         guard admitted,
+              !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session,
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
@@ -4122,7 +4136,8 @@ public actor AuthoringAPI {
         let body = try encoded(Input(expectedRevision: studioRevision, request: proposal))
         guard body.count <= 66_560 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
         let path = studioPrefix + "/exhibitions/" + (try identifier(exhibitionId)) + "/native-authoring-proposal"
-        return try await request(path, method: "POST", body: body, ifMatch: etag, expectedResponseETag: etag)
+        return try await request(path, method: "POST", body: body, ifMatch: etag, expectedResponseETag: etag,
+                                 trackSpotAimProposal: NativeTrackSpotAim.requiresCapability(proposal))
     }
 
     public func prepareWorkspaceArtworkFrame(_ command: WorkspaceArtworkFrameCommand,

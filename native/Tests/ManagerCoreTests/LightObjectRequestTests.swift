@@ -168,6 +168,124 @@ final class LightObjectRequestTests: XCTestCase {
         }
     }
 
+    func testArticulatedFixtureAndSettingsAllowOnlyTheServerSolvedSelectedTransform() throws {
+        let base = try fixture()
+        let binding: DocumentValue = .object(["version": .integer(1), "profile": .string(NativeTrackSpotAim.profile),
+            "mount": .object(["railPlacementId": .string(surface), "position": .vector([0, 0, 0]), "yaw": .integer(0)]),
+            "aim": .object(["kind": .string("placement-center"), "placementId": .string(other), "offset": .vector([0.1, 0, 0])])])
+        let command = try NativeTrackSpotAim.fixtureCommand(lightId: source, binding: binding)
+        let request = try LightObjectRequest(command: command, frame: frame(base))
+        let newAsset = "cccccccc-0000-4000-8000-000000000002"
+        var expected = changed(base.candidate)
+        var lights = expected["lights"].items!
+        lights[0]["transform"]["position"] = .vector([0.2, 3.4, 0.1])
+        expected["lights"] = .array(lights)
+        var settings = expected["extensions"][details]["lights"].items!
+        settings[0] = without(settings[0], "aim")
+        settings[0]["fixture"] = .string("none")
+        settings[0]["trackAim"] = binding
+        expected["extensions"][details]["lights"] = .array(settings)
+        expected["extensions"][attachments]["lights"] = .array([expected["extensions"][attachments]["lights"].items![1]])
+        var assets = expected["extensions"][visuals]["assets"].items!
+        assets.append(try SharedFurnishingCatalog.asset(catalogId: NativeTrackSpotAim.catalogue, id: newAsset))
+        expected["extensions"][visuals]["assets"] = .array(assets)
+        var bindings = expected["extensions"][visuals]["bindings"].items!
+        bindings[0]["assetId"] = .string(newAsset)
+        bindings[0]["pose"] = NativeTrackSpotAim.pose
+        expected["extensions"][visuals]["bindings"] = .array(bindings)
+        let entry = try request.checkedReply(reply(request, candidate: expected))
+        XCTAssertEqual(entry.candidate, expected)
+
+        var bad = expected
+        lights[1]["intensity"] = .integer(500)
+        bad["lights"] = .array(lights)
+        XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: bad)))
+        bad = expected
+        bad["extensions"][details]["lights"] = base.candidate["extensions"][details]["lights"]
+        XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: bad)))
+        bad = expected
+        lights = expected["lights"].items!
+        lights[0]["transform"]["rotation"] = .vector([0, 0, 0, 2])
+        bad["lights"] = .array(lights)
+        XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: bad)))
+
+        let attached = try entry.apply(to: base)
+        var manual = binding
+        manual["aim"] = .object(["kind": .string("manual"), "yaw": .integer(0), "pitch": .number(-1)])
+        let update = try NativeTrackSpotAim.updateCommand(in: attached, lightId: source, binding: manual,
+            shadowPriority: other, prefersShadow: true)
+        XCTAssertEqual(update["light"]["targetPlacementId"], .string(other))
+        XCTAssertEqual(update["settings"]["trackAim"]["aim"]["placementId"], .null)
+        let updateRequest = try LightObjectRequest(command: update, frame: frame(attached))
+        settings[0]["trackAim"] = manual
+        expected["extensions"][details]["lights"] = .array(settings)
+        lights = expected["lights"].items!
+        lights[0]["targetPlacementId"] = .string(other)
+        lights[0]["castsShadow"] = .bool(true)
+        lights[0]["transform"]["position"] = .vector([0.2, 3.35, 0.12])
+        expected["lights"] = .array(lights)
+        XCTAssertEqual(try updateRequest.checkedReply(reply(updateRequest, candidate: expected)).candidate, expected)
+        XCTAssertThrowsError(try makeRequest("set-light-fixture", attached, fields: ["visual": .null]))
+        var missingBinding = command
+        missingBinding["visual"] = without(command["visual"], "trackAim")
+        XCTAssertThrowsError(try LightObjectRequest(command: missingBinding, frame: frame(base)))
+    }
+
+    @MainActor
+    func testArticulatedDiagnosticRequiresExactCapabilityAndArticulatedProposal() async throws {
+        let base = try fixture()
+        let owner = UUID().uuidString.lowercased()
+        let etag = "\"studio-r1-" + String(repeating: "a", count: 64) + "\""
+        let document = NativeDocumentState(format: 1, revision: 1, workspaceId: UUID().uuidString.lowercased(),
+            tenantId: owner, principalId: owner, draft: base, etag: etag,
+            savedEditVersion: base.document["editVersion"].integer, pending: nil)
+        let scope = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1, tenantId: owner,
+            principalId: owner, draft: base, selection: nil, mode: "translate", view: "isometric", disabled: false,
+            workspaceId: document.workspaceId, baseETag: etag)
+        let binding: DocumentValue = .object(["version": .integer(1), "profile": .string(NativeTrackSpotAim.profile),
+            "mount": .object(["railPlacementId": .string(surface), "position": .vector([0, 0, 0]), "yaw": .integer(0)]),
+            "aim": .object(["kind": .string("manual"), "yaw": .integer(0), "pitch": .number(0.1)])])
+        let articulated = try NativeTrackSpotAim.fixtureCommand(lightId: source, binding: binding)
+        let ordinary: DocumentValue = .object(["type": .string("set-light-fixture"), "lightId": .string(source), "visual": .null])
+        let error: DocumentValue = .object(["code": .string("AUTHORING_PROPOSAL_INVALID"),
+            "message": .string("TRACK_SPOT_AIM_OUTSIDE_ENVELOPE: Choose joint angles inside the verified source envelope.")])
+        defer { LightTransportProtocol.reset() }
+        for (profile, command, expectedRequests, hasDetail) in [
+            (nil as String?, articulated, ["GET"], false),
+            ("unknown", articulated, ["GET"], false),
+            (NativeTrackSpotAim.profile, articulated, ["GET", "POST"], true),
+            (NativeTrackSpotAim.profile, ordinary, ["GET", "POST"], false),
+        ] {
+            try LightTransportProtocol.configure(owner: owner, reply: error, etag: etag, profile: true,
+                                                 aimProfile: profile, postStatus: 422)
+            let api = try AuthoringAPI(port: 18091, tenantId: owner, nativeRuntimeManifestSHA256: String(repeating: "b", count: 64),
+                                       protocolClasses: [LightTransportProtocol.self])
+            _ = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner,
+                origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+            let proposal = try LightObjectRequest(command: command, frame: scope)
+            do {
+                _ = try await api.prepareNativeLightObject(proposal, in: document, saved: .init(revision: 1, etag: etag, draft: base))
+                XCTFail("Expected the proposal to be refused")
+            } catch let failure as AuthoringFailure {
+                XCTAssertEqual(failure.trackSpotAimDiagnostic?.reason, hasDetail ? "TRACK_SPOT_AIM_OUTSIDE_ENVELOPE" : nil)
+                XCTAssertEqual(failure.code, expectedRequests.count == 1 ? "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE" : "AUTHORING_PROPOSAL_INVALID")
+            }
+            XCTAssertEqual(LightTransportProtocol.requests().map { $0.httpMethod ?? "" }, expectedRequests)
+        }
+    }
+
+    func testCLIEmitsOnlyExactTrackAimDiagnosticPairs() throws {
+        let reason = "TRACK_SPOT_AIM_OUTSIDE_ENVELOPE"
+        let remedy = "Choose joint angles inside the verified source envelope."
+        let issue = try XCTUnwrap(NativeTrackSpotAimDiagnostic.parse(reason + ": " + remedy))
+        let code = "AUTHORING_PROPOSAL_INVALID"
+        XCTAssertEqual(NativeAutomationFailure.value(AuthoringFailure(code, status: 422, trackSpotAimDiagnostic: issue)),
+            .object(["code": .string(code), "trackAim": .object(["reason": .string(reason), "remedy": .string(remedy)])]))
+        XCTAssertNil(NativeTrackSpotAimDiagnostic.parse(reason + ": arbitrary transport text"))
+        XCTAssertNil(NativeTrackSpotAimDiagnostic.parse("TRACK_SPOT_AIM_UNKNOWN: " + remedy))
+        XCTAssertEqual(NativeAutomationFailure.value(AuthoringFailure(code, status: 422)), .object(["code": .string(code)]))
+    }
+
     func testAuthoredShadowUsesExistingSetObjectAndPreservesTransportFences() throws {
         let base = try fixture()
         let settings = without(base.candidate["extensions"][details]["lights"].items![0], "lightId")
@@ -471,20 +589,22 @@ private final class LightTransportProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var session = Data(), reply = Data(), etag = ""
     nonisolated(unsafe) private static var observed: [URLRequest] = []
     nonisolated(unsafe) private static var postedBody = Data()
-    static func configure(owner: String, reply value: DocumentValue, etag responseETag: String, profile: Bool) throws {
+    nonisolated(unsafe) private static var postStatus = 200
+    static func configure(owner: String, reply value: DocumentValue, etag responseETag: String, profile: Bool, aimProfile: String? = nil, postStatus: Int = 200) throws {
         var fields = ["tenantId": owner, "userId": owner, "role": "owner", "csrfToken": "synthetic-csrf",
             "expiresAt": "2099-01-01T00:00:00Z", "nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
         if profile { fields["nativeLightObjectAuthoringProposalProfile"] = LightObjectAuthoring.profile }
+        fields["nativeTrackSpotAimProfile"] = aimProfile
         let sessionData = try JSONSerialization.data(withJSONObject: fields), replyData = try JSONEncoder().encode(value)
         lock.lock(); defer { lock.unlock() }
-        session = sessionData; reply = replyData; etag = responseETag; observed = []; postedBody = Data()
+        session = sessionData; reply = replyData; etag = responseETag; observed = []; postedBody = Data(); self.postStatus = postStatus
     }
     static func reset() { lock.lock(); defer { lock.unlock() }; session = Data(); reply = Data(); observed = []; postedBody = Data() }
     static func requests() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return observed }
     static func body() -> Data { lock.lock(); defer { lock.unlock() }; return postedBody }
-    private static func response(_ request: URLRequest) -> (Data, String) {
+    private static func response(_ request: URLRequest) -> (Data, String, Int) {
         lock.lock(); defer { lock.unlock() }; observed.append(request)
-        if request.httpMethod == "GET" { return (session, etag) }
+        if request.httpMethod == "GET" { return (session, etag, 200) }
         postedBody = request.httpBody ?? Data()
         if let stream = request.httpBodyStream {
             stream.open(); defer { stream.close() }
@@ -494,13 +614,13 @@ private final class LightTransportProtocol: URLProtocol, @unchecked Sendable {
                 guard count > 0 else { break }; postedBody.append(contentsOf: buffer.prefix(count))
             }
         }
-        return (reply, etag)
+        return (reply, etag, postStatus)
     }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let (data, etag) = Self.response(request)
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+        let (data, etag, statusCode) = Self.response(request)
+        let response = HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "application/json", "ETag": etag])!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)

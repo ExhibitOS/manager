@@ -18,6 +18,9 @@ public enum NativeAutomationFailure {
         if let failure = error as? AuthoringFailure {
             if let role = failure.role { result["role"] = .string(role) }
             if let field = failure.field { result["field"] = .string(field) }
+            if let aim = failure.trackSpotAimDiagnostic {
+                result["trackAim"] = .object(["reason": .string(aim.reason), "remedy": .string(aim.remedy)])
+            }
         }
         return .object(result)
     }
