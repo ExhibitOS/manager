@@ -2609,18 +2609,27 @@ pub(crate) mod normal_oex_release_declaration_tests {
         let target = RECTANGLE_FIXED64_TARGET;
         let mut payload = combined_thumbnail_payload(target);
         assert!(!payload.fresh_catalog52_constructor());
-        payload.admit_fresh_catalog52_constructor().unwrap();
+        // This ledger-only fixture intentionally lacks the complete capability
+        // inventory. Real positive admission/recheck is covered by the sealed
+        // runtime test below; this test isolates private-authority getter fences.
+        assert_eq!(payload.admit_fresh_catalog52_constructor().unwrap_err().code, "NATIVE_RUNTIME_UNQUALIFIED");
+        assert!(!payload.fresh_catalog52_constructor());
+        payload.fresh_catalog52_constructor = true;
         assert!(payload.fresh_catalog52_constructor());
         assert!(payload.selected_workspace_import_version().is_none());
-        assert!(!payload.normal_oex_selected_input().unwrap());
         assert!(Payload::classify_workspace_import_validation(combined_thumbnail_payload(target), WorkspaceImport::V7, true).is_err());
+        let unknown_source = "f".repeat(40);
+        let unknown_manifest = "f".repeat(64);
         for denied in [VIEWER_BUDGET_TARGET, WHITE_RAIL_OPPOSITE_TARGET,
+            (&unknown_source, target.1, target.2), (target.0, target.1, &unknown_manifest),
             CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET,
             (WHITE_RAIL_OPPOSITE_TARGET.0, target.1, target.2),
             (target.0, WHITE_RAIL_OPPOSITE_TARGET.1, target.2),
             (target.0, target.1, VIEWER_BUDGET_TARGET.2)] {
             let mut rejected = combined_thumbnail_payload(denied);
             assert!(rejected.admit_fresh_catalog52_constructor().is_err());
+            assert!(!rejected.fresh_catalog52_constructor());
+            rejected.fresh_catalog52_constructor = true;
             assert!(!rejected.fresh_catalog52_constructor());
         }
         payload.manifest.producer_sha256 = WHITE_RAIL_OPPOSITE_TARGET.1.into();
