@@ -75,6 +75,17 @@ actor Driver {
 }
 
 func run() async -> Int32 {
+    if CommandLine.arguments.dropFirst().first == "--inspect-existing-document" {
+        do {
+            let value = try await NativeDocumentInspection.inspect(arguments: CommandLine.arguments)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            FileHandle.standardOutput.write(try encoder.encode(value) + Data([10]))
+            return 0
+        } catch {
+            let code = (error as? BridgeFailure)?.code ?? (error as? AuthoringFailure)?.code ?? "NATIVE_DOCUMENT_INSPECTION_FAILED"
+            FileHandle.standardError.write(Data((code + "\n").utf8)); return 1
+        }
+    }
     guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--configuration" else {
         FileHandle.standardError.write(Data("AUTOMATION_CONFIGURATION_REQUIRED\n".utf8)); return 2
     }
