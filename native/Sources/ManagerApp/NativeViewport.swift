@@ -95,7 +95,7 @@ final class NativeViewportController: ObservableObject {
     fileprivate func cameraInteractionReset() {
         cameraInteractionAttempt = UUID(); changingCameraInteraction = false
         cameraInteractionMode = .object
-        message = "화면 보기 조작이 종료됐습니다. 현재 연결에서 보기 회전을 다시 선택할 수 있습니다."
+        message = "화면 보기 조작이 종료됐습니다. 현재 연결에서 보기 조작을 다시 선택할 수 있습니다."
     }
     func setCameraInteraction(_ mode: ViewportCameraInteractionMode) async {
         guard canChangeCameraInteraction, let cameraInteractionAction else { return }
@@ -104,7 +104,11 @@ final class NativeViewportController: ObservableObject {
             try await cameraInteractionAction(mode)
             guard cameraInteractionAttempt == attempt, connected, editingContextActive else { return }
             changingCameraInteraction = false; cameraInteractionMode = mode
-            message = mode == .object ? "대상 편집 조작을 확인했습니다." : "보기 회전 조작을 확인했습니다. 화면을 끌어 시점을 돌릴 수 있습니다."
+            switch mode {
+            case .object: message = "대상 편집 조작을 확인했습니다."
+            case .cameraRotate: message = "보기 회전 조작을 확인했습니다. 화면을 끌어 시점을 돌릴 수 있습니다."
+            case .cameraPan: message = "보기 이동 조작을 확인했습니다. 화면을 끌어 구도를 이동할 수 있습니다."
+            }
         } catch {
             guard cameraInteractionAttempt == attempt else { return }
             changingCameraInteraction = false
@@ -1522,6 +1526,15 @@ struct NativeViewportArea: View {
             .allowsHitTesting(ready && !model.architectureDirty && !model.architectureApplying && !model.placementApplying)
             .disabled(!ready || model.architectureDirty || model.architectureApplying)
     }
+    private var cameraInteractionTitle: String {
+        if controller.changingCameraInteraction { return "보기 조작 확인 중" }
+        switch controller.cameraInteractionMode {
+        case .cameraRotate: return "보기 회전 모드"
+        case .cameraPan: return "보기 이동 모드"
+        case .object: return "보기"
+        case nil: return "조작 확인 필요"
+        }
+    }
     @ViewBuilder private var cameraInteractionTools: some View {
         if controller.cameraInteractionSupported {
             Button("보기 회전", systemImage: "rotate.3d") {
@@ -1529,13 +1542,17 @@ struct NativeViewportArea: View {
             }
             .disabled(!controller.canChangeCameraInteraction || controller.cameraInteractionMode == .cameraRotate)
             .help("작품 선택과 배치를 유지하며 카메라로 공간을 둘러봅니다.")
+            Button("보기 이동", systemImage: "arrow.up.and.down.and.arrow.left.and.right") {
+                Task { await controller.setCameraInteraction(.cameraPan) }
+            }
+            .disabled(!controller.canChangeCameraInteraction || controller.cameraInteractionMode == .cameraPan)
+            .help("작품 선택과 배치를 유지하며 화면을 끌어 구도를 이동합니다.")
             if controller.cameraInteractionMode != .object {
                 Button("대상 편집") { Task { await controller.setCameraInteraction(.object) } }
                     .disabled(!controller.canChangeCameraInteraction)
             }
             if controller.changingCameraInteraction { ProgressView().controlSize(.small).accessibilityLabel("보기 조작 확인 중") }
-            else if controller.cameraInteractionMode == .cameraRotate { Text("보기 회전 중").font(.caption).foregroundStyle(.secondary) }
-            else if controller.cameraInteractionMode == nil { Text("조작 확인 필요").font(.caption).foregroundStyle(.secondary) }
+            else if controller.cameraInteractionMode != .object { Text(cameraInteractionTitle).font(.caption).foregroundStyle(.secondary) }
         }
     }
     private var workbenchViewTools: some View {
@@ -1565,7 +1582,7 @@ struct NativeViewportArea: View {
                     if model.entrancePreviewActive { model.recoverEntrancePreviewHost { identity = UUID() } }
                     else { identity = UUID() }
                 }.disabled(model.entrancePreviewActive ? !model.canRecoverEntranceHost : (model.placingArtwork || model.busy || model.pending || model.architectureApplying))
-            } label: { Label(controller.cameraInteractionMode == .cameraRotate ? "보기 회전 중" : "보기", systemImage: "eye") }
+            } label: { Label(cameraInteractionTitle, systemImage: "eye") }
                 .menuStyle(.borderlessButton).fixedSize()
             if editable {
                 Menu {
