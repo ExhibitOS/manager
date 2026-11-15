@@ -370,6 +370,20 @@ pub(crate) fn check_personal_transition_document(
     Ok(())
 }
 
+// Only the existing checkpoint owner can authenticate a retained publication.
+// All ordinary document/dirty guards remain in the generic predicate above.
+#[cfg(all(target_os = "macos", debug_assertions))]
+pub(crate) fn check_personal_transition_writers(
+    document: &native_document::DocumentState,
+    publication: &native_publication::PublicationState,
+    check_retained_dirty: impl FnOnce() -> Result<()>,
+    check_retained_publication: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    let retained_publication = check_retained_publication()?;
+    check_personal_transition_document(document, publication.pending.is_some() && !retained_publication,
+        check_retained_dirty)
+}
+
 impl InstallationController {
     /// Construct only an explicitly selected, entirely new profile and hand
     /// its locked default root directly to the session initializer. This is
@@ -447,6 +461,7 @@ impl InstallationController {
         token: &str,
         retained: native_maintenance::TransitionRetention<'_>,
         retained_document_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<()>,
+        retained_publication_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState, &native_publication::PublicationState) -> Result<bool>,
         current52_png_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState, &str, &native_upload::Transfer) -> Result<bool>,
         task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<T>,
     ) -> Result<T> {
@@ -465,8 +480,10 @@ impl InstallationController {
             }
             let document = self.document_unlocked(service)?.1;
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
-            check_personal_transition_document(&document, self.publication_unlocked(service)?.1.pending.is_some(),
-                || retained_document_check(service, &profile.root, &document))?;
+            let publication = self.publication_unlocked(service)?.1;
+            check_personal_transition_writers(&document, &publication,
+                || retained_document_check(service, &profile.root, &document),
+                || retained_publication_check(service, &profile.root, &document, &publication))?;
             let (file, transfer) = self.upload_unlocked(service)?;
             // The sole checkpoint caller can preserve only its authenticated,
             // exact current52 PNG journal; all ordinary writer checks stay here.
@@ -498,6 +515,21 @@ impl InstallationController {
             gpu_model_job_root_empty(&service.root)?;
             task(service, &profile.root, &document)
         })
+    }
+
+    /// Checkpoint-only read under the caller's existing personal-transition
+    /// profile lock. Keep publication_unlocked inside its installations owner.
+    #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
+    pub(crate) fn personal_transition_publication(
+        &self, service: &LifecycleService, profile: &Path,
+    ) -> Result<(native_publication::PublicationState, Option<String>)> {
+        let selected = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+        if selected.root != profile { return Err(err("NATIVE_PUBLICATION_SCOPE_CHANGED")); }
+        let (file, publication) = self.publication_unlocked(service)?;
+        let journal_sha256 = if publication.pending.is_some() {
+            Some(digest(&installation_backup::source_bytes(profile, &file, 2_200_000, true)?))
+        } else { None };
+        Ok((publication, journal_sha256))
     }
 
     #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
