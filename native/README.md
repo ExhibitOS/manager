@@ -1989,6 +1989,25 @@ These source changes require a compatible qualified runtime and actual
 Save/reopen/output verification. Source review or syntax checks alone do not
 establish scene capacity, physical contact, visible shadows or final appearance.
 
+The final shadow/track runtime source is `27b741cfec5bde7087fd7d87128731fee01ea864`,
+producer `70997c1105e539b8f3d4084839e8a34f54a2d257d014f840014d8999ac38438b`,
+manifest `42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319`.
+Only the existing clean owner at manifest `227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19`
+is admitted for a directed same-catalog52 refresh. The 47-row ledger, exact saved
+head, full document and carried restore provenance remain checked. Fresh,
+interrupted, dirty, reverse, self and skipped transitions are not added. This
+edge retains the existing 8 GiB + 256 MiB streamed physical checkpoint bound for
+the already retained profile; it does not raise a rendering or import budget.
+The old camera-pose dirty transitions keep their previous scope.
+
+The exact default1.16 manifest (23,170 bytes,
+`9302a6472a603b2ad21a693f848fd4670c41d04b51e563bbeae088dade825e81`)
+adds `dark-track-network/v1` as a distinct ceiling-rail source. All twelve
+previous Native-supported entries, including the white `linear-track`, remain.
+Selection verifies original GLB and rights notice using the existing path and
+hash guards. Source admission and tests do not establish an actual transition,
+scene fit/capacity, shadow, Save/reopen, output or appearance acceptance.
+
 ### Camera-only rotation
 
 The native workbench's **보기 회전** uses the existing negotiated

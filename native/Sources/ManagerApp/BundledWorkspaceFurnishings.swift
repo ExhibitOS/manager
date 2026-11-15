@@ -49,6 +49,7 @@ enum BundledWorkspaceFurnishings {
         "portal-pale-mineral": .portalFinish, "portal-warm-oak": .portalFinish
     ]
     private static let manifests = [
+        23170: (version: "1.16.0", digest: "9302a6472a603b2ad21a693f848fd4670c41d04b51e563bbeae088dade825e81"),
         22280: (version: "1.15.0", digest: "0cab62aed2f85534e29ee5b6eb824d7f3eaae8036cc2d5dced47fd4f5a4dd17d"),
         21376: (version: "1.14.0", digest: "9cae93c4ec7a0051e9ac0d6ffb3a877dc02c9652399ee3f31bb72680b638690d"),
         20463: (version: "1.13.0", digest: "3b7f67ab30b5537b7d2355fa76518569859d986e834f3f8c1b05cb8b5354ef9f"),
@@ -65,14 +66,15 @@ enum BundledWorkspaceFurnishings {
         switch version {
         case "1.2.0": return allowed
         case "1.4.0": return allowed.merging(generated) { first, _ in first }
-        case "1.5.0", "1.6.0", "1.7.0", "1.11.0", "1.12.0", "1.13.0", "1.14.0", "1.15.0":
+        case "1.5.0", "1.6.0", "1.7.0", "1.11.0", "1.12.0", "1.13.0", "1.14.0", "1.15.0", "1.16.0":
             var items = allowed.merging(generated) { first, _ in first }
             items[sculptureBench] = .bench
             if version != "1.5.0" { items.merge(portals) { first, _ in first } }
-            if version == "1.7.0" || version == "1.11.0" || version == "1.12.0" || version == "1.13.0" || version == "1.14.0" || version == "1.15.0" { items[compactStand] = .infoStand }
-            if version == "1.13.0" || version == "1.14.0" || version == "1.15.0" { items["linear-track"] = .ceilingRail }
-            if version == "1.14.0" || version == "1.15.0" { items["hayes-clear-protective-hood"] = .displayCase }
-            if version == "1.15.0" { items["sculpture-bench-refined-v6"] = .bench }
+            if version == "1.7.0" || version == "1.11.0" || version == "1.12.0" || version == "1.13.0" || version == "1.14.0" || version == "1.15.0" || version == "1.16.0" { items[compactStand] = .infoStand }
+            if version == "1.13.0" || version == "1.14.0" || version == "1.15.0" || version == "1.16.0" { items["linear-track"] = .ceilingRail }
+            if version == "1.14.0" || version == "1.15.0" || version == "1.16.0" { items["hayes-clear-protective-hood"] = .displayCase }
+            if version == "1.15.0" || version == "1.16.0" { items["sculpture-bench-refined-v6"] = .bench }
+            if version == "1.16.0" { items["dark-track-network"] = .ceilingRail }
             return items
         default: return [:]
         }
@@ -85,7 +87,7 @@ enum BundledWorkspaceFurnishings {
         defer { try? handle.close() }
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              let size = Int(exactly: before.st_size), sizes.contains(size), (1...22_280).contains(size),
+              let size = Int(exactly: before.st_size), sizes.contains(size), (1...23_170).contains(size),
               let data = try handle.read(upToCount: size + 1), data.count == size,
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,
@@ -102,7 +104,8 @@ enum BundledWorkspaceFurnishings {
     }
     private static func directory(for id: String) -> String {
         let source: String
-        if id == "hayes-clear-protective-hood" || id == "sculpture-bench-refined-v6" { source = "exhibitos-authored-20261114" }
+        if id == "dark-track-network" { source = "exhibitos-authored-20261115" }
+        else if id == "hayes-clear-protective-hood" || id == "sculpture-bench-refined-v6" { source = "exhibitos-authored-20261114" }
         else if id == compactStand { source = "exhibitos-authored-20261111" }
         else if portals[id] != nil { source = "exhibitos-authored-20261109" }
         else if id == sculptureBench { source = "generated-20261110" }
