@@ -168,6 +168,42 @@ final class LightObjectRequestTests: XCTestCase {
         }
     }
 
+    func testAuthoredShadowUsesExistingSetObjectAndPreservesTransportFences() throws {
+        let base = try fixture()
+        let settings = without(base.candidate["extensions"][details]["lights"].items![0], "lightId")
+        var light = without(base.candidate["lights"].items![0], "id")
+        light["castsShadow"] = .bool(true)
+        let request = try makeRequest("set-light-object", base, fields: ["light": light, "settings": settings])
+        var expected = base.candidate, rows = expected["lights"].items!
+        rows[0]["castsShadow"] = .bool(true); expected["lights"] = .array(rows); expected = changed(expected)
+        XCTAssertEqual(try request.checkedReply(reply(request, candidate: expected)).candidate, expected)
+        for variant in 0..<4 {
+            var bad = light
+            switch variant {
+            case 0: bad["castsShadow"] = .string("true")
+            case 1: bad["roomId"] = .string(other)
+            case 2: bad["transform"]["scale"] = .vector([2,2,2])
+            default: bad = without(bad, "beamAngle"); bad["type"] = .string("point")
+            }
+            XCTAssertThrowsError(try makeRequest("set-light-object", base, fields: ["light": bad, "settings": settings]))
+        }
+        for type in ["point", "area"] {
+            var legacy = base, candidate = base.candidate, legacyRows = candidate["lights"].items!
+            var row = without(legacyRows[0], "beamAngle")
+            row["type"] = .string(type); row["unit"] = .string(type == "area" ? "lumen" : "candela")
+            row["castsShadow"] = .bool(true)
+            if type == "area" { row["dimensions"] = .object(["width": .number(1), "height": .number(1)]) }
+            legacyRows[0] = row; candidate["lights"] = .array(legacyRows); try legacy.replaceCandidate(candidate)
+            var proposed = without(row, "id"); proposed["intensity"] = .integer(21)
+            XCTAssertNoThrow(try makeRequest("set-light-object", legacy, fields: ["light": proposed, "settings": settings]))
+            proposed["castsShadow"] = .bool(false)
+            XCTAssertNoThrow(try makeRequest("set-light-object", legacy, fields: ["light": proposed, "settings": settings]))
+            proposed["castsShadow"] = .bool(true)
+            legacyRows[0]["castsShadow"] = .bool(false); candidate["lights"] = .array(legacyRows); try legacy.replaceCandidate(candidate)
+            XCTAssertThrowsError(try makeRequest("set-light-object", legacy, fields: ["light": proposed, "settings": settings]))
+        }
+    }
+
     func testCloneRemapsOnlyOwnedBindingsAndSharesTheAsset() throws {
         let base = try fixture(), request = try makeRequest("duplicate-light-object", base)
         var expected = base.candidate

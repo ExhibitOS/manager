@@ -1261,6 +1261,7 @@ final class ExhibitionModel: ObservableObject {
     var canSelectLight: Bool { canSelectCatalog }
     var canPreviewLight: Bool {
         !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && lightDirty && !lightPreviewing && viewportController.connected
+            && (light?.shadowPreferenceChanged != true || lightObjectAuthorityAvailable)
             && (lightObjectProposalAvailable ? lightObjectAuthorityAvailable : (viewportController.lightInspectorSupported && (light?.detailsChanged != true || viewportController.lightFixtureSupported)))
     }
     private func lightObjectDisplayAcknowledged(_ display: NativeExhibitionDraft) -> Bool {

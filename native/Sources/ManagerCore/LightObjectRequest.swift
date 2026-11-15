@@ -88,9 +88,14 @@ public struct LightObjectRequest: Sendable {
                   case .object(let light) = command["light"], light["id"] == nil,
                   case .object(let settings) = command["settings"], settings["lightId"] == nil,
                   command["light"]["roomId"] == original["roomId"],
-                  command["light"]["castsShadow"] == original["castsShadow"],
                   command["light"]["transform"]["scale"] == original["transform"]["scale"] else { throw Self.invalid }
             try Self.checkLight(command["light"], in: frame.draft)
+            if command["light"]["castsShadow"] == .bool(true),
+               !["spot", "directional"].contains(command["light"]["type"].string ?? "") {
+                guard original["castsShadow"] == .bool(true), command["light"]["type"] == original["type"] else {
+                    throw Self.invalid
+                }
+            }
             try Self.checkSettings(command["settings"])
             let old = try Self.rows(frame.draft.candidate, namespace: Self.details).first { Self.same($0["lightId"].string, actualId) }
             if let purpose = settings["purpose"] { guard purpose == (old?["purpose"] ?? .null) else { throw Self.invalid } }

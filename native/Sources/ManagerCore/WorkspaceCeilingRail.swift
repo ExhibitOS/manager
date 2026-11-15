@@ -154,6 +154,21 @@ public enum WorkspaceCeilingRail {
     /// Produces one derived unit-scale placement and attachment in the existing draft.
     public static func applying(_ attachment: WorkspaceCeilingRailAttachment, furnishing: WorkspaceFurnishing,
                                 to draft: NativeExhibitionDraft, supportedExtensionVersion: Int64) throws -> NativeExhibitionDraft? {
+        try compose(attachment, furnishing: furnishing, to: draft, supportedExtensionVersion: supportedExtensionVersion, replacing: nil)
+    }
+
+    public static func replacing(_ replacement: WorkspaceCeilingRailReplacement, furnishing: WorkspaceFurnishing,
+                                 in draft: NativeExhibitionDraft, supportedExtensionVersion: Int64) throws -> NativeExhibitionDraft? {
+        guard furnishing.id == replacement.furnishingId, furnishing.details.model.sha256 == replacement.modelSHA256 else {
+            throw WorkspaceCeilingRailReplacement.invalid
+        }
+        return try compose(replacement.attachment, furnishing: furnishing, to: draft,
+                           supportedExtensionVersion: supportedExtensionVersion, replacing: replacement)
+    }
+
+    private static func compose(_ attachment: WorkspaceCeilingRailAttachment, furnishing: WorkspaceFurnishing,
+                                to draft: NativeExhibitionDraft, supportedExtensionVersion: Int64,
+                                replacing replacement: WorkspaceCeilingRailReplacement?) throws -> NativeExhibitionDraft? {
         guard supportedExtensionVersion >= 11, furnishing.details.kind == .ceilingRail,
               furnishing.fit?.profile == .passiveCeilingRail else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         let encoded = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(attachment))
@@ -184,6 +199,34 @@ public enum WorkspaceCeilingRail {
             guard fields(old, expected) else { throw invalid() }
             descriptors = values; placements = rows; frames = old["frameAttachments"].items ?? []
             openings = old["openingAttachments"].items ?? []; ceilings = old["ceilingAttachments"].items ?? []
+        }
+        if let replacement {
+            let failure = WorkspaceCeilingRailReplacement.invalid
+            guard old["version"] == .integer(11), roomId == replacement.roomId else { throw failure }
+            let selectedLights = (candidate["lights"].items ?? []).filter { replacement.preserveLightIds.contains($0["id"].string ?? "") }
+            let mounts = candidate["extensions"]["org.exhibitos.studio/light-attachments"]["lights"].items ?? []
+            let visuals = candidate["extensions"]["org.exhibitos.studio/furnishing-visuals"]["bindings"].items ?? []
+            guard selectedLights.count == replacement.preserveLightIds.count,
+                  selectedLights.allSatisfy({ light in
+                      light["roomId"] == .string(roomId)
+                          && mounts.filter({ $0["lightId"] == light["id"] && $0["surfaceId"] == .string(a.surfaceId) }).count == 1
+                          && visuals.filter({ $0["hostKind"] == .string("light") && $0["hostId"] == light["id"] }).count == 1
+                  }) else { throw failure }
+            let selected = placements.filter { replacement.oldPlacementIds.contains($0["id"].string ?? "") }
+            if selected.isEmpty,
+               descriptors.filter({ $0["id"] == .string(furnishing.id) }) == [descriptor],
+               placements.filter({ $0["id"] == .string(a.placementId) }) == [placement],
+               ceilings.filter({ $0["placementId"] == .string(a.placementId) }) == [encoded] { return nil }
+            guard selected.count == replacement.oldPlacementIds.count,
+                  selected.allSatisfy({ $0["roomId"] == .string(roomId) && $0["furnishingId"] == .string(replacement.oldFurnishingId) && $0["furnishingVersion"] == .integer(1) }),
+                  descriptors.filter({ $0["id"] == .string(replacement.oldFurnishingId) && $0["kind"] == .string("ceiling-rail") && $0["model"]["sha256"] == .string(replacement.oldModelSHA256) }).count == 1,
+                  ceilings.filter({ replacement.oldPlacementIds.contains($0["placementId"].string ?? "") }).count == selected.count,
+                  ceilings.filter({ replacement.oldPlacementIds.contains($0["placementId"].string ?? "") }).allSatisfy({ $0["surfaceId"] == .string(a.surfaceId) }) else { throw failure }
+            placements.removeAll { replacement.oldPlacementIds.contains($0["id"].string ?? "") }
+            ceilings.removeAll { replacement.oldPlacementIds.contains($0["placementId"].string ?? "") }
+            if !placements.contains(where: { $0["furnishingId"] == .string(replacement.oldFurnishingId) }) {
+                descriptors.removeAll { $0["id"] == .string(replacement.oldFurnishingId) }
+            }
         }
         let matching = descriptors.filter { $0["id"] == .string(furnishing.id) }
         if matching == [descriptor], placements.filter({ $0["id"] == .string(a.placementId) }) == [placement],

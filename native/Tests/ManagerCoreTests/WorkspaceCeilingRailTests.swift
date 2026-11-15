@@ -170,4 +170,84 @@ final class WorkspaceCeilingRailTests: XCTestCase {
         XCTAssertEqual(updated.candidate["extensions"][ns]["frameAttachments"], frames)
         XCTAssertEqual(updated.candidate["extensions"][ns]["openingAttachments"], portals)
     }
+    private let replacementRail = "20000000-0000-4000-8000-000000000001"
+    private let replacementPlacement = "20000000-0000-4000-8000-000000000002"
+    private let retainedLight = "20000000-0000-4000-8000-000000000003"
+    private var oldIDs: [String] { [placement, "10000000-0000-4000-8000-000000000004", "10000000-0000-4000-8000-000000000005"] }
+    private func replacementDescriptor() -> DocumentValue {
+        var value = descriptor()
+        value["id"] = .string(replacementRail)
+        value["model"]["sha256"] = .string(String(repeating: "b", count: 64))
+        value["fit"]["sourceSha256"] = value["model"]["sha256"]
+        value["fit"]["geometry"]["min"] = .vector([-1.5,-0.035,-1.5])
+        value["fit"]["geometry"]["max"] = .vector([1.5,0,1.5])
+        return value
+    }
+    private func replacementValue(in draft: NativeExhibitionDraft) -> DocumentValue {
+        .object(["roomId": draft.rooms[0]["id"], "oldFurnishingId": .string(rail),
+            "oldModelSha256": .string(modelHash), "oldPlacementIds": .array(oldIDs.map(DocumentValue.string)),
+            "preserveLightIds": .array([.string(retainedLight)]), "furnishingId": .string(replacementRail),
+            "modelSha256": .string(String(repeating: "b", count: 64)),
+            "attachment": .object(["placementId": .string(replacementPlacement), "surfaceId": .string(ceiling),
+                "anchor": .vector([0,0]), "yaw": .number(0), "gap": .number(0)])])
+    }
+    private func replacementBase(extraRail: Bool = false) throws -> NativeExhibitionDraft {
+        var base = try draft()
+        let ids = oldIDs + (extraRail ? ["10000000-0000-4000-8000-000000000006"] : [])
+        for (index, id) in ids.enumerated() {
+            base = try XCTUnwrap(WorkspaceCeilingRail.applying(.init(placementId: id, surfaceId: ceiling,
+                anchor: [0, Double(index) * 0.25], yaw: 0, gap: 0), furnishing: furnishing(), to: base, supportedExtensionVersion: 11))
+        }
+        var candidate = base.candidate
+        candidate["lights"] = .array([.object(["id": .string(retainedLight), "roomId": base.rooms[0]["id"],
+            "castsShadow": .bool(false), "future": .string("preserve")])])
+        candidate["extensions"]["org.exhibitos.studio/light-attachments"] = .object(["lights": .array([
+            .object(["lightId": .string(retainedLight), "surfaceId": .string(ceiling), "future": .integer(7)])])])
+        candidate["extensions"]["org.exhibitos.studio/furnishing-visuals"] = .object(["bindings": .array([
+            .object(["hostKind": .string("light"), "hostId": .string(retainedLight), "future": .integer(8)])])])
+        try base.replaceCandidate(candidate)
+        return base
+    }
+    func testAtomicGroupReplacementPreservesLightsAndReplaysAfterReopen() throws {
+        let base = try replacementBase(), command = try WorkspaceCeilingRailReplacement(value: replacementValue(in: base))
+        let result = try XCTUnwrap(WorkspaceCeilingRail.replacing(command, furnishing: furnishing(replacementDescriptor()), in: base, supportedExtensionVersion: 11))
+        let ns = WorkspaceFurnishingPlacement.namespace
+        XCTAssertEqual(result.document["editVersion"].integer, base.document["editVersion"].integer! + 1)
+        XCTAssertEqual(result.candidate["extensions"][ns]["placements"].items?.count, 1)
+        XCTAssertEqual(result.candidate["extensions"][ns]["placements"].items?.first?["scale"], .integer(1))
+        XCTAssertEqual(result.candidate["extensions"][ns]["furnishings"].items?.map { $0["id"] }, [.string(replacementRail)])
+        var restored = result.candidate; restored["extensions"][ns] = base.candidate["extensions"][ns]
+        XCTAssertEqual(restored, base.candidate, "Every non-rail scene row and light binding stays exact")
+        let reopened = try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(result))
+        XCTAssertNil(try WorkspaceCeilingRail.replacing(command, furnishing: furnishing(replacementDescriptor()), in: reopened, supportedExtensionVersion: 11))
+    }
+    func testReplacementKeepsSharedDescriptorAndSurvivorOrder() throws {
+        let base = try replacementBase(extraRail: true), ns = WorkspaceFurnishingPlacement.namespace
+        let result = try XCTUnwrap(WorkspaceCeilingRail.replacing(WorkspaceCeilingRailReplacement(value: replacementValue(in: base)),
+            furnishing: furnishing(replacementDescriptor()), in: base, supportedExtensionVersion: 11))
+        XCTAssertEqual(result.candidate["extensions"][ns]["furnishings"].items, [descriptor(), replacementDescriptor()])
+        XCTAssertEqual(result.candidate["extensions"][ns]["placements"].items?.first, base.candidate["extensions"][ns]["placements"].items?.last)
+        XCTAssertEqual(result.candidate["extensions"][ns]["ceilingAttachments"].items?.first, base.candidate["extensions"][ns]["ceilingAttachments"].items?.last)
+    }
+    func testReplacementRejectsStaleAmbiguousAndOutOfBoundsRequestsWithoutMutation() throws {
+        let base = try replacementBase(), original = base.document
+        for variant in 0..<9 {
+            var value = replacementValue(in: base)
+            switch variant {
+            case 0: value["oldModelSha256"] = .string(String(repeating: "c", count: 64))
+            case 1: value["oldPlacementIds"] = .array([.string(oldIDs[0]), .string(replacementRail)])
+            case 2: value["oldPlacementIds"] = .array([.string(oldIDs[0]), .string(oldIDs[0])])
+            case 3: value["roomId"] = .string(replacementRail)
+            case 4: value["attachment"]["surfaceId"] = .string(replacementRail)
+            case 5: value["attachment"]["placementId"] = .string(oldIDs[0])
+            case 6: value["attachment"]["anchor"] = .vector([1,0])
+            case 7: value["modelSha256"] = .string(String(repeating: "c", count: 64))
+            default: value["extra"] = .bool(true)
+            }
+            XCTAssertThrowsError(try WorkspaceCeilingRail.replacing(WorkspaceCeilingRailReplacement(value: value),
+                furnishing: furnishing(replacementDescriptor()), in: base, supportedExtensionVersion: 11), "variant \(variant)")
+            XCTAssertEqual(base.document, original)
+        }
+    }
+
 }

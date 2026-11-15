@@ -66,6 +66,8 @@ final class LightSettingsTests: XCTestCase {
         fields.changeType(.area)
         XCTAssertEqual(fields.intensity, "100.0", "Different units use explicit existing producer default, never a conversion")
         fields.width = "2"; fields.height = "0.4"
+        XCTAssertThrowsError(try fields.command().proposedCandidate(in: draft, selectedLightId: first), "A preferred source cannot become an unsupported area light")
+        fields.shadowPreference = false
         var row = try fields.command().proposedCandidate(in: draft, selectedLightId: first)["lights"].items![0]
         XCTAssertEqual(row["unit"], .string("lumen")); XCTAssertEqual(row["beamAngle"], .null)
         XCTAssertEqual(row["dimensions"]["width"], .number(2)); XCTAssertEqual(row["dimensions"]["height"], .number(0.4))
@@ -140,4 +142,53 @@ final class LightSettingsTests: XCTestCase {
         candidate["lights"] = .array(rows); try changed.replaceCandidate(candidate)
         XCTAssertThrowsError(try LightFormBuffer(draft: changed, selectedLightId: first))
     }
+    func testShadowPreferencePreservesLegacyAndRejectsNewUnsupportedSources() throws {
+        for type in NativeLightType.allCases {
+            let legacy = try fixture(type: type)
+            var fields = try LightFormBuffer(draft: legacy, selectedLightId: first)
+            fields.intensity = "451"
+            XCTAssertEqual(try fields.command().proposedCandidate(in: legacy, selectedLightId: first)["lights"].items![0]["castsShadow"], .bool(true))
+            fields.shadowPreference = false
+            XCTAssertEqual(try fields.command().proposedCandidate(in: legacy, selectedLightId: first)["lights"].items![0]["castsShadow"], .bool(false))
+            var base = legacy, candidate = legacy.candidate, rows = candidate["lights"].items!
+            rows[0]["castsShadow"] = .bool(false); candidate["lights"] = .array(rows)
+            try base.replaceCandidate(candidate)
+            var enabled = try LightFormBuffer(draft: base, selectedLightId: first)
+            enabled.shadowPreference = true
+            if type == .spot || type == .directional {
+                let result = try enabled.command().proposedCandidate(in: base, selectedLightId: first)
+                XCTAssertEqual(result["lights"].items![0]["castsShadow"], .bool(true))
+                var expected = base.candidate["lights"].items!
+                expected[0]["castsShadow"] = .bool(true)
+                XCTAssertEqual(result["lights"], .array(expected))
+            } else {
+                XCTAssertThrowsError(try enabled.command().proposedCandidate(in: base, selectedLightId: first))
+            }
+        }
+    }
+    func testPointAimCanKeepExplicitSameRoomShadowSubjectWithoutChangingAim() throws {
+        var base = try fixture(), candidate = base.candidate
+        candidate["placements"] = .array([.object(["id": .string(target), "roomId": base.rooms[0]["id"]])])
+        try base.replaceCandidate(candidate)
+        let row = base.candidate["lights"].items![0]
+        func command(subject: String?, preference: Bool) -> LightCommand {
+            LightCommand(lightId: first, type: .spot, color: [0.0123456789,0.3,1], intensity: 450,
+                position: [1,3,-2], beamAngle: row["beamAngle"].double,
+                details: .init(aim: .point([0,1,0]), range: nil, penumbra: nil),
+                shadowPreference: preference, shadowTargetPlacementId: subject)
+        }
+        let selected = command(subject: target, preference: true)
+        let result = try selected.proposedCandidate(in: base, selectedLightId: first)
+        XCTAssertEqual(result["lights"].items![0]["targetPlacementId"], .string(target))
+        XCTAssertEqual(result["lights"].items![0]["transform"], row["transform"])
+        XCTAssertEqual(try selected.detailsSettings(in: base)["aim"], .object(["kind": .string("point"), "position": .vector([0,1,0])]))
+        XCTAssertEqual(try command(subject: nil, preference: false).proposedCandidate(in: base, selectedLightId: first)["lights"].items![0]["targetPlacementId"], .null)
+        XCTAssertThrowsError(try command(subject: other, preference: true).proposedCandidate(in: base, selectedLightId: first))
+        XCTAssertThrowsError(try command(subject: target, preference: false).proposedCandidate(in: base, selectedLightId: first))
+        candidate = base.candidate
+        candidate["placements"] = .array([.object(["id": .string(target), "roomId": .string(other)])])
+        try base.replaceCandidate(candidate)
+        XCTAssertThrowsError(try selected.proposedCandidate(in: base, selectedLightId: first))
+    }
+
 }

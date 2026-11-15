@@ -1954,6 +1954,41 @@ The approved-model variant preview validation runtime is pinned to `ac4b4c214179
 
 The selected-Find bounds validation runtime is pinned to `899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59` (source `94f62fd55198e8f95e05e4bd16b9d7f0c04c1bef`, producer `e62f672a7a31d53deeab77f5333c3545da36f83d934d2b5c68e6c28eb46a2d3d`). Only the clean approved-model preview `ac4b4c214179eb74351d1786291d8cab53f5f7b290fca33a4d1090db43b373fd` → this exact tuple same-catalog52 refresh is added. Catalog52 and the existing47-row ledger remain unchanged; fresh/interrupted, skipped/reverse/self refresh and isolated export remain excluded. The existing selected-Find/orbit bounds correction belongs to the shared renderer. This pin establishes no actual framing, chosen-tier appearance, artwork front direction or public adoption. Current qualified validation App activation is a separate continuation after preserving its then-current saved original data.
 
+### Selected ceiling-rail replacement and authored shadow preference
+
+The development SDK provides `workspace-ceiling-rail-check` and
+`workspace-ceiling-rail-replace`. Both require a clean saved document and the
+existing rail capability. Their `command` contains the current `etag`, `roomId`,
+`oldFurnishingId`, `oldModelSha256`, unique `oldPlacementIds`, unique
+`preserveLightIds`, new registered `furnishingId` and `modelSha256`, and one
+`attachment` (`placementId`, `surfaceId`, `anchor`, `yaw`, `gap`). Unknown fields
+are refused. The selected old placements must share the expected registered
+model, room and ceiling; preserved lights must retain their ceiling mounts and
+visual bindings. The new source's measured bounds must fit at unit scale.
+
+Check returns a prospective draft without persisting. Replace stages one local
+edit, removing only the selected old rail rows and their descriptor if unused,
+then appending one new placement and attachment. Light objects, aim, colour,
+mounts, visuals and unrelated content remain exact. An exact replay after reopen
+is a no-op. Existing authenticated validation and ordinary Save retain ownership,
+rights, current-head and ETag checks. Save this rail-only change before making
+unrelated light edits. These operations are available in the standalone SDK;
+they are not added to the installed App authoring CLI allowlist.
+
+The light inspector's shadow preference edits the existing `castsShadow` boolean
+through `set-light-object`. New preferences support spot and directional lights.
+An unchanged legacy true value on a point or area light can be preserved or
+cleared; it cannot be newly enabled or carried across an unsupported type change.
+False removes the preference and permits the renderer's existing automatic
+selection when no preferred source remains. It is not a global shadow-off switch.
+For explicit point aim, an optional same-room artwork subject uses the existing
+`targetPlacementId` without changing the aim point. No artwork-specific IDs or
+new public format fields are introduced.
+
+These source changes require a compatible qualified runtime and actual
+Save/reopen/output verification. Source review or syntax checks alone do not
+establish scene capacity, physical contact, visible shadows or final appearance.
+
 ### Camera-only rotation
 
 The native workbench's **보기 회전** uses the existing negotiated

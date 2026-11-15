@@ -3550,6 +3550,30 @@ public actor AuthoringAPI {
         admitsWorkspaceFurnishings && session?.advertisesWorkspaceInfoStandReplacement == true
     }
 
+    public func prepareWorkspaceCeilingRailReplacement(_ replacement: WorkspaceCeilingRailReplacement,
+                                                       in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsWorkspaceCeilingRail, document.pending == nil, !document.dirty,
+              document.tenantId == tenant, session?.userId == document.principalId,
+              let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+        }
+        let held = generation
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let furnishing = try await workspaceFurnishing(replacement.furnishingId, version: 1)
+        guard furnishing.details.kind == .ceilingRail, furnishing.details.model.sha256 == replacement.modelSHA256 else {
+            throw AuthoringFailure("MODEL_CONFLICT")
+        }
+        let next = try WorkspaceCeilingRail.replacing(replacement, furnishing: furnishing, in: draft,
+                                                     supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        _ = try await workspaceFurnishingModel(furnishing)
+        // The authenticated existing validator owns both ordinary and bounded
+        // editing authority. An ordinary-policy false is never an edit permit.
+        try await validateNativeViewportEdit(next ?? draft, etag: etag)
+        guard generation == held, admitsWorkspaceCeilingRail else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return next
+    }
+
     public func prepareWorkspaceInfoStandReplacement(_ replacement: WorkspaceInfoStandReplacement,
                                                      in document: NativeDocumentState,
                                                      expectedModelSHA256: String,
