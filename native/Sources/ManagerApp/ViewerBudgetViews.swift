@@ -77,6 +77,55 @@ struct ViewerBudgetEvaluationView: View {
     }
 }
 
+/// Uses the existing producer report verbatim for values and evaluations. It
+/// adds no Native cost calculation or export admission decision.
+private struct ViewerBudgetAnalysisDetailsView: View {
+    let analysis: DocumentValue
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            let contributors = analysis["estimates"]["wholeExhibition"]["usage"]["contributors"].items ?? []
+            DisclosureGroup("항목별 기여") {
+                if contributors.isEmpty {
+                    Text("항목별 기여 정보가 없습니다.").foregroundStyle(.secondary)
+                }
+                ForEach(contributors.indices, id: \.self) { index in
+                    let item = contributors[index]
+                    DisclosureGroup(item["label"].string ?? "항목") {
+                        ForEach(ViewerBudgetSettings.metrics, id: \.self) { metric in
+                            if item["usage"][metric] != .null {
+                                LabeledContent(BudgetLabels.metric(metric), value: BudgetLabels.number(item["usage"][metric]))
+                            }
+                        }
+                    }
+                }
+                Text("기여도를 알 수 있는 값만 표시합니다.").foregroundStyle(.secondary)
+            }
+            let sections = analysis["estimates"]["analyzedSections"].items ?? []
+            DisclosureGroup("분석한 구간") {
+                if sections.isEmpty { Text("구간별 분석 정보가 없습니다.").foregroundStyle(.secondary) }
+                ForEach(sections.indices, id: \.self) { index in
+                    ViewerBudgetEvaluationView(title: "분석 구간 \(index + 1)", evaluation: sections[index]["evaluation"])
+                }
+                Text("구간별 범위는 겹칠 수 있습니다. 전시 전체 추정과 함께 확인하세요.").foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("조정 방법").fontWeight(.medium)
+                if analysis["analysisComplete"] != .bool(true) {
+                    Text("분석하지 못한 항목은 제작 단계의 리소스 분석을 확인하세요.")
+                }
+                Text("현재 화면과 무거운 구간을 따로 살펴보세요.")
+                Text("이 전시의 예산을 조정하거나 권장값으로 초기화할 수 있습니다.")
+            }
+            Text("전시 전체는 숨겨진 오브젝트를 포함한 선택 시나리오의 추정입니다. 메모리는 모든 선택 에셋을 함께 사용하는 경우를 가정합니다. 실제 화면 점유량·다운로드량·GPU 시간의 측정값은 각 관측 범위에서 따로 확인하세요.")
+                .foregroundStyle(.secondary)
+            if analysis["exportConfiguration"]["performanceAdvisoryOnly"] == .bool(true) {
+                Text("성능 예산 경고 중에도 저장과 내보내기를 계속할 수 있습니다. 작품 권리와 파일 형식 등 공개 준비 항목은 별도로 확인합니다.")
+                    .foregroundStyle(.secondary)
+            }
+        }.font(.caption).textSelection(.enabled)
+    }
+}
+
 struct ViewerBudgetSettingsView: View {
     @Binding var form: ViewerBudgetSettings
     let policy: DocumentValue?
@@ -245,6 +294,9 @@ struct TargetViewerBudgetStatusView: View {
                     LabeledContent("고유 콘텐츠 크기 · 바이트", value: BudgetLabels.number(analysis["inventory"]["uniqueContentBytes"]))
                     LabeledContent("다운로드 크기 · 바이트", value: BudgetLabels.number(analysis["inventory"]["downloadBytes"]))
                     Text("파일의 등록 정보입니다. 다운로드나 디코딩 후 메모리의 측정값과 구분합니다.").foregroundStyle(.secondary)
+                }.font(.caption)
+                DisclosureGroup("전체 분석 상세와 조정 방법") {
+                    ViewerBudgetAnalysisDetailsView(analysis: analysis)
                 }.font(.caption)
             }
             if !model.viewerBudgetStatus.isEmpty { Text(model.viewerBudgetStatus).font(.caption).foregroundStyle(.secondary) }
