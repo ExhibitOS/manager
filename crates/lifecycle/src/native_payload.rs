@@ -2618,10 +2618,10 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(payload.fresh_catalog52_constructor());
         assert!(payload.selected_workspace_import_version().is_none());
         assert!(Payload::classify_workspace_import_validation(combined_thumbnail_payload(target), WorkspaceImport::V7, true).is_err());
-        let unknown_source = "f".repeat(40);
-        let unknown_manifest = "f".repeat(64);
+        const UNKNOWN_SOURCE: &str = "ffffffffffffffffffffffffffffffffffffffff";
+        const UNKNOWN_MANIFEST: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
         for denied in [VIEWER_BUDGET_TARGET, WHITE_RAIL_OPPOSITE_TARGET,
-            (&unknown_source, target.1, target.2), (target.0, target.1, &unknown_manifest),
+            (UNKNOWN_SOURCE, target.1, target.2), (target.0, target.1, UNKNOWN_MANIFEST),
             CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET,
             (WHITE_RAIL_OPPOSITE_TARGET.0, target.1, target.2),
             (target.0, WHITE_RAIL_OPPOSITE_TARGET.1, target.2),
