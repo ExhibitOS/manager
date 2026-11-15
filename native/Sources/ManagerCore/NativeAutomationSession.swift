@@ -3657,7 +3657,9 @@ public actor NativeAutomationSession {
                                      nativeOriginal: Bool, detailJobId: String?) async throws -> NativeStaticExportReceipt {
         do {
             var receipt: NativeStaticExportReceipt?
-            for _ in 0..<1200 {
+            let clock = ContinuousClock()
+            let deadline = NativeStaticExportWait(started: clock.now, nativeOriginal: nativeOriginal)
+            while deadline.allowsPolling(at: clock.now) {
                 try Task.checkCancellation()
                 if let status = try await bridge.staticExportStatus(context), !status.running {
                     if nativeOriginal && !status.confirmsDetailTerminal(jobId: detailJobId, publicationId: frozen.publicationId, output: path) {
