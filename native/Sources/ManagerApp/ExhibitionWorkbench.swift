@@ -92,6 +92,9 @@ struct NativeExhibitionView: View {
     }
     private var saveLocked: Bool {
         if model.infoStandPreviewing { return true }
+        if model.canRetryViewerBudgetPolicy {
+            return readOnly || !active || model.busy || model.entrancePreviewActive
+        }
         if model.boundedPlacementCapability != nil {
             return !ready || readOnly || !model.boundedPlacementReady || model.boundedPendingRecoveryBlocked || model.busy || model.entrancePreviewActive || !model.dirty
         }
@@ -182,6 +185,10 @@ struct NativeExhibitionView: View {
             Divider()
             if !catalogDrag.feedback.isEmpty {
                 Text(catalogDrag.feedback).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
+            }
+            TargetViewerBudgetStatusView(model: model, mode: mode).padding(.horizontal, 8).padding(.vertical, 6)
+            if mode == .expert {
+                NativeEditorBudgetStatusView(controller: controller).padding(.horizontal, 8).padding(.vertical, 6)
             }
             feedback
         }
@@ -275,7 +282,7 @@ struct NativeExhibitionView: View {
                 Button { model.previewEntrance(.walk, systemReducedMotion: reducedMotion) } label: { Label("걸어보기", systemImage: "figure.walk") }
                     .labelStyle(.iconOnly).disabled(!ready || !model.viewportController.connected || !model.viewportController.entrancePreviewSupported || model.busy || model.pending || model.entrancePreviewBusy || model.infoStandPreviewing)
             }
-            Button { Task { if controller.editingContextActive { await model.save() } } } label: { Label(model.pending ? "저장 응답 다시 확인" : "전시 저장", systemImage: "square.and.arrow.down") }
+            Button { Task { if controller.editingContextActive || model.canRetryViewerBudgetPolicy { await model.save() } } } label: { Label(model.pending ? "저장 응답 다시 확인" : "전시 저장", systemImage: "square.and.arrow.down") }
                 .labelStyle(.iconOnly).disabled(saveLocked).keyboardShortcut("s", modifiers: .command)
             Menu {
                 ForEach(InspectorScope.allCases) { value in Button(value.title) { inspect(value) }.disabled(value == .cover && model.placingArtwork) }
@@ -456,7 +463,7 @@ struct NativeExhibitionView: View {
                     Task { if controller.editingContextActive { await model.replaceWithSelectedModelCandidate() } }
                 }.disabled(!ready || model.busy)
             } else {
-                Button(model.pending ? "저장 응답 다시 확인" : "전시 저장") { Task { if controller.editingContextActive { await model.save() } } }.buttonStyle(.borderedProminent).disabled(saveLocked)
+                Button(model.pending ? "저장 응답 다시 확인" : "전시 저장") { Task { if controller.editingContextActive || model.canRetryViewerBudgetPolicy { await model.save() } } }.buttonStyle(.borderedProminent).disabled(saveLocked)
             }
             if model.canRefreshApprovedCompactArtwork {
                 Button("승인한 축소본을 기존 배치에 반영") {

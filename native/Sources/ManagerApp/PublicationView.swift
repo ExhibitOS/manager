@@ -304,6 +304,10 @@ struct NativePublicationView: View {
             if !ready { Text("작업 환경에서 로컬 제작을 시작하세요.") }
             if source.draft != nil {
                 NativePublicationWatermarkView(source: source, mode: mode, ready: ready, preview: preview)
+                GroupBox("내보내기 전 전시 전체 분석") {
+                    TargetViewerBudgetStatusView(model: source, mode: .beginner)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             if let draft = source.draft, let etag = source.state?.etag {
                 Text(draft.title).font(.headline)

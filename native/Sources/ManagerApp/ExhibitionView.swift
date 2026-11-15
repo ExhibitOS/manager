@@ -24,6 +24,39 @@ final class ExhibitionModel: ObservableObject {
 
     let oexImport = OEXImportModel()
     @Published private(set) var state: NativeDocumentState?
+    @Published private(set) var viewerBudgetAnalysis: DocumentValue?
+    @Published private(set) var readingViewerBudget = false
+    @Published private(set) var viewerBudgetStatus = ""
+    private var viewerBudgetAnalyzedKey: String?
+    private var viewerBudgetAttempt = UUID()
+    var viewerBudgetReadKey: String? {
+        guard let state, let draft = state.draft, let etag = state.etag, state.pending == nil else { return nil }
+        return "\(viewportAccessID):\(state.revision):\(draft.id):\(etag)"
+    }
+    func refreshViewerBudgetAnalysis(force: Bool = false) async {
+        guard let key = viewerBudgetReadKey, let api, let source = state else {
+            viewerBudgetAttempt = UUID(); viewerBudgetAnalysis = nil; readingViewerBudget = false
+            return
+        }
+        if !force, viewerBudgetAnalyzedKey == key, viewerBudgetAnalysis != nil { return }
+        let attempt = UUID(); viewerBudgetAttempt = attempt
+        viewerBudgetAnalysis = nil; readingViewerBudget = true; viewerBudgetStatus = ""
+        defer { if viewerBudgetAttempt == attempt { readingViewerBudget = false } }
+        do {
+            try await Task.sleep(for: .milliseconds(500))
+            try Task.checkCancellation()
+            let value = try await api.viewerBudgetAnalysis(in: source)
+            try Task.checkCancellation()
+            guard viewerBudgetAttempt == attempt, self.api === api, viewerBudgetReadKey == key,
+                  state?.draft == source.draft, state?.principalId == source.principalId,
+                  state?.tenantId == source.tenantId else { return }
+            viewerBudgetAnalysis = value; viewerBudgetAnalyzedKey = key
+        } catch {
+            guard viewerBudgetAttempt == attempt, viewerBudgetReadKey == key else { return }
+            viewerBudgetAnalysis = nil
+            if !Task.isCancelled { viewerBudgetStatus = "현재 전시의 분석을 확인할 수 없습니다. 다시 확인할 수 있으며 편집과 저장은 계속할 수 있습니다." }
+        }
+    }
     @Published private(set) var items: [NativeExhibitionSummary] = []
     @Published private(set) var library: [ArtworkSummary] = []
     @Published private(set) var catalogEntries: [String: ArtworkCatalogEntry] = [:]
@@ -624,7 +657,8 @@ final class ExhibitionModel: ObservableObject {
     }
     /// Do not turn an uncertain selected-owner save into a generic PUT retry.
     var boundedPendingRecoveryBlocked: Bool {
-        NativeViewportAccess.blocksPendingReplay(selected: selectedBoundedPolicy, pending: pending, origin: state?.pending?.origin)
+        if !selectedBoundedPolicy, let state, ViewerBudgetPolicyRequest.isPending(in: state) { return false }
+        return NativeViewportAccess.blocksPendingReplay(selected: selectedBoundedPolicy, pending: pending, origin: state?.pending?.origin)
             || (pending && ordinaryBoundedRuntime)
     }
     @Published private(set) var boundedReadOnly = false
@@ -3906,15 +3940,79 @@ final class ExhibitionModel: ObservableObject {
         }
     }
 
-    func save() async {
+    var canConfigureViewerBudget: Bool {
+        session?.nativeViewerBudgetPolicyProfile == "viewer-budget-policy-v1"
+            && api != nil && !selectedBoundedPolicy && !busy && !dirty && !pending && !placingArtwork
+            && !entrancePreviewActive && state?.etag != nil && draft != nil
+    }
+
+    var canRetryViewerBudgetPolicy: Bool {
+        guard !selectedBoundedPolicy, api != nil, let state,
+              session?.nativeViewerBudgetPolicyProfile == "viewer-budget-policy-v1",
+              session?.tenantId == state.tenantId, session?.userId == state.principalId else { return false }
+        return ViewerBudgetPolicyRequest.isPending(in: state)
+    }
+
+    private func matchesViewerBudgetSource(_ expected: NativeDocumentState) -> Bool {
+        guard let state else { return false }
+        return state.format == expected.format && state.revision == expected.revision
+            && state.workspaceId == expected.workspaceId && state.tenantId == expected.tenantId
+            && state.principalId == expected.principalId && state.draft == expected.draft
+            && state.etag == expected.etag && state.savedEditVersion == expected.savedEditVersion
+            && state.pending == nil && expected.pending == nil
+    }
+
+    func viewerBudgetSettingsAnalysis(profile: String, source: NativeDocumentState) async throws -> DocumentValue {
+        guard matchesViewerBudgetSource(source), let api else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+        let analysis = try await api.viewerBudgetAnalysis(in: source, requestedProfile: profile,
+            context: profile == "native" ? "native" : "viewer")
+        guard self.api === api, matchesViewerBudgetSource(source) else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+        return analysis
+    }
+
+    func saveViewerBudgetPolicy(_ command: DocumentValue, expected: NativeDocumentState) async -> Bool {
+        guard canConfigureViewerBudget, matchesViewerBudgetSource(expected) else { return false }
+        await save(viewerBudgetPolicy: command, expectedBudgetState: expected)
+        guard let state, !state.dirty, state.pending == nil else { return false }
+        return state.etag != expected.etag || notice == "현재 저장된 예산 설정과 같습니다."
+    }
+
+    func save(viewerBudgetPolicy: DocumentValue? = nil, expectedBudgetState: NativeDocumentState? = nil) async {
         await work {
             guard let api, var value = state else { return }
             guard value.pending?.productImage == nil else { throw AuthoringFailure("EXHIBITION_PENDING") }
             guard !boundedPendingRecoveryBlocked else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            let bounded = boundedPlacementCapability != nil
+            let newBudgetPolicy = viewerBudgetPolicy != nil
+            let budgetPolicy = newBudgetPolicy || ViewerBudgetPolicyRequest.isPending(in: value)
+            let bounded = !budgetPolicy && boundedPlacementCapability != nil
             let access = viewportAccessID, generation = boundedPolicyGeneration, token = viewportCredentials?.token
+            if newBudgetPolicy {
+                // This policy-only operation must also work when the viewport
+                // cannot render. Publication editability still comes from the
+                // authenticated server, independently of a viewport lock.
+                guard let expectedBudgetState, matchesViewerBudgetSource(expectedBudgetState), !value.dirty,
+                      !dirty, value.pending == nil, !selectedBoundedPolicy,
+                      let base = value.draft, let command = viewerBudgetPolicy,
+                      await api.admitsViewerBudgetPolicy else { throw AuthoringFailure("VIEWER_BUDGET_POLICY_UNAVAILABLE") }
+                let saved = try await api.exhibition(base.id)
+                let editing = try await publishedEditingAccess(base.id, api: api, expected: saved)
+                guard !editing.immutable, saved.draft == base, saved.etag == value.etag else {
+                    throw AuthoringFailure(editing.immutable ? "PUBLISHED_DRAFT_IMMUTABLE" : "EXHIBITION_COMPARISON_STALE")
+                }
+                let proposal = try await api.prepareViewerBudgetPolicy(command, in: value)
+                guard self.api === api, matchesViewerBudgetSource(expectedBudgetState), viewportAccessID == access,
+                      !dirty, !pending else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+                value.draft = try proposal.apply(to: base)
+                if value.draft == base {
+                    notice = "현재 저장된 예산 설정과 같습니다."
+                    return
+                }
+            }
             if value.pending == nil {
-                if bounded {
+                if budgetPolicy {
+                    // Keep the checked policy-only draft. The ordinary durable
+                    // Save intent and server CAS below remain the only writer.
+                } else if bounded {
                     guard boundedPlacementReady, !formDirty, !positionDirty, !architectureDirty,
                           let baseline = boundedPlacementBaseline, let current = value.draft,
                           let selection = viewportSelection else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
@@ -3930,7 +4028,8 @@ final class ExhibitionModel: ObservableObject {
                     value.draft = try appliedFields()
                 }
                 guard let draft = value.draft else { throw AuthoringFailure("EXHIBITION_REQUIRED") }
-                value.pending = .init(etag: value.etag, draft: draft, origin: bounded ? "bounded-placement-v1" : nil)
+                value.pending = .init(etag: value.etag, draft: draft,
+                    origin: budgetPolicy ? ViewerBudgetPolicyRequest.pendingOrigin : bounded ? "bounded-placement-v1" : nil)
                 try await persist(value) // durable exact intent BEFORE the request
                 if bounded {
                     guard viewportAccessID == access, boundedPolicyGeneration == generation,
@@ -3941,6 +4040,13 @@ final class ExhibitionModel: ObservableObject {
                 syncPublicationWatermark()
             }
             guard let intent = state?.pending else { throw AuthoringFailure("EXHIBITION_PENDING") }
+            if budgetPolicy {
+                guard let captured = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
+                try await api.validatePendingViewerBudgetPolicy(in: captured)
+                guard self.api === api, state?.revision == captured.revision,
+                      state.map({ ViewerBudgetPolicyRequest.isPending(in: $0) }) == true,
+                      state?.pending?.requestId == intent.requestId else { throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED") }
+            }
             if try intent.draft.publicationWatermark()?.requiresQualifiedRuntime == true, !publicationWatermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
             let saved: NativeStudioResponse
             do { saved = try await api.saveExhibition(intent.draft, requestId: intent.requestId, etag: intent.etag) }
@@ -3964,12 +4070,12 @@ final class ExhibitionModel: ObservableObject {
             }
             accepted.draft = saved.draft; accepted.etag = saved.etag; accepted.savedEditVersion = saved.draft.document["editVersion"].integer; accepted.pending = nil
             try await persist(accepted); comparison = nil; syncFields()
-            if bounded {
+            if bounded || (budgetPolicy && ordinaryBoundedRuntime) {
                 boundedPlacementCapability = nil; boundedPlacementPolicy = nil; boundedPlacementBaseline = nil
                 boundedPlacementSession = nil; boundedPlacementEpoch = nil; boundedPolicyPending = true; storedImmutable = true
             }
             notice = "전시를 저장했습니다. 작품과 권리를 다시 확인한 뒤 미리보기와 내보내기로 진행하세요."
-            if bounded {
+            if bounded || (budgetPolicy && ordinaryBoundedRuntime) {
                 await prepareOrdinaryBoundedPlacement()
                 do { try await list() } catch {
                     if boundedPolicyPending { catalogStatus = "전시 목록을 새로 확인하지 못했습니다." }

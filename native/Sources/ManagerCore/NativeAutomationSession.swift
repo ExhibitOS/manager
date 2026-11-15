@@ -8,7 +8,7 @@ import Darwin
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "room-audio-intake", "room-audio-status", "room-audio-approve",
-        "workspace-bench-visual-check",
+        "workspace-bench-visual-check", "viewer-budget-inspect",
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
@@ -90,6 +90,7 @@ public actor NativeAutomationSession {
         }
     }
     private var sceneProposals: [String: (SceneProposal, String, String)] = [:]
+    private var viewerBudgetProposals: [String: (ViewerBudgetPolicyRequest, String)] = [:]
     private var pendingRevisions: [String: UInt64] = [:]
     private var staticIntents: [String: NativePublicationPending] = [:]
     private var selectedOEXFormat: String?
@@ -396,7 +397,7 @@ public actor NativeAutomationSession {
 
         runtimeStopped = true
         proposals.removeAll(); sharedBenchProposals.removeAll(); surfaceProposals.removeAll(); plaqueProposals.removeAll(); wallFinishProposals.removeAll()
-        sceneProposals.removeAll(); portalProposals.removeAll(); proceduralFrameClearProposals.removeAll(); frameImageFitProposals.removeAll()
+        viewerBudgetProposals.removeAll(); sceneProposals.removeAll(); portalProposals.removeAll(); proceduralFrameClearProposals.removeAll(); frameImageFitProposals.removeAll()
         _ = try await bridge.stop(context)
         let stopped = try await waitReady()
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses,
@@ -1869,10 +1870,15 @@ public actor NativeAutomationSession {
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
-            let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel"]
+            let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
+        }
+        if ["viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"].contains(operation) {
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
+            let extra: Set<String> = ["viewer-budget-inspect", "viewer-budget-prepare"].contains(operation) ? ["command"] : ["proposalId"]
+            guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel"].contains(operation) {
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
@@ -1959,6 +1965,9 @@ public actor NativeAutomationSession {
         let bytes = try encoder.encode(request)
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
+        if ["viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"].contains(operation) {
+            try checkedRevision(request, current)
+        }
         if installedExportRootIdentity != nil {
             try Self.checkInstalledPendingOperation(operation, hasPending: current.pending != nil, authoring: installedAuthoringCLI)
         }
@@ -1979,6 +1988,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED")
             }
             if ["pedestal-prepare", "light-prepare", "fixture-prepare", "light-attachment-prepare", "light-object-prepare"].contains(operation), sceneProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            if operation == "viewer-budget-prepare", viewerBudgetProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "plaque-prepare", plaqueProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "wall-finish-prepare", wallFinishProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "workspace-portal-prepare", portalProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
@@ -2019,6 +2029,37 @@ public actor NativeAutomationSession {
             }
             let (_, _, refreshed) = try await checked(request)
             guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+        case "viewer-budget-inspect":
+            guard case .object(let options) = request["command"], Set(options.keys).isSubset(of: ["profile", "context", "automaticProfile"]),
+                  options.values.allSatisfy({ $0.string != nil }) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let analysis = try await api.viewerBudgetAnalysis(in: current, requestedProfile: options["profile"]?.string,
+                context: options["context"]?.string ?? "viewer", automaticProfile: options["automaticProfile"]?.string ?? "standard")
+            let (_, _, latest) = try await checked(request)
+            guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            let status = analysis["estimates"]["wholeExhibition"]["evaluation"]["status"].string ?? "unknown"
+            let label = status == "within" ? "정상" : status == "warning" ? "주의" : status == "admission-exceeded" ? "한도 초과" : "알 수 없음"
+            result = .object(["analysis": analysis, "summary": .string("목표 Viewer · \(analysis["selection"]["effectiveProfile"].string ?? "unknown") · 전시 전체 \(label)")])
+        case "viewer-budget-prepare":
+            guard selectedOEXFormat == nil, let etag = current.etag else { throw BridgeFailure("VIEWER_BUDGET_POLICY_UNAVAILABLE") }
+            let proposal = try await api.prepareViewerBudgetPolicy(request["command"], in: current)
+            let (_, _, latest) = try await checked(request)
+            guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            viewerBudgetProposals[id] = (proposal, etag)
+            result = .object(["proposalId": .string(id), "candidate": proposal.candidate])
+        case "viewer-budget-apply", "viewer-budget-cancel":
+            guard let proposalId = request["proposalId"].string, let (proposal, etag) = viewerBudgetProposals[proposalId] else { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            if operation == "viewer-budget-cancel" {
+                viewerBudgetProposals.removeValue(forKey: proposalId); result = .object(["cancelled": .bool(true)])
+            } else {
+                guard selectedOEXFormat == nil, !current.dirty, current.pending == nil, let draft = current.draft,
+                      current.etag == etag, await api.admitsViewerBudgetPolicy else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+                let saved = try await api.exhibition(draft.id)
+                let (_, _, latest) = try await checked(request)
+                guard saved.draft == draft, saved.etag == etag, try value(latest) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+                var next = current; next.draft = try proposal.apply(to: draft)
+                result = next.draft == draft ? try value(current) : try value(await bridge.saveDocumentState(context, state: next))
+                viewerBudgetProposals.removeValue(forKey: proposalId)
+            }
         case "pedestal-prepare", "light-prepare", "fixture-prepare", "light-attachment-prepare", "light-object-prepare":
             try checkedRevision(request, current)
             guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }

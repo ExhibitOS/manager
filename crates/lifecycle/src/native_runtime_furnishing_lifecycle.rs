@@ -1625,7 +1625,7 @@ mod tests {
     #[test]
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn contact_catalog52_fresh_binding_retains_fresh_invariants_and_reopens() {
-        for target in [crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET] {
+        for target in [crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET, crate::native_payload::RECTANGLE_FIXED64_TARGET] {
         let mut fresh = binding(GENERATION);
         fresh.catalog = 52;
         fresh.source_commit = target.0.into();
@@ -1686,7 +1686,8 @@ mod tests {
             assert!(serde_json::from_value::<Binding>(value).unwrap().check().is_err());
         }
         for older in [crate::native_payload::COMBINED_THUMBNAIL_TARGET,
-                      crate::native_payload::STATIC_DETAIL_PHASE_TARGET] {
+                      crate::native_payload::STATIC_DETAIL_PHASE_TARGET,
+                      crate::native_payload::VIEWER_BUDGET_TARGET] {
             invalid = fresh.clone();
             invalid.source_commit = older.0.into();
             invalid.producer_sha256 = older.1.into();

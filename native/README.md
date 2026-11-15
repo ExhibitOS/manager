@@ -1,5 +1,26 @@
 # Native macOS application (in progress)
 
+## Native Viewer budget client source
+
+The qualified rectangle/fixed64/default1.17 candidate (`7af55e9e…`, source
+`ca347c30…`, producer `9506cea2…`) is admitted as a directed clean refresh from
+`41e741a1…`, retaining catalog52, ledger47 and the existing 8.5 GiB checkpoint
+bound. Its exact runtime manifest binds the default1.17 manifest
+`4751b398…` from source `cc477089…`. The exact final candidate also uses the
+existing `FreshEmpty` initializer and mandatory inherited owner channel for a
+new, absent profile. Fresh lineage, restore-proof, physical identity and signed
+exchange checks remain unchanged; dirty, interrupted, reverse and skipped
+refreshes remain refused. The uninstalled `290fdd12…` budget component proof
+retains its historical clean/reopen record but is no longer a fresh shipping
+target; `7cfac368…` remains unadmitted. Actual new-item default1.17 adoption in a
+distinct clean workspace is separate from duplicating an official existing item.
+Policy-only Save retries retain a closed
+`viewer-budget-policy-v1` intent, original request ID and ETag; authenticated
+server comparison and ordinary CAS are required independently of GPU state.
+Actual source tests, App/helper/SDK qualification, adoption, UI/CLI use, Save,
+reopen and output need separate evidence.
+
+
 The exact white-rail opposite-heading successor (manifest `41e741a1…`, source
 `3e6210b8…`) admits only the directed clean `d81ad0bc…` refresh. It retains
 catalog 52, the 47-row ledger, source artwork, saved document and existing 8.5 GiB

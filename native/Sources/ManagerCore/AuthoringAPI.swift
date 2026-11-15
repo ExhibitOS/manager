@@ -31,6 +31,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeProductImageThumbnailRepairProfile: String? = nil
     public var nativeRequiredModelOriginalProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
+    public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
@@ -1102,7 +1103,9 @@ public actor AuthoringAPI {
          "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19",
          "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319",
          "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8",
-         "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"].contains(manifest)
+         "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1",
+         "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354",
+         "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"].contains(manifest)
         #else
         false
         #endif
@@ -1320,6 +1323,66 @@ public actor AuthoringAPI {
         return next
     }
 
+    public var admitsViewerBudgetPolicy: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeViewerBudgetPolicyProfile == "viewer-budget-policy-v1"
+    }
+    public func prepareViewerBudgetPolicy(_ command: DocumentValue, in document: NativeDocumentState) async throws -> ViewerBudgetPolicyRequest {
+        guard admitsViewerBudgetPolicy, document.pending == nil, !document.dirty,
+              document.tenantId == tenant, document.principalId == session?.userId,
+              let draft = document.draft, let etag = document.etag else { throw AuthoringFailure("VIEWER_BUDGET_POLICY_UNAVAILABLE") }
+        let held = generation
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1, tenantId: document.tenantId,
+            principalId: document.principalId, draft: draft, selection: nil, mode: "translate", view: "isometric", disabled: false,
+            workspaceId: document.workspaceId, baseETag: etag)
+        let proposal = try ViewerBudgetPolicyRequest(frame: frame, command: command)
+        let response = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
+        let checked = try proposal.checkedReply(response)
+        try Task.checkCancellation()
+        try saved.requireSameComparison(await exhibition(draft.id))
+        guard generation == held, admitsViewerBudgetPolicy else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return checked
+    }
+
+    /// Inspect the original policy Save without replacing its request ID or ETag.
+    /// A reply lost after commit is retried through the server's existing
+    /// idempotency path; a changed head with different content is a conflict.
+    public func validatePendingViewerBudgetPolicy(in document: NativeDocumentState) async throws {
+        guard admitsViewerBudgetPolicy, document.tenantId == tenant,
+              document.principalId == session?.userId,
+              ViewerBudgetPolicyRequest.isPending(in: document), let intent = document.pending else {
+            throw AuthoringFailure("VIEWER_BUDGET_POLICY_UNAVAILABLE")
+        }
+        let held = generation
+        let saved = try await exhibition(intent.draft.id)
+        if saved.etag == intent.etag {
+            try ViewerBudgetPolicyRequest.requirePolicyOnlyChange(from: saved.draft, to: intent.draft)
+        } else if saved.draft != intent.draft {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        try Task.checkCancellation()
+        guard generation == held, admitsViewerBudgetPolicy else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+    }
+
+    /// Authenticated read-only analysis of the current (possibly dirty) draft.
+    /// Older runtimes return unavailable; callers retain an unknown state and
+    /// keep ordinary editing/Save independent of this advisory request.
+    public func viewerBudgetAnalysis(in document: NativeDocumentState, requestedProfile: String? = nil,
+                                    context: String = "viewer", automaticProfile: String = "standard") async throws -> DocumentValue {
+        guard nativeSession, !authenticationBusy, document.tenantId == tenant,
+              document.principalId == session?.userId else { throw AuthoringFailure("AUTH_REQUIRED") }
+        let input = try ViewerBudgetAnalysisRequest(document: document, requestedProfile: requestedProfile,
+            context: context, automaticProfile: automaticProfile)
+        let body = try encoded(input.body)
+        guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        let value: DocumentValue = try await request(studioPrefix + "/exhibitions/" + identifier(input.draft.id) + "/viewer-budget-analysis",
+            method: "POST", body: body, ifMatch: input.etag, timeout: 30, expectedResponseETag: input.etag)
+        try Task.checkCancellation()
+        return try input.checkedReply(value)
+    }
+
     /// A scoped policy observation; it does not authorize a write.
     public func nativeViewportPolicy(_ id: String) async throws -> NativeViewportPolicy {
         let value: NativeViewportPolicy = try await request(studioPrefix + "/exhibitions/" + identifier(id) + "/native-viewport-policy")
@@ -1449,6 +1512,8 @@ public actor AuthoringAPI {
             || nativeRuntimeManifestSHA256 == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || nativeRuntimeManifestSHA256 == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || nativeRuntimeManifestSHA256 == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
+            || nativeRuntimeManifestSHA256 == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
+            || nativeRuntimeManifestSHA256 == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
         #else
         false
         #endif
@@ -2993,6 +3058,8 @@ public actor AuthoringAPI {
             || manifest == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || manifest == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
+            || manifest == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
+            || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
         #else
         false
         #endif
@@ -3831,6 +3898,8 @@ public actor AuthoringAPI {
             || manifest == "42477130f6e4c5d8d0e1b73da61421aac42d67e6b3073c1780ae032d5f50b319"
             || manifest == "d81ad0bcbf9a3b5776059693303aabb563b166b12e9728b3266b0b63415b23f8"
             || manifest == "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
+            || manifest == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
+            || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
         #else
         false
         #endif
@@ -4030,7 +4099,8 @@ public actor AuthoringAPI {
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let scene = ["set-pedestal", "add-light", "set-light-details"].contains(operation)
         let frameImageFit = operation == "reconcile-frame-image-fit"
-        let admitted = frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let budgetPolicy = operation == "set-viewer-budget-policy"
+        let admitted = budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
@@ -4041,7 +4111,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (frameImageFit || lightObject || ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation)) else {
+              (budgetPolicy || frameImageFit || lightObject || ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }

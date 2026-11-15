@@ -120,9 +120,12 @@ pub(crate) fn validate(s: &DocumentState) -> Result<()> {
     if let Some(p) = &s.pending
         && (!uuid(&p.request_id)
             || p.origin.as_deref().is_some_and(|v| !matches!(v,
-                "bounded-placement-v1" | "bounded-import-v1" | "approved-model-candidate-v1" | PRODUCT_IMAGE_ORIGIN))
+                "bounded-placement-v1" | "bounded-import-v1" | "approved-model-candidate-v1" | "viewer-budget-policy-v1" | PRODUCT_IMAGE_ORIGIN))
             || (p.origin.as_deref() == Some("approved-model-candidate-v1")) != p.model_candidate.is_some()
             || (p.origin.as_deref() == Some(PRODUCT_IMAGE_ORIGIN)) != p.product_image.is_some()
+            || (p.origin.as_deref() == Some("viewer-budget-policy-v1")
+                && (s.draft.as_ref() != Some(&p.draft)
+                    || s.saved_edit_version.and_then(|v| v.checked_add(1)) != p.draft["editVersion"].as_u64()))
             || p.model_candidate.as_ref().is_some_and(|candidate|
                 !uuid(&candidate.artwork_id) || !uuid(&candidate.import_job_id) || !uuid(&candidate.placement_id)
                     || !(1..=2_147_483_647).contains(&candidate.artwork_revision))
@@ -296,6 +299,16 @@ mod pending_origin_tests {
         assert!(validate(&serde_json::from_value(tagged).unwrap()).is_ok());
         state.pending.as_mut().unwrap().origin = Some("bounded-import-v1".into());
         assert!(validate(&state).is_ok());
+        let mut budget = state.clone();
+        budget.draft.as_mut().unwrap()["editVersion"] = serde_json::json!(2);
+        budget.pending.as_mut().unwrap().draft["editVersion"] = serde_json::json!(2);
+        budget.pending.as_mut().unwrap().origin = Some("viewer-budget-policy-v1".into());
+        assert!(validate(&budget).is_ok());
+        budget.pending.as_mut().unwrap().draft["candidate"]["title"] = serde_json::json!("different");
+        assert!(validate(&budget).is_err());
+        budget.pending.as_mut().unwrap().draft = budget.draft.clone().unwrap();
+        budget.saved_edit_version = Some(2);
+        assert!(validate(&budget).is_err());
         state.pending.as_mut().unwrap().origin = Some("other".into());
         assert!(validate(&state).is_err());
 

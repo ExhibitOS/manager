@@ -461,7 +461,9 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
-        || crate::native_payload::white_rail_opposite_clean_transition(pair)) {
+        || crate::native_payload::white_rail_opposite_clean_transition(pair)
+        || crate::native_payload::viewer_budget_clean_transition(pair)
+        || crate::native_payload::rectangle_fixed64_clean_transition(pair)) {
         return AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3352,6 +3354,52 @@ mod tests {
         }
         assert_eq!(checkpoint_inventory_limit((crate::native_payload::DISABLED_PREVIEW_PRESSURE_TARGET.2, source), None),
             CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn viewer_budget_checkpoint_budget_is_only_the_directed_clean_pair() {
+        let source = crate::native_payload::WHITE_RAIL_OPPOSITE_TARGET.2;
+        let target = crate::native_payload::VIEWER_BUDGET_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES);
+        // Redistributable scalar from the failed cold inventory; no data allocation.
+        let current_profile_bytes = 8_944_386_064u64;
+        assert!(current_profile_bytes > NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES);
+        assert!(current_profile_bytes < checkpoint_inventory_limit((source, target), None));
+        assert_eq!(checkpoint_inventory_limit((crate::native_payload::GROUPED_RAIL_CONTACT_TARGET.2, source), None), AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES);
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(), hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64), saved_etag: "\"studio-r201-synthetic\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
+        for denied in [(crate::native_payload::GROUPED_RAIL_CONTACT_TARGET.2, target), (crate::native_payload::AUTHORED_SHADOW_TRACK116_TARGET.2, target), (crate::native_payload::NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2, target), (crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2, target), (crate::native_payload::SELECTED_FIND_BOUNDS_TARGET.2, target), (crate::native_payload::APPROVED_MODEL_VARIANT_PREVIEW_TARGET.2, target), (crate::native_payload::WORKSPACE_FAILURE_READOUT_TARGET.2, target), (target, source), (target, target), (source, source),
+                       (crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2, target), (crate::native_payload::FURNISHING_READINESS_TARGET.2, target), (crate::native_payload::PASSIVE_CEILING_RAIL_TARGET.2, target), ("unknown", target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn rectangle_fixed64_checkpoint_budget_is_only_the_directed_clean_pair() {
+        let source = crate::native_payload::WHITE_RAIL_OPPOSITE_TARGET.2;
+        let target = crate::native_payload::RECTANGLE_FIXED64_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES);
+        // Redistributable scalar from the failed cold inventory; no data allocation.
+        let current_profile_bytes = 8_944_386_064u64;
+        assert!(current_profile_bytes > NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES);
+        assert!(current_profile_bytes < checkpoint_inventory_limit((source, target), None));
+        assert_eq!(checkpoint_inventory_limit((crate::native_payload::GROUPED_RAIL_CONTACT_TARGET.2, source), None), AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES);
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(), hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64), saved_etag: "\"studio-r201-synthetic\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
+        for denied in [(crate::native_payload::VIEWER_BUDGET_TARGET.2, target), (crate::native_payload::GROUPED_RAIL_CONTACT_TARGET.2, target), (crate::native_payload::AUTHORED_SHADOW_TRACK116_TARGET.2, target), (crate::native_payload::NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2, target), (crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2, target), (crate::native_payload::SELECTED_FIND_BOUNDS_TARGET.2, target), (crate::native_payload::APPROVED_MODEL_VARIANT_PREVIEW_TARGET.2, target), (crate::native_payload::WORKSPACE_FAILURE_READOUT_TARGET.2, target), (target, source), (target, target), (source, source),
+                       (crate::native_payload::CURRENT52_INTERRUPTED_TARGET.2, target), (crate::native_payload::FURNISHING_READINESS_TARGET.2, target), (crate::native_payload::PASSIVE_CEILING_RAIL_TARGET.2, target), ("unknown", target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

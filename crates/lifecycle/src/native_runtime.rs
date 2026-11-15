@@ -5181,17 +5181,17 @@ mod furnishing_thumbnail_upgrade_result_tests {
 
     #[test]
     fn contact_catalog52_initialize_inherits_required_hayes_channel_only_for_exact_host() {
-        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET,
+        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, VIEWER_BUDGET_TARGET,
             COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET};
         let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
-        for target in [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET] {
+        for target in [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET] {
         assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Initialize)));
         assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Reopen)));
         for start in [None, Some(FurnishingStart::Upgrade051To050051),
             Some(FurnishingStart::Upgrade045To051), Some(FurnishingStart::SelectedImport040)] {
             assert!(!ordinary_inherited_hayes(&make(target), start));
         }
-        for older in [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET] {
+        for older in [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET, VIEWER_BUDGET_TARGET] {
             assert!(!ordinary_inherited_hayes(&make(older), Some(FurnishingStart::Initialize)));
             assert!(ordinary_inherited_hayes(&make(older), Some(FurnishingStart::Reopen)));
             for mixed in [(older.0,target.1,target.2), (target.0,older.1,target.2), (target.0,target.1,older.2)] {
