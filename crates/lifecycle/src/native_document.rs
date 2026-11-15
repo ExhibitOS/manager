@@ -44,7 +44,7 @@ impl ProductImageReplacement {
         Self::deserialize(decoder).map(Some)
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DocumentState {
     pub format: u32,
@@ -56,6 +56,12 @@ pub struct DocumentState {
     pub etag: Option<String>,
     pub saved_edit_version: Option<u64>,
     pub pending: Option<Pending>,
+}
+// Checkpoint comparison needs Debug, but failures must not print a private draft.
+impl std::fmt::Debug for DocumentState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("DocumentState").finish_non_exhaustive()
+    }
 }
 fn valid_etag(value: &str) -> bool {
     value

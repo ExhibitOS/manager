@@ -713,7 +713,7 @@ struct NativeViewport: NSViewRepresentable {
                       frame.presentation == .threeD else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let generation = self.generation, context = self.controller.editingContextGeneration
                 @MainActor func current() throws {
-                    guard self.active, self.prepared, self.isPage(web.url), self.generation == generation,
+                    guard self.active, self.prepared, self.web === web, self.isPage(web.url), self.generation == generation,
                           self.controller.owner == self.epoch, frame.epoch == self.epoch,
                           self.controller.editingContextActive, self.controller.editingContextGeneration == context,
                           self.controller.connected, self.sent == frame.sequence,
@@ -735,8 +735,8 @@ struct NativeViewport: NSViewRepresentable {
                           self.placementIntent == nil, !self.inspectorPending else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 }
                 try current()
-                // One synchronous, read-only sample. These existing datasets
-                // report a last request/map admission, never live pose or appearance.
+                // One synchronous, read-only sample. Request/map datasets do not
+                // report live pose; the separate pose sample must match this frame.
                 let script = """
                 const canvases = [...document.querySelectorAll('canvas[aria-label="전시 공간 3D 미리보기"]')].filter(c => {
                   const r = c.getBoundingClientRect(); return c.isConnected && r.width > 0 && r.height > 0;
@@ -748,6 +748,9 @@ struct NativeViewport: NSViewRepresentable {
                   if (value !== null && value.length > 4096) throw new Error('VIEWPORT_DISPLAY_LIMIT');
                   result[key] = value;
                 }
+                const pose = c.dataset.nativeCameraPose;
+                result.nativeCameraPose = !document.hidden && !c.closest('[hidden],[inert]') &&
+                    typeof pose === 'string' && pose.length <= 4096 ? pose : null;
                 // Project only the agreed bounded loader slice. Legacy or
                 // malformed records remain unavailable; never forward the
                 // unrelated viewer state, raw errors, paths or timing data.
@@ -783,9 +786,13 @@ struct NativeViewport: NSViewRepresentable {
                 guard let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let bytes = try JSONSerialization.data(withJSONObject: response)
                 guard bytes.count <= 65_536, case .object(let fields) = try JSONDecoder().decode(DocumentValue.self, from: bytes),
-                      Set(fields.keys) == Set(["floorView", "cameraProjection", "floorTextures", "viewerState", "workspaceFurnishingFailures"]) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                      Set(fields.keys) == Set(["floorView", "cameraProjection", "floorTextures", "viewerState", "workspaceFurnishingFailures", "nativeCameraPose"]) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 var datasets: [String: DocumentValue] = [:]
                 for (key, value) in fields {
+                    if key == "nativeCameraPose" {
+                        datasets[key] = NativeCameraPoseReadout.projected(value.string, epoch: frame.epoch, sequence: frame.sequence)
+                        continue
+                    }
                     if key == "workspaceFurnishingFailures" {
                         datasets[key] = WorkspaceFurnishingFailureReadout.projected(value.string, in: frame.draft)
                         continue

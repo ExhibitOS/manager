@@ -36,6 +36,7 @@ impl InstallationController {
             staging,
             TransitionRetention::None,
             Current52PngRetention::Deny,
+            None,
             |service, profile, document, key| {
                 let guard = service.lock()?;
                 service.check_prepare_guard(&guard)?;

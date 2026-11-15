@@ -352,6 +352,24 @@ pub(crate) fn gpu_model_job_root_empty(root: &Path) -> Result<()> {
     }
 }
 
+// The checkpoint caller must authenticate its exact retained document when
+// dirty. Pending writes/publication are never delegated or waived.
+#[cfg(all(target_os = "macos", debug_assertions))]
+pub(crate) fn check_personal_transition_document(
+    document: &native_document::DocumentState,
+    publication_pending: bool,
+    check_retained_dirty: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if document.pending.is_some() || publication_pending {
+        return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+    }
+    let version = document.draft.as_ref().and_then(|v| v.get("editVersion")).and_then(Value::as_u64);
+    if document.draft.is_some() && version != document.saved_edit_version {
+        check_retained_dirty()?;
+    }
+    Ok(())
+}
+
 impl InstallationController {
     /// Construct only an explicitly selected, entirely new profile and hand
     /// its locked default root directly to the session initializer. This is
@@ -426,6 +444,7 @@ impl InstallationController {
         &self,
         token: &str,
         retained: native_maintenance::TransitionRetention<'_>,
+        retained_document_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<()>,
         current52_png_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState, &str, &native_upload::Transfer) -> Result<bool>,
         task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<T>,
     ) -> Result<T> {
@@ -443,12 +462,9 @@ impl InstallationController {
                 return Err(err("NATIVE_FURNISHING_THUMBNAIL_PENDING"));
             }
             let document = self.document_unlocked(service)?.1;
-            let version = document.draft.as_ref().and_then(|v| v.get("editVersion")).and_then(Value::as_u64);
-            if document.pending.is_some() || (document.draft.is_some() && version != document.saved_edit_version)
-                || self.publication_unlocked(service)?.1.pending.is_some() {
-                return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
-            }
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
+            check_personal_transition_document(&document, self.publication_unlocked(service)?.1.pending.is_some(),
+                || retained_document_check(service, &profile.root, &document))?;
             let (file, transfer) = self.upload_unlocked(service)?;
             // The sole checkpoint caller can preserve only its authenticated,
             // exact current52 PNG journal; all ordinary writer checks stay here.
