@@ -35,16 +35,21 @@ public struct LightCommand: Equatable, Sendable {
     public let fixture: NativeLightFixture? // nil keeps the existing fixture; explicit color intent may still use details.
     public let colorIntent: LightColorIntent
     public let details: LightDetailEdits?
-    public var usesLightDetails: Bool { fixture != nil || colorIntent != .preserve || details != nil }
+    public let shadowPreference: Bool?
+    public let shadowTargetPlacementId: String?
+    public var usesLightDetails: Bool { fixture != nil || colorIntent != .preserve || details != nil || shadowPreference != nil || shadowTargetPlacementId != nil }
 
     public init(lightId: String, type: NativeLightType, color: [Double], intensity: Double,
                 position: [Double], beamAngle: Double? = nil, areaSize: [Double]? = nil, fixture: NativeLightFixture? = nil,
-                colorIntent: LightColorIntent = .preserve, details: LightDetailEdits? = nil) {
+                colorIntent: LightColorIntent = .preserve, details: LightDetailEdits? = nil,
+                shadowPreference: Bool? = nil, shadowTargetPlacementId: String? = nil) {
         self.lightId = lightId; self.type = type; self.color = color; self.intensity = intensity
         self.position = position; self.beamAngle = beamAngle; self.areaSize = areaSize
         self.fixture = fixture
         self.colorIntent = colorIntent
         self.details = details
+        self.shadowPreference = shadowPreference
+        self.shadowTargetPlacementId = shadowTargetPlacementId
     }
     fileprivate static func invalid() -> AuthoringFailure { AuthoringFailure("LIGHT_FIELDS_INVALID") }
     fileprivate static func row(in draft: NativeExhibitionDraft, id: String, selectedLightId: String?) throws -> (Int, DocumentValue) {
@@ -81,6 +86,11 @@ public struct LightCommand: Equatable, Sendable {
             guard zip(color, expected).allSatisfy({ abs($0.0 - $0.1) <= 1e-6 }) else { throw Self.invalid() }
         }
 
+        guard case .bool(let originalShadow) = original["castsShadow"] else { throw Self.invalid() }
+        let requestedShadow = shadowPreference ?? originalShadow
+        guard !requestedShadow || type == .spot || type == .directional || (originalShadow && oldType == type) else {
+            throw Self.invalid()
+        }
         var row = original
         if let details {
             if let range = details.range { guard (type == .point || type == .spot), range.isFinite, (0.1...50).contains(range) else { throw Self.invalid() } }
@@ -101,6 +111,13 @@ public struct LightCommand: Equatable, Sendable {
                       draft.placements.contains(where: { $0["id"].string == id && $0["roomId"] == row["roomId"] }) else { throw Self.invalid() }
                 row["targetPlacementId"] = .string(id)
             }
+        }
+        if let shadowPreference { row["castsShadow"] = .bool(shadowPreference) }
+        if let shadowTargetPlacementId {
+            guard requestedShadow, type == .spot || type == .directional,
+                  UUID(uuidString: shadowTargetPlacementId) != nil,
+                  draft.placements.contains(where: { $0["id"] == .string(shadowTargetPlacementId) && $0["roomId"] == row["roomId"] }) else { throw Self.invalid() }
+            row["targetPlacementId"] = .string(shadowTargetPlacementId)
         }
         func set(_ key: String, _ value: DocumentValue) { if row[key] != value { row[key] = value } }
         set("type", .string(type.rawValue)); set("unit", .string(type.unit))
@@ -197,6 +214,9 @@ public struct LightFormBuffer: Equatable, Sendable {
     public var beamDegrees: String
     public var width: String, height: String
     public var fixture: NativeLightFixture
+    public var shadowPreference: Bool
+    private let originalShadowPreference: Bool
+    public var shadowPreferenceChanged: Bool { shadowPreference != originalShadowPreference }
     public let fixtureEditable: Bool
     public var aimMode: String, aimX: String, aimY: String, aimZ: String, targetPlacementId: String
     public var range: String, penumbra: String
@@ -209,7 +229,7 @@ public struct LightFormBuffer: Equatable, Sendable {
         colorMode == .direct ? originalTemperature != nil
             : Double(kelvin.trimmingCharacters(in: .whitespacesAndNewlines)) != originalTemperature
     }
-    public var detailsChanged: Bool { fixtureChanged || colorDetailsChanged || advancedDetailsChanged }
+    public var detailsChanged: Bool { fixtureChanged || colorDetailsChanged || advancedDetailsChanged || shadowPreferenceChanged }
     private let originalBeamRadians: Double?
     private let originalBeamDegrees: String
 
@@ -219,11 +239,13 @@ public struct LightFormBuffer: Equatable, Sendable {
               (type == .spot) == (row["beamAngle"] != .null),
               (type == .area) == (row["dimensions"] != .null),
               let color = row["color"].items, color.count == 3,
-              let position = row["transform"]["position"].items, position.count == 3 else { throw LightCommand.invalid() }
+              let position = row["transform"]["position"].items, position.count == 3,
+              case .bool(let castsShadow) = row["castsShadow"] else { throw LightCommand.invalid() }
         func text(_ value: DocumentValue) throws -> String {
             guard let n = value.double, n.isFinite else { throw LightCommand.invalid() }; return String(n)
         }
         lightId = selectedLightId; self.type = type
+        shadowPreference = castsShadow; originalShadowPreference = castsShadow
         red = try text(color[0]); green = try text(color[1]); blue = try text(color[2])
         intensity = try text(row["intensity"])
         x = try text(position[0]); y = try text(position[1]); z = try text(position[2])
@@ -322,7 +344,9 @@ public struct LightFormBuffer: Equatable, Sendable {
         return LightCommand(lightId: lightId, type: type, color: resolved.color,
                             intensity: try number(intensity), position: try [number(x), number(y), number(z)],
                             beamAngle: beam, areaSize: type == .area ? try [number(width), number(height)] : nil,
-                            fixture: fixtureEditable && fixture != originalFixture ? fixture : nil, colorIntent: resolved.intent, details: edits)
+                            fixture: fixtureEditable && fixture != originalFixture ? fixture : nil, colorIntent: resolved.intent, details: edits,
+                            shadowPreference: shadowPreferenceChanged ? shadowPreference : nil,
+                            shadowTargetPlacementId: shadowPreference && (type == .spot || type == .directional) && aimMode == "point" && !targetPlacementId.isEmpty ? targetPlacementId : nil)
     }
 }
 

@@ -145,6 +145,22 @@ struct SelectedLightInspector: View {
                                 guard var next = model.light else { return }; next.changeType(value); model.light = next
                             })) { ForEach(NativeLightType.allCases, id: \.self) { Text($0.title).tag($0) } }
                             Text("빛의 계산 방식을 선택합니다. 종류를 바꿔 단위가 달라지면 밝기는 기본값 100으로 바뀝니다.").font(.caption).foregroundStyle(.secondary)
+                            if fields.type == .spot || fields.type == .directional || fields.shadowPreference {
+                                Toggle("그림자 기준 조명으로 우선 사용", isOn: Binding(get: { fields.shadowPreference }, set: { value in
+                                    guard var next = model.light else { return }; next.shadowPreference = value; model.light = next
+                                })).disabled(!model.lightObjectProposalAvailable)
+                                Text("기준 조명이 없으면 기존 자동 선택을 사용합니다. 선택한 기준 조명의 밝기가 0이어도 다른 자동 조명으로 바뀌지 않습니다.").font(.caption).foregroundStyle(.secondary)
+                                if fields.type != .spot && fields.type != .directional {
+                                    Text("이 종류는 그림자 기준 조명으로 지원되지 않습니다. 해제하면 기존 자동 선택을 사용합니다.").font(.caption).foregroundStyle(.secondary)
+                                }
+                                if fields.shadowPreference && fields.aimMode == "point" {
+                                    Picker("그림자 대상 작품", selection: field(\.targetPlacementId)) {
+                                        Text("대상 지정 없음").tag("")
+                                        ForEach(aimTargets) { target in Text(target.title).tag(target.id) }
+                                    }
+                                    Text("점 조준 위치를 유지하면서 선택한 작품의 그림자를 우선 처리합니다.").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
                             if fields.fixtureEditable {
                                 Picker("조명 기구", selection: Binding(get: { fields.fixture }, set: { value in
                                     guard var next = model.light else { return }; next.fixture = value; model.light = next

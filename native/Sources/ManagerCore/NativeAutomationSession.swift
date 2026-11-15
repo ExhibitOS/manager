@@ -2220,6 +2220,27 @@ public actor NativeAutomationSession {
             result = try await executeFurnishingThumbnail(operation, request: request, api: api, current: current)
         case "workspace-furnishing-thumbnail-render":
             result = try await furnishingThumbnail(request, context: context, api: api, current: current)
+        case "workspace-ceiling-rail-check", "workspace-ceiling-rail-replace":
+            let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == keys, selectedOEXFormat == nil, await api.admitsWorkspaceCeilingRail else {
+                throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            guard case .object(var command) = request["command"], let etag = current.etag, let base = current.draft,
+                  command.removeValue(forKey: "etag") == .string(etag) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let replacement = try WorkspaceCeilingRailReplacement(value: .object(command))
+            let next = try await api.prepareWorkspaceCeilingRailReplacement(replacement, in: current)
+            let (_, _, refreshed) = try await checked(request)
+            guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            if operation == "workspace-ceiling-rail-check" {
+                result = .object(["changed": .bool(next != nil), "document": try value(current),
+                                  "prospectiveDraft": try value(next ?? base)])
+            } else if let next {
+                var updated = current; updated.draft = next
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: updated))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "workspace-furnishing-place":
             guard selectedOEXFormat == nil, await api.admitsWorkspaceFurnishings else {
                 throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
