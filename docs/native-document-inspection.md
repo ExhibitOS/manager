@@ -18,10 +18,12 @@ document reader can return an in-memory revision-zero default.
 Success writes one JSON line containing owner IDs, Native revision, saved and
 current edit versions, exhibition ID, ETag, dirty status and pending Save
 request ID/origin/ETag. It excludes candidate bodies, selection tokens and
-credentials. Live runtime ownership and attribution of an applied edit remain
-`unknown`: this inspection neither probes orphan processes nor reconstructs an
-operation history. A pending Save ID does not establish which operation applied
-an unsaved edit. No Save or recovery authority is granted.
+credentials. Live runtime ownership remains `unknown`; this inspection does not
+probe orphan processes. Applied-edit attribution is also `unknown` unless the
+document holds the exact opt-in `automation-applied-draft-v1` Pending shape. That
+shape reports its retained apply request ID and origin only, without inventing
+an operation name. A legacy pending Save ID does not establish which operation
+applied an unsaved edit. No Save or recovery authority is granted by inspection.
 
 Failure writes a code to stderr and returns a nonzero exit status. An active
 profile owner is refused by the existing helper's `PROFILE_BUSY` guard. The

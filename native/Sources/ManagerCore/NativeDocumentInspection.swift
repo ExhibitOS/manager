@@ -49,7 +49,10 @@ public enum NativeDocumentInspection {
             "exhibitionId": document.draft.map { .string($0.id) } ?? .null,
             "etag": document.etag.map(DocumentValue.string) ?? .null,
             "dirty": .bool(document.dirty), "pendingSave": pending,
-            "liveRuntimeOwnership": .string("unknown"), "applyOperationAttribution": .string("unknown")])
+            "liveRuntimeOwnership": .string("unknown"),
+            "applyOperationAttribution": NativeAppliedDraftSave.retainedRequestId(in: document).map {
+                .object(["requestId": .string($0), "origin": .string(NativeAppliedDraftSave.origin)])
+            } ?? .string("unknown")])
     }
 
     public static func inspect(arguments: [String]) async throws -> DocumentValue {
