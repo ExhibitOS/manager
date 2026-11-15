@@ -67,6 +67,18 @@ final class NativeAutomationFixtureTests: XCTestCase {
         XCTAssertEqual(try preview.apply(to: base), base)
         fields["requestId"] = .string(UUID().uuidString.lowercased())
         XCTAssertThrowsError(try NativeAutomationFixture.fixtureReply(.object(fields), request: request))
+        var replacement = input
+        replacement["catalogId"] = .string("recessed-downlight")
+        let replacementRequest = try NativeAutomationFixture.fixtureRequest(replacement, frame: frame(base))
+        XCTAssertEqual(replacementRequest.command.catalogId, "recessed-downlight")
+        for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"] { fields[key] = replacementRequest.value[key] }
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureReply(.object(fields), request: replacementRequest))
+        replacement["catalogId"] = .string("backless-oak-bench")
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureRequest(replacement, frame: frame(base)))
+        replacement["catalogId"] = .string("unqualified-fixture")
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureRequest(replacement, frame: frame(base)))
+        replacement["catalogId"] = .null
+        XCTAssertThrowsError(try NativeAutomationFixture.fixtureRequest(replacement, frame: frame(base)))
     }
     func testAttachmentRejectsForgedTransformAndReplyFields() throws {
         let base = try fixture(), request = try NativeAutomationFixture.AttachmentRequest(input(), frame: frame(base))

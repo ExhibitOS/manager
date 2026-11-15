@@ -15,12 +15,14 @@ enum NativeAutomationFixture {
         return values.compactMap(\.double)
     }
     static func fixtureRequest(_ input: DocumentValue, frame: ViewportFrame) throws -> SharedFurnishingViewportRequest {
-        guard case .object(let fields) = input, Set(fields.keys) == ["lightId", "pose"],
+        guard case .object(let fields) = input,
+              Set(fields.keys).subtracting(["catalogId"]) == ["lightId", "pose"],
+              fields["catalogId"] == nil || fields["catalogId"]?.string != nil,
               let id = input["lightId"].string, UUID(uuidString: id) != nil,
               let lights = frame.draft.candidate["lights"].items,
               lights.filter({ $0["id"].string == id && $0["type"] == .string("spot") }).count == 1 else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
         let pose = try FurnishingPose(input["pose"])
-        let command = try SharedFurnishingCommand(host: .light, hostId: id, pose: pose)
+        let command = try SharedFurnishingCommand(host: .light, hostId: id, pose: pose, catalogId: input["catalogId"].string)
         return try SharedFurnishingViewportRequest(frame: frame, command: command, selectedInspectorId: id)
     }
     enum FixturePreview: Sendable {
@@ -41,7 +43,8 @@ enum NativeAutomationFixture {
             guard case .object(let fields) = reply, Set(fields.keys) == keys.union(["candidate"]),
                   try JSONEncoder().encode(reply).count <= 1_100_000,
                   keys.allSatisfy({ reply[$0] == request.value[$0] }),
-                  try SharedFurnishingPreview.pose(in: request.frame.draft, host: .light, id: request.command.hostId) == request.command.pose else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+                  try SharedFurnishingPreview.pose(in: request.frame.draft, host: .light, id: request.command.hostId) == request.command.pose,
+                  try SharedFurnishingPreview.catalogId(in: request.frame.draft, host: .light, id: request.command.hostId) == request.command.catalogId else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
             return .existing(.init(base: request.frame.draft, candidate: request.frame.draft.candidate))
         }
         return .changed(try request.checkedReply(reply))
