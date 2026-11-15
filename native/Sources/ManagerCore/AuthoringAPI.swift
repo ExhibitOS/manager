@@ -1439,8 +1439,8 @@ public actor AuthoringAPI {
 
     public nonisolated var supportsPlacedExitDoorDepthCorrection: Bool {
         #if DEBUG
-        ["9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b",
-         "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c"].contains(nativeRuntimeManifestSHA256)
+        nativeRuntimeManifestSHA256 == "9cc5b33143c6fc887e405f96952a8a96c4b17cde573ebf77bc77b8f72c55651b"
+            || nativeRuntimeManifestSHA256 == "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c"
         #else
         false
         #endif

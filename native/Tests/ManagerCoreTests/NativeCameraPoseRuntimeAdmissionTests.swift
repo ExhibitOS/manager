@@ -3,7 +3,7 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeCameraPoseRuntimeAdmissionTests: XCTestCase {
-    func testExactPoseSuccessorPreservesExistingReaderEligibility() {
+    func testExactPoseSuccessorPreservesExistingReaderEligibility() throws {
         let manifest = "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c"
         #if DEBUG
         XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
@@ -13,6 +13,12 @@ final class NativeCameraPoseRuntimeAdmissionTests: XCTestCase {
         XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
         XCTAssertFalse(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
         XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        #endif
+        let api = try AuthoringAPI(port: 18091, tenantId: "10000000-0000-4000-8000-000000000001", nativeRuntimeManifestSHA256: manifest)
+        #if DEBUG
+        XCTAssertTrue(api.supportsPlacedExitDoorDepthCorrection)
+        #else
+        XCTAssertFalse(api.supportsPlacedExitDoorDepthCorrection)
         #endif
         XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
         for unknown in [manifest.uppercased(), String(repeating: "f", count: 64)] {
