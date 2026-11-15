@@ -564,9 +564,17 @@ pub(crate) const NATIVE_CAMERA_POSE_TARGET: RuntimeTuple = (
     "41c0700d7de95b3819150f552eeb856eca96bd1d443a039cf536c2b42dc4cb58",
     "9e18823be762d34a2f272e0e26550ac6536fb9910b99c02c1a95db7ee3d5934c",
 );
+// Exact Native-only lifecycle availability correction; no new catalog or fresh admission.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const NATIVE_CAMERA_POSE_LIFECYCLE_TARGET: RuntimeTuple = (
+    "d000e6e6ff838157d84fe71fce4408a8e2595964",
+    "41c0700d7de95b3819150f552eeb856eca96bd1d443a039cf536c2b42dc4cb58",
+    "227b37233443c437d8efb768b8305df2a32142029cb04f5e42e437d357570d19",
+);
 pub(crate) fn native_camera_pose_retained_dirty_transition(pair: (&str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return pair == (SHARED_RAIL_DEFAULT115_TARGET.2, NATIVE_CAMERA_POSE_TARGET.2);
+    return [(SHARED_RAIL_DEFAULT115_TARGET.2, NATIVE_CAMERA_POSE_TARGET.2),
+            (NATIVE_CAMERA_POSE_TARGET.2, NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2)].contains(&pair);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = pair; false }
 }
@@ -578,7 +586,7 @@ pub(crate) fn current52_interrupted_host_matches(tuple: (&str, &str, &str)) -> b
 }
 pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET, CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, CURRENT52_INTERRUPTED_TARGET, PASSIVE_CEILING_RAIL_TARGET, FURNISHING_READINESS_TARGET, WORKSPACE_FAILURE_READOUT_TARGET, APPROVED_MODEL_VARIANT_PREVIEW_TARGET, SELECTED_FIND_BOUNDS_TARGET, DISABLED_PREVIEW_PRESSURE_TARGET, SHARED_RAIL_DEFAULT115_TARGET, NATIVE_CAMERA_POSE_TARGET].contains(&tuple);
+    return [COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET, CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, CURRENT52_INTERRUPTED_TARGET, PASSIVE_CEILING_RAIL_TARGET, FURNISHING_READINESS_TARGET, WORKSPACE_FAILURE_READOUT_TARGET, APPROVED_MODEL_VARIANT_PREVIEW_TARGET, SELECTED_FIND_BOUNDS_TARGET, DISABLED_PREVIEW_PRESSURE_TARGET, SHARED_RAIL_DEFAULT115_TARGET, NATIVE_CAMERA_POSE_TARGET, NATIVE_CAMERA_POSE_LIFECYCLE_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1174,7 +1182,8 @@ pub(crate) fn current_image_thumbnail_transition(pair: (&str, &str)) -> bool {
             (APPROVED_MODEL_VARIANT_PREVIEW_TARGET.2, SELECTED_FIND_BOUNDS_TARGET.2),
             (SELECTED_FIND_BOUNDS_TARGET.2, DISABLED_PREVIEW_PRESSURE_TARGET.2),
             (DISABLED_PREVIEW_PRESSURE_TARGET.2, SHARED_RAIL_DEFAULT115_TARGET.2),
-            (SHARED_RAIL_DEFAULT115_TARGET.2, NATIVE_CAMERA_POSE_TARGET.2)].contains(&pair);
+            (SHARED_RAIL_DEFAULT115_TARGET.2, NATIVE_CAMERA_POSE_TARGET.2),
+            (NATIVE_CAMERA_POSE_TARGET.2, NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2)].contains(&pair);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = pair; false }
 }
@@ -1550,6 +1559,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || DISABLED_PREVIEW_PRESSURE_TARGET.2 == manifest
         || SHARED_RAIL_DEFAULT115_TARGET.2 == manifest
         || NATIVE_CAMERA_POSE_TARGET.2 == manifest
+        || NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1615,7 +1625,8 @@ impl FurnishingTransition {
                 || (source == APPROVED_MODEL_VARIANT_PREVIEW_TARGET && target == SELECTED_FIND_BOUNDS_TARGET)
                 || (source == SELECTED_FIND_BOUNDS_TARGET && target == DISABLED_PREVIEW_PRESSURE_TARGET)
                 || (source == DISABLED_PREVIEW_PRESSURE_TARGET && target == SHARED_RAIL_DEFAULT115_TARGET)
-                || (source == SHARED_RAIL_DEFAULT115_TARGET && target == NATIVE_CAMERA_POSE_TARGET))
+                || (source == SHARED_RAIL_DEFAULT115_TARGET && target == NATIVE_CAMERA_POSE_TARGET)
+                || (source == NATIVE_CAMERA_POSE_TARGET && target == NATIVE_CAMERA_POSE_LIFECYCLE_TARGET))
     }
 
     pub(crate) fn is_current52_interrupted_recovery(self) -> bool {
@@ -1624,7 +1635,11 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
-        if native_camera_pose_retained_dirty_transition(pair) {
+        if pair == (NATIVE_CAMERA_POSE_TARGET.2, NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2) {
+            return Some(Self::SameCatalog { source: NATIVE_CAMERA_POSE_TARGET, target: NATIVE_CAMERA_POSE_LIFECYCLE_TARGET,
+                catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+        }
+        if pair == (SHARED_RAIL_DEFAULT115_TARGET.2, NATIVE_CAMERA_POSE_TARGET.2) {
             return Some(Self::SameCatalog { source: SHARED_RAIL_DEFAULT115_TARGET, target: NATIVE_CAMERA_POSE_TARGET,
                 catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
         }
@@ -2455,30 +2470,34 @@ pub(crate) mod normal_oex_release_declaration_tests {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
     fn native_camera_pose_is_exact_directed_refresh_without_new_ledger_or_fresh_admission() {
-        let source = SHARED_RAIL_DEFAULT115_TARGET;
-        let target = NATIVE_CAMERA_POSE_TARGET;
-        let pair = (source.2, target.2);
-        assert!(native_camera_pose_retained_dirty_transition(pair));
-        assert!(combined_thumbnail_host_matches(target));
-        assert!(!combined_thumbnail_fresh_host_matches(target));
-        assert!(!current52_interrupted_host_matches(target));
-        assert!(current_image_thumbnail_transition(pair));
-        assert!(saved_workspace_transition_supported(pair));
-        assert!(saved_workspace_transition_target(target.2));
-        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
-        let transition = FurnishingTransition::from_manifests(pair).unwrap();
-        assert!(transition.is_combined_thumbnail_runtime_refresh());
-        assert!(!transition.upgrades_catalog());
-        let before = combined_thumbnail_payload(source).workspace_furnishing_ledger(transition.source_catalog()).unwrap();
-        let after = combined_thumbnail_payload(target).workspace_furnishing_ledger(transition.target_catalog()).unwrap();
-        assert_eq!(before, after); assert_eq!(after.lines().count(), 47);
-        for denied in [(target.2, source.2), (target.2, target.2), (source.2, source.2),
-                       (DISABLED_PREVIEW_PRESSURE_TARGET.2, target.2), (METRIC_FRAME_TARGET.2, target.2)] {
-            assert!(!native_camera_pose_retained_dirty_transition(denied));
-            assert!(FurnishingTransition::from_manifests(denied).is_none());
-        }
-        for mixed in [(source.0,target.1,target.2), (target.0,"invalid",target.2), (target.0,target.1,source.2)] {
-            assert!(!combined_thumbnail_host_matches(mixed));
+        for (source, target) in [(SHARED_RAIL_DEFAULT115_TARGET, NATIVE_CAMERA_POSE_TARGET),
+            (NATIVE_CAMERA_POSE_TARGET, NATIVE_CAMERA_POSE_LIFECYCLE_TARGET)] {
+            let pair = (source.2, target.2);
+            assert!(native_camera_pose_retained_dirty_transition(pair));
+            assert!(combined_thumbnail_host_matches(target));
+            assert!(!combined_thumbnail_fresh_host_matches(target));
+            assert!(!current52_interrupted_host_matches(target));
+            assert!(current_image_thumbnail_transition(pair));
+            assert!(saved_workspace_transition_supported(pair));
+            assert!(saved_workspace_transition_target(target.2));
+            assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
+            let transition = FurnishingTransition::from_manifests(pair).unwrap();
+            assert!(matches!(transition, FurnishingTransition::SameCatalog { source: actual_source, target: actual_target, .. }
+                if actual_source == source && actual_target == target));
+            assert!(transition.is_combined_thumbnail_runtime_refresh());
+            assert!(!transition.upgrades_catalog());
+            let before = combined_thumbnail_payload(source).workspace_furnishing_ledger(transition.source_catalog()).unwrap();
+            let after = combined_thumbnail_payload(target).workspace_furnishing_ledger(transition.target_catalog()).unwrap();
+            assert_eq!(before, after); assert_eq!(after.lines().count(), 47);
+            for denied in [(target.2, source.2), (target.2, target.2), (source.2, source.2),
+                           (DISABLED_PREVIEW_PRESSURE_TARGET.2, target.2), (METRIC_FRAME_TARGET.2, target.2)] {
+                assert!(!native_camera_pose_retained_dirty_transition(denied));
+                assert!(FurnishingTransition::from_manifests(denied).is_none());
+            }
+            assert!(FurnishingTransition::from_manifests((SHARED_RAIL_DEFAULT115_TARGET.2, NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2)).is_none());
+            for mixed in [(source.0,target.1,target.2), (target.0,"invalid",target.2), (target.0,target.1,source.2)] {
+                assert!(!combined_thumbnail_host_matches(mixed));
+            }
         }
     }
 
