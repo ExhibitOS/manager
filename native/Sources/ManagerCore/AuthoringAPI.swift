@@ -31,6 +31,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeProductImageThumbnailRepairProfile: String? = nil
     public var nativeRequiredModelOriginalProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
+    public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
@@ -1316,6 +1317,46 @@ public actor AuthoringAPI {
             throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
         }
         return next
+    }
+
+    public var admitsViewerBudgetPolicy: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeViewerBudgetPolicyProfile == "viewer-budget-policy-v1"
+    }
+    public func prepareViewerBudgetPolicy(_ command: DocumentValue, in document: NativeDocumentState) async throws -> ViewerBudgetPolicyRequest {
+        guard admitsViewerBudgetPolicy, document.pending == nil, !document.dirty,
+              document.tenantId == tenant, document.principalId == session?.userId,
+              let draft = document.draft, let etag = document.etag else { throw AuthoringFailure("VIEWER_BUDGET_POLICY_UNAVAILABLE") }
+        let held = generation
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1, tenantId: document.tenantId,
+            principalId: document.principalId, draft: draft, selection: nil, mode: "translate", view: "isometric", disabled: false,
+            workspaceId: document.workspaceId, baseETag: etag)
+        let proposal = try ViewerBudgetPolicyRequest(frame: frame, command: command)
+        let response = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
+        let checked = try proposal.checkedReply(response)
+        try Task.checkCancellation()
+        try saved.requireSameComparison(await exhibition(draft.id))
+        guard generation == held, admitsViewerBudgetPolicy else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return checked
+    }
+
+    /// Authenticated read-only analysis of the current (possibly dirty) draft.
+    /// Older runtimes return unavailable; callers retain an unknown state and
+    /// keep ordinary editing/Save independent of this advisory request.
+    public func viewerBudgetAnalysis(in document: NativeDocumentState, requestedProfile: String? = nil,
+                                    context: String = "viewer", automaticProfile: String = "standard") async throws -> DocumentValue {
+        guard nativeSession, !authenticationBusy, document.tenantId == tenant,
+              document.principalId == session?.userId else { throw AuthoringFailure("AUTH_REQUIRED") }
+        let input = try ViewerBudgetAnalysisRequest(document: document, requestedProfile: requestedProfile,
+            context: context, automaticProfile: automaticProfile)
+        let body = try encoded(input.body)
+        guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        let value: DocumentValue = try await request(studioPrefix + "/exhibitions/" + identifier(input.draft.id) + "/viewer-budget-analysis",
+            method: "POST", body: body, ifMatch: input.etag, timeout: 30, expectedResponseETag: input.etag)
+        try Task.checkCancellation()
+        return try input.checkedReply(value)
     }
 
     /// A scoped policy observation; it does not authorize a write.
@@ -4022,7 +4063,8 @@ public actor AuthoringAPI {
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let scene = ["set-pedestal", "add-light", "set-light-details"].contains(operation)
         let frameImageFit = operation == "reconcile-frame-image-fit"
-        let admitted = frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let budgetPolicy = operation == "set-viewer-budget-policy"
+        let admitted = budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
@@ -4033,7 +4075,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (frameImageFit || lightObject || ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation)) else {
+              (budgetPolicy || frameImageFit || lightObject || ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }

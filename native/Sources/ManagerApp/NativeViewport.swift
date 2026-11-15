@@ -49,15 +49,15 @@ final class NativeViewportController: ObservableObject {
     @Published private var editingPurposeActive = true
     // Health gates actions without replacing the document/host identity. A real
     // purpose change retains the existing generation invalidation boundary.
-    @Published var runtimeAvailable = true
+    @Published var runtimeAvailable = true { didSet { if !runtimeAvailable { retireResourceUsage() } } }
     var editingContextActive: Bool {
         get { editingPurposeActive && runtimeAvailable }
         set {
-            if editingPurposeActive != newValue { editingContextGeneration = UUID(); displayReadout = ""; retireCameraInteraction() }
+            if editingPurposeActive != newValue { editingContextGeneration = UUID(); displayReadout = ""; retireCameraInteraction(); retireResourceUsage() }
             editingPurposeActive = newValue
         }
     }
-    @Published var connected = false
+    @Published var connected = false { didSet { if !connected { retireResourceUsage() } } }
     /// Restriction from an acknowledged frame; retained until a newer exact
     /// frame explicitly clears it. It never grants server authority.
     @Published fileprivate(set) var boundedReadOnly = false
@@ -123,6 +123,34 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var furnishingVisualsSupported = false
     @Published fileprivate(set) var sharedFurnishingVisualsSupported = false
     @Published fileprivate(set) var plinthEnvelopeAlignSupported = false
+    @Published fileprivate(set) var resourceUsageSupported = false
+    @Published private(set) var resourceUsage: DocumentValue?
+    @Published private(set) var readingResourceUsage = false
+    fileprivate var resourceUsageAction: (() async throws -> DocumentValue)?
+    private var resourceUsageAttempt = UUID()
+    func retireResourceUsage() {
+        resourceUsageAttempt = UUID()
+        resourceUsage = nil; readingResourceUsage = false
+    }
+    func refreshResourceUsage() async {
+        retireResourceUsage()
+        guard editingContextActive, connected, resourceUsageSupported, let resourceUsageAction else { return }
+        let attempt = resourceUsageAttempt, context = editingContextGeneration, epoch = owner, sequence = acceptedSequence
+        readingResourceUsage = true
+        defer { if resourceUsageAttempt == attempt { readingResourceUsage = false } }
+        do {
+            try await Task.sleep(for: .milliseconds(500))
+            try Task.checkCancellation()
+            let response = try await resourceUsageAction()
+            try Task.checkCancellation()
+            guard resourceUsageAttempt == attempt, editingContextActive, connected,
+                  editingContextGeneration == context, owner == epoch, acceptedSequence == sequence else { return }
+            resourceUsage = response
+        } catch {
+            guard resourceUsageAttempt == attempt else { return }
+            resourceUsage = nil
+        }
+    }
     @Published fileprivate(set) var spaceSettingsSupported = false
     @Published fileprivate(set) var viewingPlanSupported = false
     @Published fileprivate(set) var lightInspectorSupported = false
@@ -508,7 +536,7 @@ struct NativeViewport: NSViewRepresentable {
             #if DEBUG
             if controller.owner == epoch { controller.snapshotPolicyObservation = nil }
             #endif
-            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }
+            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false }
             if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.lightObjectAction = nil; controller.wallFinishAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
@@ -546,7 +574,7 @@ struct NativeViewport: NSViewRepresentable {
                 controller.retireCameraInteraction()
                 controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil
                 controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false
-                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""
+                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false
                 controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
@@ -614,7 +642,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.retireCameraInteraction(); controller.cameraInteractionAction = nil; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = "" }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.retireCameraInteraction(); controller.cameraInteractionAction = nil; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.retireCameraInteraction()
@@ -675,6 +703,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.furnishingVisualsSupported = acceptance.supportsFurnishingVisuals
                         self.controller.sharedFurnishingVisualsSupported = acceptance.supportsSharedFurnishingVisuals
                         self.controller.plinthEnvelopeAlignSupported = acceptance.supportsPlinthEnvelopeAlign
+                        self.controller.resourceUsageSupported = acceptance.capabilities?.contains(ViewerResourceUsageRequest.capability) == true
                         self.controller.spaceSettingsSupported = acceptance.supportsSpaceSettings
                         self.controller.viewingPlanSupported = acceptance.supportsViewingPlan
                         self.controller.lightInspectorSupported = acceptance.supportsLightInspector
@@ -928,6 +957,25 @@ struct NativeViewport: NSViewRepresentable {
                 let bytes = try JSONSerialization.data(withJSONObject: response)
                 guard bytes.count <= 1_100_000 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
                 return try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: bytes))
+            }
+            controller.resourceUsageAction = { [weak self] in
+                guard let self, self.active, self.prepared, self.controller.owner == self.epoch,
+                      self.controller.connected, self.controller.editingContextActive, self.controller.resourceUsageSupported,
+                      let web = self.web, let frame = self.latest, self.sent == frame.sequence,
+                      self.controller.acceptedSequence == frame.sequence else { throw AuthoringFailure("RESOURCE_USAGE_STALE") }
+                let request = try ViewerResourceUsageRequest(frame: frame)
+                let generation = self.generation, context = self.controller.editingContextGeneration
+                let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
+                let response = try await web.callAsyncJavaScript("if (typeof window.exhibitosViewport?.viewerResourceUsage !== 'function') throw new Error('RESOURCE_USAGE_UNAVAILABLE'); return await window.exhibitosViewport.viewerResourceUsage(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                try Task.checkCancellation()
+                guard self.active, self.prepared, self.controller.connected, self.controller.owner == self.epoch,
+                      self.generation == generation, self.controller.editingContextActive,
+                      self.controller.editingContextGeneration == context, self.latest?.sequence == frame.sequence,
+                      self.latest?.draft == frame.draft, self.controller.acceptedSequence == frame.sequence,
+                      let response, JSONSerialization.isValidJSONObject(response) else { throw AuthoringFailure("RESOURCE_USAGE_STALE") }
+                let data = try JSONSerialization.data(withJSONObject: response)
+                guard data.count <= 1_100_000 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+                return try request.checkedReply(JSONDecoder().decode(DocumentValue.self, from: data))
             }
             controller.spaceSettingsAction = { [weak self] command in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.spaceSettingsSupported,

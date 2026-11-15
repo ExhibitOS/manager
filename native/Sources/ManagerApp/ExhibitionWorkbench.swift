@@ -183,6 +183,10 @@ struct NativeExhibitionView: View {
             if !catalogDrag.feedback.isEmpty {
                 Text(catalogDrag.feedback).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 8)
             }
+            TargetViewerBudgetStatusView(model: model, mode: mode).padding(.horizontal, 8).padding(.vertical, 6)
+            if mode == .expert {
+                NativeEditorBudgetStatusView(controller: controller).padding(.horizontal, 8).padding(.vertical, 6)
+            }
             feedback
         }
         .background(Color(nsColor: .windowBackgroundColor))
