@@ -1996,8 +1996,16 @@ Only the existing clean owner at manifest `227b37233443c437d8efb768b8305df2a3214
 is admitted for a directed same-catalog52 refresh. The 47-row ledger, exact saved
 head, full document and carried restore provenance remain checked. Fresh,
 interrupted, dirty, reverse, self and skipped transitions are not added. This
-edge retains the existing 8 GiB + 256 MiB streamed physical checkpoint bound for
-the already retained profile; it does not raise a rendering or import budget.
+edge uses an 8 GiB + 512 MiB streamed physical checkpoint policy. The actual
+saved profile measured 8,944,386,064 bytes and exceeded the inherited 8.25 GiB
+policy by 86,016,016 bytes before activation. The 8.5 GiB policy leaves
+182,419,440 bytes of margin for this exact clean transition. It is a conservative
+disk/workload policy, not a hardware or format limit. The 64 KiB streaming buffer,
+private owner/mode/single-link checks, file-count checks and two-inventory free
+space guard remain unchanged. Other transitions retain their prior bounds.
+A checkpoint rejection leaves the original data intact; preserve its failure
+record and review this scoped capacity and free space before a qualified retry.
+It does not raise a rendering or import budget.
 The old camera-pose dirty transitions keep their previous scope.
 
 The exact default1.16 manifest (23,170 bytes,

@@ -84,6 +84,11 @@ const CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 // Reuse the existing 256 MiB margin only for that directed pair; no old bound grows.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES: u64 = CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES + 256 * 1024 * 1024;
+// The current saved profile is 8,944,386,064 bytes. This exact clean successor
+// receives an 8.5 GiB streamed disk-inventory policy (182,419,440 bytes margin).
+// It changes neither memory buffering nor owner/mode/link/count/space checks.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES: u64 = CATALOG45_SELECTED_PNG_CHECKPOINT_MAX_BYTES + 512 * 1024 * 1024;
 const MAX_MANIFEST: usize = 16 * 1024 * 1024;
 const DATA_DIRECTORIES: &[&str] = &["native-database", "blobs", "config"];
 const MEMBERS: &[&str] = &["native-database", "blobs", "config", "runtime.env", RECORD];
@@ -454,8 +459,11 @@ fn transition_source_ledger(payload: &crate::native_payload::Payload, transition
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if proof.is_none() && (crate::native_payload::native_camera_pose_retained_dirty_transition(pair)
-        || crate::native_payload::authored_shadow_track_clean_transition(pair)) {
+    if proof.is_none() && crate::native_payload::authored_shadow_track_clean_transition(pair) {
+        return AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::native_camera_pose_retained_dirty_transition(pair) {
         return NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3349,7 +3357,12 @@ mod tests {
     fn authored_shadow_track_checkpoint_budget_is_only_the_directed_clean_pair() {
         let source = crate::native_payload::NATIVE_CAMERA_POSE_LIFECYCLE_TARGET.2;
         let target = crate::native_payload::AUTHORED_SHADOW_TRACK116_TARGET.2;
-        assert_eq!(checkpoint_inventory_limit((source, target), None), NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES);
+        assert_eq!(checkpoint_inventory_limit((source, target), None), AUTHORED_SHADOW_TRACK_CHECKPOINT_MAX_BYTES);
+        // Redistributable scalar from the failed cold inventory; no data allocation.
+        let current_profile_bytes = 8_944_386_064u64;
+        assert!(current_profile_bytes > NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES);
+        assert!(current_profile_bytes < checkpoint_inventory_limit((source, target), None));
+        assert_eq!(checkpoint_inventory_limit((crate::native_payload::NATIVE_CAMERA_POSE_TARGET.2, source), None), NATIVE_CAMERA_POSE_CHECKPOINT_MAX_BYTES);
         let proof = StartupCancellation045 {
             failed_generation: Uuid::new_v4().to_string(), hayes_job_id: Uuid::new_v4().to_string(),
             hayes_completion_frame_sha256: "a".repeat(64), saved_etag: "\"studio-r201-synthetic\"".into(),
