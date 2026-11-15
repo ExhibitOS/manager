@@ -21,7 +21,9 @@ enum NativeAutomationFixture {
               let id = input["lightId"].string, UUID(uuidString: id) != nil,
               let lights = frame.draft.candidate["lights"].items,
               lights.filter({ $0["id"].string == id && $0["type"] == .string("spot") }).count == 1 else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-        let pose = try FurnishingPose(input["pose"])
+        let pose: FurnishingPose?
+        if input["pose"] == .null { pose = nil }
+        else { pose = try FurnishingPose(input["pose"]) }
         let command = try SharedFurnishingCommand(host: .light, hostId: id, pose: pose, catalogId: input["catalogId"].string)
         return try SharedFurnishingViewportRequest(frame: frame, command: command, selectedInspectorId: id)
     }
@@ -44,7 +46,7 @@ enum NativeAutomationFixture {
                   try JSONEncoder().encode(reply).count <= 1_100_000,
                   keys.allSatisfy({ reply[$0] == request.value[$0] }),
                   try SharedFurnishingPreview.pose(in: request.frame.draft, host: .light, id: request.command.hostId) == request.command.pose,
-                  try SharedFurnishingPreview.catalogId(in: request.frame.draft, host: .light, id: request.command.hostId) == request.command.catalogId else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+                  try SharedFurnishingPreview.catalogId(in: request.frame.draft, host: .light, id: request.command.hostId) == (request.command.pose == nil ? nil : request.command.catalogId) else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
             return .existing(.init(base: request.frame.draft, candidate: request.frame.draft.candidate))
         }
         return .changed(try request.checkedReply(reply))

@@ -63,8 +63,8 @@ final class SharedFurnishingCatalogTests: XCTestCase {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/shared-furnishing-catalog-fixture.json")
         var value = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: fixture))
         let rows = try SharedFurnishingCatalog.checkedCatalog(value)
-        XCTAssertEqual(Set(rows.compactMap { $0["catalogId"].string }), ["backless-oak-bench", "sculpture-bench-refined", "museum-track-spot", "recessed-downlight", "museum-wallwasher", "museum-wallwasher-rear-relief", "gallery-open-portal", "rectangular-plinth"])
-        value["items"] = .array(Array(rows.reversed())); XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(value).count, 8)
+        XCTAssertEqual(Set(rows.compactMap { $0["catalogId"].string }), ["backless-oak-bench", "sculpture-bench-refined", "museum-track-spot", "museum-track-spot-fixed-64p1", "recessed-downlight", "museum-wallwasher", "museum-wallwasher-rear-relief", "gallery-open-portal", "rectangular-plinth"])
+        value["items"] = .array(Array(rows.reversed())); XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(value).count, 9)
         var changed = rows; changed[0]["rights"]["licenseId"] = .string("unknown")
         value["items"] = .array(changed); XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(value))
         var duplicate = rows; duplicate[1] = rows[0]
