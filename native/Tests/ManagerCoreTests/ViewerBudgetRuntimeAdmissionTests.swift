@@ -3,8 +3,9 @@ import XCTest
 @testable import ManagerCore
 
 final class ViewerBudgetRuntimeAdmissionTests: XCTestCase {
-    func testExactBudgetSuccessorPreservesExistingReaderEligibility() throws {
-        for manifest in ["290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"] {
+    func testExactQualifiedSuccessorsPreserveExistingReaderEligibility() throws {
+        for manifest in ["290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354",
+                         "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"] {
             #if DEBUG
             XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
             XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
