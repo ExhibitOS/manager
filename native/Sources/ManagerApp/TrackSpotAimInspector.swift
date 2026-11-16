@@ -74,6 +74,7 @@ struct TrackSpotAimInspector: View {
     @ObservedObject var model: ExhibitionModel
     let ready: Bool
     let light: DocumentValue
+    let canApply: Bool
 
     private struct Choice: Identifiable {
         let id: String
@@ -167,7 +168,7 @@ struct TrackSpotAimInspector: View {
                                 .accessibilityHint("조명이 속한 공간 기준 X, Y, Z 좌표입니다.")
                         }
                         Button("조명 적용") { Task { await model.applyLight() } }
-                            .disabled(!ready || !model.canApplyLight)
+                            .disabled(!canApply)
                         Button("조준 입력 취소") { model.discardLight() }
                             .disabled(!model.lightDirty || model.busy || model.pending || model.architectureApplying)
                     }

@@ -124,7 +124,7 @@ struct SelectedLightInspector: View {
                 if let row = selected {
                     let room = model.draft?.rooms.first { $0["id"] == row["roomId"] }?["name"].string ?? "공간"
                     Text(room).font(.title3.weight(.semibold))
-                    TrackSpotAimInspector(model: model, ready: ready, light: row)
+                    TrackSpotAimInspector(model: model, ready: ready, light: row, canApply: ready && model.canApplyLight)
                     if model.selectedLightUsesTrackAim {
                         Text("조준 조절형 기구는 레일에 연결됩니다. 기구 숨기기나 다른 외형으로 전환은 지원되지 않습니다.")
                             .font(.caption).foregroundStyle(.secondary)
