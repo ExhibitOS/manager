@@ -124,7 +124,15 @@ struct SelectedLightInspector: View {
                 if let row = selected {
                     let room = model.draft?.rooms.first { $0["id"] == row["roomId"] }?["name"].string ?? "공간"
                     Text(room).font(.title3.weight(.semibold))
-                    if let fields = model.light {
+                    TrackSpotAimInspector(model: model, ready: ready, light: row, canApply: ready && model.canApplyLight)
+                    if model.selectedLightUsesTrackAim {
+                        Text("조준 조절형 기구는 레일에 연결됩니다. 기구 숨기기나 다른 외형으로 전환은 지원되지 않습니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if model.trackSpotAimAvailable {
+                            Button("조명 삭제 미리보기", role: .destructive) { Task { await model.previewLightObjectAction("remove-light-object") } }
+                                .disabled(!ready || !model.canPreviewLightObjectAction)
+                        }
+                    } else if model.trackSpotAimForm == nil, let fields = model.light {
                         if fields.isRoomBaseLight {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("공간 기본 조명").font(.headline)
@@ -267,7 +275,9 @@ struct SelectedLightInspector: View {
                     if !controller.lightInspectorSupported && !model.lightObjectProposalAvailable { Text("현재 연결에서는 조명을 확인할 수 있습니다. 편집 가능한 제작 서비스에 다시 연결하세요.").font(.caption).foregroundStyle(.secondary) }
                 } else { Text("조명 목록에서 대상을 선택하세요.").foregroundStyle(.secondary) }
                 if !model.lightStatus.isEmpty { Text(model.lightStatus).foregroundStyle(.secondary) }
-                SharedFurnishingCatalogView(model: model, viewport: controller, ready: ready)
+                if !model.selectedLightUsesTrackAim && model.trackSpotAimForm == nil {
+                    SharedFurnishingCatalogView(model: model, viewport: controller, ready: ready)
+                }
             }.padding(16)
         }.inspectorColumnWidth(min: 280, ideal: 320, max: 420)
     }

@@ -81,7 +81,32 @@ public struct LightObjectRequest: Sendable {
               let actualId = original["id"].string else { throw Self.invalid }
         _ = try Self.rows(frame.draft.candidate, namespace: Self.details)
         _ = try Self.rows(frame.draft.candidate, namespace: Self.attachments)
-        _ = try Self.furnishings(frame.draft.candidate)
+        let furnishings = try Self.furnishings(frame.draft.candidate)
+        let existingTrackAim = NativeTrackSpotAim.binding(in: frame.draft, lightId: actualId)
+        let visualBinding = furnishings.bindings.first { $0["hostKind"] == .string("light") && Self.same($0["hostId"].string, actualId) }
+        let articulatedAsset = furnishings.assets.contains {
+            $0["catalogId"] == .string(NativeTrackSpotAim.catalogue) && visualBinding?["assetId"] == $0["id"]
+        }
+        guard articulatedAsset == (existingTrackAim != .null) else { throw Self.invalid }
+        if existingTrackAim != .null {
+            guard visualBinding?["pose"] == NativeTrackSpotAim.pose,
+                  !(try Self.rows(frame.draft.candidate, namespace: Self.attachments)).contains(where: {
+                      Self.same($0["lightId"].string, actualId)
+                  }) else { throw Self.invalid }
+            switch type {
+            case "set-light-fixture":
+                guard command["visual"]["catalogId"] == .string(NativeTrackSpotAim.catalogue) else {
+                    throw AuthoringFailure("TRACK_SPOT_AIM_EXPLICIT_MODE_CHANGE_REQUIRED")
+                }
+            case "set-light-object":
+                guard command["settings"]["trackAim"] != .null else {
+                    throw AuthoringFailure("TRACK_SPOT_AIM_EXPLICIT_MODE_CHANGE_REQUIRED")
+                }
+                guard fields["attachment"] == nil, command["light"]["transform"] == original["transform"] else { throw Self.invalid }
+            case "remove-light-object": break
+            default: throw Self.invalid
+            }
+        }
         switch type {
         case "set-light-object":
             guard Set(fields.keys).subtracting(["attachment"]) == ["type", "lightId", "light", "settings"],
@@ -97,6 +122,9 @@ public struct LightObjectRequest: Sendable {
                 }
             }
             try Self.checkSettings(command["settings"])
+            if command["settings"]["trackAim"] != .null {
+                guard existingTrackAim != .null, command["light"]["type"] == .string("spot") else { throw Self.invalid }
+            }
             let old = try Self.rows(frame.draft.candidate, namespace: Self.details).first { Self.same($0["lightId"].string, actualId) }
             if let purpose = settings["purpose"] { guard purpose == (old?["purpose"] ?? .null) else { throw Self.invalid } }
             if let placement = settings["basePlacement"] { guard placement == (old?["basePlacement"] ?? .null) else { throw Self.invalid } }
@@ -108,11 +136,18 @@ public struct LightObjectRequest: Sendable {
         case "set-light-fixture":
             guard Set(fields.keys) == ["type", "lightId", "visual"] else { throw Self.invalid }
             if command["visual"] != .null {
-                guard case .object(let visual) = command["visual"], Set(visual.keys) == ["catalogId", "catalogVersion", "pose"],
+                guard case .object(let visual) = command["visual"],
                       let catalog = command["visual"]["catalogId"].string,
                       command["visual"]["catalogVersion"] == .integer(1), original["type"] == .string("spot"),
                       try SharedFurnishingCatalog.descriptor(catalog)["hostKinds"].items == [.string("light")] else { throw Self.invalid }
-                _ = try FurnishingPose(command["visual"]["pose"])
+                if catalog == NativeTrackSpotAim.catalogue {
+                    guard Set(visual.keys) == ["catalogId", "catalogVersion", "pose", "trackAim"],
+                          command["visual"]["pose"] == NativeTrackSpotAim.pose else { throw Self.invalid }
+                    try NativeTrackSpotAim.check(command["visual"]["trackAim"])
+                } else {
+                    guard Set(visual.keys) == ["catalogId", "catalogVersion", "pose"] else { throw Self.invalid }
+                    _ = try FurnishingPose(command["visual"]["pose"])
+                }
             }
         case "duplicate-light-object", "remove-light-object":
             guard Set(fields.keys) == ["type", "lightId"] else { throw Self.invalid }
@@ -154,7 +189,11 @@ public struct LightObjectRequest: Sendable {
         let original = lights[index]
         switch command["type"].string {
         case "set-light-object":
-            var row = command["light"]; row["id"] = original["id"]; lights[index] = row; next["lights"] = .array(lights)
+            var row = command["light"]; row["id"] = original["id"]
+            if command["settings"]["trackAim"] != .null {
+                try copySolvedTransform(from: reply, into: &row)
+            }
+            lights[index] = row; next["lights"] = .array(lights)
             let mounted: Bool
             if case .object(let fields) = command { mounted = fields["attachment"].map { $0 != .null } ?? false } else { mounted = false }
             var settings = try RoomBaseLightIntent.settingsForEdit(command["settings"], light: row, original: original, base: base, mounted: mounted)
@@ -170,7 +209,21 @@ public struct LightObjectRequest: Sendable {
         case "set-light-fixture":
             let visual = command["visual"]
             var settings = try NativeLightFixture.settings(in: frame.draft, lightId: sourceLightId)
-            settings["fixture"] = .string(visual == .null ? "none" : "spot-can")
+            if visual["catalogId"] == .string(NativeTrackSpotAim.catalogue) {
+                guard case .object(var fields) = settings,
+                      fields["purpose"] == nil, fields["basePlacement"] == nil else { throw Self.changed }
+                fields.removeValue(forKey: "aim")
+                fields["fixture"] = .string("none")
+                fields["trackAim"] = visual["trackAim"]
+                settings = .object(fields)
+                try Self.removeRow(sourceLightId, namespace: Self.attachments, in: &next)
+                var solved = original
+                try copySolvedTransform(from: reply, into: &solved)
+                lights[index] = solved
+                next["lights"] = .array(lights)
+            } else {
+                settings["fixture"] = .string(visual == .null ? "none" : "spot-can")
+            }
             settings["lightId"] = original["id"]
             try Self.upsert(settings, id: sourceLightId, namespace: Self.details, in: &next)
             var graph = try Self.furnishings(base)
@@ -215,6 +268,20 @@ public struct LightObjectRequest: Sendable {
         }
         if next != base, case .object = next["extensions"][Self.template] { next["extensions"][Self.template]["modified"] = .bool(true) }
         return next
+    }
+
+    /// The authenticated proposal owns the solve. Only the selected light's
+    /// rigid transform can come from its reply; every other field is compared.
+    private func copySolvedTransform(from candidate: DocumentValue, into light: inout DocumentValue) throws {
+        let solved = candidate["lights"].items?.filter { $0["id"] == light["id"] } ?? []
+        guard solved.count == 1, case .object(let pose) = solved[0]["transform"],
+              Set(pose.keys) == ["position", "rotation", "scale"],
+              Self.vector(solved[0]["transform"]["position"], count: 3),
+              Self.vector(solved[0]["transform"]["rotation"], count: 4),
+              solved[0]["transform"]["scale"] == .vector([1, 1, 1]),
+              let q = solved[0]["transform"]["rotation"].items,
+              abs(q.reduce(0) { $0 + pow($1.double ?? 0, 2) } - 1) <= 1e-6 else { throw Self.changed }
+        light["transform"] = solved[0]["transform"]
     }
 
     private static func rows(_ candidate: DocumentValue, namespace: String) throws -> [DocumentValue] {
@@ -286,9 +353,14 @@ public struct LightObjectRequest: Sendable {
     }
     private static func checkSettings(_ value: DocumentValue) throws {
         guard case .object(let fields) = value, fields["fixture"] != nil,
-              Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement"]),
+              Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "trackAim"]),
               let fixture = value["fixture"].string, NativeLightFixture(rawValue: fixture) != nil,
               fields["purpose"].map({ $0 == .string("room-base") }) ?? true else { throw invalid }
+        if let trackAim = fields["trackAim"] {
+            guard fixture == "none", fields["aim"] == nil, fields["purpose"] == nil,
+                  fields["basePlacement"] == nil else { throw invalid }
+            try NativeTrackSpotAim.check(trackAim)
+        }
         if let placement = fields["basePlacement"] {
             guard let raw = placement.string, RoomBaseLightPlacement(rawValue: raw) != nil else { throw invalid }
         }

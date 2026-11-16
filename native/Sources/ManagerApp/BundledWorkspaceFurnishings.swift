@@ -49,6 +49,7 @@ enum BundledWorkspaceFurnishings {
         "portal-pale-mineral": .portalFinish, "portal-warm-oak": .portalFinish
     ]
     private static let manifests = [
+        25957: (version: "1.18.0", digest: "83d9d1913850c310e63a1d5a77297ca8944da1fc9720cf017e3a9dad361b7e5a"),
         25051: (version: "1.17.0", digest: "4751b398f8a1d6edd362004449655932fabfdd78de3500b74b29453b05d5475a"),
         23170: (version: "1.16.0", digest: "9302a6472a603b2ad21a693f848fd4670c41d04b51e563bbeae088dade825e81"),
         22280: (version: "1.15.0", digest: "0cab62aed2f85534e29ee5b6eb824d7f3eaae8036cc2d5dced47fd4f5a4dd17d"),
@@ -65,7 +66,7 @@ enum BundledWorkspaceFurnishings {
     ]
     private static func supportedItems(version: String) -> [String: WorkspaceFurnishingKind] {
         switch version {
-        case "1.17.0":
+        case "1.17.0", "1.18.0":
             var items = supportedItems(version: "1.16.0")
             items["painting-rectangular-dark-track"] = .ceilingRail
             return items
@@ -85,14 +86,14 @@ enum BundledWorkspaceFurnishings {
         }
     }
     private static func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
-    private static func bounded(_ url: URL, sizes: Set<Int>) throws -> Data {
+    private static func bounded(_ url: URL, sizes: Set<Int>, maximum: Int) throws -> Data {
         let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? handle.close() }
         var before = stat(), after = stat()
         guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
-              let size = Int(exactly: before.st_size), sizes.contains(size), (1...25_051).contains(size),
+              let size = Int(exactly: before.st_size), sizes.contains(size), (1...maximum).contains(size),
               let data = try handle.read(upToCount: size + 1), data.count == size,
               fstat(fd, &after) == 0, after.st_size == before.st_size,
               after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec,
@@ -125,7 +126,7 @@ enum BundledWorkspaceFurnishings {
         let manifestURL = root.appendingPathComponent("assets/furnishings/default-manifest.json")
         guard root.resolvingSymlinksInPath() == root, manifestURL.resolvingSymlinksInPath() == manifestURL,
               manifestURL.path.hasPrefix(root.path + "/") else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
-        let data = try bounded(manifestURL, sizes: Set(manifests.keys))
+        let data = try bounded(manifestURL, sizes: Set(manifests.keys), maximum: 25_957)
         guard let pin = manifests[data.count], digest(data) == pin.digest else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
         let manifest = try JSONDecoder().decode(Manifest.self, from: data)
         let supported = supportedItems(version: pin.version)
@@ -159,7 +160,7 @@ enum BundledWorkspaceFurnishings {
             throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
         }
         let notice = try path(item.rights.notice.path, root: catalog.root)
-        let noticeData = try await Task.detached { try bounded(notice, sizes: [item.rights.notice.bytes]) }.value
+        let noticeData = try await Task.detached { try bounded(notice, sizes: [item.rights.notice.bytes], maximum: 25_051) }.value
         guard digest(noticeData) == item.rights.notice.sha256 else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
         if let source = item.provenance.source {
             let original = try await ImportFileSnapshot.load(path(source.path, root: catalog.root), byteLimit: WorkspaceFurnishingModel.byteLimit)

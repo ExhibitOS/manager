@@ -158,6 +158,9 @@ impl Binding {
             && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let fresh_contact = self.admission_kind == Admission::FreshEmpty
             && crate::native_payload::combined_thumbnail_fresh_host_matches(tuple);
+        let ordinary_combined = self.catalog == 52 && self.restore.is_none()
+            && (fresh_contact || self.admission_kind == Admission::CleanReopen)
+            && crate::native_payload::combined_thumbnail_ordinary_host_matches(tuple);
         let combined_thumbnail = self.catalog == 52
             && (matches!(self.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
                 || fresh_contact || (interrupted && self.restore.is_none()
@@ -175,7 +178,7 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || combined_thumbnail
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -1625,7 +1628,8 @@ mod tests {
     #[test]
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn contact_catalog52_fresh_binding_retains_fresh_invariants_and_reopens() {
-        for target in [crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET, crate::native_payload::RECTANGLE_FIXED64_TARGET] {
+        for target in [crate::native_payload::CONTACT_EMITTER_CARD_TARGET, crate::native_payload::METRIC_FRAME_TARGET, crate::native_payload::RECTANGLE_FIXED64_TARGET,
+            crate::native_payload::KNOWN_TRACK_AIM_TARGET] {
         let mut fresh = binding(GENERATION);
         fresh.catalog = 52;
         fresh.source_commit = target.0.into();
@@ -1754,6 +1758,18 @@ mod tests {
         let mut reopened = pin(LATER, target);
         reopened.consume(&restored).unwrap();
         assert_eq!(reopened.restore, prior.restore);
+        if reopened.catalog == 52 {
+            let mut aimed = reopened.clone();
+            let aim = crate::native_payload::KNOWN_TRACK_AIM_TARGET;
+            aimed.source_commit = aim.0.into();
+            aimed.producer_sha256 = aim.1.into();
+            aimed.payload_manifest_sha256 = aim.2.into();
+            assert!(aimed.check().is_err());
+            aimed.restore = None;
+            aimed.check().unwrap();
+            aimed.admission_kind = Admission::CatalogUpgrade051To050051;
+            assert!(aimed.check().is_err());
+        }
         let mut other_root = pin(NEXT, target);
         other_root.physical.root_inode += 1;
         assert!(other_root.consume_furnishing_transition(&prior, transition).is_err());

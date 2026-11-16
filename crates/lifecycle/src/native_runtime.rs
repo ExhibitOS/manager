@@ -243,7 +243,7 @@ fn ordinary_inherited_hayes(payload: &Payload, start: Option<FurnishingStart>) -
         || (crate::native_payload::current_image_thumbnail_host_matches((&payload.context().source_commit,
                 payload.producer_sha256(), &payload.context().manifest_sha256))
             && start == Some(FurnishingStart::Reopen))
-        || (crate::native_payload::combined_thumbnail_host_matches((&payload.context().source_commit,
+        || (crate::native_payload::combined_thumbnail_ordinary_host_matches((&payload.context().source_commit,
                 payload.producer_sha256(), &payload.context().manifest_sha256))
             && start == Some(FurnishingStart::Reopen))
         || (crate::native_payload::gpu_model_host_matches((&payload.context().source_commit,
@@ -5184,10 +5184,10 @@ mod furnishing_thumbnail_upgrade_result_tests {
 
     #[test]
     fn contact_catalog52_initialize_inherits_required_hayes_channel_only_for_exact_host() {
-        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, VIEWER_BUDGET_TARGET,
-            COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET};
+        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET,
+            VIEWER_BUDGET_TARGET, COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET};
         let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
-        for target in [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET] {
+        for target in [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET] {
         assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Initialize)));
         assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Reopen)));
         for start in [None, Some(FurnishingStart::Upgrade051To050051),

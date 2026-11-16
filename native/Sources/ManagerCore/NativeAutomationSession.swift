@@ -2174,7 +2174,12 @@ public actor NativeAutomationSession {
                 guard request["command"]["type"] != .string("set-room-base-light-placement") || authoringSession?.advertisesRoomBaseLightPlacement == true else {
                     throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
                 }
-                let proposal = try LightObjectRequest(command: request["command"], frame: frame)
+                let command = request["command"]
+                if NativeTrackSpotAim.requiresCapability(command)
+                    || NativeTrackSpotAim.binding(in: draft, lightId: command["lightId"].string ?? "") != .null {
+                    guard await api.admitsNativeTrackSpotAim else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                }
+                let proposal = try LightObjectRequest(command: command, frame: frame)
                 let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
                 let checked = try proposal.checkedReply(reply)
                 preview = .lightObject(checked); candidate = checked.candidate
@@ -2238,6 +2243,11 @@ public actor NativeAutomationSession {
             } else {
                 if operation == "light-object-apply" {
                     guard await api.admitsNativeLightObjectAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                    if case .lightObject(let object) = preview,
+                       NativeTrackSpotAim.requiresCapability(object.command)
+                        || NativeTrackSpotAim.binding(in: object.base, lightId: object.lightId) != .null {
+                        guard await api.admitsNativeTrackSpotAim else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                    }
                 }
                 guard !current.dirty, current.pending == nil, let draft = current.draft, current.etag == etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
                 try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE")

@@ -1262,7 +1262,22 @@ final class ExhibitionModel: ObservableObject {
     @Published var lightMountAnchorY = "0"
     @Published var lightMountGap = "0.15"
     @Published private(set) var lightStatus = ""
-    var lightDirty: Bool { light != lightBaseline || lightObjectPreview != nil }
+    @Published var trackSpotAimForm: TrackSpotAimForm? {
+        didSet { clearLightObjectPreview(); lightStatus = "" }
+    }
+    private var trackSpotAimBaseline: TrackSpotAimForm?
+    var selectedLightUsesTrackAim: Bool {
+        draft.map { NativeTrackSpotAim.binding(in: $0, lightId: selectedLightId) != .null } ?? false
+    }
+    var trackSpotAimPreviewEmitter: [Double]? {
+        guard let preview = lightObjectPreview, NativeTrackSpotAim.requiresCapability(preview.command),
+              let row = preview.candidate["lights"].items?.first(where: { $0["id"].string == preview.lightId }) else { return nil }
+        return row["transform"]["position"].items?.compactMap(\.double)
+    }
+    var trackSpotAimAvailable: Bool {
+        lightObjectProposalAvailable && session?.nativeTrackSpotAimProfile == NativeTrackSpotAim.profile
+    }
+    var lightDirty: Bool { light != lightBaseline || trackSpotAimForm != trackSpotAimBaseline || lightObjectPreview != nil }
     var lightPreviewing: Bool { lightPreview != nil || lightObjectPreview != nil }
     // This advertises the existing Native SDK/API route, independently of the
     // optional Web lightObject receiver. Server session/profile checks still authorize it.
@@ -2960,8 +2975,13 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     private func syncLight() {
-        light = nil; lightBaseline = nil; lightStatus = ""
+        light = nil; lightBaseline = nil; trackSpotAimForm = nil; trackSpotAimBaseline = nil; lightStatus = ""
         guard let draft, !selectedLightId.isEmpty else { return }
+        let binding = NativeTrackSpotAim.binding(in: draft, lightId: selectedLightId)
+        if binding != .null, let row = draft.candidate["lights"].items?.first(where: { $0["id"].string == selectedLightId }) {
+            let form = TrackSpotAimForm(binding: binding, light: row)
+            trackSpotAimForm = form; trackSpotAimBaseline = form
+        }
         do {
             let fields = try LightFormBuffer(draft: draft, selectedLightId: selectedLightId)
             light = fields; lightBaseline = fields
@@ -2985,8 +3005,31 @@ final class ExhibitionModel: ObservableObject {
         if lightObjectSharedForm != nil { sharedFurnishing = sharedFurnishingBaseline }
         syncLight()
     }
+    func beginTrackSpotAim(light row: DocumentValue) {
+        guard trackSpotAimAvailable, canPreviewLightObjectAction, row["id"].string == selectedLightId,
+              row["type"] == .string("spot"), !selectedLightUsesTrackAim else { return }
+        trackSpotAimForm = TrackSpotAimForm(binding: .null, light: row)
+    }
+    var canPreviewTrackSpotAim: Bool {
+        trackSpotAimAvailable && lightObjectAuthorityAvailable && lightObjectContext()
+            && light == lightBaseline && trackSpotAimForm != nil && trackSpotAimForm != trackSpotAimBaseline
+            && !lightPreviewing
+    }
+    func previewTrackSpotAim() async {
+        guard canPreviewTrackSpotAim, let form = trackSpotAimForm, let draft else { return }
+        do {
+            let binding = try form.binding()
+            let command = try selectedLightUsesTrackAim
+                ? NativeTrackSpotAim.updateCommand(in: draft, lightId: selectedLightId, binding: binding,
+                    shadowPriority: form.shadowTarget, prefersShadow: form.prefersShadow)
+                : NativeTrackSpotAim.fixtureCommand(lightId: selectedLightId, binding: binding)
+            await previewLightObject(command, allowingFormInput: true)
+        } catch {
+            lightStatus = "레일, 조준 대상과 입력 범위를 확인하세요."
+        }
+    }
     func previewLight() async {
-        guard canPreviewLight, let fields = light, let base = draft else { return }
+        guard trackSpotAimForm == nil, canPreviewLight, let fields = light, let base = draft else { return }
         if lightObjectAuthorityAvailable {
             do {
                 let value = try fields.command()
@@ -3022,7 +3065,7 @@ final class ExhibitionModel: ObservableObject {
         if let preview = lightObjectPreview {
             let access = viewportAccessID, context = viewportController.editingContextGeneration
             await work {
-                guard lightObjectAuthorityAvailable, roomBaseCommandAvailable(preview.command), lightObjectPreviewAccessID == access, viewportAccessID == access,
+                guard lightObjectAuthorityAvailable, lightObjectCommandAvailable(preview.command), lightObjectPreviewAccessID == access, viewportAccessID == access,
                       let api, await api.admitsNativeLightObjectAuthoringProposal,
                       let base = draft, preview.base == base, let etag = state?.etag,
                       let display = lightObjectDisplayDraft, !editingLocked(acknowledging: display), lightObjectDisplayAcknowledged(display) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
@@ -3061,8 +3104,10 @@ final class ExhibitionModel: ObservableObject {
         await previewLightObject(.object(["type": .string("set-room-base-light-placement"),
             "lightId": .string(selectedLightId), "basePlacement": .string(placement.rawValue)]))
     }
-    private func roomBaseCommandAvailable(_ command: DocumentValue) -> Bool {
-        command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true
+    private func lightObjectCommandAvailable(_ command: DocumentValue) -> Bool {
+        let needsAim = NativeTrackSpotAim.requiresCapability(command) || selectedLightUsesTrackAim
+        return (!needsAim || trackSpotAimAvailable)
+            && (command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true)
     }
     func previewLightObjectAction(_ type: String) async {
         guard canPreviewLightObjectAction,
@@ -3092,10 +3137,10 @@ final class ExhibitionModel: ObservableObject {
     }
     private func previewLightObject(_ command: DocumentValue, allowingFormInput: Bool = false, sharedForm: SharedFurnishingFormBuffer? = nil) async {
         guard lightObjectContext(allowingShared: sharedForm != nil), lightObjectAuthorityAvailable, !lightPreviewing,
-              allowingFormInput || !lightDirty, roomBaseCommandAvailable(command), command["lightId"] == .string(selectedLightId),
+              allowingFormInput || !lightDirty, lightObjectCommandAvailable(command), command["lightId"] == .string(selectedLightId),
               let api, let base = draft, let document = state, let etag = document.etag,
               let credentials = viewportCredentials, let capturedSession = session else { return }
-        let access = viewportAccessID, selected = selectedLightId, fields = light
+        let access = viewportAccessID, selected = selectedLightId, fields = light, aimForm = trackSpotAimForm
         let context = viewportController.editingContextGeneration
         architectureApplying = true
         defer { architectureApplying = false }
@@ -3111,15 +3156,24 @@ final class ExhibitionModel: ObservableObject {
                   session?.csrfToken == capturedSession.csrfToken, session?.expiresAt == capturedSession.expiresAt,
                   session?.role == capturedSession.role, state?.revision == document.revision,
                   viewportController.confirmsNativeLightObjectFrame(frame, in: document, context: context),
-                  lightObjectAuthorityAvailable, roomBaseCommandAvailable(command), viewportAccessID == access, draft == base, state?.etag == etag,
-                  selectedLightId == selected, light == fields, preview.base == base,
+                  lightObjectAuthorityAvailable, lightObjectCommandAvailable(command), viewportAccessID == access, draft == base, state?.etag == etag,
+                  selectedLightId == selected, light == fields, trackSpotAimForm == aimForm, preview.base == base,
                   sharedForm == nil || sharedFurnishing == sharedForm else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             let display = try preview.apply(to: base)
             lightObjectPreview = preview; lightObjectDisplayDraft = display; lightObjectPreviewAccessID = access
             lightObjectSharedForm = sharedForm
             lightStatus = "조명 변경을 미리 보고 있습니다. 적용하거나 입력 취소를 선택하세요. 전시 저장은 별도로 진행합니다."
         } catch {
-            failure = error as? AuthoringFailure ?? AuthoringFailure("LIGHT_PREVIEW_FAILED")
+            if NativeTrackSpotAim.requiresCapability(command),
+               (error as? AuthoringFailure)?.code == "AUTHORING_PROPOSAL_INVALID" {
+                if let issue = (error as? AuthoringFailure)?.trackSpotAimDiagnostic {
+                    lightStatus = "\(issue.reason) · \(issue.remedy)"
+                } else {
+                    lightStatus = "조준을 미리 볼 수 없습니다. 레일 위치, 조준 대상 또는 각도를 확인하세요."
+                }
+            } else {
+                failure = error as? AuthoringFailure ?? AuthoringFailure("LIGHT_PREVIEW_FAILED")
+            }
             viewportController.diagnose("LIGHT_OBJECT", error)
         }
     }

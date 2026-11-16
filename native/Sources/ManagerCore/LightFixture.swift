@@ -40,10 +40,15 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
             return .object(["fixture": .string(Self.none.rawValue)])
         }
         guard case .object(var fields) = row,
-              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement"]),
+              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "trackAim"]),
               fields["purpose"].map({ $0 == .string("room-base") }) ?? true,
               row["fixture"].string.flatMap(Self.init(rawValue:)) != nil else { throw invalid() }
         try RoomBaseLightIntent.checkMarker(row)
+        if let trackAim = fields["trackAim"] {
+            guard fields["fixture"] == .string("none"), fields["aim"] == nil,
+                  fields["purpose"] == nil, fields["basePlacement"] == nil else { throw invalid() }
+            try NativeTrackSpotAim.check(trackAim)
+        }
         fields.removeValue(forKey: "lightId")
         return .object(fields)
     }

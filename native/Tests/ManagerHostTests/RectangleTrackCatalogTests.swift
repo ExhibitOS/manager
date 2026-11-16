@@ -5,6 +5,38 @@ import XCTest
 @testable import ManagerApp
 
 final class RectangleTrackCatalogTests: XCTestCase {
+    func testExact118KeepsLightVisualsOutOfWorkspaceCards() throws {
+        guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_118_RUNTIME_PLATFORM"] else {
+            throw XCTSkip("Set EXHIBITOS_DEFAULT_118_RUNTIME_PLATFORM to the qualified runtime platform directory")
+        }
+        let source = URL(fileURLWithPath: input, isDirectory: true)
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: source)
+        XCTAssertEqual(catalog.version, "1.18.0")
+        XCTAssertEqual(Set(catalog.items.map(\.id)), Set([
+            "freestanding-info-stand", "gallery-stool", "upholstered-gallery-bench",
+            "closed-exit-door", "exit-pictogram-sign", "sculpture-gallery-bench",
+            "portal-pale-mineral", "portal-warm-oak", "compact-caption-stand",
+            "linear-track", "hayes-clear-protective-hood", "sculpture-bench-refined-v6",
+            "dark-track-network", "painting-rectangular-dark-track",
+        ]))
+        XCTAssertEqual(catalog.items.count, 14)
+        let rail = try XCTUnwrap(catalog.items.first { $0.id == "painting-rectangular-dark-track" })
+        XCTAssertEqual(rail.kind, .ceilingRail)
+        XCTAssertEqual(rail.model.sha256, "aca126489bf21adcc637e9a3c3bb805bb57f93111c3333a8fdefab9d371d1c42")
+
+        let files = FileManager.default
+        let root = files.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? files.removeItem(at: root) }
+        let relative = "assets/furnishings/default-manifest.json"
+        let path = root.appendingPathComponent(relative)
+        try files.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var changed = try Data(contentsOf: source.appendingPathComponent(relative))
+        XCTAssertEqual(changed.count, 25_957)
+        changed[changed.startIndex] ^= 1
+        try changed.write(to: path)
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: root))
+    }
+
     func testExact117RectangleDiscoveryAndSourceNoticeIntegrity() async throws {
         guard let input = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_117_RUNTIME_PLATFORM"] else {
             throw XCTSkip("Set EXHIBITOS_DEFAULT_117_RUNTIME_PLATFORM to the qualified runtime platform directory")

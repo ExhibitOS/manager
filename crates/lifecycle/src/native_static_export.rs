@@ -31,6 +31,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354"
             || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
             || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
+            || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
             || isolated_saved_head_runtime_allowed(manifest))
 }
 fn isolated_saved_head_runtime_allowed(manifest: &str) -> bool {
@@ -3255,6 +3256,15 @@ mod detail_tests {
         assert!(!isolated_saved_head_runtime_allowed(target));
         assert!(!saved_head_runtime_allowed(&target.to_uppercase()));
         assert!(!saved_head_runtime_allowed(&"f".repeat(64)));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn known_track_aim_saved_head_export_stays_ordinary_only() {
+        let manifest = crate::native_payload::KNOWN_TRACK_AIM_TARGET.2;
+        assert!(saved_head_runtime_allowed(manifest));
+        assert!(!isolated_saved_head_runtime_allowed(manifest));
+        assert!(!saved_head_runtime_allowed(&manifest.to_uppercase()));
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
