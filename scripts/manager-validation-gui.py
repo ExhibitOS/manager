@@ -166,9 +166,11 @@ def pids(executable=GUI):
     return {int(row[0]) for row in rows if len(row) == 2 and row[1] == str(APP / executable)}
 
 
-def launch_services_has_app():
+def launch_services_has_app(*, strict=False):
     result = subprocess.run(("/usr/bin/lsappinfo", "find", f"bundleID={BUNDLE_ID}"),
                             text=True, capture_output=True, check=False)
+    if strict:
+        require(result.returncode == 0, "Unable to verify the Launch Services registration.")
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
@@ -190,24 +192,33 @@ def check_return(bundle, profile, pins, receipt_path):
             "The retained launch receipt must match the owner, PID, bundle, profile and pins.")
 
     def verify_exited():
-        require(not pids() and not pids(HELPER) and not launch_services_has_app(),
+        require(not pids() and not pids(HELPER) and not launch_services_has_app(strict=True),
                 "The fixed GUI or its helper is still registered. Have the owner finish normal Quit.")
 
     verify_exited()
     anchor = hashlib.sha256(os.fsencode(profile)).hexdigest()
     paths = (profile.parent / f".exhibitos-profile-session-{anchor}.lock", profile / "profile-session.lock")
     with ExitStack() as locks:
+        held = []
         for path in paths:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             locks.callback(os.close, fd)
             info = os.fstat(fd)
-            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1,
+            require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+                    and info.st_uid == os.geteuid() and info.st_nlink == 1,
                     "The profile lease file has unexpected custody.")
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise ValidationError("The fixed profile lease is still held. Wait for its normal return.") from error
+            held.append((path, info))
         verify_exited()
+        for path, info in held:
+            named = path.lstat()
+            require(stat.S_ISREG(named.st_mode) and stat.S_IMODE(named.st_mode) == 0o600
+                    and named.st_uid == os.geteuid() and named.st_nlink == 1
+                    and (named.st_dev, named.st_ino) == (info.st_dev, info.st_ino),
+                    "The held profile lease no longer matches the named file.")
     return {**receipt, "returnVerified": True, "innerProfileLeasesAvailable": True}
 
 
