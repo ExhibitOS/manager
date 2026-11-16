@@ -5387,10 +5387,11 @@ mod furnishing_thumbnail_upgrade_result_tests {
 
     #[test]
     fn contact_catalog52_initialize_inherits_required_hayes_channel_only_for_exact_host() {
-        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET,
+        use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, FIXED64_PUBLICATION_REPAIR_TARGET, KNOWN_TRACK_AIM_TARGET,
             INSTALLED_CATALOG_ORIGIN_TARGET, VIEWER_BUDGET_TARGET, COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET};
         let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
-        for target in [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET] {
+        for target in [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET,
+            FIXED64_PUBLICATION_REPAIR_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET] {
         assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Initialize)));
         assert!(ordinary_inherited_hayes(&make(target), Some(FurnishingStart::Reopen)));
         for start in [None, Some(FurnishingStart::Upgrade051To050051),
