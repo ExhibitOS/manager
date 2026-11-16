@@ -49,6 +49,7 @@ public actor NativeAutomationSession {
     private let workspaceV6ValidationRuntime: URL?
     private let workspaceV7ValidationRuntime: URL?
     private let existingWorkspaceV5: ExistingWorkspaceV5?
+    private let firstArchitectureEntry: Bool
     private let appliedDraftRecovery: NativeAppliedDraftSave.Anchor?
     private let root: URL
     private let installedAuthoringCLI: Bool
@@ -63,6 +64,7 @@ public actor NativeAutomationSession {
     private var currentImageThumbnailReviews: [String: NativeCurrentImageThumbnailReview] = [:]
     private var runtimeManifest: String?
     private var identity: NativeDocumentState?
+    private var firstArchitectureStaged: NativeExhibitionDraft?
     private var privateHost: NativePrivateHost?
     private var closed = false
     private var busy = false
@@ -97,7 +99,7 @@ public actor NativeAutomationSession {
     private var selectedOEXFormat: String?
     private var runtimeStopped = false
 
-    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil) throws {
+    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil, firstArchitectureEntry: Bool = false) throws {
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
@@ -115,7 +117,8 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: $0.manifestSHA256)
             } == true
-        guard !(selectedOEX9 && selectedOEX10),
+        guard !firstArchitectureEntry || (existingWorkspaceV5?.manifestSHA256 == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02" && !selectedOEX9 && !selectedOEX10 && workspaceV6ValidationRuntime == nil && workspaceV7ValidationRuntime == nil && appliedDraftRecoveryPath == nil),
+              !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
               !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
               existingWorkspaceV5 == nil || (!selectedOEX9 && !selectedOEX10
@@ -137,6 +140,7 @@ public actor NativeAutomationSession {
         self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
         self.workspaceV6ValidationRuntime = workspaceV6ValidationRuntime
         self.existingWorkspaceV5 = existingWorkspaceV5
+        self.firstArchitectureEntry = firstArchitectureEntry
         self.workspaceV7ValidationRuntime = workspaceV7ValidationRuntime
         let selectedDraft12 = draft12 && existingWorkspaceV5 == nil
         selectedOEXFormat = selectedDraft12 ? "1.0.0-draft.12" : selectedOEX10 ? "1.0.0-draft.10" : selectedOEX9 ? "1.0.0-draft.9" : nil
@@ -196,6 +200,7 @@ public actor NativeAutomationSession {
         self.workspaceV6ValidationRuntime = nil
         self.workspaceV7ValidationRuntime = nil
         self.existingWorkspaceV5 = nil
+        self.firstArchitectureEntry = false
         self.appliedDraftRecovery = nil
         bridge = try NativeBridge(helper: helper, profile: profile,
                                   requireExistingManagedProfile: requireExistingManagedProfile)
@@ -333,6 +338,35 @@ public actor NativeAutomationSession {
         } else {
             status = try await bridge.nativeStatus(context)
             saved = try await bridge.documentState(context)
+        }
+        if firstArchitectureEntry {
+            guard !status.needsShutdown, !status.accountRequired, status.selectedOex != true, status.errorCode == nil,
+                  let config = status.configuration, config.kind == "personal", config.manifestSha256 == expected.manifestSHA256,
+                  config.tenantId == expected.tenantId, config.ports.web == ports["web"],
+                  config.ports.api == ports["api"], config.ports.database == ports["database"],
+                  saved.workspaceId == expected.workspaceId, saved.tenantId == expected.tenantId,
+                  saved.principalId == expected.principalId, !saved.dirty, saved.draft == nil,
+                  saved.etag == nil, saved.savedEditVersion == nil, saved.pending == nil else {
+                throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+            }
+            _ = try await bridge.start(context)
+            let ready = try await waitStartup(manifest: expected.manifestSHA256)
+            guard ready.runtime?.readiness.ready == true, ready.selectedOex != true,
+                  let actual = ready.configuration else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            try Self.checkReopenedConfiguration(actual, previous: config, ports: config.ports)
+            guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            let credentials = try await bridge.authoringSession(context)
+            guard credentials.tenantId == expected.tenantId, credentials.principalId == expected.principalId else {
+                throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+            }
+            let api = try AuthoringAPI(port: config.ports.web, tenantId: expected.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
+            let session = try await api.connect(credentials)
+            guard await api.admitsPersonalExhibitionCreation,
+                  try value(await bridge.documentState(context)) == value(saved) else {
+                throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+            }
+            self.api = api; authoringSession = session; runtimeManifest = config.manifestSha256; identity = saved
+            return try await statusValue()
         }
         guard !status.needsShutdown, !status.accountRequired, status.selectedOex != true, status.errorCode == nil,
               let config = status.configuration, config.manifestSha256 == expected.manifestSHA256,
@@ -1784,6 +1818,19 @@ public actor NativeAutomationSession {
         return try NativeExhibitionDraft.new(title: title, roomBaseLight: roomBaseLight)
     }
 
+    static func firstArchitectureDraft(_ request: DocumentValue, in current: NativeDocumentState, roomBaseLight: Bool) throws -> NativeExhibitionDraft {
+        let initial = try emptyExhibitionDraft(request, in: current, roomBaseLight: roomBaseLight)
+        guard let rooms = initial.candidate["rooms"].items, rooms.count == 1,
+              let roomID = rooms[0]["id"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        let ids = (0..<6).map { _ in UUID().uuidString.lowercased() }
+        let shell: DocumentValue = .object(["type": .string("white-cube"), "roomId": .string(roomID),
+                                           "surfaceIds": .array(ids.map(DocumentValue.string))])
+        let withShell = try NativePrivateHostArchitecture.applying(shell, to: initial)
+        let opening: DocumentValue = .object(["type": .string("opening-add"), "id": .string(UUID().uuidString.lowercased()),
+            "surfaceId": .string(ids[0]), "width": .number(1.10), "height": .number(2.20), "offset": .vector([0, -0.90])])
+        return try NativePrivateHostArchitecture.applying(opening, to: withShell)
+    }
+
     static func checkPendingSaveRequest(_ request: DocumentValue, _ current: NativeDocumentState,
                                         knownRevision: UInt64?, ordinary: Bool) throws {
         guard let draft = current.draft, let pending = current.pending,
@@ -2060,6 +2107,9 @@ public actor NativeAutomationSession {
         let bytes = try encoder.encode(request)
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
+        if firstArchitectureEntry && !["read", "first-architecture-create", "save"].contains(operation) {
+            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
         if current.pending?.origin == NativeAppliedDraftSave.origin && !["read", "applied-draft-save-resume"].contains(operation) {
             throw BridgeFailure("APPLIED_DRAFT_RECOVERY_ONLY")
         }
@@ -2101,6 +2151,19 @@ public actor NativeAutomationSession {
         busy = true; defer { busy = false }
         let result: DocumentValue
         switch operation {
+        case "first-architecture-create":
+            let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard firstArchitectureEntry, Set(fields.keys) == keys, await api.admitsPersonalExhibitionCreation else {
+                throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            var next = current
+            next.draft = try Self.firstArchitectureDraft(request, in: current, roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
+            try Task.checkCancellation()
+            let staged = try await bridge.saveDocumentState(context, state: next)
+            guard staged.draft == next.draft else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            firstArchitectureStaged = staged.draft
+            result = try value(staged)
         case let name where Self.privateHostOperations.contains(name):
             result = try await executePrivateHost(name, request: request, id: id, context: context, api: api, current: current)
         case "exhibition-new":
@@ -3579,6 +3642,11 @@ public actor NativeAutomationSession {
             result = try await resumeAppliedDraftSave(request, id: id, context: context, api: api, current: current)
         case "save":
             guard let draft = current.draft else { throw BridgeFailure("EXHIBITION_REQUIRED") }
+            if firstArchitectureEntry {
+                guard current.etag == nil, current.savedEditVersion == nil, draft == firstArchitectureStaged else {
+                    throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE")
+                }
+            }
             var next = current
             if next.pending != nil {
                 // A restarted ordinary operator must retain the original
@@ -3593,6 +3661,11 @@ public actor NativeAutomationSession {
             }
             let saved = try await api.saveExhibition(draft, requestId: id, etag: next.etag)
             try saved.requireSameComparison(await api.exhibition(draft.id))
+            if firstArchitectureEntry {
+                guard next.etag == nil, saved.revision == 1, saved.draft == draft else {
+                    throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+                }
+            }
             next.draft = saved.draft; next.etag = saved.etag; next.savedEditVersion = saved.draft.document["editVersion"].integer; next.pending = nil
             result = try value(await bridge.saveDocumentState(context, state: next))
         case "reopen-saved":
