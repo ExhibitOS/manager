@@ -303,17 +303,23 @@ impl Binding {
     pub(super) fn verify_restore_activation(&self, root: &Path) -> Result<()> {
         self.check()?;
         let proof = self.restore.as_ref().ok_or_else(|| err(ERROR))?;
+        crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
+            &proof.archive_manifest_sha256, &proof.target_system_identifier, self.restore_receipt_payload(proof), proof.provenance.as_ref(),
+            proof.carried_provenance.as_ref(), proof.private_codec_manifest_sha256.as_deref())
+    }
+
+    fn restore_receipt_payload(&self, proof: &Restore) -> &str {
+        if proof.private_codec_manifest_sha256.is_some() {
+            return &self.payload_manifest_sha256;
+        }
         let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
-        let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
+        crate::native_payload::catalog45_retained_restore_payload(tuple)
             .or_else(|| crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::furnishing_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::current_image_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::combined_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::gpu_model_carried_receipt_payload(tuple))
-            .unwrap_or(self.payload_manifest_sha256.as_str());
-        crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
-            &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref(),
-            proof.carried_provenance.as_ref(), proof.private_codec_manifest_sha256.as_deref())
+            .unwrap_or(self.payload_manifest_sha256.as_str())
     }
 
     pub(super) fn same_installation(&self, other: &Self) -> bool {
@@ -2528,6 +2534,7 @@ mod tests {
         reopened.consume(&first).unwrap();
         assert_eq!(reopened.admission_kind, Admission::CleanReopen);
         assert_eq!(reopened.restore, prior.restore);
+        assert_eq!(reopened.restore_receipt_payload(reopened.restore.as_ref().unwrap()), manifest);
     }
 
     #[test]
