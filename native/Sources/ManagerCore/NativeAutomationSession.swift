@@ -36,6 +36,22 @@ public actor NativeAutomationSession {
         }
     }
 
+    private static let preparedBudgetReadbackManifest = "72495f5c9da5a4bf4cb772e077d4bd5e0e4d9059683505b18d3e2335eab7b4a1"
+
+    static func admitsPreparedBudgetReadback(manifest: String?, publicationProfile: String?) -> Bool {
+        #if DEBUG
+        return manifest == preparedBudgetReadbackManifest && publicationProfile == "bounded-local-v1"
+        #else
+        return false
+        #endif
+    }
+
+    static func checkPreparedBudgetReadbackOperation(manifest: String?, operation: String) throws {
+        if manifest == preparedBudgetReadbackManifest && !["read", "viewer-budget-inspect"].contains(operation) {
+            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
+    }
+
     private var bridge: NativeBridge
     private var bridgeOpen = true
     private var closeFailure: Error?
@@ -396,6 +412,8 @@ public actor NativeAutomationSession {
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
+        let admitsPreparedBudget = Self.admitsPreparedBudgetReadback(manifest: config.manifestSha256,
+            publicationProfile: session.nativePublicationProfile)
         let admitsDefaultSeats = await api.admitsWorkspaceDefaultSeatProposal
         let requiresDefaultSeatProfile = AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256)
             || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: config.manifestSha256)
@@ -411,7 +429,7 @@ public actor NativeAutomationSession {
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
-                || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
+                || admitsPreparedBudget || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
@@ -2010,6 +2028,7 @@ public actor NativeAutomationSession {
             throw BridgeFailure("APPLIED_DRAFT_RECOVERY_ONLY")
         }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
+        try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
