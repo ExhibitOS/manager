@@ -122,7 +122,7 @@ final class ExhibitionModel: ObservableObject {
     }
 
     func furnishingThumbnail(for item: WorkspaceFurnishingSummary) -> FurnishingThumbnail? {
-        guard let lookup = furnishingThumbnailLookupKey(item) else { return nil }
+        guard item.thumbnailRoute != .installedPlaceholder, let lookup = furnishingThumbnailLookupKey(item) else { return nil }
         guard let key = furnishingThumbnailOrder.last(where: {
                   $0.access == lookup.access && $0.tenant == lookup.tenant && $0.principal == lookup.principal
                       && $0.furnishingID == item.id && $0.version == item.version
@@ -136,7 +136,7 @@ final class ExhibitionModel: ObservableObject {
             && !infoStandPreviewing && readThumbnailCheckpoint != nil && writeThumbnailCheckpoint != nil
     }
     func makeFurnishingThumbnailReview(_ summary: WorkspaceFurnishingSummary) -> FurnishingThumbnailReviewModel? {
-        guard summary.installedThumbnailProfile == nil, durableFurnishingThumbnailsAvailable, !busy, summary.rightsAvailability.display,
+        guard summary.thumbnailRoute == .workspace, durableFurnishingThumbnailsAvailable, !busy, summary.rightsAvailability.display,
               let api, let owner = state, let readCheckpoint = readThumbnailCheckpoint,
               let writeCheckpoint = writeThumbnailCheckpoint else { return nil }
         let access = viewportAccessID
@@ -235,6 +235,7 @@ final class ExhibitionModel: ObservableObject {
     /// Existing registry cards need the same current descriptor/rights binding
     /// as a live intake return. Read it without creating or saving an intake.
     func loadFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary, retry: Bool) async {
+        guard summary.thumbnailRoute != .installedPlaceholder else { return }
         let previous = furnishingThumbnailTail, id = UUID(), access = viewportAccessID
         let job = Task { [weak self] in
             await previous?.value
@@ -247,7 +248,7 @@ final class ExhibitionModel: ObservableObject {
     }
 
     private func loadExistingFurnishingThumbnail(_ summary: WorkspaceFurnishingSummary, retry: Bool) async {
-        if summary.installedThumbnailProfile != nil {
+        if summary.thumbnailRoute == .installedImage {
             do { try await loadInstalledFurnishingThumbnail(summary) }
             catch {
                 guard let lookup = furnishingThumbnailLookupKey(summary), !Task.isCancelled else { return }
