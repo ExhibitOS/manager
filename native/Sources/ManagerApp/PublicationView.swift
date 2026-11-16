@@ -434,7 +434,11 @@ struct NativePublicationView: View {
             NativeStaticExportView(model: staticExport, completed: model.state?.completed.flatMap { completed in
                 model.completedMatches(completed, source: source) ? completed : nil
             }, ready: ready && !model.busy && !hosting.running && !hosting.busy,
-                inspectBudget: { try await model.preparedViewerBudget($0, source: source) })
+                inspectBudget: { try await model.preparedViewerBudget($0, source: source) },
+                isCurrent: { completed in
+                    !model.busy && model.state?.pending == nil && !hosting.running && !hosting.busy
+                        && model.completedMatches(completed, source: source)
+                })
             NativeHostingView(model: hosting, receipt: staticExport.status?.privateEditor == true ? nil : staticExport.status?.receipt.flatMap { receipt in
                 model.state?.completed.flatMap { completed in
                     completed.publication.publicationId == receipt.publicationId && model.completedMatches(completed, source: source) ? receipt : nil
