@@ -65,8 +65,13 @@ public struct LightCommand: Equatable, Sendable {
     }
     private func replacement(in draft: NativeExhibitionDraft, selectedLightId: String?) throws -> (Int, DocumentValue) {
         let (index, original) = try Self.row(in: draft, id: lightId, selectedLightId: selectedLightId)
+        let settings = try? NativeLightFixture.settings(in: draft, lightId: lightId)
+        let ceilingFill = settings.map { $0["ceilingFill"] != .null } ?? false
+        if ceilingFill {
+            guard type == .area, intensity >= 0, intensity == original["intensity"].double else { throw Self.invalid() }
+        }
         guard color.count == 3, color.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
-              intensity.isFinite, (0...1_000_000).contains(intensity), position.count == 3,
+              intensity.isFinite, ceilingFill || (0...1_000_000).contains(intensity), position.count == 3,
               position.allSatisfy({ $0.isFinite && abs($0) <= 10_000 }),
               case .object = original["transform"],
               let oldType = original["type"].string.flatMap(NativeLightType.init(rawValue:)),
@@ -78,7 +83,7 @@ public struct LightCommand: Equatable, Sendable {
         } else if beamAngle != nil { throw Self.invalid() }
         if type == .area {
             guard let areaSize, areaSize.count == 2,
-                  areaSize.allSatisfy({ $0.isFinite && (0.01...100).contains($0) }) else { throw Self.invalid() }
+                  areaSize.allSatisfy({ $0.isFinite && (ceilingFill ? $0 > 0 : (0.01...100).contains($0)) }) else { throw Self.invalid() }
         } else if areaSize != nil { throw Self.invalid() }
         guard fixture?.supports(type) != false else { throw Self.invalid() }
         if case .temperature(let kelvin) = colorIntent {
@@ -203,6 +208,7 @@ public struct LightFormBuffer: Equatable, Sendable {
     public let lightId: String
     public let isRoomBaseLight: Bool
     public let basePlacement: RoomBaseLightPlacement?
+    public let ceilingFillBrightness: Double?
     public var type: NativeLightType
     public var red: String, green: String, blue: String
     public var colorMode: NativeLightColorMode
@@ -260,6 +266,7 @@ public struct LightFormBuffer: Equatable, Sendable {
         let settings = try? NativeLightFixture.settings(in: draft, lightId: selectedLightId)
         isRoomBaseLight = settings?["purpose"] == .string("room-base")
         basePlacement = settings?["basePlacement"].string.flatMap(RoomBaseLightPlacement.init(rawValue:))
+        ceilingFillBrightness = settings.flatMap { try? RoomCeilingFill.brightness(in: $0["ceilingFill"]) }
         originalTemperature = settings?["temperatureKelvin"].double
         originalColor = try color.map { value in
             guard let n = value.double, n.isFinite else { throw LightCommand.invalid() }; return n

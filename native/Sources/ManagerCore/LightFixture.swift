@@ -40,7 +40,7 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
             return .object(["fixture": .string(Self.none.rawValue)])
         }
         guard case .object(var fields) = row,
-              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "trackAim"]),
+              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "ceilingFill", "trackAim"]),
               fields["purpose"].map({ $0 == .string("room-base") }) ?? true,
               row["fixture"].string.flatMap(Self.init(rawValue:)) != nil else { throw invalid() }
         try RoomBaseLightIntent.checkMarker(row)

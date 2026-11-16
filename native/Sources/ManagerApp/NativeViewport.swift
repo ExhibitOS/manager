@@ -157,6 +157,7 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var lightFixtureSupported = false
     @Published fileprivate(set) var lightObjectSupported = false
     @Published fileprivate(set) var roomBaseLightSupported = false
+    @Published fileprivate(set) var roomCeilingFillSupported = false
     @Published fileprivate(set) var wallFinishSupported = false
     @Published fileprivate(set) var benchInspectorSupported = false
     @Published fileprivate(set) var plaqueInspectorSupported = false
@@ -421,7 +422,8 @@ final class NativeViewportController: ObservableObject {
     func perform(_ command: NativeGeometryAction, model: ExhibitionModel) async {
         guard editingContextActive, !model.placingArtwork, let action, connected else { return }
         if case .installation(.alignOnVerifiedPlinth(_)) = command, !plinthEnvelopeAlignSupported { return }
-        if case .roomBaseLight = command, !model.canUseRoomBaseLight { return }
+        if case .roomBaseLight(let roomAction) = command,
+           !model.canUseRoomBaseLight || (roomAction.requestsCeilingFill && !model.canUseRoomCeilingFill) { return }
         let contextGeneration = editingContextGeneration, access = model.viewportAccessID
         do {
             let (candidate, base) = try await action(command)
@@ -539,7 +541,7 @@ struct NativeViewport: NSViewRepresentable {
             if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false }
-            if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.lightObjectAction = nil; controller.wallFinishAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
+            if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.lightObjectAction = nil; controller.wallFinishAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.roomCeilingFillSupported = false; controller.wallFinishSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
             if controller.owner == epoch { controller.action = nil; controller.thumbnailAction = nil; controller.registeredFurnishingThumbnailAction = nil; controller.findSelectionAction = nil; controller.placementAction = nil; controller.catalogDropAction = nil; controller.catalogDropSupported = false; controller.placementSupported = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.acceptedSequence = 0 }
         }
         private func restoreSnapshotPolicy(_ id: UUID? = nil) {
@@ -575,7 +577,7 @@ struct NativeViewport: NSViewRepresentable {
                 controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil
                 controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false
                 entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false
-                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
+                controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.roomCeilingFillSupported = false; controller.wallFinishSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
                 sendTask?.cancel(); sendTask = nil
@@ -642,7 +644,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.retireCameraInteraction(); controller.cameraInteractionAction = nil; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.retireCameraInteraction(); controller.cameraInteractionAction = nil; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.roomCeilingFillSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.retireCameraInteraction()
@@ -710,6 +712,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.lightFixtureSupported = acceptance.supportsLightFixture
                         self.controller.lightObjectSupported = acceptance.supportsLightObject
                         self.controller.roomBaseLightSupported = frame.workspaceId == nil && !frame.disabled && acceptance.supportsRoomBaseLight
+                        self.controller.roomCeilingFillSupported = self.controller.roomBaseLightSupported && acceptance.supportsRoomCeilingFill
                         self.controller.wallFinishSupported = acceptance.supportsWallFinish
                         self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
                         self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
@@ -1534,13 +1537,13 @@ struct NativeViewportArea: View {
     @ViewBuilder private var roomAddControls: some View {
         Button("공간 추가") {
             let action: NativeGeometryAction = model.canUseRoomBaseLight
-                ? .roomBaseLight(.addRoom(name: "새 공간"))
+                ? .roomBaseLight(.addRoom(name: "새 공간", ceilingFill: model.canUseRoomCeilingFill))
                 : .addRoom(name: "새 공간")
             Task { await controller.perform(action, model: model) }
         }
         if model.canUseRoomBaseLight {
             Button("기본 조명 적용") {
-                let action = RoomBaseLightAction.ensure(roomId: model.roomId)
+                let action = RoomBaseLightAction.ensure(roomId: model.roomId, ceilingFill: model.canUseRoomCeilingFill)
                 Task { await controller.perform(.roomBaseLight(action), model: model) }
             }.disabled(!model.canEnsureRoomBaseLight)
         }
