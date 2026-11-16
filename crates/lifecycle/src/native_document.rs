@@ -245,6 +245,14 @@ impl InstallationController {
         }
         Ok((file, saved))
     }
+    pub(crate) fn require_empty_oex_document_unlocked(&self, service: &LifecycleService) -> Result<()> {
+        let (_, doc) = self.document_unlocked(service)?;
+        if doc.draft.is_some() || doc.pending.is_some() || doc.etag.is_some() || doc.saved_edit_version.is_some() {
+            return Err(err("NATIVE_OEX_FRESH_DRAFT_REQUIRED"));
+        }
+        Ok(())
+    }
+
     pub fn native_document(&self, token: &str) -> Result<DocumentState> {
         self.with_current(token, |service| {
             let profile = self

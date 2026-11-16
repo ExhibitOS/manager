@@ -54,7 +54,7 @@ pub(super) struct Inventory { pub expanded_bytes: u64, pub packed_bytes: u64, pu
 impl Inventory {
     pub(super) fn check_format(&self, selected:Option<&str>)->Result<()> {
         if self.archive_format.as_deref()!=selected
-            || selected.is_some_and(|f|!matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"|"1.0.0-draft.12")){return Err(invalid());} Ok(())
+            || selected.is_some_and(|f|!matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"|"1.0.0-draft.12"|crate::native_payload::CURRENT_RAIL_OEX_FORMAT)){return Err(invalid());} Ok(())
     }
 }
 #[allow(dead_code)]
@@ -72,7 +72,7 @@ pub(super) fn check(control: &Control, reply: &[u8]) -> Result<Inventory> {
         || value.expanded_bytes > 512*1024*1024
         || value.packed_bytes > value.expanded_bytes || value.packed_bytes > 512*1024*1024
         || value.entry_count < 2 || value.entry_count > 256
-        || value.archive_format.as_deref().is_some_and(|f| !matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"|"1.0.0-draft.12"))
+        || value.archive_format.as_deref().is_some_and(|f| !matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"|"1.0.0-draft.12"|crate::native_payload::CURRENT_RAIL_OEX_FORMAT))
         || !hash_valid(&value.manifest_sha256) { return Err(invalid()); }
     Ok(Inventory { expanded_bytes: value.expanded_bytes, packed_bytes: value.packed_bytes,
         manifest_sha256: value.manifest_sha256, entry_count: value.entry_count, archive_format:value.archive_format })
@@ -141,7 +141,7 @@ pub(super) fn run_direct(payload: &Payload, input: &super::oex_read_fd::Observed
 /// Executable paths come only from the already-verified payload in production.
 fn run_owned(node: &Path, script: &Path, root: &Path, input: &super::oex_read_fd::ObservedStage,
     request: &Control, expected_format:Option<&str>, cancelled: &AtomicBool, check_owner: &mut dyn FnMut() -> Result<()>) -> Result<Prepared> {
-    if expected_format.is_some_and(|f|!matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"|"1.0.0-draft.12")){return Err(invalid());}
+    if expected_format.is_some_and(|f|!matches!(f,"1.0.0-draft.9"|"1.0.0-draft.10"|"1.0.0-draft.12"|crate::native_payload::CURRENT_RAIL_OEX_FORMAT)){return Err(invalid());}
     let uncertain = || err("NATIVE_OEX_WORKER_UNCERTAIN");
     let encoded = request.encode()?;
     check_owner()?;

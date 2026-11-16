@@ -152,6 +152,9 @@ impl Setup {
         self.normal_selected_v3_bootstrap(auth, generation, "normal-oex-workspace-v5")
     }
     pub(super) fn workspace_import_bootstrap(&self, auth: &LocalAuthority, generation: &str, version: crate::native_payload::WorkspaceImport) -> Result<Vec<u8>> {
+        if version == crate::native_payload::WorkspaceImport::CurrentRail {
+            return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+        }
         self.normal_selected_v3_bootstrap(auth, generation, super::oex_catalog_frames::Protocol::from(version).owner_mode())
     }
     pub(super) fn workspace_furnishing_bootstrap(&self, auth: &LocalAuthority, generation: &str, start: super::FurnishingStart) -> Result<Vec<u8>> {

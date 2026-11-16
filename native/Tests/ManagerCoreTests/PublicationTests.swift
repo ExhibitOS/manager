@@ -134,6 +134,24 @@ final class PublicationTests: XCTestCase {
         XCTAssertThrowsError(try pending.confirmingSavedSnapshot(NativeStudioResponse(revision: 1, etag: etag, draft: NativeExhibitionDraft(document: changed))))
         XCTAssertThrowsError(try accepted.confirmingSavedSnapshot(saved), "An existing acknowledgement cannot be overwritten")
     }
+    func testLegacySavedSnapshotCanAcquireOnlyItsFirstBinding() throws {
+        let source = try NativeExhibitionDraft.new()
+        var pending = try NativePublicationPending(source: source, etag: "\"studio-r2-" + String(repeating: "a", count: 64) + "\"")
+        let etag = "\"studio-r1-" + String(repeating: "b", count: 64) + "\""
+        let saved = NativeStudioResponse(revision: 1, etag: etag, draft: pending.snapshot)
+        let binding = String(repeating: "c", count: 64)
+        XCTAssertThrowsError(try pending.bindingSavedSnapshot(saved, to: binding))
+        pending.snapshotEtag = etag
+        let bound = try pending.bindingSavedSnapshot(saved, to: binding)
+        XCTAssertEqual(bound.planBindingSha256, binding)
+        XCTAssertEqual(bound.snapshot, pending.snapshot)
+        XCTAssertEqual(bound.snapshotEtag, pending.snapshotEtag)
+        XCTAssertEqual(bound.saveRequestId, pending.saveRequestId)
+        XCTAssertEqual(bound.publishRequestId, pending.publishRequestId)
+        XCTAssertThrowsError(try bound.bindingSavedSnapshot(saved, to: binding))
+        XCTAssertThrowsError(try pending.bindingSavedSnapshot(
+            NativeStudioResponse(revision: 1, etag: etag, draft: source), to: binding))
+    }
     func testPendingSnapshotBindingRejectsLateGenerationScopeRevisionAndRequestChanges() throws {
         let pending = try NativePublicationPending(source: NativeExhibitionDraft.new(), etag: "\"studio-r7-" + String(repeating: "a", count: 64) + "\"")
         let state = NativePublicationState(format: 1, revision: 7, workspaceId: UUID().uuidString.lowercased(),

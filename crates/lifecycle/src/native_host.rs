@@ -47,7 +47,11 @@ pub struct Status {
     pub oex_workspace_v6_qualified: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oex_workspace_v7_qualified: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oex_current_rail_qualified: Option<bool>,
     pub oex_save_offer: Option<OexSaveOffer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_rail_publication_manifest_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fresh_image_release_configured: Option<bool>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -406,6 +410,9 @@ impl Host {
         state.configuration = None;
         state.account_required = true;
         state.runtime = None;
+        if state.payload.as_ref().is_some_and(|payload| payload.current_rail_payload()) {
+            state.payload = None;
+        }
         state.error = None;
         state.backup = None;
         state.restoration = None;
@@ -454,7 +461,13 @@ impl Host {
             oex_028_qualified: state.oex_028_qualified,
             oex_workspace_v6_qualified: selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V6),
             oex_workspace_v7_qualified: (selected_workspace_import == Some(crate::native_payload::WorkspaceImport::V7)).then_some(true),
+            oex_current_rail_qualified: (selected_workspace_import == Some(crate::native_payload::WorkspaceImport::CurrentRail)).then_some(true),
             oex_save_offer: state.oex_save_offer.clone(),
+            current_rail_publication_manifest_sha256: state.payload.as_ref().filter(|payload| {
+                payload.current_rail_payload() && !state.busy && !state.selected_oex
+                    && state.session.is_some() && state.error.is_none()
+                    && state.runtime.as_ref().is_some_and(|runtime| runtime.state == "ready" && runtime.readiness.ready)
+            }).map(|payload| payload.context().manifest_sha256),
             fresh_image_release_configured: state.configuration.as_ref().and_then(|configured| {
                 crate::native_payload::fresh_image_release_manifest_matches(&configured.manifest_sha256)
                     .then_some(true)
@@ -805,7 +818,15 @@ impl Host {
                             let cached = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.payload.clone();
                             let payload = match cached {
                                 Some(p) => p,
-                                None => Arc::new(Payload::open(&resources)?),
+                                None => {
+                                    let mut payload = Payload::open(&resources)?;
+                                    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                                    if payload.current_rail_payload() {
+                                        controller.with_current(&token, |service|
+                                            Session::classify_current_rail_source(service, &mut payload))?;
+                                    }
+                                    Arc::new(payload)
+                                },
                             };
                             let oex_027_qualified = payload.normal_oex_027_selected_input()?;
                             let oex_028_qualified = payload.normal_oex_028_selected_input()?;
@@ -835,6 +856,9 @@ impl Host {
                                     shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
                                 cancel.store(state.stop_requested, Ordering::SeqCst);
                                 state.cancel = Some(cancel.clone());
+                                if payload.current_rail_selected() {
+                                    state.selected_oex = true;
+                                }
                             }
                             let mut observe_phase = |context| {
                                 if let Ok(mut state) = shared.lock() {
@@ -842,9 +866,14 @@ impl Host {
                                 }
                             };
                             let selected = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;
-                            let started = if selected { session.start_cancellable_observing(&mut observe_phase) } else {
+                            let started = if selected && !payload.current_rail_selected() {
+                                session.start_cancellable_observing(&mut observe_phase)
+                            } else {
                                 controller.with_current_mutation(&token, |service| {
                                     controller.ensure_no_bounded_import_transition_unlocked(service)?;
+                                    if payload.current_rail_selected() {
+                                        controller.require_empty_oex_document_unlocked(service)?;
+                                    }
                                     session.start_cancellable_observing(&mut observe_phase)
                                 })
                             };
@@ -1165,9 +1194,17 @@ impl Host {
             return Err(err("BUSY"));
         }
         if let UiCommand::SaveOEXImportState { selection_token, transfer } = &request.command {
-            let selected = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;
+            let (selected, current_rail) = {
+                let state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                (state.selected_oex, state.payload.as_ref().is_some_and(|payload| payload.current_rail_selected()))
+            };
             if !selected && transfer.intent.as_ref().is_some_and(|i| i.profile.as_deref() == Some("bounded-file-v1")) {
                 return Err(err("NATIVE_OEX_IMPORT_PENDING"));
+            }
+            if let Some(format) = transfer.intent.as_ref().and_then(|intent| intent.oex_format.as_deref())
+                && current_rail != (format == crate::native_payload::CURRENT_RAIL_OEX_FORMAT)
+            {
+                return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
             }
             if selected {
                 let current = self.controller.native_oex_import(selection_token)?;
@@ -1179,6 +1216,10 @@ impl Host {
                         return Err(err("NATIVE_OEX_IMPORT_PENDING"));
                     }
                 }
+            }
+            if current_rail {
+                let stored = self.controller.save_native_oex_import_scoped(selection_token, (**transfer).clone(), true)?;
+                return serde_json::to_value(stored).map_err(|_| err("STATE_INVALID"));
             }
         }
         if selected_import_busy {
@@ -1225,8 +1266,11 @@ impl Host {
                 state.selected_oex_completed = true;
                 return serde_json::to_value(stored).map_err(|_| err("STATE_INVALID"));
             }
-            let selected = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;
-            if selected && self.controller.native_oex_import(selection_token)?.intent.is_some() {
+            let (selected, current_rail) = {
+                let state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                (state.selected_oex, state.payload.as_ref().is_some_and(|payload| payload.current_rail_selected()))
+            };
+            if selected && (current_rail || self.controller.native_oex_import(selection_token)?.intent.is_some()) {
                 return Err(err("NATIVE_OEX_IMPORT_PENDING"));
             }
         }
@@ -1741,8 +1785,13 @@ mod selected_oex_ipc_tests {
         let mut wrong_scope = document.clone(); wrong_scope.workspace_id = Uuid::new_v4().to_string();
         assert!(host.handle(request(2, UiCommand::SaveDocumentState { selection_token: token.clone(), document: Box::new(wrong_scope) })).is_err());
         assert!(controller.native_document(&token).unwrap().draft.is_none());
+        controller.with_current_mutation(&token, |service|
+            controller.require_empty_oex_document_unlocked(service)).unwrap();
         let save = UiCommand::SaveDocumentState { selection_token: token.clone(), document: Box::new(document) };
         host.handle(request(3, save)).unwrap();
+        let occupied = controller.with_current_mutation(&token, |service|
+            controller.require_empty_oex_document_unlocked(service)).unwrap_err();
+        assert_eq!(occupied.code, "NATIVE_OEX_FRESH_DRAFT_REQUIRED");
         let observation = |attempt: String, etag: String| OexSaveObservation { attempt_id: attempt, exhibition_id: offer.exhibition_id.clone(), etag, request_id: offer.request_id.clone() };
         { host.state.lock().unwrap().stop_requested = true; }
         assert!(host.handle(request(4, UiCommand::NativeOexSaveAuthorize { selection_token: token.clone(), observation: observation(offer.attempt_id.clone(), old_etag.clone()) })).is_err());

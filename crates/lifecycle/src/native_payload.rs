@@ -198,6 +198,46 @@ fn workspace_v5_validation_matches(manifest: &Manifest, manifest_hash: &str, sel
 pub(crate) enum WorkspaceImport {
     V6,
     V7,
+    CurrentRail,
+}
+
+pub(crate) const CURRENT_RAIL_OEX_FORMAT: &str = "1.0.0-draft.23";
+pub(crate) const CURRENT_RAIL_PAYLOAD: (&str, &str, &str) = (
+    "646b846d0fbac1130e81a8454616877df3807c5b",
+    "161050f9b7c2ffcc4b8bc3f56eb8cc0ceb536b631a9caf46d77ce270ab6c4f9a",
+    "3e713cc13566556c6eff13c65c11166e9bb292e5ddef229053037b0e54f33a0b",
+);
+const CURRENT_RAIL_HINT: (&str, u64, &str) = (
+    "platform/apps/api/dist/oex-owned-current-rail-format-hint.js", 226,
+    "328daf1d249b1c5e02749edf29e01d5a1ff863356ba51f6a03d872eb996ee1e0",
+);
+const CURRENT_RAIL_PREFLIGHT: (&str, u64, &str) = (
+    "platform/apps/api/dist/oex-owned-current-rail-preflight.js", 203,
+    "9b85761b07e24042378fcce5e615717af60ba1fdaff98ba8677d6f751ba5e948",
+);
+const CURRENT_RAIL_PACKED: (&str, u64, &str) = (
+    "platform/apps/api/dist/oex-owned-current-rail-packed-v2.js", 312,
+    "9a3a81661a19f7a6fdd1e7f84b8f3724aad1d4aa2745cc75e58bca2f5d516146",
+);
+const CURRENT_RAIL_MARKER: (&str, u64, &str) = (
+    "platform/scripts/native-oex-current-workspace-rail-capability-v1.json", 436,
+    "f2075930bcd0a4c51dd8d254274f4e4cd443fe200bf25a832cffe7312acbfb82",
+);
+pub(crate) const CURRENT_RAIL_SCHEMA_NAME: &str = "053_oex_current_workspace_rail.sql";
+pub(crate) const CURRENT_RAIL_SCHEMA_SHA256: &str =
+    "857547176c1149c25c04ad32003c2f148a907c6db7ed28ff1e7d7bb523086d16";
+const CURRENT_RAIL_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-oex-current-workspace-rail/053_oex_current_workspace_rail.sql",
+    1255, CURRENT_RAIL_SCHEMA_SHA256,
+);
+const CURRENT_RAIL_MATERIALIZER: (&str, u64, &str) = (
+    "platform/apps/api/dist/oex-owned-current-rail-chunk-materializer.js", 311,
+    "6609dd9a465e5fe2b0ff5a3dd56085fc104e91260b026c464863b80222a3bfe8",
+);
+
+pub(crate) fn current_rail_host_matches(tuple: (&str, &str, &str)) -> bool {
+    cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))
+        && tuple == CURRENT_RAIL_PAYLOAD
 }
 
 pub(crate) const WORKSPACE_WALL_SCHEMA_NAME: &str = "035_workspace_material_wall_import.sql";
@@ -609,13 +649,22 @@ pub(crate) const RECTANGLE_FIXED64_TARGET: RuntimeTuple = (
     "9506cea2a63d36f4ef1dffa4a0c75a7ac141b3445f193f189b1a830710136702",
     "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29",
 );
-// Exact API-only fixed64 publication source-path repair; ordinary clean refresh only.
+// Exact API-only fixed64 publication source-path repair.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const FIXED64_PUBLICATION_REPAIR_TARGET: RuntimeTuple = (
     "edaefab7ef8b6b003ddd1dbf7755d9d4c93b0699",
     "9506cea2a63d36f4ef1dffa4a0c75a7ac141b3445f193f189b1a830710136702",
     "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
 );
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
+    RECTANGLE_FIXED64_TARGET,
+    FIXED64_PUBLICATION_REPAIR_TARGET,
+    KNOWN_TRACK_AIM_TARGET,
+    INSTALLED_CATALOG_ORIGIN_TARGET,
+    BENCH_BASECOLOR_PREPARATION_TARGET,
+    ROOM_CEILING_FILL_TARGET,
+];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ROOM_CEILING_FILL_TARGET: RuntimeTuple = (
     "e70eee989fc18b815129a4b9adf159fc0616c873",
@@ -739,7 +788,8 @@ pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)
 // exact set. Earlier combined targets retain their reopen/transition scope.
 pub(crate) fn combined_thumbnail_fresh_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET].contains(&tuple);
+    return FRESH_CATALOG52_CONSTRUCTOR_TARGETS.contains(&tuple)
+        || [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2191,6 +2241,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     FurnishingThumbnail050,
     CurrentImageThumbnail051,
     CombinedThumbnails052,
+    CurrentRail053,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -2213,6 +2264,7 @@ impl WorkspaceFurnishingCatalog {
             Self::FurnishingThumbnail050 => 50,
             Self::CurrentImageThumbnail051 => 51,
             Self::CombinedThumbnails052 => 52,
+            Self::CurrentRail053 => 53,
         }
     }
 
@@ -2221,7 +2273,8 @@ impl WorkspaceFurnishingCatalog {
             | Self::MaterialMultimap040 | Self::FramePreparation041 | Self::HayesOriginal042
             | Self::HayesDisposition043 | Self::HayesRelease044 | Self::RequiredModelPreparation045
             | Self::LargeModelPreparation046 | Self::FreshImagePreparation047 | Self::InfoStandPreparation048
-            | Self::GpuModelPreparation049 | Self::FurnishingThumbnail050 | Self::CurrentImageThumbnail051 | Self::CombinedThumbnails052)
+            | Self::GpuModelPreparation049 | Self::FurnishingThumbnail050 | Self::CurrentImageThumbnail051
+            | Self::CombinedThumbnails052 | Self::CurrentRail053)
     }
 }
 
@@ -2308,6 +2361,7 @@ fn workspace_import_files_match(
             WorkspaceImport::V7 => exact_file(WORKSPACE_V7_CAPABILITY)
                 && exact_file((WORKSPACE_WALL_SCHEMA_PATH, 3720, WORKSPACE_WALL_SCHEMA_SHA256))
                 && selected_marker.is_none_or(exact_file),
+            WorkspaceImport::CurrentRail => false,
         }
 }
 
@@ -2913,7 +2967,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
         let source = RECTANGLE_FIXED64_TARGET;
         let target = FIXED64_PUBLICATION_REPAIR_TARGET;
         assert!(combined_thumbnail_host_matches(target));
-        assert!(!combined_thumbnail_fresh_host_matches(target));
+        assert!(combined_thumbnail_fresh_host_matches(target));
         assert!(!current52_interrupted_host_matches(target));
         assert!(saved_workspace_transition_target(target.2));
         assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
@@ -2939,6 +2993,11 @@ pub(crate) mod normal_oex_release_declaration_tests {
             (target.0,target.1,source.2),
             (target.0,target.1,"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")] {
             assert!(!combined_thumbnail_host_matches(denied));
+            assert!(!combined_thumbnail_fresh_host_matches(denied));
+            let mut payload = combined_thumbnail_payload(denied);
+            assert!(payload.admit_fresh_catalog52_constructor().is_err());
+            payload.fresh_catalog52_constructor = true;
+            assert!(!payload.fresh_catalog52_constructor());
         }
         assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(&target.2.to_uppercase()));
         assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(&"f".repeat(64)));
@@ -2948,6 +3007,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
     #[test]
     #[ignore = "requires the exact sealed API-only fixed64 publication repair runtime; readonly payload opener"]
     fn fixed64_publication_repair_actual_runtime_ordinary_opener_and_recheck() {
+        use std::os::unix::fs::DirBuilderExt;
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FIXED64_PUBLICATION_RUNTIME").unwrap());
         let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
         ordinary.recheck().unwrap();
@@ -2957,8 +3017,31 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert_eq!(ordinary.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).unwrap().lines().count(), 47);
         assert!(!ordinary.fresh_catalog52_constructor());
         assert!(!ordinary.workspace_import_selected_input());
-        assert!(Payload::open_fresh_workspace_v7_validation(&root).is_err());
+        let fresh = Payload::open_fresh_workspace_v7_validation(&root).unwrap();
+        fresh.recheck().unwrap();
+        assert_eq!((fresh.manifest.source_commit.as_str(), fresh.producer_sha256(),
+            fresh.manifest_sha256.as_str()), target);
+        assert!(fresh.fresh_catalog52_constructor());
+        assert!(fresh.workspace_import_version().is_none());
+        assert!(!fresh.normal_oex_selected_input().unwrap());
+        assert_eq!(fresh.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).unwrap(),
+            ordinary.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).unwrap());
         assert_eq!(Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
+
+        let scratch = fs::canonicalize(std::env::temp_dir()).unwrap()
+            .join(format!("exhibitos-fixed64-occupied-{}", Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&scratch).unwrap();
+        let occupied = scratch.join("profile");
+        fs::DirBuilder::new().mode(0o700).create(&occupied).unwrap();
+        let marker = occupied.join("existing-data");
+        fs::write(&marker, b"preserve").unwrap();
+        let error = crate::installations::InstallationController::with_fresh_selected(
+            occupied.clone(), std::sync::Arc::new(fresh), crate::native_installation::Ports::default(),
+        ).err().unwrap();
+        assert_eq!(error.code, "NATIVE_FRESH_PROFILE_REQUIRED");
+        assert_eq!(fs::read(&marker).unwrap(), b"preserve");
+        assert_eq!(fs::read_dir(occupied).unwrap().count(), 1);
+        fs::remove_dir_all(scratch).unwrap();
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -6438,6 +6521,9 @@ impl Payload {
     }
 
     pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
+        if self.current_rail_payload() {
+            return Ok(Some(WorkspaceFurnishingCatalog::CurrentRail053));
+        }
         const PORTAL_MARKER: &str = "platform/scripts/native-workspace-portal-finish-capability-v1.json";
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let portal = Some((
@@ -6905,15 +6991,22 @@ impl Payload {
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 49
+            } else if file.path.starts_with("platform/database/native-oex-current-workspace-rail/") {
+                let (path, bytes, hash) = CURRENT_RAIL_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::CurrentRail053 || file.path != path
+                    || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash) {
+                    return Err(invalid());
+                }
+                53
             } else if file.path.starts_with(CURRENT_IMAGE_THUMBNAIL_DIRECTORY) {
                 let (path, bytes, hash) = CURRENT_IMAGE_THUMBNAIL_SCHEMA;
-                if !matches!(catalog, WorkspaceFurnishingCatalog::CurrentImageThumbnail051 | WorkspaceFurnishingCatalog::CombinedThumbnails052)
+                if !matches!(catalog, WorkspaceFurnishingCatalog::CurrentImageThumbnail051 | WorkspaceFurnishingCatalog::CombinedThumbnails052 | WorkspaceFurnishingCatalog::CurrentRail053)
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 51
             } else if file.path.starts_with(FURNISHING_THUMBNAIL_DIRECTORY) {
                 let (path, bytes, hash) = FURNISHING_THUMBNAIL_SCHEMA;
-                if !matches!(catalog, WorkspaceFurnishingCatalog::FurnishingThumbnail050 | WorkspaceFurnishingCatalog::CombinedThumbnails052)
+                if !matches!(catalog, WorkspaceFurnishingCatalog::FurnishingThumbnail050 | WorkspaceFurnishingCatalog::CombinedThumbnails052 | WorkspaceFurnishingCatalog::CurrentRail053)
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 50
@@ -6948,6 +7041,7 @@ impl Payload {
         // These isolated catalogs append one migration to 045.
         let count = match catalog {
             WorkspaceFurnishingCatalog::CombinedThumbnails052 => if bench_basecolor { 48 } else { 47 },
+            WorkspaceFurnishingCatalog::CurrentRail053 => 48,
             WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048
                 | WorkspaceFurnishingCatalog::GpuModelPreparation049 | WorkspaceFurnishingCatalog::FurnishingThumbnail050
                 | WorkspaceFurnishingCatalog::CurrentImageThumbnail051 => 46,
@@ -7024,6 +7118,7 @@ impl Payload {
         let approved = match version {
             WorkspaceImport::V6 => WORKSPACE_V6_VALIDATION_PROVENANCE,
             WorkspaceImport::V7 => WORKSPACE_V7_VALIDATION_PROVENANCE,
+            WorkspaceImport::CurrentRail => return Err(err("NATIVE_RUNTIME_UNQUALIFIED")),
         };
         if let Some(catalog) = payload.workspace_furnishing_catalog()? {
             let marker = match catalog {
@@ -7061,7 +7156,7 @@ impl Payload {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn admit_fresh_catalog52_constructor(&mut self) -> Result<()> {
         let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
-        if ![RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET].contains(&tuple) || !combined_thumbnail_fresh_host_matches(tuple)
+        if !FRESH_CATALOG52_CONSTRUCTOR_TARGETS.contains(&tuple)
             || self.workspace_import.is_some() || self.workspace_v5_validation
             || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CombinedThumbnails052)
         { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
@@ -7072,7 +7167,7 @@ impl Payload {
     pub(crate) fn fresh_catalog52_constructor(&self) -> bool {
         if !self.fresh_catalog52_constructor { return false; }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        return [RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET]
+        return FRESH_CATALOG52_CONSTRUCTOR_TARGETS
             .contains(&(&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256))
             && self.workspace_import.is_none() && !self.workspace_v5_validation;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -7087,10 +7182,28 @@ impl Payload {
     pub(crate) fn workspace_import_selected_input(&self) -> bool {
         self.selected_workspace_import_version().is_some()
     }
+    pub(crate) fn current_rail_payload(&self) -> bool {
+        current_rail_host_matches((&self.manifest.source_commit, &self.manifest.producer_sha256, &self.manifest_sha256))
+            && self.manifest.mode == "local-validation"
+            && !self.manifest.official_signed && !self.manifest.redistribution_qualified
+            && [CURRENT_RAIL_HINT, CURRENT_RAIL_PREFLIGHT, CURRENT_RAIL_PACKED,
+                CURRENT_RAIL_MARKER, CURRENT_RAIL_SCHEMA, CURRENT_RAIL_MATERIALIZER]
+                .into_iter().all(|(path, bytes, sha256)| self.manifest.files.iter().any(|file|
+                    file.path == path && file.link.is_none() && file.executable == Some(false)
+                        && file.bytes == Some(bytes) && file.sha256.as_deref() == Some(sha256)))
+    }
+    pub(crate) fn current_rail_selected(&self) -> bool {
+        self.selected_workspace_import_version() == Some(WorkspaceImport::CurrentRail)
+    }
+    pub(crate) fn bind_current_rail_selection(&mut self) -> Result<()> {
+        if !self.current_rail_payload() { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        self.workspace_import = Some((WorkspaceImport::CurrentRail, true));
+        Ok(())
+    }
     pub(crate) fn admits_selected_oex_format(&self, format: &str) -> Result<bool> {
         if self.workspace_import_selected_input() {
             self.recheck()?;
-            return Ok(format == "1.0.0-draft.12");
+            return Ok(if self.current_rail_selected() { format == CURRENT_RAIL_OEX_FORMAT } else { format == "1.0.0-draft.12" });
         }
         match format {
             "1.0.0-draft.9" => Ok(true),
@@ -7228,7 +7341,10 @@ impl Payload {
                 == NORMAL_OEX_030_CONCRETE_LOCAL_VALIDATION_PROVENANCE
     }
     pub(crate) fn oex_format_hint(&self)->Result<(PathBuf,PathBuf,PathBuf)> {
-        let script = if self.workspace_import_selected_input() {
+        let script = if self.current_rail_selected() {
+            self.recheck()?;
+            CURRENT_RAIL_HINT.0
+        } else if self.workspace_import_selected_input() {
             self.recheck()?;
             WORKSPACE_IMPORT_FORMAT_HINT
         } else if self.normal_oex_028_selected_input()? {
@@ -7278,7 +7394,9 @@ impl Payload {
         Ok((self.node(), self.root.join(name), self.root.clone()))
     }
     pub(crate) fn oex_materializer(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
-        let name = if self.workspace_import_selected_input() { WORKSPACE_IMPORT_MATERIALIZER } else { "platform/apps/api/dist/oex-owned-chunk-materializer.js" };
+        let name = if self.current_rail_selected() { CURRENT_RAIL_MATERIALIZER.0 }
+            else if self.workspace_import_selected_input() { WORKSPACE_IMPORT_MATERIALIZER }
+            else { "platform/apps/api/dist/oex-owned-chunk-materializer.js" };
         if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
             return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
         }
@@ -7286,7 +7404,9 @@ impl Payload {
         Ok((self.node(), self.root.join(name), self.root.clone()))
     }
     pub(crate) fn oex_preflight(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
-        let name = if self.workspace_import_selected_input() { WORKSPACE_IMPORT_PREFLIGHT } else { "platform/apps/api/dist/oex-owned-preflight.js" };
+        let name = if self.current_rail_selected() { CURRENT_RAIL_PREFLIGHT.0 }
+            else if self.workspace_import_selected_input() { WORKSPACE_IMPORT_PREFLIGHT }
+            else { "platform/apps/api/dist/oex-owned-preflight.js" };
         if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
             return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
         }
@@ -7296,7 +7416,9 @@ impl Payload {
     /// Fixed codec-only resources, rechecked against this admitted manifest and
     /// held across authentication. No arbitrary module or executable selection.
     pub(crate) fn oex_packed_worker_v2(&self) -> Result<(PathBuf, PathBuf, PathBuf)> {
-        let name = if self.workspace_import_selected_input() { WORKSPACE_IMPORT_PACKED } else { "platform/apps/api/dist/oex-owned-packed-worker-v2.js" };
+        let name = if self.current_rail_selected() { CURRENT_RAIL_PACKED.0 }
+            else if self.workspace_import_selected_input() { WORKSPACE_IMPORT_PACKED }
+            else { "platform/apps/api/dist/oex-owned-packed-worker-v2.js" };
         if !self.manifest.files.iter().any(|f| f.path == name && f.link.is_none() && f.executable == Some(false)) {
             return Err(err("NATIVE_OEX_WORKER_UNAVAILABLE"));
         }

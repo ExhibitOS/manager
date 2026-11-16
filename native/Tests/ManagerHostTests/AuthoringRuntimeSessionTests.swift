@@ -5,6 +5,16 @@ import ManagerCore
 
 @MainActor
 final class AuthoringRuntimeSessionTests: XCTestCase {
+    func testRetainedRailPublicationUsesLiveR3WhileConfiguredParentRemains09ea() {
+        let configured = "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
+        let live = "3e713cc13566556c6eff13c65c11166e9bb292e5ddef229053037b0e54f33a0b"
+        let request = "369fa26c-fc10-495d-92d3-d31557268722"
+        XCTAssertEqual(PublicationModel.publicationManifest(configured: configured, liveRail: live, requestId: request), live)
+        XCTAssertNil(PublicationModel.publicationManifest(configured: configured, liveRail: nil, requestId: request))
+        XCTAssertNil(PublicationModel.publicationManifest(configured: configured, liveRail: configured, requestId: request))
+        XCTAssertEqual(PublicationModel.publicationManifest(configured: configured, liveRail: live, requestId: nil), configured)
+    }
+
     func testNewRuntimeReconnectsCMSWithoutDiscardingForm() async throws {
         guard let node = ProcessInfo.processInfo.environment["EXHIBITOS_OEX_TEST_NODE"] else {
             throw XCTSkip("Requires owned Node fixture runtime")

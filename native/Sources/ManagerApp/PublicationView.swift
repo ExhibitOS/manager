@@ -35,35 +35,50 @@ final class PublicationModel: ObservableObject {
     @Published private(set) var verifiedCompleted: NativePublicationCompleted?
     private var watermarkRuntimeAvailable = false
     private var runtimeManifestSha256: String?
+    private var liveRailManifest: String?
+    private var liveJobId: String?
+    private static let railRequestId = "369fa26c-fc10-495d-92d3-d31557268722"
+    private static let railManifest = "3e713cc13566556c6eff13c65c11166e9bb292e5ddef229053037b0e54f33a0b"
+
+    static func publicationManifest(configured: String?, liveRail: String?, requestId: String?) -> String? {
+        guard requestId == railRequestId else { return configured }
+        return liveRail == railManifest ? liveRail : nil
+    }
     private var runtimeReady = false
     private var runtimeGeneration = UUID()
     private var checkedGeneration: UUID?
     private var checkedPublicationProfile: String?
     private var boundedPublicationAvailable: Bool { session?.nativePublicationProfile == "bounded-local-v1" }
-    func configureWatermarkRuntime(_ configuration: NativeConfiguration?, ready: Bool) {
+    func configureWatermarkRuntime(_ configuration: NativeConfiguration?, ready: Bool,
+                                   liveRailManifest: String?, liveJobId: String?) {
         let available = PublicationWatermarkRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
-        if runtimeManifestSha256 != configuration?.manifestSha256 || runtimeReady != ready || watermarkRuntimeAvailable != available {
+        if runtimeManifestSha256 != configuration?.manifestSha256 || runtimeReady != ready || watermarkRuntimeAvailable != available
+            || self.liveRailManifest != liveRailManifest || self.liveJobId != liveJobId {
             runtimeGeneration = UUID(); report = nil; checkedId = nil; reviewed = nil; checkedGeneration = nil
             verifiedCompleted = nil
         }
         runtimeManifestSha256 = configuration?.manifestSha256; runtimeReady = ready; watermarkRuntimeAvailable = available
+        self.liveRailManifest = liveRailManifest; self.liveJobId = liveJobId
     }
     private func requireWatermarkRuntime(_ draft: NativeExhibitionDraft) throws {
         if try draft.publicationWatermark()?.requiresQualifiedRuntime == true, !watermarkRuntimeAvailable { throw AuthoringFailure("WATERMARK_RUNTIME_UNAVAILABLE") }
     }
-    private func planBinding(_ draft: NativeExhibitionDraft, etag: String, sourceId: String? = nil, publicationProfile: String? = nil) throws -> String? {
+    private func planBinding(_ draft: NativeExhibitionDraft, etag: String, sourceId: String? = nil, publicationProfile: String? = nil, requestId: String? = nil) throws -> String? {
         try requireWatermarkRuntime(draft)
         guard runtimeReady else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
         // The legacy flow retains its old history. Only an adopted watermark
         // runtime emits the new optional journal field to its matching helper.
         if publicationProfile != nil, !boundedPublicationAvailable { throw AuthoringFailure("PUBLICATION_STAGE_UNAVAILABLE") }
         guard watermarkRuntimeAvailable || publicationProfile != nil else { return nil }
-        guard let runtimeManifestSha256 else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
-        return try nativePublicationPlanBinding(sourceExhibitionId: sourceId ?? draft.id, etag: etag, runtimeManifestSha256: runtimeManifestSha256, watermark: draft.publicationWatermark(), publicationProfile: publicationProfile)
+        guard let manifest = Self.publicationManifest(configured: runtimeManifestSha256, liveRail: liveRailManifest,
+                                                      requestId: requestId) else {
+            throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+        }
+        return try nativePublicationPlanBinding(sourceExhibitionId: sourceId ?? draft.id, etag: etag, runtimeManifestSha256: manifest, watermark: draft.publicationWatermark(), publicationProfile: publicationProfile)
     }
-    private func profileForBinding(_ binding: String?, draft: NativeExhibitionDraft, etag: String, sourceId: String) throws -> String? {
-        if boundedPublicationAvailable, binding == (try planBinding(draft, etag: etag, sourceId: sourceId, publicationProfile: "bounded-local-v1")) { return "bounded-local-v1" }
-        guard binding == (try planBinding(draft, etag: etag, sourceId: sourceId)) else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+    private func profileForBinding(_ binding: String?, draft: NativeExhibitionDraft, etag: String, sourceId: String, requestId: String) throws -> String? {
+        if boundedPublicationAvailable, binding == (try planBinding(draft, etag: etag, sourceId: sourceId, publicationProfile: "bounded-local-v1", requestId: requestId)) { return "bounded-local-v1" }
+        guard binding == (try planBinding(draft, etag: etag, sourceId: sourceId, requestId: requestId)) else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
         return nil
     }
     func completedMatches(_ completed: NativePublicationCompleted, source: ExhibitionModel) -> Bool {
@@ -78,8 +93,8 @@ final class PublicationModel: ObservableObject {
     func completedRefersToSource(_ completed: NativePublicationCompleted, source: ExhibitionModel) -> Bool {
         guard !source.dirty, let draft = source.draft, let etag = source.state?.etag else { return false }
         do {
-            let profile = try profileForBinding(completed.planBindingSha256, draft: draft, etag: etag, sourceId: draft.id)
-            return completed.refersToSource(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: try planBinding(draft, etag: etag, publicationProfile: profile))
+            let profile = try profileForBinding(completed.planBindingSha256, draft: draft, etag: etag, sourceId: draft.id, requestId: completed.publishRequestId)
+            return completed.refersToSource(sourceExhibitionId: draft.id, etag: etag, planBindingSha256: try planBinding(draft, etag: etag, publicationProfile: profile, requestId: completed.publishRequestId))
         }
         catch { return false }
     }
@@ -177,12 +192,59 @@ final class PublicationModel: ObservableObject {
             try await finishPending()
         }
     }
-    func retry() async {
+    func retry(source: ExhibitionModel) async {
         await work(.readingRecord) {
             guard let read else { throw AuthoringFailure("PUBLICATION_STORE_REQUIRED") }
-            state = try checked(await read()); try await finishPending()
+            state = try checked(await read())
+            #if DEBUG
+            if let original = state, let pending = original.pending,
+               pending.publishRequestId == Self.railRequestId {
+                try await reconcileRailSnapshot(pending, in: original, source: source)
+            }
+            #endif
+            try await finishPending()
         }
     }
+    #if DEBUG
+    private func reconcileRailSnapshot(_ pending: NativePublicationPending, in original: NativePublicationState,
+                                       source: ExhibitionModel) async throws {
+        let generation = runtimeGeneration
+        guard runtimeReady, liveRailManifest == Self.railManifest, liveJobId != nil,
+              let api, let session, let local = source.state, !source.dirty, !local.dirty,
+              local.workspaceId == original.workspaceId, local.tenantId == original.tenantId,
+              local.principalId == original.principalId, local.etag == pending.sourceEtag,
+              let draft = local.draft, draft.id == pending.sourceExhibitionId,
+              draft.document["editVersion"].integer == 1, let snapshotETag = pending.snapshotEtag else {
+            throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED")
+        }
+        phase = .checkingSource
+        let savedSource = try await api.exhibition(draft.id)
+        let savedSnapshot = try await api.exhibition(pending.snapshot.id)
+        guard savedSource.draft == draft, savedSource.etag == pending.sourceEtag,
+              savedSnapshot.draft == pending.snapshot, savedSnapshot.etag == snapshotETag,
+              savedSnapshot.revision == 1 else {
+            throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED")
+        }
+        let fresh = try await api.verifyRetainedSession(session)
+        guard fresh.nativePublicationProfile == "bounded-local-v1",
+              generation == runtimeGeneration, !source.dirty, source.state?.revision == local.revision,
+              source.state?.draft == draft, source.state?.etag == pending.sourceEtag else {
+            throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED")
+        }
+        guard let binding = try planBinding(pending.snapshot, etag: pending.sourceEtag,
+                                            sourceId: pending.sourceExhibitionId,
+                                            publicationProfile: "bounded-local-v1", requestId: pending.publishRequestId) else {
+            throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+        }
+        if pending.planBindingSha256 != nil { try pending.requirePlanBinding(binding); return }
+        var accepted = original
+        accepted.pending = try pending.bindingSavedSnapshot(savedSnapshot, to: binding)
+        try Task.checkCancellation()
+        phase = .recordingRequest
+        try await persist(accepted)
+        guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+    }
+    #endif
     func comparePendingSnapshot() async {
         await work(.readingRecord) {
             guard let read, let api else { throw AuthoringFailure("PUBLICATION_STORE_REQUIRED") }
@@ -194,8 +256,8 @@ final class PublicationModel: ObservableObject {
             let binding = try NativePendingPublicationSnapshotBinding(original, generation: generation)
             state = original
             try requireWatermarkRuntime(pending.snapshot)
-            let profile = try profileForBinding(pending.planBindingSha256, draft: pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId)
-            try pending.requirePlanBinding(planBinding(pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId, publicationProfile: profile))
+            let profile = try profileForBinding(pending.planBindingSha256, draft: pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId, requestId: pending.publishRequestId)
+            try pending.requirePlanBinding(planBinding(pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId, publicationProfile: profile, requestId: pending.publishRequestId))
             phase = .checkingSource
             let saved = try await api.exhibition(pending.snapshot.id)
             guard let current = state else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
@@ -210,8 +272,8 @@ final class PublicationModel: ObservableObject {
         guard let api, var value = state, var pending = value.pending else { throw AuthoringFailure("PUBLICATION_PENDING") }
         try requireWatermarkRuntime(pending.snapshot)
         let generation = runtimeGeneration
-        let profile = try profileForBinding(pending.planBindingSha256, draft: pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId)
-        try pending.requirePlanBinding(planBinding(pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId, publicationProfile: profile))
+        let profile = try profileForBinding(pending.planBindingSha256, draft: pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId, requestId: pending.publishRequestId)
+        try pending.requirePlanBinding(planBinding(pending.snapshot, etag: pending.sourceEtag, sourceId: pending.sourceExhibitionId, publicationProfile: profile, requestId: pending.publishRequestId))
         guard pending.mode == nil || (pending.mode == "reusable-draft-v1" && pending.snapshotEtag == pending.sourceEtag && pending.capabilityPublicationId != nil) else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         if pending.snapshotEtag == nil {
             try Task.checkCancellation()
@@ -239,7 +301,7 @@ final class PublicationModel: ObservableObject {
         publication = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotEtag, requestId: pending.publishRequestId, publicationProfile: profile)
         try Task.checkCancellation()
         guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
-        guard var accepted = state, accepted.pending?.publishRequestId == pending.publishRequestId else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        guard var accepted = state, accepted.pending == pending else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         accepted.completed = NativePublicationCompleted(pending: pending, publication: publication); accepted.pending = nil
         phase = .savingResult
         try await persist(accepted)
@@ -336,7 +398,7 @@ struct NativePublicationView: View {
                     Button("저장된 사본과 비교") { Task { await model.comparePendingSnapshot() } }.disabled(!ready || model.busy)
                     Text("기존 사본을 읽어 보관한 내용과 대조합니다. 새 저장 요청은 보내지 않습니다.").font(.caption).foregroundStyle(.secondary)
                 }
-                Button("보관한 준비 다시 확인") { Task { await model.retry() } }.disabled(!ready || model.busy)
+                Button("보관한 준비 다시 확인") { Task { await model.retry(source: source) } }.disabled(!ready || model.busy)
             }
             if let completed = model.state?.completed {
                 let matches = model.completedRefersToSource(completed, source: source)

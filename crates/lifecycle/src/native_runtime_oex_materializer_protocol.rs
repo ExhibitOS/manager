@@ -70,7 +70,7 @@ fn decimal(value: &str, nonzero: bool) -> bool {
 impl Request {
     fn valid(&self) -> bool {
         if self.version != 1 || self.kind != "oex-chunks-v1" || self.profile != "bounded-file-v1"
-            || !matches!(self.format.as_str(), "1.0.0-draft.9" | "1.0.0-draft.10" | "1.0.0-draft.12") || !(1..=MAX_BYTES).contains(&self.archive_bytes)
+            || !matches!(self.format.as_str(), "1.0.0-draft.9" | "1.0.0-draft.10" | "1.0.0-draft.12" | crate::native_payload::CURRENT_RAIL_OEX_FORMAT) || !(1..=MAX_BYTES).contains(&self.archive_bytes)
             || self.source_digest != self.archive_sha256
             || [&self.tenant_id,&self.resource_id,&self.job_id,&self.user_id,&self.request_id,&self.lease_id,
                 &self.attempt_id,&self.runtime_generation,&self.stage_id,&self.reservation_id,&self.reservation_generation]
@@ -102,7 +102,7 @@ impl Request {
             return Err(err("NATIVE_OEX_WORKER_UNCERTAIN"));
         }
         let ack: Ack=serde_json::from_slice(reply).map_err(|_|err("NATIVE_OEX_WORKER_UNCERTAIN"))?;
-        if (self.format == "1.0.0-draft.12"
+        if (matches!(self.format.as_str(), "1.0.0-draft.12" | crate::native_payload::CURRENT_RAIL_OEX_FORMAT)
             && serde_json::to_vec(&ack).map_err(|_| err("NATIVE_OEX_WORKER_UNCERTAIN"))? != reply)
             || ack.version != 1 || ack.kind != "materialized" || ack.status != "complete"
             || ack.attempt_id != self.attempt_id || ack.runtime_generation != self.runtime_generation

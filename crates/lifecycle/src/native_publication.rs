@@ -62,6 +62,34 @@ pub struct PublicationState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub native_original_attempts: BTreeMap<String, NativeOriginalAttempt>,
 }
+// Only the reviewed R3 snapshot may acquire a binding on an existing request.
+fn approved_rail_reconciliation(current: &PublicationState, state: &PublicationState) -> bool {
+    let (Some(old), Some(next)) = (&current.pending, &state.pending) else { return false; };
+    if !cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions))
+        || current.workspace_id != "72ec031f-4bbe-4cf5-9d6b-1c5857e8db95"
+        || current.tenant_id != "5e863a72-4f9a-40d3-bbcc-1568cb1a3d94"
+        || current.principal_id != "b7ac2e39-34f7-4060-a3f8-b6badf6ab48d"
+        || current.revision != 2 || state.revision != current.revision
+        || current.completed.is_some() || state.completed.is_some()
+        || !current.native_original_attempts.is_empty() || !state.native_original_attempts.is_empty()
+        || old.mode.is_some() || old.capability_publication_id.is_some() || old.plan_binding_sha256.is_some()
+        || old.source_exhibition_id != "3a2e1dc0-a259-4b4e-9431-e7c5f5f76f44"
+        || old.source_etag != "\"studio-r2-bd54b80fee750ba96c4548e28d8cfd5a1b977e3edcf4ef8d4b1569d0a46e3d9a\""
+        || old.snapshot["exhibitionId"] != "7b411dcc-c73b-4ad4-b9da-94dfcfe4d398"
+        || old.snapshot["id"] != "1532ccc0-0390-4979-aaa4-38cdc9c7a077"
+        || old.snapshot_etag.as_deref() != Some("\"studio-r1-fee369313d4394432cd25d857878855a0897d12fcfd6bf803f0fdb9ea45a66ed\"")
+        || old.save_request_id != "867d3bb1-0338-4062-accf-0bee39db1cc5"
+        || old.publish_request_id != "369fa26c-fc10-495d-92d3-d31557268722"
+    {
+        return false;
+    }
+    let mut expected = old.clone();
+    // Existing Swift plan digest for the source ETag, exact R3, no watermark
+    // and bounded-local-v1. Distinct from the Server request receipt digest.
+    expected.plan_binding_sha256 = Some("918623731cdd8d4cfbfbf5b010256c879c76d2a8dd34f773554f88220991b736".into());
+    next == &expected
+}
+
 fn valid_etag(value: &str) -> bool {
     value
         .strip_prefix("\"studio-r")
@@ -244,10 +272,18 @@ impl InstallationController {
                 let mut b = next.clone();
                 a.snapshot_etag = None;
                 b.snapshot_etag = None;
-                if a != b
-                    || (old.snapshot_etag.is_some() && old.snapshot_etag != next.snapshot_etag)
-                {
-                    return Err(err("NATIVE_PUBLICATION_REQUEST_CHANGED"));
+                if a != b || (old.snapshot_etag.is_some() && old.snapshot_etag != next.snapshot_etag) {
+                    if !approved_rail_reconciliation(&current, &state) {
+                        return Err(err("NATIVE_PUBLICATION_REQUEST_CHANGED"));
+                    }
+                    let (_, document) = self.document_unlocked(service)?;
+                    if document.pending.is_some() || document.saved_edit_version != Some(1)
+                        || document.etag.as_deref() != Some(old.source_etag.as_str())
+                        || document.draft.as_ref().and_then(native_document::draft_id)
+                            != Some(old.source_exhibition_id.as_str())
+                    {
+                        return Err(err("NATIVE_PUBLICATION_SCOPE_CHANGED"));
+                    }
                 }
             }
             if state.revision != current.revision {
@@ -402,6 +438,47 @@ mod tests {
             altered.snapshot["candidate"]["lights"][0]["color"][2] = serde_json::json!(0.955973353249286_f64);
             assert!(pending != altered, "The existing immutable-pending comparison still rejects a real bit change");
         }
+    }
+
+    #[test]
+    #[cfg(feature = "workspace-v5-owner-validation")]
+    fn only_the_reviewed_saved_snapshot_can_bind_once() {
+        let original: PublicationState = serde_json::from_value(serde_json::json!({
+            "format": 1, "revision": 2,
+            "workspaceId": "72ec031f-4bbe-4cf5-9d6b-1c5857e8db95",
+            "tenantId": "5e863a72-4f9a-40d3-bbcc-1568cb1a3d94",
+            "principalId": "b7ac2e39-34f7-4060-a3f8-b6badf6ab48d",
+            "pending": {
+                "sourceExhibitionId": "3a2e1dc0-a259-4b4e-9431-e7c5f5f76f44",
+                "sourceEtag": "\"studio-r2-bd54b80fee750ba96c4548e28d8cfd5a1b977e3edcf4ef8d4b1569d0a46e3d9a\"",
+                "saveRequestId": "867d3bb1-0338-4062-accf-0bee39db1cc5",
+                "publishRequestId": "369fa26c-fc10-495d-92d3-d31557268722",
+                "snapshotEtag": "\"studio-r1-fee369313d4394432cd25d857878855a0897d12fcfd6bf803f0fdb9ea45a66ed\"",
+                "snapshot": {
+                    "id": "1532ccc0-0390-4979-aaa4-38cdc9c7a077",
+                    "exhibitionId": "7b411dcc-c73b-4ad4-b9da-94dfcfe4d398",
+                }
+            },
+            "completed": null
+        })).unwrap();
+        let mut bound = original.clone();
+        bound.pending.as_mut().unwrap().plan_binding_sha256 =
+            Some("918623731cdd8d4cfbfbf5b010256c879c76d2a8dd34f773554f88220991b736".into());
+        assert!(approved_rail_reconciliation(&original, &bound));
+        assert!(!approved_rail_reconciliation(&bound, &bound));
+
+        let mut outside_scope = original.clone();
+        outside_scope.principal_id = Uuid::new_v4().to_string();
+        assert!(!approved_rail_reconciliation(&outside_scope, &bound));
+        let mut stale = bound.clone();
+        stale.revision += 1;
+        assert!(!approved_rail_reconciliation(&original, &stale));
+        let mut modified = bound.clone();
+        modified.pending.as_mut().unwrap().snapshot["editVersion"] = serde_json::json!(2);
+        assert!(!approved_rail_reconciliation(&original, &modified));
+        let mut different_request = bound.clone();
+        different_request.pending.as_mut().unwrap().publish_request_id = Uuid::new_v4().to_string();
+        assert!(!approved_rail_reconciliation(&original, &different_request));
     }
 
     #[test]

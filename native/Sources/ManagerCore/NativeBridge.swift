@@ -97,7 +97,9 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let oex028Qualified: Bool?
     public let oexWorkspaceV6Qualified: Bool?
     public let oexWorkspaceV7Qualified: Bool?
+    public let oexCurrentRailQualified: Bool?
     public let oexSaveOffer: NativeOEXSaveOffer?
+    public let currentRailPublicationManifestSha256: String?
     public let freshImageReleaseConfigured: Bool?
     public let hayesOriginalReady: Bool?
     public let hayesReceipt: NativeHayesReceipt?
@@ -279,9 +281,9 @@ public actor NativeBridge {
         guard process.terminationStatus == 0 else { throw BridgeFailure("NATIVE_HELPER_EXITED") }
     }
     /// A separate read-only helper receives only the held private snapshot FD.
-    public func selectedOEXFormat(_ archive: NativeOEXArchive) async throws -> String {
+    public func selectedOEXFormat(_ archive: NativeOEXArchive, currentRail: Bool = false) async throws -> String {
         guard let helper = process.executableURL else { throw BridgeFailure("NATIVE_HELPER_MISSING") }
-        return try await archive.selectedFormat(helper: helper, validation: selectedOEXFormatValidation)
+        return try await archive.selectedFormat(helper: helper, validation: selectedOEXFormatValidation, currentRail: currentRail)
     }
     public func context() throws -> Context { try request("context") }
     public func presentation() throws -> Presentation { try request("presentation") }

@@ -125,7 +125,7 @@ public struct NativeOEXArchive: Sendable {
     }
     /// Provisional metadata from the same sealed snapshot. Platform still hashes
     /// and validates the complete archive under the independently held import lease.
-    func selectedFormat(helper: URL, validation: (version: String, runtime: URL)? = nil) async throws -> String {
+    func selectedFormat(helper: URL, validation: (version: String, runtime: URL)? = nil, currentRail: Bool = false) async throws -> String {
         let ownedFile = file, identity = stamp, expectedCount = count
         let work = Task.detached(priority: .userInitiated) {
             let fd = Darwin.open(ownedFile.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
@@ -171,7 +171,8 @@ public struct NativeOEXArchive: Sendable {
             result.removeLast()
             let hint = try JSONDecoder().decode(OEXSelectedFormatHint.self, from: result)
             let workspaceImport = validation?.version == "v6" || validation?.version == "v7"
-            try hint.check(bytes: result, count: expectedCount, device: before.st_dev, inode: before.st_ino, workspaceImport: workspaceImport)
+            try hint.check(bytes: result, count: expectedCount, device: before.st_dev, inode: before.st_ino,
+                           workspaceImport: workspaceImport, currentRail: currentRail)
             return hint.archiveFormat
         }
         return try await withTaskCancellationHandler {
@@ -309,8 +310,15 @@ public struct NativeOEXArchive: Sendable {
 struct OEXSelectedFormatHint: Decodable {
     let version: Int, kind: String, archiveFormat: String, archiveBytes: Int
     let manifestSha256: String, inputDevice: String, inputInode: String
-    func check(bytes: Data, count: Int, device: dev_t, inode: ino_t, workspaceImport: Bool = false) throws {
-        let supportedFormats = workspaceImport ? ["1.0.0-draft.12"] : ["1.0.0-draft.9", "1.0.0-draft.10"]
+    func check(bytes: Data, count: Int, device: dev_t, inode: ino_t,
+               workspaceImport: Bool = false, currentRail: Bool = false) throws {
+        let supportedFormats: [String]
+        if currentRail {
+            guard !workspaceImport else { throw AuthoringFailure("OEX_FORMAT_INVALID") }
+            supportedFormats = ["1.0.0-draft.23"]
+        } else {
+            supportedFormats = workspaceImport ? ["1.0.0-draft.12"] : ["1.0.0-draft.9", "1.0.0-draft.10"]
+        }
         guard let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
               Set(object.keys) == Set(["version", "kind", "archiveFormat", "archiveBytes", "manifestSha256", "inputDevice", "inputInode"]),
               version == 1, kind == "oex-format-hint", supportedFormats.contains(archiveFormat),

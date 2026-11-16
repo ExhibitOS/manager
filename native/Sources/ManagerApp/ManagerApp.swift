@@ -26,7 +26,8 @@ final class ManagerModel: ObservableObject {
             exhibitions.viewportController.runtimeAvailable = authoringReady
             exhibitions.configurePublicationWatermark(native?.configuration, ready: ready)
             exhibitions.configureFloorRuntime(native?.configuration, ready: ready || retainsAuthoringViewport)
-            publication.configureWatermarkRuntime(native?.configuration, ready: ready)
+            publication.configureWatermarkRuntime(native?.configuration, ready: ready,
+                liveRailManifest: native?.currentRailPublicationManifestSha256, liveJobId: native?.runtime?.jobId)
             if oldValue?.runtime?.hasOwnedProcesses == true, native?.runtime?.hasOwnedProcesses == false,
                native?.needsShutdown == false, native?.busy == false,
                let manifest = native?.configuration?.manifestSha256, oldValue?.configuration?.manifestSha256 == manifest {

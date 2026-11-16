@@ -35,7 +35,7 @@ pub(crate) fn validate(s: &Transfer) -> Result<()> {
         || s.intent.as_ref().is_some_and(|i| {
             let limit = match (i.profile.as_deref(), i.oex_format.as_deref()) {
                 (None, None) => 64 * 1024 * 1024,
-                (Some("bounded-file-v1"), Some("1.0.0-draft.9" | "1.0.0-draft.10" | "1.0.0-draft.12")) => 512 * 1024 * 1024,
+                (Some("bounded-file-v1"), Some("1.0.0-draft.9" | "1.0.0-draft.10" | "1.0.0-draft.12" | crate::native_payload::CURRENT_RAIL_OEX_FORMAT)) => 512 * 1024 * 1024,
                 _ => return true,
             };
             !uuid(&i.request_id) || !hash_valid(&i.sha256) || i.bytes == 0 || i.bytes > limit
@@ -133,11 +133,22 @@ impl InstallationController {
         }
         Ok(bytes)
     }
-    pub fn save_native_oex_import(&self, token: &str, mut state: Transfer) -> Result<Transfer> {
+    pub fn save_native_oex_import(&self, token: &str, state: Transfer) -> Result<Transfer> {
+        self.save_native_oex_import_scoped(token, state, false)
+    }
+
+    pub(crate) fn save_native_oex_import_scoped(
+        &self, token: &str, mut state: Transfer, current_rail: bool,
+    ) -> Result<Transfer> {
         self.with_current(token, |service| {
             let profile = self.profile.as_ref().ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
             let _lock = profile_lock(profile)?; self.ensure_active_creation_unlocked(service)?; let (file, current) = self.oex_import_unlocked(service)?;
             validate(&state)?;
+            let current_rail_format = state.intent.as_ref().and_then(|intent| intent.oex_format.as_deref())
+                == Some(crate::native_payload::CURRENT_RAIL_OEX_FORMAT);
+            if current_rail != current_rail_format {
+                return Err(err("NATIVE_OEX_ATTEMPT_INVALID"));
+            }
             if state.workspace_id != current.workspace_id || state.tenant_id != current.tenant_id || state.principal_id != current.principal_id { return Err(err("NATIVE_OEX_IMPORT_SCOPE_CHANGED")); }
             if state.revision != current.revision { return Err(err("NATIVE_OEX_IMPORT_STATE_CHANGED")); }
             // A selected bounded transfer is a durable recovery fence. Only

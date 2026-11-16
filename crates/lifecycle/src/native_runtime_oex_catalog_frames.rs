@@ -2,6 +2,7 @@
 //! The peer's frame is a claim, never evidence of a live owner or catalog.
 use super::*;
 use crate::native_payload::{
+    CURRENT_RAIL_SCHEMA_NAME, CURRENT_RAIL_SCHEMA_SHA256,
     NORMAL_OEX_028_SCHEMA_SHA256, NORMAL_OEX_029_FLOOR_SCHEMA_SHA256,
     NORMAL_OEX_030_CONCRETE_SCHEMA_SHA256, WorkspaceImport,
     WORKSPACE_WALL_SCHEMA_NAME, WORKSPACE_WALL_SCHEMA_SHA256,
@@ -23,6 +24,8 @@ pub(super) const WORKSPACE_V5_LEDGER: [(&str, &str); 7] = [
 
 const SCHEMA_033: &str = "f69d3dc12d7b89f1a342daef1d7bca08787667efacdfca3d214d3101b051d1dd";
 const SCHEMA_034: &str = "ebf2300ef875b635617d82369f4c7cad4cbe6d8fa43677bdbd2e5e21dd74da21";
+pub(super) const CURRENT_RAIL_PARENT: &str = "4745457a32f053697cfa3f91dba752a35526ff8e7a4c04890c6364e39c964a6d";
+pub(super) const CURRENT_RAIL_OWNER_MODE: &str = "workspace-furnishing-053-selected-import-v1";
 const WORKSPACE_IMPORT_LEDGER: [(&str, &str); 2] = [
     ("033_workspace_material_import_provenance.sql", SCHEMA_033),
     ("034_workspace_material_terminal_proof.sql", SCHEMA_034),
@@ -34,12 +37,14 @@ pub(super) enum Protocol {
     WorkspaceV5,
     WorkspaceV6,
     WorkspaceV7,
+    CurrentRail,
 }
 impl From<WorkspaceImport> for Protocol {
     fn from(version: WorkspaceImport) -> Self {
         match version {
             WorkspaceImport::V6 => Self::WorkspaceV6,
             WorkspaceImport::V7 => Self::WorkspaceV7,
+            WorkspaceImport::CurrentRail => Self::CurrentRail,
         }
     }
 }
@@ -49,16 +54,20 @@ impl Protocol {
             Self::V2 => &WORKSPACE_V5_LEDGER[..2],
             _ => &WORKSPACE_V5_LEDGER[..],
         };
-        let import = if matches!(self, Self::WorkspaceV6 | Self::WorkspaceV7) {
+        let import = if matches!(self, Self::WorkspaceV6 | Self::WorkspaceV7 | Self::CurrentRail) {
             &WORKSPACE_IMPORT_LEDGER[..]
         } else {
             &[]
         };
-        let wall = (self == Self::WorkspaceV7).then_some((WORKSPACE_WALL_SCHEMA_NAME, WORKSPACE_WALL_SCHEMA_SHA256));
+        let wall = matches!(self, Self::WorkspaceV7 | Self::CurrentRail)
+            .then_some((WORKSPACE_WALL_SCHEMA_NAME, WORKSPACE_WALL_SCHEMA_SHA256));
         base.iter().chain(import).copied().chain(wall)
     }
 
     pub(super) fn ledger_query(self) -> String {
+        if self == Self::CurrentRail {
+            return "SELECT name,sha256 FROM public.schema_migrations ORDER BY name".into();
+        }
         let names = self.ledger().map(|(name, _)| name)
             .chain((self == Self::WorkspaceV6).then_some(WORKSPACE_WALL_SCHEMA_NAME))
             .map(|name| format!("'{name}'")).collect::<Vec<_>>().join(",");
@@ -66,6 +75,12 @@ impl Protocol {
     }
 
     pub(super) fn check_ledger(self, rows: &str) -> Result<()> {
+        if self == Self::CurrentRail {
+            let (parent, tail) = rows.rsplit_once('\n').ok_or_else(bad)?;
+            let (name, sha256) = tail.split_once('|').ok_or_else(bad)?;
+            if (name, sha256) != (CURRENT_RAIL_SCHEMA_NAME, CURRENT_RAIL_SCHEMA_SHA256) { return Err(bad()); }
+            return check_current_rail_parent(parent);
+        }
         let expected = self.ledger().map(|(name, hash)| format!("{name}|{hash}"))
             .collect::<Vec<_>>().join("\n");
         if rows != expected { return Err(bad()); }
@@ -78,8 +93,25 @@ impl Protocol {
             Self::WorkspaceV5 => "normal-oex-workspace-v5",
             Self::WorkspaceV6 => "normal-oex-workspace-import-v6",
             Self::WorkspaceV7 => "normal-oex-workspace-import-v7",
+            Self::CurrentRail => "normal-oex-current-workspace-rail-v1",
         }
     }
+}
+
+pub(super) fn check_current_rail_parent(rows: &str) -> Result<()> {
+    #[derive(Serialize)]
+    struct Migration<'a> { name: &'a str, sha256: &'a str }
+    let rows = rows.lines().map(|row| {
+        let (name, sha256) = row.split_once('|').ok_or_else(bad)?;
+        if !hash_valid(sha256) { return Err(bad()); }
+        Ok(Migration { name, sha256 })
+    }).collect::<Result<Vec<_>>>()?;
+    if rows.len() != 47
+        || digest(&serde_json::to_vec(&rows).map_err(|_| bad())?) != CURRENT_RAIL_PARENT
+    {
+        return Err(bad());
+    }
+    Ok(())
 }
 
 fn bad() -> LifecycleError { err("NATIVE_OWNER_CHANNEL_UNAVAILABLE") }
@@ -113,6 +145,10 @@ struct CatalogFrame {
     schema034_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema035_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_catalog_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema053_sha256: Option<String>,
 }
 /// Captured independently from the owned session, PostgreSQL and pinned store.
 pub(super) struct Observation<'a> {
@@ -127,7 +163,9 @@ pub(super) fn acknowledge(bytes: &[u8], observed: &Observation<'_>, protocol: Pr
         Protocol::WorkspaceV5 => (5, "catalog-ready-v5", "catalog-ack-v5"),
         Protocol::WorkspaceV6 => (6, "catalog-ready-v6", "catalog-ack-v6"),
         Protocol::WorkspaceV7 => (7, "catalog-ready-v7", "catalog-ack-v7"),
+        Protocol::CurrentRail => (8, "catalog-ready-current-rail-v1", "catalog-ack-current-rail-v1"),
     };
+    let rail = protocol == Protocol::CurrentRail;
     let mut ledger = protocol.ledger().map(|(_, digest)| digest).skip(2);
     let extras = [f.schema028_sha256.as_deref(), f.schema029_sha256.as_deref(), f.schema030_sha256.as_deref(),
         f.schema031_sha256.as_deref(), f.schema032_sha256.as_deref(), f.schema033_sha256.as_deref(), f.schema034_sha256.as_deref(), f.schema035_sha256.as_deref()];
@@ -140,7 +178,10 @@ pub(super) fn acknowledge(bytes: &[u8], observed: &Observation<'_>, protocol: Pr
         || f.database_system_id != observed.system || f.database_oid != observed.oid
         || f.store_device != observed.device.to_string() || f.store_inode != observed.inode.to_string()
         || f.schema026_sha256 != SCHEMA_026 || f.schema027_sha256 != SCHEMA_027
-        || extras.into_iter().any(|value| value != ledger.next()) { return Err(bad()); }
+        || extras.into_iter().any(|value| value != ledger.next())
+        || f.parent_catalog_sha256.as_deref() != rail.then_some(CURRENT_RAIL_PARENT)
+        || f.schema053_sha256.as_deref() != rail.then_some(CURRENT_RAIL_SCHEMA_SHA256)
+    { return Err(bad()); }
     f.kind = ack.into();
     serde_json::to_vec(&f).map_err(|_| bad())
 }
@@ -154,11 +195,37 @@ mod tests {
             runtime_generation:Uuid::new_v4().to_string(),payload_manifest_sha256:"a".repeat(64),
             database_system_id:"123".into(),database_oid:"456".into(),store_device:"7".into(),store_inode:"8".into(),
             schema026_sha256:SCHEMA_026.into(),schema027_sha256:SCHEMA_027.into(),
-            schema028_sha256:None,schema029_sha256:None,schema030_sha256:None,schema031_sha256:None,schema032_sha256:None,schema033_sha256:None,schema034_sha256:None,schema035_sha256:None}
+            schema028_sha256:None,schema029_sha256:None,schema030_sha256:None,schema031_sha256:None,schema032_sha256:None,schema033_sha256:None,schema034_sha256:None,schema035_sha256:None,
+            parent_catalog_sha256:None,schema053_sha256:None}
     }
     fn observation(frame: &CatalogFrame) -> Observation<'_> {
         Observation {workspace:&frame.workspace_id,tenant:&frame.tenant_id,principal:&frame.principal_id,
             generation:&frame.runtime_generation,manifest:&frame.payload_manifest_sha256,system:"123",oid:"456",device:7,inode:8}
+    }
+    #[test]
+    fn current_rail_catalog_ack_requires_both_pins_in_order() {
+        let protocol = Protocol::CurrentRail;
+        let mut frame = fixture();
+        frame.version = 8;
+        frame.kind = "catalog-ready-current-rail-v1".into();
+        frame.protocol = protocol.owner_mode().into();
+        let schemas: Vec<_> = protocol.ledger().map(|(_, sha)| Some(sha.to_string())).collect();
+        [
+            &mut frame.schema028_sha256, &mut frame.schema029_sha256, &mut frame.schema030_sha256,
+            &mut frame.schema031_sha256, &mut frame.schema032_sha256, &mut frame.schema033_sha256,
+            &mut frame.schema034_sha256, &mut frame.schema035_sha256,
+        ].into_iter().zip(schemas.into_iter().skip(2)).for_each(|(field, hash)| *field = hash);
+        frame.parent_catalog_sha256 = Some(CURRENT_RAIL_PARENT.into());
+        frame.schema053_sha256 = Some(CURRENT_RAIL_SCHEMA_SHA256.into());
+        let observed = observation(&frame);
+        let wire = serde_json::to_string(&frame).unwrap();
+        let ack = acknowledge(wire.as_bytes(), &observed, protocol).unwrap();
+        assert_eq!(ack, wire.replacen("catalog-ready-", "catalog-ack-", 1).into_bytes());
+        let tail = format!(",\"parentCatalogSha256\":\"{CURRENT_RAIL_PARENT}\",\"schema053Sha256\":\"{CURRENT_RAIL_SCHEMA_SHA256}\"");
+        assert!(wire.ends_with(&format!("{tail}}}")));
+        assert!(acknowledge(wire.replace(&tail, "").as_bytes(), &observed, protocol).is_err());
+        assert!(acknowledge(wire.replace(CURRENT_RAIL_PARENT, &"0".repeat(64)).as_bytes(), &observed, protocol).is_err());
+        assert!(acknowledge(wire.as_bytes(), &observed, Protocol::WorkspaceV7).is_err());
     }
     #[test]
     fn catalog_ack_requires_canonical_scoped_frame_and_observed_identity() {
