@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
-import simd
 
 /// Absence is historical UNKNOWN, never an inferred automatic setting.
 public enum RoomBaseLightPlacement: String, Codable, Sendable {
@@ -19,8 +18,8 @@ public enum RoomCeilingFill {
             let position = pose["position"].items?.compactMap(\.double) ?? []
             let rotation = pose["rotation"].items?.compactMap(\.double) ?? []
             let scale = pose["scale"].items?.compactMap(\.double) ?? []
-            guard position.count == 3, position.allSatisfy(\.isFinite), rotation.count == 4,
-                  rotation.allSatisfy(\.isFinite), abs(rotation.reduce(0) { $0 + $1 * $1 } - 1) <= 1e-6,
+            guard position.count == 3, position.allSatisfy({ $0.isFinite && abs($0) <= 10_000 }), rotation.count == 4,
+                  rotation.allSatisfy(\.isFinite), abs(hypot(hypot(rotation[0], rotation[1]), hypot(rotation[2], rotation[3])) - 1) <= 1e-6,
                   scale.count == 3, scale.allSatisfy({ abs($0 - 1) <= tolerance }) else { throw invalid }
             return (position, rotation, scale)
         }
@@ -33,19 +32,43 @@ public enum RoomCeilingFill {
         guard ceilings.count <= 1 else { throw invalid }
         if let ceiling = ceilings.first {
             let pose = try rigid(ceiling["transform"])
-            guard let w = ceiling["dimensions"]["width"].double, let h = ceiling["dimensions"]["height"].double,
-                  w.isFinite, w > 0, h.isFinite, h > 0 else { throw invalid }
-            let q = simd_normalize(simd_quatd(ix: pose.rotation[0], iy: pose.rotation[1], iz: pose.rotation[2], r: pose.rotation[3]))
-            let x = q.act(SIMD3<Double>(1, 0, 0)), y = q.act(SIMD3<Double>(0, 1, 0))
-            let normal = q.act(SIMD3<Double>(0, 0, 1))
+            let size = ceiling["dimensions"]
+            guard let w = size["width"].double, let h = size["height"].double,
+                  (0...10_000).contains(w), w > 0, (0...10_000).contains(h), h > 0,
+                  size["depth"] == .null || size["depth"].double != nil else { throw invalid }
+            let d = size["depth"].double ?? 0
+            guard (0...10_000).contains(d) else { throw invalid }
+            let q = pose.rotation, position = pose.position, scale = pose.scale
+            func point(_ input: SIMD3<Double>) throws -> SIMD3<Double> {
+                let a = input.x * scale[0], b = input.y * scale[1], c = input.z * scale[2]
+                let tx = 2 * (q[1] * c - q[2] * b), ty = 2 * (q[2] * a - q[0] * c), tz = 2 * (q[0] * b - q[1] * a)
+                let x = a + q[3] * tx + q[1] * tz - q[2] * ty + position[0]
+                let y = b + q[3] * ty + q[2] * tx - q[0] * tz + position[1]
+                let z = c + q[3] * tz + q[0] * ty - q[1] * tx + position[2]
+                guard [x, y, z].allSatisfy({ $0.isFinite && abs($0) <= 10_000 }) else { throw invalid }
+                return SIMD3(x, y, z)
+            }
+            let center = SIMD3(position[0], position[1], position[2])
+            func unit(_ input: SIMD3<Double>) throws -> SIMD3<Double> {
+                let axis = try point(input) - center
+                let length = hypot(hypot(axis.x, axis.y), axis.z)
+                guard length >= tolerance else { throw invalid }
+                return axis / length
+            }
+            let x = try unit(SIMD3(1, 0, 0)), y = try unit(SIMD3(0, 1, 0)), normal = try unit(SIMD3(0, 0, 1))
             func aligned(_ axis: SIMD3<Double>) -> Bool { max(abs(axis.x), abs(axis.y), abs(axis.z)) >= 1 - tolerance }
             guard aligned(x), aligned(y), abs(normal.y + 1) <= tolerance else { throw invalid }
-            let half = simd_abs(x) * (w * pose.scale[0] / 2) + simd_abs(y) * (h * pose.scale[1] / 2)
-            let center = SIMD3<Double>(pose.position[0], pose.position[1], pose.position[2])
-            let expected = SIMD3<Double>(width / 2, 0, depth / 2)
-            let level = SIMD3<Double>(0, height, 0)
-            let low = (center - half) - (level - expected), high = (center + half) - (level + expected)
-            guard [low.x, low.y, low.z, high.x, high.y, high.z].allSatisfy({ abs($0) <= tolerance }) else { throw invalid }
+            let half = SIMD3(w / 2, h / 2, d / 2)
+            let corners = try (0..<8).map { index in
+                try point(SIMD3(index & 1 == 0 ? -half.x : half.x, index & 2 == 0 ? -half.y : half.y,
+                    index & 4 == 0 ? -half.z : half.z))
+            }
+            let low = [-width / 2, height, -depth / 2], high = [width / 2, height, depth / 2]
+            for axis in 0..<3 {
+                let values = corners.map { $0[axis] }
+                guard abs((values.min() ?? .infinity) - low[axis]) <= tolerance,
+                      abs((values.max() ?? .infinity) - high[axis]) <= tolerance else { throw invalid }
+            }
         }
         return room["dimensions"]
     }

@@ -78,6 +78,42 @@ final class RoomBaseLightIntentTests: XCTestCase {
         altered["lights"][0]["transform"]["position"] = .vector([0, 4, 0])
         XCTAssertThrowsError(try edit.checkedReply(reply(edit, candidate: altered)))
     }
+
+    func testNegotiatedCeilingFillAcceptsNearUnitRoomAndChecksExplicitCeilingDepth() throws {
+        var draft = try NativeExhibitionDraft.new()
+        var base = draft.candidate
+        let roomId = try XCTUnwrap(base["rooms"][0]["id"].string)
+        base["rooms"][0]["transform"]["rotation"] = .vector([0, 0, 0, 1.00000075])
+        let ceilingId = UUID().uuidString.lowercased()
+        base["surfaces"] = .array([.object([
+            "id": .string(ceilingId), "roomId": .string(roomId), "type": .string("ceiling"),
+            "dimensions": .object(["width": .integer(12), "height": .integer(8)]),
+            "transform": .object(["position": .vector([0, 4, 0]),
+                "rotation": .vector([0.7071067811865476, 0, 0, 0.7071067811865476]), "scale": .vector([1, 1, 1])])
+        ])])
+        try draft.replaceCandidate(base)
+        let selection = ViewportSelection(kind: "room", id: roomId)
+        let action = RoomBaseLightAction.ensure(roomId: roomId, ceilingFill: true)
+        let lightId = UUID().uuidString.lowercased()
+        XCTAssertEqual(try action.encodedValue(in: draft, selected: selection)["ceilingFillProfile"], .string(RoomCeilingFill.profile))
+        let reply = try RoomBaseLightAction.appendingLight(to: base, room: base["rooms"][0], lightId: lightId, ceilingFill: true)
+        XCTAssertEqual(reply["lights"][0]["intensity"].double?.bitPattern, 0x40565381fbdf09e0)
+        XCTAssertTrue(try action.apply(reply, to: &draft, selected: selection))
+
+        var thick = base
+        thick["surfaces"][0]["dimensions"]["depth"] = .number(0.03)
+        let fallback = try RoomBaseLightAction.appendingLight(to: thick, room: thick["rooms"][0], lightId: lightId, ceilingFill: true)
+        XCTAssertEqual(fallback["lights"][0]["type"], .string("point"))
+        XCTAssertEqual(try RoomBaseLightIntent.preserveCeilingFillAfterCeilingEdit(
+            replyWithSurfaces(reply, surfaces: thick["surfaces"]), roomId: roomId
+        )["extensions"][namespace]["lights"][0]["basePlacement"], .string("manual"))
+    }
+
+    private func replyWithSurfaces(_ candidate: DocumentValue, surfaces: DocumentValue) -> DocumentValue {
+        var next = candidate
+        next["surfaces"] = surfaces
+        return next
+    }
     func testPlacementMarkerIsIndependentOptionalCapability() throws {
         var raw = ["userId": "u", "tenantId": "t", "role": "admin", "csrfToken": "csrf", "expiresAt": "later", "roomBaseLightProfile": "room-base-light-v1"]
         func decode() throws -> AuthoringSession { try JSONDecoder().decode(AuthoringSession.self, from: JSONEncoder().encode(raw)) }
