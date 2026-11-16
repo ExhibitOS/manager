@@ -3966,7 +3966,9 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsOrdinarySavedHeadStaticRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == workspaceInfoStandPreparationManifestPin
+        // Its debug admission is scoped to the ordinary catalogue and thumbnails.
+        guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
+        return manifest == workspaceInfoStandPreparationManifestPin
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
         #else
