@@ -622,6 +622,13 @@ pub(crate) const KNOWN_TRACK_AIM_TARGET: RuntimeTuple = (
     "50ec9b3e6ffed4025aab856ba718292de6cae022601f9c14fde774dd18ee6640",
     "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
 );
+// Exact API-only installed catalogue marker, admitted for ordinary authoring.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const INSTALLED_CATALOG_ORIGIN_TARGET: RuntimeTuple = (
+    "98751f9e95650d4132bfd760a4b1c89a8c8d24a4",
+    "50ec9b3e6ffed4025aab856ba718292de6cae022601f9c14fde774dd18ee6640",
+    "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae",
+);
 pub(crate) fn fixed64_publication_repair_clean_transition(pair: (&str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return pair == (RECTANGLE_FIXED64_TARGET.2, FIXED64_PUBLICATION_REPAIR_TARGET.2);
@@ -681,14 +688,14 @@ pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool
 // carried restore retain their existing combined-thumbnail host set.
 pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if tuple == KNOWN_TRACK_AIM_TARGET { return true; }
+    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET].contains(&tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
 // Both fresh binding admission and its mandatory inherited channel use this
 // exact set. Earlier combined targets retain their reopen/transition scope.
 pub(crate) fn combined_thumbnail_fresh_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET].contains(&tuple);
+    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2739,14 +2746,27 @@ pub(crate) mod normal_oex_release_declaration_tests {
     #[ignore = "requires the exact sealed default1.18 known track aim runtime; readonly payload openers only"]
     fn known_track_aim_actual_runtime_ordinary_and_fresh_openers() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_KNOWN_TRACK_AIM_RUNTIME").unwrap());
-        let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
-        let fresh = Payload::open_fresh_workspace_v7_validation(&root).unwrap();
+        assert_ordinary_runtime_openers(&root, KNOWN_TRACK_AIM_TARGET);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed runtime with installed catalogue origin; readonly payload openers only"]
+    fn installed_catalog_origin_actual_runtime_ordinary_and_fresh_openers() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_INSTALLED_CATALOG_RUNTIME").unwrap());
+        assert_ordinary_runtime_openers(&root, INSTALLED_CATALOG_ORIGIN_TARGET);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn assert_ordinary_runtime_openers(root: &Path, target: RuntimeTuple) {
+        let ordinary = Payload::open_workspace_v5_validation(root, false).unwrap();
+        let fresh = Payload::open_fresh_workspace_v7_validation(root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
         for (payload, is_fresh) in [(&ordinary, false), (&fresh, true)] {
             payload.recheck().unwrap();
             assert_eq!(
                 (payload.manifest.source_commit.as_str(), payload.producer_sha256(), payload.manifest_sha256.as_str()),
-                KNOWN_TRACK_AIM_TARGET,
+                target,
             );
             assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
             assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 47);
@@ -2754,13 +2774,13 @@ pub(crate) mod normal_oex_release_declaration_tests {
             assert!(payload.workspace_import_version().is_none());
             assert!(!payload.normal_oex_selected_input().unwrap());
         }
-        assert_eq!(Payload::open_workspace_v5_validation(&root, true).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
+        assert_eq!(Payload::open_workspace_v5_validation(root, true).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
         for version in [WorkspaceImport::V6, WorkspaceImport::V7] {
             for selected in [false, true] {
-                assert_eq!(Payload::open_workspace_import_validation(&root, version, selected).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
+                assert_eq!(Payload::open_workspace_import_validation(root, version, selected).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
             }
         }
-        assert_eq!(Payload::open_saved_workspace_transition(&root).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
+        assert_eq!(Payload::open_saved_workspace_transition(root).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -6020,7 +6040,9 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
-        if (&*context.source_commit, payload.producer_sha256(), &*context.manifest_sha256) == KNOWN_TRACK_AIM_TARGET {
+        if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET].contains(&(
+            &*context.source_commit, payload.producer_sha256(), &*context.manifest_sha256
+        )) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         if [CATALOG40_DRAFT2_OEX_SELECTED.2, CATALOG40_RETAINED_OEX_CLEANUP.2]
@@ -6959,7 +6981,7 @@ impl Payload {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn admit_fresh_catalog52_constructor(&mut self) -> Result<()> {
         let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
-        if ![RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET].contains(&tuple) || !combined_thumbnail_fresh_host_matches(tuple)
+        if ![RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET].contains(&tuple) || !combined_thumbnail_fresh_host_matches(tuple)
             || self.workspace_import.is_some() || self.workspace_v5_validation
             || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CombinedThumbnails052)
         { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
@@ -6970,7 +6992,7 @@ impl Payload {
     pub(crate) fn fresh_catalog52_constructor(&self) -> bool {
         if !self.fresh_catalog52_constructor { return false; }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        return [RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET]
+        return [RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET]
             .contains(&(&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256))
             && self.workspace_import.is_none() && !self.workspace_v5_validation;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]

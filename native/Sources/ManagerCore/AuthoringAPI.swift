@@ -1115,7 +1115,8 @@ public actor AuthoringAPI {
          "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354",
          "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29",
          "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
-         "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"].contains(manifest)
+         "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
+         "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
         false
         #endif
@@ -3916,6 +3917,7 @@ public actor AuthoringAPI {
             || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
             || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
+            || manifest == "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"
         #else
         false
         #endif
