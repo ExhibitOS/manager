@@ -292,16 +292,27 @@ public struct WorkspaceFurnishing: Codable, Equatable, Sendable {
 }
 
 public struct WorkspaceFurnishingSummary: Codable, Sendable, Identifiable {
+    public enum ThumbnailRoute: Sendable {
+        case installedImage, installedPlaceholder, workspace
+    }
+
     public let id: String
     public let version: Int
     public let kind: WorkspaceFurnishingKind
     public let name: String
     public let rightsAvailability: WorkspaceMaterialSummary.Availability
+    /// Positive origin from the authenticated library, independent of its card.
+    public let installedCatalog: Bool?
     /// Present only when the installed distribution supplies an immutable card.
     public let installedThumbnailProfile: String?
 
+    public var thumbnailRoute: ThumbnailRoute {
+        if installedThumbnailProfile != nil { return .installedImage }
+        return installedCatalog == true ? .installedPlaceholder : .workspace
+    }
+
     var isValid: Bool {
-        workspaceFurnishingID(id) && version == 1 && furnishingText(name, limit: 120)
+        workspaceFurnishingID(id) && version == 1 && furnishingText(name, limit: 120) && installedCatalog != false
             && (installedThumbnailProfile == nil || installedThumbnailProfile == InstalledFurnishingThumbnail.profile)
     }
 }

@@ -54,6 +54,25 @@ final class InstalledFurnishingThumbnailTests: XCTestCase {
             origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
         return api
     }
+    func testLibraryOriginRoutesWithoutOverridingAuthoredCard() throws {
+        let legacy = try fixture().summary
+        var wire = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(legacy))
+        func summary() throws -> WorkspaceFurnishingSummary {
+            try JSONDecoder().decode(WorkspaceFurnishingSummary.self, from: JSONEncoder().encode(wire))
+        }
+        XCTAssertNil(legacy.installedCatalog)
+        XCTAssertEqual(legacy.thumbnailRoute, .installedImage)
+        wire["installedCatalog"] = .bool(true)
+        XCTAssertTrue(try summary().isValid)
+        XCTAssertEqual(try summary().thumbnailRoute, .installedImage)
+        wire["installedThumbnailProfile"] = .null
+        XCTAssertEqual(try summary().thumbnailRoute, .installedPlaceholder)
+        wire["installedCatalog"] = .null
+        XCTAssertTrue(try summary().isValid)
+        XCTAssertEqual(try summary().thumbnailRoute, .workspace)
+        wire["installedCatalog"] = .bool(false)
+        XCTAssertFalse(try summary().isValid)
+    }
     func testIssuedDescriptorCanonicalHashesAndClosedBinding() throws {
         let f = try fixture()
         XCTAssertEqual(try InstalledFurnishingThumbnail.canonicalHash(f.descriptor), f.metadata["source"]["descriptorSha256"].string)

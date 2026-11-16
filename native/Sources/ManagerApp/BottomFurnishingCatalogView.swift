@@ -150,7 +150,9 @@ struct BottomFurnishingCatalogView: View {
         guard workspaceVisible,
               (installed || model.durableFurnishingThumbnailsAvailable || (model.furnishingThumbnailFrameReady && controller.furnishingThumbnailSupported)) else { return nil }
         var ids = visibleRows.compactMap { row -> String? in
-            guard case .workspace(let item) = row, item.rightsAvailability.display else { return nil }; return item.id
+            guard case .workspace(let item) = row, item.rightsAvailability.display,
+                  item.thumbnailRoute != .installedPlaceholder else { return nil }
+            return item.id
         }
         if let recent = currentRegistration?.item.id, let index = ids.firstIndex(of: recent) {
             ids.remove(at: index); ids.insert(recent, at: 0)
@@ -303,7 +305,7 @@ struct BottomFurnishingCatalogView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            if case .workspace(let item) = row, item.installedThumbnailProfile == nil, model.durableFurnishingThumbnailsAvailable {
+            if case .workspace(let item) = row, item.thumbnailRoute == .workspace, model.durableFurnishingThumbnailsAvailable {
                 Button("대표 이미지 확인·선택", systemImage: "photo") {
                     thumbnailReview = model.makeFurnishingThumbnailReview(item)
                 }
@@ -332,6 +334,7 @@ struct BottomFurnishingCatalogView: View {
 
     private func previewStatus(_ row: BottomFurnishingCatalogRow) -> String? {
         guard case .workspace(let item) = row, item.rightsAvailability.display else { return nil }
+        if item.thumbnailRoute == .installedPlaceholder { return "미리보기 지원 안 함" }
         switch model.furnishingThumbnail(for: item) {
         case .ready: return nil
         case .failed: return "미리보기 실패"
