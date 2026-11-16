@@ -347,8 +347,12 @@ struct WorkspaceFurnishingIntakeView: View {
             DisclosureGroup("출처와 모델 세부 정보") {
                 Text(intake.declaration.provenance).foregroundStyle(.secondary)
                 if let preparation = intake.preparation {
-                    LabeledContent("보정 방식", value: preparation.recipe == .normalizeLegacySignTexture
-                        ? "안내판 텍스처 호환 처리" : "사용하지 않는 탄젠트 속성 제거")
+                    let recipeLabel = switch preparation.recipe {
+                    case .omitUnusedInvalidTangent: "사용하지 않는 탄젠트 속성 제거"
+                    case .normalizeLegacySignTexture: "안내판 텍스처 호환 처리"
+                    case .benchBaseColor512: "벤치 기본색 텍스처 512 px로 축소"
+                    }
+                    LabeledContent("보정 방식", value: recipeLabel)
                     LabeledContent("원본 SHA-256") {
                         Text(preparation.sourceModel.sha256).font(.caption.monospaced()).textSelection(.enabled)
                     }

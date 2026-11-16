@@ -32,7 +32,14 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
             || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
+            || bench_basecolor_saved_head_runtime_allowed(manifest)
             || isolated_saved_head_runtime_allowed(manifest))
+}
+fn bench_basecolor_saved_head_runtime_allowed(manifest: &str) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return manifest == crate::native_payload::BENCH_BASECOLOR_PREPARATION_TARGET.2;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = manifest; false }
 }
 fn isolated_saved_head_runtime_allowed(manifest: &str) -> bool {
     cfg!(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))

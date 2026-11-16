@@ -506,6 +506,44 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try intake(prepared).check(supportedExtensionVersion: 3, infoStandPreparationManifest: manifest))
     }
 
+    func testBenchBaseColorReceiptBindsCurrentProducerAndExactModelPair() throws {
+        let policy = WorkspaceFurnishingPreparationPolicy.benchBaseColor512
+        let manifest = "4dbbd5412ed794def04f0e58eb12a80603279e5c124dfa0ef3169adc22d7889c"
+        var wire = try registered()
+        wire["preparationPolicy"] = .string(policy.rawValue)
+        wire["declaration"]["kind"] = .string("bench")
+        wire["declaration"]["model"]["bytes"] = .integer(256)
+        wire["received"]["bytes"] = .integer(256)
+        let source = wire["declaration"]["model"]
+        let renderable: DocumentValue = .object([
+            "mime": .string("model/gltf-binary"), "bytes": .integer(128),
+            "sha256": .string(String(repeating: "d", count: 64)),
+        ])
+        var descriptor = wire["declaration"]
+        descriptor["id"] = .string(furnishingId)
+        descriptor["version"] = .integer(1)
+        descriptor["model"] = renderable
+        wire["furnishing"] = descriptor
+        wire["preparation"] = .object([
+            "recipe": .string(policy.rawValue), "sourceModel": source, "renderableModel": renderable,
+            "runtimeManifestSHA256": .string(manifest),
+        ])
+        let prepared = try intake(wire)
+        try prepared.check(supportedExtensionVersion: 3, benchPreparationManifest: manifest)
+        XCTAssertTrue(prepared.approvesBenchReplacement(try XCTUnwrap(prepared.furnishing)))
+        XCTAssertThrowsError(try prepared.check(supportedExtensionVersion: 3))
+        XCTAssertThrowsError(try prepared.check(supportedExtensionVersion: 3, benchPreparationManifest: modelSHA256))
+
+        wire["preparation"]["sourceModel"] = renderable
+        XCTAssertThrowsError(try intake(wire).check(supportedExtensionVersion: 3, benchPreparationManifest: manifest))
+        if case .object(var fields) = wire {
+            fields.removeValue(forKey: "preparation")
+            XCTAssertThrowsError(try intake(.object(fields)).check(supportedExtensionVersion: 3, benchPreparationManifest: manifest))
+        } else {
+            XCTFail("Expected a registered intake fixture")
+        }
+    }
+
     func testPortalFinishRoundTripPreservesV5FurnishingsAndDoor() throws {
         var wire = try registered()
         wire["furnishing"]["kind"] = .string("portal-finish")
