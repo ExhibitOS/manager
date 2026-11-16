@@ -51,6 +51,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var workspaceArtworkFrameModelsProfile: String? = nil
     public var workspaceArtworkFramePreparationProfile: String? = nil
     public var workspaceInfoStandPreparationProfile: String? = nil
+    public var workspaceBenchBaseColorPreparationProfile: String? = nil
     public var workspaceInfoStandReplacementProfile: String? = nil
     public var workspaceFurnishingThumbnailProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
@@ -654,6 +655,7 @@ public actor AuthoringAPI {
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
+            || Self.supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || Self.supportsOrdinaryNativePublicationRuntime(manifest: manifest)
             || Self.supportsDefaultSeatRuntime(manifest: manifest)
             || Self.supportsCarriedRestoreBenchRuntime(manifest: manifest) || Self.supportsWalkingCollisionRuntime(manifest: manifest)
@@ -3123,6 +3125,22 @@ public actor AuthoringAPI {
         admitsWorkspaceInfoStandPreparation ? nativeRuntimeManifestSHA256 : nil
     }
 
+    nonisolated static func supportsBenchBaseColorPreparationRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "4dbbd5412ed794def04f0e58eb12a80603279e5c124dfa0ef3169adc22d7889c"
+        #else
+        false
+        #endif
+    }
+
+    private var benchPreparationManifest: String? {
+        guard admitsWorkspaceFurnishings, let manifest = nativeRuntimeManifestSHA256,
+              Self.supportsBenchBaseColorPreparationRuntime(manifest: manifest),
+              session?.workspaceBenchBaseColorPreparationProfile == WorkspaceFurnishingPreparationPolicy.benchBaseColor512.rawValue
+        else { return nil }
+        return manifest
+    }
+
     public var admitsWorkspacePortalFinish: Bool {
         workspacePortalFinishRuntimeQualified && admitsWorkspaceFurnishings && session?.advertisesWorkspacePortalFinish == true
     }
@@ -3198,6 +3216,11 @@ public actor AuthoringAPI {
             guard admitsWorkspaceInfoStandPreparation, details.canRequestInfoStandPreparation else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
+        case .benchBaseColor512:
+            guard benchPreparationManifest != nil, details.kind == .bench,
+                  (28...WorkspaceFurnishingPreparationPolicy.benchBaseColorSourceByteLimit).contains(details.model.bytes) else {
+                throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
+            }
         case nil:
             break
         }
@@ -3207,7 +3230,7 @@ public actor AuthoringAPI {
         try intake.check(requestId: requestId, details: details, expectedPolicy: policy, expectedFit: fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
                          admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation,
-                         infoStandPreparationManifest: infoStandPreparationManifest)
+                         infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
         return intake
     }
 
@@ -3215,7 +3238,7 @@ public actor AuthoringAPI {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(id))
         try intake.check(id: id, supportedExtensionVersion: supportedFurnishingExtensionVersion,
                          admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
-                         requireCurrentInfoStandProducer: requireCurrentInfoStandProducer)
+                         requireCurrentInfoStandProducer: requireCurrentInfoStandProducer, benchPreparationManifest: benchPreparationManifest)
         if requireCurrentInfoStandProducer && intake.preparationPolicy != .normalizeLegacySignTexture {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
@@ -3258,7 +3281,7 @@ public actor AuthoringAPI {
     public func uploadWorkspaceFurnishing(_ previous: WorkspaceFurnishingIntake,
                                           snapshot: ImportFileSnapshot) async throws -> WorkspaceFurnishingIntake {
         try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
         let model = try WorkspaceFurnishingModel(snapshot: snapshot)
         guard model == previous.declaration.model else { throw AuthoringFailure("MODEL_CONFLICT") }
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/model",
@@ -3266,7 +3289,7 @@ public actor AuthoringAPI {
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
                          expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                         admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                         admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
         guard intake.received != nil else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return intake
     }
@@ -3274,14 +3297,14 @@ public actor AuthoringAPI {
     public func workspaceFurnishingAction(_ previous: WorkspaceFurnishingIntake,
                                           _ action: WorkspaceFurnishingIntakeAction) async throws -> WorkspaceFurnishingIntake {
         try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/" + action.rawValue,
             method: "POST", body: Data("{}".utf8))
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
                          expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
                          admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
-                         requireCurrentInfoStandProducer: previous.phase != .registered)
+                         requireCurrentInfoStandProducer: previous.phase != .registered, benchPreparationManifest: benchPreparationManifest)
         return intake
     }
 
@@ -3302,7 +3325,7 @@ public actor AuthoringAPI {
         let page: AuthoringPage<WorkspaceFurnishingIntake> = try await furnishingPage("furnishing-intakes", cursor: cursor)
         for intake in page.items {
             try intake.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                             admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest)
+                             admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
         }
         guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return page
@@ -3810,8 +3833,7 @@ public actor AuthoringAPI {
         let intake = try await workspaceFurnishingIntake(intakeId)
         let furnishing = try await workspaceFurnishing(replacement.furnishingId, version: 1)
         guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        guard intake.phase == .registered, intake.preparationPolicy == nil, intake.fitProfile == nil,
-              intake.furnishing == furnishing, intake.declaration == furnishing.details,
+        guard intake.approvesBenchReplacement(furnishing),
               furnishing.details.rights.permissions.display, furnishing.details.rights.permissions.export else {
             throw AuthoringFailure("FURNISHING_MODEL_APPROVAL_REQUIRED")
         }
@@ -3825,8 +3847,8 @@ public actor AuthoringAPI {
         guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         guard latest.etag == etag, latest.revision == policy.revision, current.etag == etag,
               current.revision == saved.revision, current.draft == draft,
-              registered.phase == .registered, registered.furnishing == furnishing,
-              registered.declaration == furnishing.details else {
+              registered.approvesBenchReplacement(furnishing), registered.requestId == intake.requestId,
+              registered.declaration == intake.declaration, registered.preparation == intake.preparation else {
             throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
         }
         return next
@@ -3969,6 +3991,7 @@ public actor AuthoringAPI {
         // Its debug admission is scoped to the ordinary catalogue and thumbnails.
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
+            || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
         #else

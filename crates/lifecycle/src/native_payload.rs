@@ -622,6 +622,30 @@ pub(crate) const KNOWN_TRACK_AIM_TARGET: RuntimeTuple = (
     "50ec9b3e6ffed4025aab856ba718292de6cae022601f9c14fde774dd18ee6640",
     "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
 );
+// Exact ordinary successor with source-bound bench base-color preparation.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const BENCH_BASECOLOR_PREPARATION_TARGET: RuntimeTuple = (
+    "c9dbf015fb1c93477603e2aef588bf80e5245b7d",
+    "49fd14b853b4e871c928c9beaec053d31cecd4b728d5951306f06720c87c367e",
+    "4dbbd5412ed794def04f0e58eb12a80603279e5c124dfa0ef3169adc22d7889c",
+);
+const BENCH_BASECOLOR_PREPARATION_DIRECTORY: &str = "platform/database/native-workspace-bench-basecolor-preparation/";
+const BENCH_BASECOLOR_PREPARATION_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-workspace-bench-basecolor-preparation/052_workspace_bench_basecolor_preparation.sql",
+    1962, "2084c189fb896da4cc5c84fb698cda9d85b9e82029f0e2aecd79cce6abebc870",
+);
+const BENCH_BASECOLOR_PREPARATION_MARKER: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-bench-basecolor-preparation-capability-v1.json",
+    275, "0bc1a416f0fd119d48c43ff7464ad89f71d05829cd6d139623de9404fcb437fc",
+);
+
+fn bench_basecolor_preparation_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == BENCH_BASECOLOR_PREPARATION_TARGET;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
 // Exact API-only installed catalogue marker, admitted for ordinary authoring.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const INSTALLED_CATALOG_ORIGIN_TARGET: RuntimeTuple = (
@@ -688,14 +712,14 @@ pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool
 // carried restore retain their existing combined-thumbnail host set.
 pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET].contains(&tuple) { return true; }
+    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
 // Both fresh binding admission and its mandatory inherited channel use this
 // exact set. Earlier combined targets retain their reopen/transition scope.
 pub(crate) fn combined_thumbnail_fresh_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET].contains(&tuple);
+    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2758,6 +2782,20 @@ pub(crate) mod normal_oex_release_declaration_tests {
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the sealed bench base-color successor; readonly payload openers only"]
+    fn bench_basecolor_actual_runtime_ordinary_and_fresh_openers() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_BENCH_BASECOLOR_RUNTIME").unwrap());
+        assert_ordinary_runtime_openers(&root, BENCH_BASECOLOR_PREPARATION_TARGET);
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(
+            BENCH_BASECOLOR_PREPARATION_TARGET.2,
+        ));
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(
+            INSTALLED_CATALOG_ORIGIN_TARGET.2,
+        ));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn assert_ordinary_runtime_openers(root: &Path, target: RuntimeTuple) {
         let ordinary = Payload::open_workspace_v5_validation(root, false).unwrap();
         let fresh = Payload::open_fresh_workspace_v7_validation(root).unwrap();
@@ -2769,7 +2807,15 @@ pub(crate) mod normal_oex_release_declaration_tests {
                 target,
             );
             assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
-            assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 47);
+            let ledger = payload.workspace_furnishing_ledger(catalog).unwrap();
+            if target == BENCH_BASECOLOR_PREPARATION_TARGET {
+                assert_eq!(ledger.lines().count(), 48);
+                assert!(ledger.ends_with(&format!(
+                    "052_workspace_bench_basecolor_preparation.sql|{}", BENCH_BASECOLOR_PREPARATION_SCHEMA.2,
+                )));
+            } else {
+                assert_eq!(ledger.lines().count(), 47);
+            }
             assert_eq!(payload.fresh_catalog52_constructor(), is_fresh);
             assert!(payload.workspace_import_version().is_none());
             assert!(!payload.normal_oex_selected_input().unwrap());
@@ -6040,7 +6086,7 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
-        if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET].contains(&(
+        if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&(
             &*context.source_commit, payload.producer_sha256(), &*context.manifest_sha256
         )) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
@@ -6496,7 +6542,10 @@ impl Payload {
         let retained_recovery = self.catalog45_retained_image_recovery_validation() || startup_cancel_recovery;
         let pre_ready_preservation = self.catalog45_pre_ready_preservation_validation();
         let pre_ready_hayes_preservation = self.catalog45_pre_ready_hayes_preservation_validation();
+        let bench_basecolor_pinned = bench_basecolor_preparation_host_matches(tuple);
         for ((path, bytes, sha), expected) in [
+            (BENCH_BASECOLOR_PREPARATION_MARKER, bench_basecolor_pinned),
+            (BENCH_BASECOLOR_PREPARATION_SCHEMA, bench_basecolor_pinned),
             (CATALOG45_RECOVERY_CAPABILITY, self.catalog45_recovery_validation() && !selected_recovery && !retained_recovery && !pre_ready_preservation && !pre_ready_hayes_preservation),
             (CATALOG45_SELECTED_RECOVERY_CAPABILITY, selected_recovery),
             (CATALOG45_RETAINED_IMAGE_RECOVERY_CAPABILITY, retained_recovery),
@@ -6717,6 +6766,10 @@ impl Payload {
             ("native-oex-workspace-import-wall", 35..=35),
             ("native-workspace-furnishing", 36..=36),
         ];
+        let bench_basecolor = catalog == WorkspaceFurnishingCatalog::CombinedThumbnails052
+            && bench_basecolor_preparation_host_matches((
+                &self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256,
+            ));
         let mut rows = std::collections::BTreeMap::new();
         for file in &self.manifest.files {
             let Some((directory, name)) = file.path.strip_prefix("platform/database/").and_then(|path| path.split_once('/')) else {
@@ -6730,6 +6783,7 @@ impl Payload {
             if catalog == WorkspaceFurnishingCatalog::CombinedThumbnails052
                 && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
                 && file.path != CURRENT_IMAGE_THUMBNAIL_SCHEMA.0 && file.path != FURNISHING_THUMBNAIL_SCHEMA.0
+                && !(bench_basecolor && file.path == BENCH_BASECOLOR_PREPARATION_SCHEMA.0)
             { return Err(invalid()); }
             if catalog == WorkspaceFurnishingCatalog::CurrentImageThumbnail051
                 && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
@@ -6843,6 +6897,12 @@ impl Payload {
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 50
+            } else if file.path.starts_with(BENCH_BASECOLOR_PREPARATION_DIRECTORY) {
+                let (path, bytes, hash) = BENCH_BASECOLOR_PREPARATION_SCHEMA;
+                if !bench_basecolor || file.path != path || file.bytes != Some(bytes)
+                    || file.sha256.as_deref() != Some(hash)
+                { return Err(invalid()); }
+                52
             } else if file.path.starts_with(INFO_STAND_PREPARATION_DIRECTORY) {
                 let (path, bytes, hash) = INFO_STAND_PREPARATION_SCHEMA;
                 if catalog != WorkspaceFurnishingCatalog::InfoStandPreparation048
@@ -6867,7 +6927,7 @@ impl Payload {
         }
         // These isolated catalogs append one migration to 045.
         let count = match catalog {
-            WorkspaceFurnishingCatalog::CombinedThumbnails052 => 47,
+            WorkspaceFurnishingCatalog::CombinedThumbnails052 => if bench_basecolor { 48 } else { 47 },
             WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048
                 | WorkspaceFurnishingCatalog::GpuModelPreparation049 | WorkspaceFurnishingCatalog::FurnishingThumbnail050
                 | WorkspaceFurnishingCatalog::CurrentImageThumbnail051 => 46,
@@ -6981,7 +7041,7 @@ impl Payload {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn admit_fresh_catalog52_constructor(&mut self) -> Result<()> {
         let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
-        if ![RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET].contains(&tuple) || !combined_thumbnail_fresh_host_matches(tuple)
+        if ![RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&tuple) || !combined_thumbnail_fresh_host_matches(tuple)
             || self.workspace_import.is_some() || self.workspace_v5_validation
             || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CombinedThumbnails052)
         { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
@@ -6992,7 +7052,7 @@ impl Payload {
     pub(crate) fn fresh_catalog52_constructor(&self) -> bool {
         if !self.fresh_catalog52_constructor { return false; }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        return [RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET]
+        return [RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET]
             .contains(&(&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256))
             && self.workspace_import.is_none() && !self.workspace_v5_validation;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]

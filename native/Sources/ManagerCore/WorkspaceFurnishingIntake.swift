@@ -49,10 +49,12 @@ public struct WorkspaceFurnishingModel: Codable, Equatable, Sendable {
 public enum WorkspaceFurnishingPreparationPolicy: String, Codable, Sendable {
     case omitUnusedInvalidTangent = "omit-unused-invalid-tangent-r1"
     case normalizeLegacySignTexture = "normalize-legacy-sign-texture-r1"
+    case benchBaseColor512 = "bench-basecolor-512-v1"
 
     static let profile = "workspace-artwork-frame-preparation-v1"
     static let infoStandProfile = "workspace-info-stand-preparation-v1"
     static let infoStandSourceByteLimit = 4 * 1024 * 1024
+    static let benchBaseColorSourceByteLimit = 4 * 1024 * 1024
 
     // The three reviewed source → v2 model pairs in ExhibitOS Spec draft.24.
     private static let models: [(source: WorkspaceFurnishingModel, renderable: WorkspaceFurnishingModel)] = [
@@ -72,7 +74,7 @@ public enum WorkspaceFurnishingPreparationPolicy: String, Codable, Sendable {
     func renderable(for source: WorkspaceFurnishingModel) -> WorkspaceFurnishingModel? {
         switch self {
         case .omitUnusedInvalidTangent: Self.models.first { $0.source == source }?.renderable
-        case .normalizeLegacySignTexture: nil
+        case .normalizeLegacySignTexture, .benchBaseColor512: nil
         }
     }
 }
@@ -336,7 +338,7 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
             case .omitUnusedInvalidTangent:
                 try Self.requireKeys(decoder, ["sourceModel", "recipe", "renderableModel"])
                 runtimeManifestSHA256 = nil
-            case .normalizeLegacySignTexture:
+            case .normalizeLegacySignTexture, .benchBaseColor512:
                 try Self.requireKeys(decoder, ["sourceModel", "recipe", "renderableModel", "runtimeManifestSHA256"])
                 runtimeManifestSHA256 = try fields.decode(String.self, forKey: .runtimeManifestSHA256)
             }
@@ -400,7 +402,7 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
                supportedExtensionVersion: Int64 = 1,
                admitsRectangularFit: Bool = false,
                admitsPreparation: Bool = false, infoStandPreparationManifest: String? = nil,
-               requireCurrentInfoStandProducer: Bool = false) throws {
+               requireCurrentInfoStandProducer: Bool = false, benchPreparationManifest: String? = nil) throws {
         guard workspaceFurnishingID(intakeId), workspaceFurnishingID(self.requestId),
               id.map({ $0 == intakeId }) ?? true, requestId.map({ $0 == self.requestId }) ?? true,
               declaration.isValid, declaration.kind.minimumExtensionVersion <= supportedExtensionVersion,
@@ -447,6 +449,18 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
                   }) ?? true else {
                 throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
             }
+        case .benchBaseColor512:
+            guard let benchPreparationManifest, nativeImportDigest(benchPreparationManifest),
+                  declaration.kind == .bench, (28...WorkspaceFurnishingPreparationPolicy.benchBaseColorSourceByteLimit).contains(declaration.model.bytes),
+                  (phase == .registered) == (preparation != nil),
+                  preparation.map({ receipt in
+                      receipt.runtimeManifestSHA256 == benchPreparationManifest
+                          && receipt.renderableModel.isValid
+                          && (28..<declaration.model.bytes).contains(receipt.renderableModel.bytes)
+                          && receipt.renderableModel.sha256 != declaration.model.sha256
+                  }) ?? true else {
+                throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+            }
         }
         if let preparation {
             let expected = WorkspaceFurnishingDetails(kind: declaration.kind, name: declaration.name,
@@ -458,6 +472,16 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
         } else if let furnishing, furnishing.details != declaration {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
+    }
+
+    func approvesBenchReplacement(_ registered: WorkspaceFurnishing) -> Bool {
+        guard phase == .registered, fitProfile == nil, furnishing == registered,
+              registered.details.kind == .bench else { return false }
+        if preparationPolicy == .benchBaseColor512 {
+            return preparation?.sourceModel == declaration.model
+                && preparation?.renderableModel == registered.details.model
+        }
+        return preparationPolicy == nil && declaration == registered.details
     }
 
     func checkInfoStandApproval(_ registered: WorkspaceFurnishing, currentProducer: String) throws {
