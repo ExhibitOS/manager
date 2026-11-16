@@ -34,13 +34,13 @@ final class WorkspaceBenchVisualReplacementTests: XCTestCase {
         try .init(benchId: bench, placementId: placement, expectedModelSHA256: expected ?? oldHash,
             furnishingId: newId, modelSHA256: newHash)
     }
-    private func fixture(shared: Bool = false) throws -> NativeExhibitionDraft {
+    private func fixture(shared: Bool = false, modelForward: BenchSettings.WorkspaceVisual.ModelForward? = .positiveZ) throws -> NativeExhibitionDraft {
         var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
         let room = try XCTUnwrap(draft.rooms.first?["id"].string)
         let seat = try BenchSettings(id: bench, name: "Backed seat", roomId: room, kind: .backed,
             position: [0,0,2], yaw: 0, width: 1.5, depth: 0.7, height: 0.45, material: .defaults(.wood),
             viewpointId: "55555555-5555-4555-8555-555555555555",
-            workspaceVisual: .init(placementId: placement, modelSha256: oldHash, modelForward: .positiveZ))
+            workspaceVisual: .init(placementId: placement, modelSha256: oldHash, modelForward: modelForward))
         var rows: [DocumentValue] = [.object(["id": .string(placement), "roomId": .string(room),
             "furnishingId": .string(oldId), "furnishingVersion": .integer(1), "position": .vector([0,0,2]), "yaw": .number(0), "scale": .number(1)])]
         if shared { var other = rows[0]; other["id"] = .string("66666666-6666-4666-8666-666666666666"); rows.append(other) }
@@ -69,6 +69,29 @@ final class WorkspaceBenchVisualReplacementTests: XCTestCase {
         XCTAssertEqual(next.candidate, expected)
         XCTAssertEqual(try BenchSettings.list(in: next)[0].workspaceVisual?.modelForward, .positiveZ)
     }
+    func testModelForwardChangesOnlyTheBoundBackedBenchOrientation() throws {
+        let before = try fixture(modelForward: nil)
+        let input: DocumentValue = .object([
+            "benchId": .string(bench), "placementId": .string(placement), "furnishingId": .string(oldId),
+            "furnishingVersion": .integer(1), "modelSha256": .string(oldHash),
+            "expectedModelForward": .string("negative-z"), "modelForward": .string("positive-z"),
+        ])
+        let command = try WorkspaceBenchModelForward(value: input)
+        let changed = try XCTUnwrap(command.applying(to: before))
+        var candidate = changed.candidate
+        var benches = try XCTUnwrap(candidate["extensions"][BenchSettings.namespace]["benches"].items)
+        XCTAssertEqual(benches[0]["workspaceVisual"]["modelForward"], .string("positive-z"))
+        benches[0]["workspaceVisual"] = .object([
+            "placementId": .string(placement), "modelSha256": .string(oldHash),
+        ])
+        candidate["extensions"][BenchSettings.namespace]["benches"] = .array(benches)
+        XCTAssertEqual(candidate, before.candidate)
+        XCTAssertThrowsError(try command.applying(to: changed))
+        var otherModel = input
+        otherModel["modelSha256"] = .string(newHash)
+        XCTAssertThrowsError(try WorkspaceBenchModelForward(value: otherModel).applying(to: before))
+    }
+
     func testSharedOldDescriptorIsRetainedAndOtherPlacementExact() throws {
         let before = try fixture(shared: true), next = try replacement().applying(newFurnishing(), to: before, supportedExtensionVersion: 11)
         let workspace = WorkspaceFurnishingPlacement.namespace

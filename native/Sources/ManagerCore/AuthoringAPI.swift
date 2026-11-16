@@ -52,6 +52,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var workspaceArtworkFramePreparationProfile: String? = nil
     public var workspaceInfoStandPreparationProfile: String? = nil
     public var workspaceBenchBaseColorPreparationProfile: String? = nil
+    public var workspaceBenchModelForwardProfile: String? = nil
     public var workspaceInfoStandReplacementProfile: String? = nil
     public var workspaceFurnishingThumbnailProfile: String? = nil
     public var workspaceRegisteredFrameLineageProfile: String? = nil
@@ -3849,6 +3850,43 @@ public actor AuthoringAPI {
               current.revision == saved.revision, current.draft == draft,
               registered.approvesBenchReplacement(furnishing), registered.requestId == intake.requestId,
               registered.declaration == intake.declaration, registered.preparation == intake.preparation else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        return next
+    }
+
+    public func prepareWorkspaceBenchModelForward(_ command: WorkspaceBenchModelForward,
+                                                  in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard session?.workspaceBenchModelForwardProfile == WorkspaceBenchModelForward.profile else {
+            throw AuthoringFailure("BENCH_MODEL_FORWARD_UNAVAILABLE")
+        }
+        let held = generation
+        let policy = try await workspaceBenchSeatPolicy(in: document)
+        guard let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE")
+        }
+        let saved = try await exhibition(draft.id)
+        guard saved.draft == draft, saved.etag == etag, saved.revision == policy.revision else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let next = try command.applying(to: draft)
+        let furnishing = try await workspaceFurnishing(command.furnishingId, version: 1)
+        let descriptor = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(furnishing))
+        guard furnishing.details.kind == .bench, furnishing.details.model.sha256 == command.modelSha256,
+              furnishing.details.rights.permissions.display,
+              draft.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["furnishings"].items?
+                  .filter({ $0["id"].string == command.furnishingId }) == [descriptor] else {
+            throw AuthoringFailure("BENCH_MODEL_FORWARD_REFERENCE")
+        }
+        _ = try await workspaceFurnishingModel(furnishing)
+        try await validateNativeViewportEdit(next ?? draft, etag: etag)
+        let latest = try await workspaceBenchSeatPolicy(in: document)
+        let current = try await exhibition(draft.id)
+        guard generation == held, session?.workspaceBenchModelForwardProfile == WorkspaceBenchModelForward.profile else {
+            throw AuthoringFailure("ACCOUNT_CHANGED")
+        }
+        guard latest.revision == policy.revision, current.revision == saved.revision,
+              current.etag == etag, current.draft == draft else {
             throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
         }
         return next
