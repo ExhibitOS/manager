@@ -99,6 +99,7 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let oexWorkspaceV7Qualified: Bool?
     public let oexCurrentRailQualified: Bool?
     public let oexSaveOffer: NativeOEXSaveOffer?
+    public let currentRailPublicationManifestSha256: String?
     public let freshImageReleaseConfigured: Bool?
     public let hayesOriginalReady: Bool?
     public let hayesReceipt: NativeHayesReceipt?
