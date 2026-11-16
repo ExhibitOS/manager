@@ -528,7 +528,7 @@ struct Frame<'a> {
 
 impl Exchange {
     pub(super) fn new(binding: &Binding, lease_body: &[u8]) -> Result<Self> {
-        Ok(Self {
+        let exchange = Self {
             generation: binding.generation.clone(),
             lease_transcript_sha256: digest(lease_body),
             admission_kind: binding.admission_kind,
@@ -541,11 +541,18 @@ impl Exchange {
                 })
             }),
             previous_runtime_generation: binding.interrupted_claim_generations.first().cloned(),
-        })
+        };
+        if exchange.version() == 5 && (binding.catalog != 52 || !crate::native_payload::current52_carried_interrupted_host_matches((
+            &binding.source_commit, &binding.producer_sha256, &binding.payload_manifest_sha256,
+        ))) {
+            return Err(err(ERROR));
+        }
+        Ok(exchange)
     }
 
     fn version(&self) -> u32 {
-        if self.carried_restore_proof.is_some() { 4 }
+        if self.carried_restore_proof.is_some() && self.previous_runtime_generation.is_some() { 5 }
+        else if self.carried_restore_proof.is_some() { 4 }
         else if self.previous_runtime_generation.is_some() { 3 }
         else if self.restore_proof.is_some() { 2 }
         else { 1 }
@@ -572,6 +579,17 @@ impl Exchange {
         bytes.extend(decode(&self.lease_transcript_sha256)?);
         bytes.push(self.admission_kind.tag());
         bytes.extend(decode(&self.active_binding_sha256)?);
+        if let Some(proof) = &self.restore_proof {
+            let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
+            bytes.extend(decode(&digest(&canonical))?);
+        }
+        if let Some(proof) = &self.carried_restore_proof {
+            let carried_interrupted = self.version() == 5 && self.admission_kind == Admission::InterruptedReopen;
+            if self.restore_proof.is_some() || (!carried_interrupted && !self.admission_kind.allows_carried_v4())
+            { return Err(err(ERROR)); }
+            let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
+            bytes.extend(decode(&digest(&canonical))?);
+        }
         if let Some(previous) = &self.previous_runtime_generation {
             let previous_id = Uuid::parse_str(previous).map_err(|_| err(ERROR))?;
             if previous_id == id || previous_id.to_string() != *previous || self.restore_proof.is_some()
@@ -580,17 +598,6 @@ impl Exchange {
                 return Err(err(ERROR));
             }
             bytes.extend_from_slice(previous_id.as_bytes());
-        }
-        if let Some(proof) = &self.restore_proof {
-            let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
-            bytes.extend(decode(&digest(&canonical))?);
-        }
-        if let Some(proof) = &self.carried_restore_proof {
-            if self.restore_proof.is_some() || self.previous_runtime_generation.is_some()
-                || !self.admission_kind.allows_carried_v4()
-            { return Err(err(ERROR)); }
-            let canonical = serde_json::to_vec(proof).map_err(|_| err(ERROR))?;
-            bytes.extend(decode(&digest(&canonical))?);
         }
         Ok(bytes)
     }
@@ -858,6 +865,56 @@ mod tests {
             frame["carriedRestoreProof"]["observation"]["archiveSourceDatabaseOid"] = "16003".into();
             assert!(exchange.check_frame(&key, kind, &serde_json::to_vec(&frame).unwrap()).is_err());
         }
+    }
+
+    #[test]
+    fn carried_interrupted_v5_matches_platform_and_binds_both_proofs() {
+        let prior = "11111111-1111-4111-8111-111111111111";
+        let proof = serde_json::from_value(serde_json::json!({
+            "version": 1, "sourceHandoffSha256": "e".repeat(64),
+            "priorRestoreProof": {
+                "restoreId": prior, "backupId": "22222222-2222-4222-8222-222222222222",
+                "authenticatedManifestSha256": "c".repeat(64),
+                "sourceDatabaseSystemId": "12", "sourceDatabaseOid": "34",
+                "targetDatabaseSystemId": "56", "targetDatabaseOid": "78",
+                "provenanceRowCount": 1, "provenanceTableSha256": "d".repeat(64)
+            },
+            "archiveSourceDatabaseSystemId": "56", "archiveSourceDatabaseOid": "78",
+            "targetDatabaseSystemId": "90", "targetDatabaseOid": "91",
+            "provenanceRowCount": 1, "provenanceTableSha256": "d".repeat(64)
+        })).unwrap();
+        let mut exchange = Exchange {
+            generation: GENERATION.into(), lease_transcript_sha256: "a".repeat(64),
+            admission_kind: Admission::InterruptedReopen, active_binding_sha256: "b".repeat(64),
+            restore_proof: None, previous_runtime_generation: Some(prior.into()),
+            carried_restore_proof: Some(CarriedChannelProof {
+                restore_id: "33333333-3333-4333-8333-333333333333".into(),
+                backup_id: "44444444-4444-4444-8444-444444444444".into(),
+                authenticated_manifest_sha256: "f".repeat(64), observation: proof,
+            }),
+        };
+        // Node24.21 vectors from the exact sealed 298eb5d3 producer.
+        for (kind, mac) in [
+            (Kind::Admission, "62191cf444f8d88e1793581e651397231b74e56bfd760e58b70bb03934715c66"),
+            (Kind::AdmissionAck, "d2469e6a0846da4b68c32c649b3e898937d311d677c10b9104adf506229ceac3"),
+            (Kind::Stop, "55122ef5bcfd60816e6888d17f6af193caa3d7529b4346492f70028279b901c1"),
+            (Kind::Drained, "e3e4098a698d0a021e162164f08b0563796d3c7fa5b9a3452181eaf2028e1928"),
+        ] {
+            let key = [7; 32];
+            let bytes = exchange.signed(&key, kind).unwrap();
+            assert!(bytes.len() < LIMIT);
+            let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(value["version"], 5);
+            assert_eq!(value["mac"], mac);
+            exchange.check_frame(&key, kind, &bytes).unwrap();
+            value["previousRuntimeGeneration"] = LATER.into();
+            assert!(exchange.check_frame(&key, kind, &serde_json::to_vec(&value).unwrap()).is_err());
+        }
+        exchange.admission_kind = Admission::CleanReopen;
+        assert!(exchange.signed(&[7; 32], Kind::Admission).is_err());
+        exchange.admission_kind = Admission::InterruptedReopen;
+        exchange.previous_runtime_generation = Some(GENERATION.into());
+        assert!(exchange.signed(&[7; 32], Kind::Admission).is_err());
     }
 
     #[test]

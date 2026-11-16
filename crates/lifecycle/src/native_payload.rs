@@ -617,6 +617,19 @@ pub(crate) const FIXED64_PUBLICATION_REPAIR_TARGET: RuntimeTuple = (
     "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CURRENT52_CARRIED_INTERRUPTED_TARGET: RuntimeTuple = (
+    "a2529ee134e9ecebd0c25cb0668615bd58f3472e",
+    "2bdc4942227e2691490e0496b07ce8f0ba0df47823396b13d20a98160ec50820",
+    "298eb5d33e539f3ec2368f7ff76b1e2fef2d7e8a001138d3a161c91fb1407014",
+);
+
+pub(crate) fn current52_carried_interrupted_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == CURRENT52_CARRIED_INTERRUPTED_TARGET;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const PRIVATE_EXB_CODEC: RuntimeTuple = (
     "45d52c116dc14b57113005293b24b17204a8df91",
     "8e7374be46c900aa01fd1c0385b936077812c9aad988322334c5b04077dbfaa6",
