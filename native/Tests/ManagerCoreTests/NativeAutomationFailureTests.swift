@@ -4,6 +4,27 @@ import Darwin
 @testable import ManagerCore
 
 final class NativeAutomationFailureTests: XCTestCase {
+    func testFirstArchitectureDraftHasOneTypedBottomAlignedOpeningAndRejectsNonemptyJournal() throws {
+        let id = "10000000-0000-4000-8000-000000000001"
+        var state = NativeDocumentState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id,
+            draft: nil, etag: nil, savedEditVersion: nil, pending: nil)
+        let request: DocumentValue = .object(["command": .object(["title": .string("Synthetic portal")])])
+        let draft = try NativeAutomationSession.firstArchitectureDraft(request, in: state, roomBaseLight: false)
+        let openings = try XCTUnwrap(draft.candidate["openings"].items)
+        XCTAssertEqual(draft.candidate["rooms"].items?.count, 1)
+        XCTAssertEqual(draft.candidate["surfaces"].items?.count, 6)
+        XCTAssertEqual(openings.count, 1)
+        XCTAssertEqual(openings[0]["dimensions"]["width"], .number(1.10))
+        XCTAssertEqual(openings[0]["dimensions"]["height"], .number(2.20))
+        XCTAssertEqual(openings[0]["offset"], .vector([0, -0.90]))
+        state.draft = draft
+        XCTAssertThrowsError(try NativeAutomationSession.firstArchitectureDraft(request, in: state, roomBaseLight: false))
+        state.draft = nil; state.pending = .init(etag: nil, draft: draft)
+        XCTAssertThrowsError(try NativeAutomationSession.firstArchitectureDraft(request, in: state, roomBaseLight: false))
+        var invalid = request; invalid["command"]["draft"] = draft.candidate
+        state.pending = nil
+        XCTAssertThrowsError(try NativeAutomationSession.firstArchitectureDraft(invalid, in: state, roomBaseLight: false))
+    }
     func testInstalledReopenUsesVerifiedConfigurationAndRefusesScopeOrPortDrift() throws {
         let tenant = "10000000-0000-4000-8000-000000000001", manifest = String(repeating: "a", count: 64)
         func configuration(kind: String? = "personal", owner: String? = nil, sha: String? = nil,
