@@ -2,6 +2,7 @@
 //! Read-only provisional format inspection of a held Swift snapshot. No profile,
 //! installation, HTTP request, reservation or import authority is opened here.
 use super::*;
+use crate::native_payload::{CURRENT_RAIL_OEX_FORMAT, WorkspaceImport};
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::{fs::MetadataExt, process::CommandExt};
@@ -16,12 +17,12 @@ fn invalid()->LifecycleError {err("NATIVE_OEX_FORMAT_INVALID")}
 fn stamp(m:&fs::Metadata)->(u64,u64,u64,i64,i64,i64,i64) {
     (m.dev(),m.ino(),m.len(),m.mtime(),m.mtime_nsec(),m.ctime(),m.ctime_nsec())
 }
-fn check_hint(bytes:&[u8],before:&fs::Metadata,workspace_import:bool)->Result<()> {
+fn check_hint(bytes:&[u8],before:&fs::Metadata,workspace_import:Option<WorkspaceImport>)->Result<()> {
     let h:Hint=serde_json::from_slice(bytes).map_err(|_|invalid())?;
-    let format_valid = if workspace_import {
-        h.archive_format == "1.0.0-draft.12"
-    } else {
-        matches!(h.archive_format.as_str(), "1.0.0-draft.9" | "1.0.0-draft.10")
+    let format_valid = match workspace_import {
+        Some(WorkspaceImport::CurrentRail) => h.archive_format == CURRENT_RAIL_OEX_FORMAT,
+        Some(WorkspaceImport::V6 | WorkspaceImport::V7) => h.archive_format == "1.0.0-draft.12",
+        None => matches!(h.archive_format.as_str(), "1.0.0-draft.9" | "1.0.0-draft.10"),
     };
     if h.version!=1||h.kind!="oex-format-hint"||!format_valid
         || h.archive_bytes!=before.len()||h.input_device!=before.dev().to_string()||h.input_inode!=before.ino().to_string()
@@ -32,9 +33,9 @@ pub(super) fn run(payload:&Payload, input_fd:i32, cancelled:&AtomicBool)->Result
     let fd=unsafe{libc::fcntl(input_fd,libc::F_DUPFD_CLOEXEC,64)};
     if fd<0{return Err(invalid());}
     let source=unsafe{File::from_raw_fd(fd)};
-    run_owned(&node,&script,&root,source,cancelled,payload.workspace_import_selected_input())
+    run_owned(&node,&script,&root,source,cancelled,payload.selected_workspace_import_version())
 }
-fn run_owned(node:&Path,script:&Path,root:&Path,source:File,cancelled:&AtomicBool,workspace_import:bool)->Result<Vec<u8>> {
+fn run_owned(node:&Path,script:&Path,root:&Path,source:File,cancelled:&AtomicBool,workspace_import:Option<WorkspaceImport>)->Result<Vec<u8>> {
     let before=source.metadata().map_err(|_|invalid())?;
     let flags=unsafe{libc::fcntl(source.as_raw_fd(),libc::F_GETFL)};
     if !before.is_file()||before.uid()!=unsafe{libc::geteuid()}||before.mode()&0o777!=0o600||before.nlink()!=1
@@ -94,11 +95,16 @@ mod tests {
         let before=file.metadata().unwrap();
         let mut hint=Hint{version:1,kind:"oex-format-hint".into(),archive_format:"1.0.0-draft.10".into(),archive_bytes:100,
             manifest_sha256:"a".repeat(64),input_device:before.dev().to_string(),input_inode:before.ino().to_string()};
-        for format in ["1.0.0-draft.9","1.0.0-draft.10"]{hint.archive_format=format.into();assert!(check_hint(&serde_json::to_vec(&hint).unwrap(),&before,false).is_ok());}
-        hint.archive_format="1.0.0-draft.11".into();assert!(check_hint(&serde_json::to_vec(&hint).unwrap(),&before,false).is_err());
-        hint.archive_format="1.0.0-draft.10".into();hint.input_inode=format!("0{}",before.ino());assert!(check_hint(&serde_json::to_vec(&hint).unwrap(),&before,false).is_err());
-        hint.input_inode=before.ino().to_string();hint.archive_bytes=101;assert!(check_hint(&serde_json::to_vec(&hint).unwrap(),&before,false).is_err());
-        hint.archive_bytes=100;let mut bytes=serde_json::to_vec(&hint).unwrap();bytes.push(b' ');assert!(check_hint(&bytes,&before,false).is_err());
+        hint.archive_format=CURRENT_RAIL_OEX_FORMAT.into();
+        let current_rail=serde_json::to_vec(&hint).unwrap();
+        assert!(check_hint(&current_rail,&before,Some(WorkspaceImport::CurrentRail)).is_ok());
+        assert!(check_hint(&current_rail,&before,Some(WorkspaceImport::V7)).is_err());
+        assert!(check_hint(&current_rail,&before,None).is_err());
+        for format in ["1.0.0-draft.9","1.0.0-draft.10"]{hint.archive_format=format.into();assert!(check_hint(&serde_json::to_vec(&hint).unwrap(),&before,None).is_ok());}
+        hint.archive_format="1.0.0-draft.11".into();assert!(check_hint(&serde_json::to_vec(&hint).unwrap(),&before,None).is_err());
+        hint.archive_format="1.0.0-draft.10".into();hint.input_inode=format!("0{}",before.ino());assert!(check_hint(&serde_json::to_vec(&hint).unwrap(),&before,None).is_err());
+        hint.input_inode=before.ino().to_string();hint.archive_bytes=101;assert!(check_hint(&serde_json::to_vec(&hint).unwrap(),&before,None).is_err());
+        hint.archive_bytes=100;let mut bytes=serde_json::to_vec(&hint).unwrap();bytes.push(b' ');assert!(check_hint(&bytes,&before,None).is_err());
         drop(file);fs::remove_file(path).unwrap();
     }
 }

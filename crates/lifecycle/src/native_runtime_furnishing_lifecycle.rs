@@ -163,6 +163,9 @@ impl Binding {
         let ordinary_combined = self.catalog == 52 && self.restore.is_none()
             && (fresh_contact || self.admission_kind == Admission::CleanReopen)
             && crate::native_payload::combined_thumbnail_ordinary_host_matches(tuple);
+        let current_rail = self.catalog == 53 && self.restore.is_none()
+            && self.admission_kind == Admission::CleanReopen
+            && crate::native_payload::current_rail_host_matches(tuple);
         let private_codec = self.restore.as_ref().and_then(|restore| restore.private_codec_manifest_sha256.as_deref());
         let private_exb = self.catalog == 52
             && matches!(self.admission_kind, Admission::VerifiedRestore | Admission::CleanReopen)
@@ -186,7 +189,7 @@ impl Binding {
         };
         if self.version != 1
             || (private_codec.is_some() && !private_exb)
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail || private_exb
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail || private_exb || current_rail
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -342,6 +345,23 @@ impl Binding {
             Phase::ActivatedRestore => self.admission_kind = Admission::VerifiedRestore,
         }
         self.restore = prior.restore.clone();
+        self.previous_generation = Some(prior.generation.clone());
+        self.check()
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn consume_current_rail_parent(&mut self, prior: &Self) -> Result<()> {
+        prior.check()?;
+        if self.phase != Phase::Active || self.previous_generation.is_some()
+            || self.admission_kind != Admission::FreshEmpty || self.restore.is_some()
+            || self.generation == prior.generation || self.owner != prior.owner || self.physical != prior.physical
+            || prior.phase != Phase::Clean || prior.restore.is_some()
+            || !prior.matches_catalog_tuple(52, crate::native_payload::FIXED64_PUBLICATION_REPAIR_TARGET)
+            || !self.matches_catalog_tuple(53, crate::native_payload::CURRENT_RAIL_PAYLOAD)
+        {
+            return Err(err(ERROR));
+        }
+        self.admission_kind = Admission::CleanReopen;
         self.previous_generation = Some(prior.generation.clone());
         self.check()
     }
@@ -637,6 +657,39 @@ mod tests {
     const GENERATION: &str = "10000000-0000-4000-8000-000000000001";
     const NEXT: &str = "10000000-0000-4000-8000-000000000005";
     const LATER: &str = "10000000-0000-4000-8000-000000000006";
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn current_rail_only_consumes_the_cold_exact_parent_and_cannot_repeat() {
+        use crate::native_payload::{CURRENT_RAIL_PAYLOAD, FIXED64_PUBLICATION_REPAIR_TARGET};
+        let pin = |binding: &mut Binding, catalog, (source, producer, manifest): (&str, &str, &str)| {
+            binding.catalog = catalog;
+            binding.source_commit = source.into();
+            binding.producer_sha256 = producer.into();
+            binding.payload_manifest_sha256 = manifest.into();
+        };
+        let mut source = binding(GENERATION);
+        pin(&mut source, 52, FIXED64_PUBLICATION_REPAIR_TARGET);
+        source.admission_kind = Admission::CleanReopen;
+        source.previous_generation = Some(LATER.into());
+        source.phase = Phase::Clean;
+        let mut target = binding(NEXT);
+        pin(&mut target, 53, CURRENT_RAIL_PAYLOAD);
+        let mut wrong_physical = target.clone();
+        wrong_physical.physical.root_inode += 1;
+        assert!(wrong_physical.consume_current_rail_parent(&source).is_err());
+        source.phase = Phase::Active;
+        assert!(target.consume_current_rail_parent(&source).is_err());
+        source.phase = Phase::Clean;
+        target.consume_current_rail_parent(&source).unwrap();
+        assert_eq!(target.admission_kind, Admission::CleanReopen);
+        target.phase = Phase::Clean;
+        let mut ordinary = binding(LATER);
+        pin(&mut ordinary, 53, CURRENT_RAIL_PAYLOAD);
+        assert!(ordinary.consume_current_rail_parent(&target).is_err());
+        ordinary.consume(&target).unwrap();
+        assert_eq!(ordinary.previous_generation.as_deref(), Some(NEXT));
+    }
 
     fn binding(generation: &str) -> Binding {
         Binding {

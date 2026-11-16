@@ -203,6 +203,24 @@ impl LifecycleService {
         payload: &Payload,
         ports: Ports,
     ) -> Result<BTreeMap<String, String>> {
+        self.personal_environment_for_manifest(payload, ports, None)
+    }
+
+    /// Read the original catalog-52 configuration. The selected Session
+    /// independently proves the prior cold binding before any child runs.
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn current_rail_environment(
+        &self, payload: &Payload, ports: Ports,
+    ) -> Result<BTreeMap<String, String>> {
+        if !payload.current_rail_payload() { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
+        self.personal_environment_for_manifest(
+            payload, ports, Some(crate::native_payload::FIXED64_PUBLICATION_REPAIR_TARGET.2),
+        )
+    }
+
+    fn personal_environment_for_manifest(
+        &self, payload: &Payload, ports: Ports, source_manifest: Option<&str>,
+    ) -> Result<BTreeMap<String, String>> {
         let record = read(self)?;
         if present(&self.root, "native-installation.json")?
             || present(&self.root, "installed.json")?
@@ -210,7 +228,8 @@ impl LifecycleService {
         {
             return Err(err("NATIVE_MIGRATION_REQUIRED"));
         }
-        if record.manifest_sha256 != payload.context().manifest_sha256 || record.ports != ports {
+        let manifest = payload.context().manifest_sha256;
+        if record.manifest_sha256 != source_manifest.unwrap_or(&manifest) || record.ports != ports {
             return Err(err("NATIVE_CONFIGURATION_CHANGED"));
         }
         let bytes = Bytes(installation_backup::source_bytes(
@@ -219,7 +238,11 @@ impl LifecycleService {
             8192,
             true,
         )?);
-        personal_environment_fields(&record, &bytes.0)
+        let mut fields = personal_environment_fields(&record, &bytes.0)?;
+        if source_manifest.is_some() {
+            fields.insert("NATIVE_RUNTIME_MANIFEST_SHA256".into(), manifest);
+        }
+        Ok(fields)
     }
 
     pub fn prepare_native_personal(&self, payload: &Payload, ports: Ports) -> Result<Context> {

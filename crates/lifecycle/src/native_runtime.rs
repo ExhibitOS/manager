@@ -11,7 +11,11 @@ use crate::native_payload::{Catalog45StartupRecovery, FurnishingTransition};
 #[path = "native_runtime_oex_format_hint.rs"] mod oex_format_hint;
 /// Fixed helper-only read-only ingress; no profile or lifecycle is instantiated.
 pub fn selected_oex_format(resources:&Path,input_fd:i32,cancelled:&AtomicBool)->Result<Vec<u8>> {
-    oex_format_hint::run(&Payload::open(resources)?,input_fd,cancelled)
+    let mut payload = Payload::open(resources)?;
+    if payload.current_rail_payload() {
+        payload.bind_current_rail_selection()?;
+    }
+    oex_format_hint::run(&payload,input_fd,cancelled)
 }
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 pub fn selected_oex_format_v5_validation(resources: &Path, input_fd: i32, cancelled: &AtomicBool) -> Result<Vec<u8>> {
@@ -86,7 +90,7 @@ mod hayes_probe_source;
 pub(crate) const WORKSPACE_FURNISHING_INITIALIZATION: &str = "native-workspace-furnishing-initialization.json";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, Upgrade039To040, Upgrade040To044, Upgrade044To045, Upgrade045To050, Upgrade045To049, Upgrade045To051, Upgrade051To050051 }
+enum FurnishingStart { Initialize, Reopen, SelectedImport038, SelectedImport039, SelectedImport040, SelectedImport053, Upgrade039To040, Upgrade040To044, Upgrade044To045, Upgrade045To050, Upgrade045To049, Upgrade045To051, Upgrade051To050051 }
 
 #[derive(Clone, Copy)]
 enum StartMode<'a> {
@@ -107,11 +111,11 @@ impl FurnishingStart {
     }
 
     fn is_selected_import(self) -> bool {
-        matches!(self, Self::SelectedImport038 | Self::SelectedImport039 | Self::SelectedImport040)
+        matches!(self, Self::SelectedImport038 | Self::SelectedImport039 | Self::SelectedImport040 | Self::SelectedImport053)
     }
 
     fn opens_existing(self) -> bool {
-        matches!(self, Self::Reopen | Self::Upgrade039To040 | Self::Upgrade040To044 | Self::Upgrade044To045 | Self::Upgrade045To050 | Self::Upgrade045To049 | Self::Upgrade045To051 | Self::Upgrade051To050051)
+        matches!(self, Self::Reopen | Self::SelectedImport053 | Self::Upgrade039To040 | Self::Upgrade040To044 | Self::Upgrade044To045 | Self::Upgrade045To050 | Self::Upgrade045To049 | Self::Upgrade045To051 | Self::Upgrade051To050051)
     }
 
     fn owner_mode(self) -> &'static str {
@@ -121,6 +125,7 @@ impl FurnishingStart {
             Self::SelectedImport038 => "workspace-furnishing-038-selected-import-v7",
             Self::SelectedImport039 => "workspace-furnishing-039-selected-import-v7",
             Self::SelectedImport040 => "workspace-furnishing-040-selected-import-v7",
+            Self::SelectedImport053 => oex_catalog_frames::CURRENT_RAIL_OWNER_MODE,
             Self::Upgrade039To040 => "workspace-furnishing-039-to-040-upgrade-v1",
             Self::Upgrade040To044 => "workspace-furnishing-040-to-044-upgrade-v1",
             Self::Upgrade044To045 => "workspace-furnishing-044-to-045-upgrade-v1",
@@ -231,7 +236,8 @@ fn ordinary_inherited_hayes(payload: &Payload, start: Option<FurnishingStart>) -
     let fresh_contact = start == Some(FurnishingStart::Initialize)
         && crate::native_payload::combined_thumbnail_fresh_host_matches((
             payload.context().source_commit.as_str(), payload.producer_sha256(), payload.context().manifest_sha256.as_str()));
-    fresh_contact || (payload.retained_furnishing_catalog().is_some()
+    (payload.current_rail_payload() && start == Some(FurnishingStart::Reopen))
+        || fresh_contact || (payload.retained_furnishing_catalog().is_some()
         && matches!(start, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
         || (payload.ordinary_fresh_furnishing()
             && matches!(start, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
@@ -1561,8 +1567,35 @@ impl Session {
     ) -> Result<Self> {
         installations::private_directory(&service.root)?;
         signed_release::trust::lifecycle_writer::admit(&service.root, &Action::Start)?;
-        let environment = Environment(service.native_start_environment(&payload, ports)?);
-        Self::bound_session(service, payload, ports, guard, environment, None)
+        let environment = Environment(Self::start_environment(service, &payload, ports)?);
+        let selected = payload.current_rail_selected();
+        let mut session = Self::bound_session(service, payload, ports, guard, environment, None)?;
+        session.normal_oex_selected = selected;
+        Ok(session)
+    }
+    fn start_environment(service: &LifecycleService, payload: &Payload, ports: Ports) -> Result<BTreeMap<String, String>> {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if payload.current_rail_payload() {
+            return service.current_rail_environment(payload, ports);
+        }
+        service.native_start_environment(payload, ports)
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn classify_current_rail_source(service: &LifecycleService, payload: &mut Payload) -> Result<()> {
+        if !payload.current_rail_payload() { return Ok(()); }
+        let current = current_run(&service.root)?.ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        let prior = current.furnishing.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+        if current.id != prior.generation || prior.phase != Phase::Clean || prior.restore.is_some() {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        unconsumed_furnishing_completion(&service.root, prior)?;
+        if prior.matches_catalog_tuple(52, crate::native_payload::FIXED64_PUBLICATION_REPAIR_TARGET) {
+            payload.bind_current_rail_selection()?;
+        } else if !prior.matches_catalog_tuple(53, crate::native_payload::CURRENT_RAIL_PAYLOAD) {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        Ok(())
     }
     #[cfg(debug_assertions)]
     pub(crate) fn new_transition_trial(
@@ -1663,6 +1696,19 @@ impl Session {
     fn workspace_furnishing_start(&self, prior: Option<&Binding>) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
+        if catalog == WorkspaceFurnishingCatalog::CurrentRail053 {
+            self.check_native_observation_fence()?;
+            self.payload.recheck()?;
+            self.payload.workspace_furnishing_ledger(catalog)?;
+            if self.transition_fence.is_some() || self.normal_oex_selected != self.payload.current_rail_selected()
+                || !exists(&self.service.root.join("native-database"))?
+                || exists(&self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))?
+                || !prior.is_some_and(|binding| binding.phase == Phase::Clean && binding.restore.is_none())
+            {
+                return Err(err(furnishing_lifecycle::ERROR));
+            }
+            return Ok(Some(if self.normal_oex_selected { FurnishingStart::SelectedImport053 } else { FurnishingStart::Reopen }));
+        }
         let initialize = if self.normal_oex_selected {
             if !self.fresh_ordinary_furnishing
                 || self.payload.selected_workspace_import_version() != Some(crate::native_payload::WorkspaceImport::V7)
@@ -3042,6 +3088,16 @@ const { isDeepStrictEqual } = require('node:util');
                 Instant::now() + Duration::from_secs(60))?;
             if observed != expected { return Err(err("NATIVE_WORKSPACE_FURNISHING_CATALOG")); }
         }
+        if self.payload.current_rail_payload() {
+            let protocol = oex_catalog_frames::Protocol::CurrentRail;
+            let ledger = self.query_database_before("exhibitos", &protocol.ledger_query(),
+                Instant::now() + Duration::from_secs(60))?;
+            if furnishing == Some(FurnishingStart::SelectedImport053) {
+                oex_catalog_frames::check_current_rail_parent(&ledger)?;
+            } else {
+                protocol.check_ledger(&ledger)?;
+            }
+        }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         self.check_retained_product_image_before_node()?;
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3401,7 +3457,7 @@ const { isDeepStrictEqual } = require('node:util');
         if !services && exists(&self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))? {
             return Err(err("NATIVE_WORKSPACE_FURNISHING_INITIALIZATION_PENDING"));
         }
-        if self.normal_oex_selected {
+        if self.normal_oex_selected && !self.payload.current_rail_selected() {
             if self.fresh_oex_started || !services || self.guard.is_none()
                 || exists(&self.service.root.join("native-database"))?
                 || exists(&self.service.root.join("blobs"))?
@@ -3410,6 +3466,12 @@ const { isDeepStrictEqual } = require('node:util');
                 return Err(err("NATIVE_OEX_FRESH_ROOT_REQUIRED"));
             }
             self.check_native_observation_fence()?;
+            self.fresh_oex_started = true;
+        }
+        if self.payload.current_rail_payload() && (!services || self.fresh_oex_started || self.guard.is_none()) {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        if self.payload.current_rail_selected() {
             self.fresh_oex_started = true;
         }
         if services && (exists(&self.service.root.join("native-restore-current.json"))?
@@ -3435,7 +3497,7 @@ const { isDeepStrictEqual } = require('node:util');
         }
         if self.transition_fence.is_none() {
             self.environment = Environment(
-                self.service.native_start_environment(&self.payload, self.ports)?,
+                Self::start_environment(&self.service, &self.payload, self.ports)?,
             );
         }
         // Keep the last writer binding when a DB-only job rotates the diagnostic pointer.
@@ -3519,6 +3581,16 @@ const { isDeepStrictEqual } = require('node:util');
             if services {
                 match furnishing {
                     Some(FurnishingStart::Initialize | FurnishingStart::SelectedImport038 | FurnishingStart::SelectedImport039 | FurnishingStart::SelectedImport040) => (),
+                    Some(FurnishingStart::SelectedImport053) => {
+                        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                        {
+                            let source = prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+                            unconsumed_furnishing_completion(&self.service.root, source)?;
+                            active.consume_current_rail_parent(source)?;
+                        }
+                        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+                        return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+                    }
                     Some(FurnishingStart::Reopen | FurnishingStart::Upgrade039To040 | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045 | FurnishingStart::Upgrade045To050 | FurnishingStart::Upgrade045To049 | FurnishingStart::Upgrade045To051 | FurnishingStart::Upgrade051To050051) => {
                         let source = prior_binding.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
                         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3662,7 +3734,7 @@ const { isDeepStrictEqual } = require('node:util');
         Ok(self.snapshot())
     }
     pub(crate) fn selected_furnishing_import(&self) -> bool {
-        self.normal_oex_selected && self.furnishing_binding.as_ref().is_some_and(|binding| matches!(binding.catalog, 38 | 39))
+        self.normal_oex_selected && self.furnishing_binding.as_ref().is_some_and(|binding| matches!(binding.catalog, 38 | 39 | 53))
     }
 
     /// The host calls this after the selected operation completes and its
