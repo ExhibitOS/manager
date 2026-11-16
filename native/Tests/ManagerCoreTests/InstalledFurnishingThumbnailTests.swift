@@ -75,8 +75,13 @@ final class InstalledFurnishingThumbnailTests: XCTestCase {
     }
     func testInstalledCatalogOriginRuntimeAdmitsThumbnailsWithoutSavedHeadExport() {
         let manifest = "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"
+        #if DEBUG
         XCTAssertTrue(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: manifest))
         XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        #else
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        #endif
         XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
     }
     func testIssuedDescriptorCanonicalHashesAndClosedBinding() throws {
