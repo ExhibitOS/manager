@@ -38,7 +38,7 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
     public let sourceExhibitionId: String, sourceEtag: String
     public let snapshot: NativeExhibitionDraft
     public let saveRequestId: String, publishRequestId: String
-    public let planBindingSha256: String?
+    public private(set) var planBindingSha256: String?
     public var snapshotEtag: String?
     public init(source: NativeExhibitionDraft, etag: String, planBindingSha256: String? = nil) throws {
         guard validPublicationETag(etag), validPublicationPlanBinding(planBindingSha256) else { throw AuthoringFailure("ETAG_INVALID") }
@@ -68,6 +68,16 @@ public struct NativePublicationPending: Codable, Equatable, Sendable {
     }
     public func requirePlanBinding(_ expected: String?) throws {
         guard validPublicationPlanBinding(planBindingSha256), validPublicationPlanBinding(expected), planBindingSha256 == expected else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+    }
+    public func bindingSavedSnapshot(_ saved: NativeStudioResponse, to binding: String) throws -> Self {
+        guard mode == nil, capabilityPublicationId == nil, planBindingSha256 == nil,
+              saved.revision == 1, saved.etag == snapshotEtag, saved.draft == snapshot,
+              validPublicationPlanBinding(binding) else {
+            throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+        }
+        var next = self
+        next.planBindingSha256 = binding
+        return next
     }
     /// Compare an authenticated GET result; never replay the uncertain POST or
     /// replace its snapshot/request IDs. The caller retains generation and CAS.

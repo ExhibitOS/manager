@@ -177,12 +177,59 @@ final class PublicationModel: ObservableObject {
             try await finishPending()
         }
     }
-    func retry() async {
+    func retry(source: ExhibitionModel) async {
         await work(.readingRecord) {
             guard let read else { throw AuthoringFailure("PUBLICATION_STORE_REQUIRED") }
-            state = try checked(await read()); try await finishPending()
+            state = try checked(await read())
+            #if DEBUG
+            if let original = state, let pending = original.pending,
+               pending.publishRequestId == "369fa26c-fc10-495d-92d3-d31557268722" {
+                try await reconcileRailSnapshot(pending, in: original, source: source)
+            }
+            #endif
+            try await finishPending()
         }
     }
+    #if DEBUG
+    private func reconcileRailSnapshot(_ pending: NativePublicationPending, in original: NativePublicationState,
+                                       source: ExhibitionModel) async throws {
+        let generation = runtimeGeneration
+        guard runtimeManifestSha256 == "3e713cc13566556c6eff13c65c11166e9bb292e5ddef229053037b0e54f33a0b",
+              let api, let session, let local = source.state, !source.dirty, !local.dirty,
+              local.workspaceId == original.workspaceId, local.tenantId == original.tenantId,
+              local.principalId == original.principalId, local.etag == pending.sourceEtag,
+              let draft = local.draft, draft.id == pending.sourceExhibitionId,
+              draft.document["editVersion"].integer == 1, let snapshotETag = pending.snapshotEtag else {
+            throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED")
+        }
+        phase = .checkingSource
+        let savedSource = try await api.exhibition(draft.id)
+        let savedSnapshot = try await api.exhibition(pending.snapshot.id)
+        guard savedSource.draft == draft, savedSource.etag == pending.sourceEtag,
+              savedSnapshot.draft == pending.snapshot, savedSnapshot.etag == snapshotETag,
+              savedSnapshot.revision == 1 else {
+            throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED")
+        }
+        let fresh = try await api.verifyRetainedSession(session)
+        guard fresh.nativePublicationProfile == "bounded-local-v1",
+              generation == runtimeGeneration, !source.dirty, source.state?.revision == local.revision,
+              source.state?.draft == draft, source.state?.etag == pending.sourceEtag else {
+            throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED")
+        }
+        guard let binding = try planBinding(pending.snapshot, etag: pending.sourceEtag,
+                                            sourceId: pending.sourceExhibitionId,
+                                            publicationProfile: "bounded-local-v1") else {
+            throw AuthoringFailure("PUBLICATION_PLAN_CHANGED")
+        }
+        if pending.planBindingSha256 != nil { try pending.requirePlanBinding(binding); return }
+        var accepted = original
+        accepted.pending = try pending.bindingSavedSnapshot(savedSnapshot, to: binding)
+        try Task.checkCancellation()
+        phase = .recordingRequest
+        try await persist(accepted)
+        guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+    }
+    #endif
     func comparePendingSnapshot() async {
         await work(.readingRecord) {
             guard let read, let api else { throw AuthoringFailure("PUBLICATION_STORE_REQUIRED") }
@@ -239,7 +286,7 @@ final class PublicationModel: ObservableObject {
         publication = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotEtag, requestId: pending.publishRequestId, publicationProfile: profile)
         try Task.checkCancellation()
         guard generation == runtimeGeneration else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
-        guard var accepted = state, accepted.pending?.publishRequestId == pending.publishRequestId else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
+        guard var accepted = state, accepted.pending == pending else { throw AuthoringFailure("PUBLICATION_SCOPE_CHANGED") }
         accepted.completed = NativePublicationCompleted(pending: pending, publication: publication); accepted.pending = nil
         phase = .savingResult
         try await persist(accepted)
@@ -336,7 +383,7 @@ struct NativePublicationView: View {
                     Button("저장된 사본과 비교") { Task { await model.comparePendingSnapshot() } }.disabled(!ready || model.busy)
                     Text("기존 사본을 읽어 보관한 내용과 대조합니다. 새 저장 요청은 보내지 않습니다.").font(.caption).foregroundStyle(.secondary)
                 }
-                Button("보관한 준비 다시 확인") { Task { await model.retry() } }.disabled(!ready || model.busy)
+                Button("보관한 준비 다시 확인") { Task { await model.retry(source: source) } }.disabled(!ready || model.busy)
             }
             if let completed = model.state?.completed {
                 let matches = model.completedRefersToSource(completed, source: source)
