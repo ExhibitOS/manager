@@ -2753,6 +2753,7 @@ const { isDeepStrictEqual } = require('node:util');
     }
     fn start_inner(&mut self, services: bool, maintenance_system: Option<&str>, existing_database: bool,
         mut furnishing: Option<FurnishingStart>,
+        mut observe_phase: Option<&mut dyn FnMut(Context)>,
     ) -> Result<()> {
         let mut reservations = Vec::new();
         for port in [self.ports.web, self.ports.api, self.ports.database] {
@@ -2821,6 +2822,9 @@ const { isDeepStrictEqual } = require('node:util');
         drop(reservations);
         self.state = "starting_database".into();
         self.record()?;
+        if let Some(observe) = &mut observe_phase {
+            observe(self.snapshot());
+        }
         let nonce = self
             .job_id
             .clone()
@@ -3046,6 +3050,9 @@ const { isDeepStrictEqual } = require('node:util');
         self.check_clean_exit_hayes_before_node()?;
         self.state = "starting_services".into();
         self.record()?;
+        if let Some(observe) = observe_phase {
+            observe(self.snapshot());
+        }
         let mut environment = vec![
             ("NODE_ENV", "production".into()),
             (
@@ -3356,7 +3363,13 @@ const { isDeepStrictEqual } = require('node:util');
     /// The host resets cancellation before publishing its handle, so a stop
     /// arriving between publication and startup cannot be overwritten.
     pub(crate) fn start_cancellable(&mut self) -> Result<Context> {
-        self.start_owned(StartMode::Services)
+        self.start_owned(StartMode::Services, None)
+    }
+    pub(crate) fn start_cancellable_observing(
+        &mut self,
+        observe_phase: &mut dyn FnMut(Context),
+    ) -> Result<Context> {
+        self.start_owned(StartMode::Services, Some(observe_phase))
     }
     /// Maintenance preparation only: owned PG18 and database, without Node,
     /// API/workers, schema migrations, authentication bootstrap or readiness.
@@ -3365,15 +3378,19 @@ const { isDeepStrictEqual } = require('node:util');
         self.start_database_only_cancellable()
     }
     pub(crate) fn start_database_only_cancellable(&mut self) -> Result<Context> {
-        self.start_owned(StartMode::Database)
+        self.start_owned(StartMode::Database, None)
     }
     pub(crate) fn start_restore_stage_cancellable(&mut self) -> Result<Context> {
-        self.start_owned(StartMode::RestoreStage)
+        self.start_owned(StartMode::RestoreStage, None)
     }
     pub(crate) fn start_restore_activation(&mut self, id: &str) -> Result<Context> {
-        self.start_owned(StartMode::RestoreActivation(id))
+        self.start_owned(StartMode::RestoreActivation(id), None)
     }
-    fn start_owned(&mut self, mode: StartMode<'_>) -> Result<Context> {
+    fn start_owned(
+        &mut self,
+        mode: StartMode<'_>,
+        observe_phase: Option<&mut dyn FnMut(Context)>,
+    ) -> Result<Context> {
         let services = matches!(mode, StartMode::Services);
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if !matches!(self.hayes_bootstrap, HayesBootstrap::Disabled)
@@ -3614,7 +3631,13 @@ const { isDeepStrictEqual } = require('node:util');
         self.publish_current(binding.clone())?;
         self.furnishing_binding = binding;
         // The current pointer now describes this owned attempt; it has no PIDs yet.
-        let result = self.start_inner(services, maintenance_system.as_deref(), existing_database, furnishing);
+        let result = self.start_inner(
+            services,
+            maintenance_system.as_deref(),
+            existing_database,
+            furnishing,
+            observe_phase,
+        );
         if let Err(error) = result {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             if error.code == oex_retained_cleanup::ERROR

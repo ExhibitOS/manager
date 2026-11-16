@@ -69,6 +69,7 @@ struct State {
     configuration: Option<Prepared>,
     account_required: bool,
     runtime: Option<Context>,
+    start_progress: Option<Context>,
     error: Option<String>,
     payload: Option<Arc<Payload>>,
     session: Option<Session>,
@@ -92,6 +93,16 @@ struct State {
     pre_ready_guard_diagnostic: Option<Value>,
 }
 impl State {
+    fn observe_start_phase(&mut self, worker: &Arc<AtomicBool>, context: Context) {
+        if self.busy
+            && self.operation == "starting"
+            && !self.stop_requested
+            && self.cancel.as_ref().is_some_and(|active| Arc::ptr_eq(active, worker))
+        {
+            self.start_progress = Some(context);
+        }
+    }
+
     fn retire_completed_oex_after_drain(&mut self) -> Option<Session> {
         if self.selected_oex && self.selected_oex_completed && self.selected_oex_stop_accepted
             && self.oex_terminal.is_none() && self.oex_save_offer.is_none()
@@ -189,6 +200,7 @@ impl Host {
                 configuration: None,
                 account_required: true,
                 runtime: None,
+                start_progress: None,
                 error: None,
                 payload: None,
                 session: None,
@@ -430,7 +442,7 @@ impl Host {
             configuration: state.configuration.clone(),
             account_required: state.account_required,
             runtime: if state.busy {
-                None
+                state.start_progress.clone()
             } else {
                 state.runtime.clone()
             },
@@ -472,6 +484,7 @@ impl Host {
             }
             if matches!(work, Work::Stop) && state.busy {
                 state.stop_requested = true;
+                state.start_progress = None;
                 if matches!(state.operation.as_str(), "activating_restore" | "transitioning_personal_runtime") {
                     // Activation owns a final verification/commit sequence.
                     // A quit request waits for ordered completion; it is not a
@@ -816,18 +829,23 @@ impl Host {
                             let session = lease.session.as_mut().ok_or_else(|| err("NATIVE_HOST_UNAVAILABLE"))?;
                             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
                             if let Some(selection) = retained_cleanup { session.arm_oex_retained_cleanup(selection)?; }
+                            let cancel = session.cancellation();
                             {
                                 let mut state =
                                     shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
-                                let cancel = session.cancellation();
                                 cancel.store(state.stop_requested, Ordering::SeqCst);
-                                state.cancel = Some(cancel);
+                                state.cancel = Some(cancel.clone());
                             }
+                            let mut observe_phase = |context| {
+                                if let Ok(mut state) = shared.lock() {
+                                    state.observe_start_phase(&cancel, context);
+                                }
+                            };
                             let selected = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;
-                            let started = if selected { session.start_cancellable() } else {
+                            let started = if selected { session.start_cancellable_observing(&mut observe_phase) } else {
                                 controller.with_current_mutation(&token, |service| {
                                     controller.ensure_no_bounded_import_transition_unlocked(service)?;
-                                    session.start_cancellable()
+                                    session.start_cancellable_observing(&mut observe_phase)
                                 })
                             };
                             let requested = shared
@@ -955,6 +973,7 @@ impl Host {
                 }));
             {
                 let mut state = match shared.lock() { Ok(state) => state, Err(error) => error.into_inner() };
+                state.start_progress = None;
                 if oex_owned_session {
                     state.oex_save_offer = None;
                     state.oex_save_sender = None;
@@ -1607,6 +1626,68 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod startup_progress_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn startup_progress_is_visible_only_for_the_active_start_worker() {
+        let parent = std::env::temp_dir().join(format!("exhibitos-start-progress-{}", Uuid::new_v4()));
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = fs::canonicalize(parent).unwrap();
+        let controller = Arc::new(InstallationController::new(parent.join("profile"), None).unwrap());
+        let token = controller.context().unwrap().selection_token;
+        let mut host = Host::new(controller, parent.join("unused-resources"));
+        let worker = Arc::new(AtomicBool::new(false));
+        let other_worker = Arc::new(AtomicBool::new(false));
+        let job_id = Uuid::new_v4().to_string();
+        let phase = |state: &str| Context {
+            format: 1,
+            job_id: Some(job_id.clone()),
+            state: state.into(),
+            ports: Ports::default(),
+            readiness: Default::default(),
+            error_code: None,
+            failure_code: None,
+            postgres_pid: None,
+            node_pid: None,
+            auxiliary_pid: None,
+            exits: Default::default(),
+            log_truncated: false,
+        };
+        {
+            let root = host.selected(&token).unwrap();
+            let mut state = host.state.lock().unwrap();
+            state.root = Some(root);
+            state.busy = true;
+            state.operation = "starting".into();
+            state.cancel = Some(worker.clone());
+            state.observe_start_phase(&other_worker, phase("starting_database"));
+        }
+        assert!(host.status(&token).unwrap().runtime.is_none());
+        for name in ["starting_database", "starting_services"] {
+            host.state.lock().unwrap().observe_start_phase(&worker, phase(name));
+            let status = host.status(&token).unwrap();
+            assert!(status.busy);
+            assert_eq!(status.operation, "starting");
+            let observed = status.runtime.unwrap();
+            assert_eq!(observed.state, name);
+            assert_eq!(observed.job_id.as_deref(), Some(job_id.as_str()));
+            assert!(!observed.readiness.ready);
+        }
+        let stopped = host.launch(token.clone(), Work::Stop).unwrap();
+        assert_eq!(stopped.operation, "stopping");
+        assert!(stopped.runtime.is_none());
+        assert!(worker.load(Ordering::SeqCst));
+        host.state.lock().unwrap().observe_start_phase(&worker, phase("starting_services"));
+        assert!(host.status(&token).unwrap().runtime.is_none());
+        drop(host);
+        fs::remove_dir_all(parent).unwrap();
     }
 }
 
