@@ -918,18 +918,6 @@ impl InstallationController {
             let configuration = restored.join("configuration");
             let signing = authenticated_configuration(&restored, &prepared.kind, private_signing)?;
             if private_signing && !codec_authenticated { return Err(bad()); }
-            names(
-                &configuration,
-                &[
-                    "native-source.json",
-                    "native-runtime.env",
-                    owner,
-                    "freeze-signing-key.json",
-                ]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            )?;
             let source: SourceMap = json(&configuration, "native-source.json", 65536)?;
             if validate_source(&source, &prepared.kind, &archive_payload.context().manifest_sha256, &service.root)? {
                 let (mut registry, _) = load(&profile.root)?.ok_or_else(bad)?;
