@@ -128,11 +128,19 @@ public struct LightObjectRequest: Sendable {
             let old = try Self.rows(frame.draft.candidate, namespace: Self.details).first { Self.same($0["lightId"].string, actualId) }
             if let purpose = settings["purpose"] { guard purpose == (old?["purpose"] ?? .null) else { throw Self.invalid } }
             if let placement = settings["basePlacement"] { guard placement == (old?["basePlacement"] ?? .null) else { throw Self.invalid } }
+            if let fill = settings["ceilingFill"], fill != old?["ceilingFill"] { throw Self.invalid }
+            if old?["ceilingFill"] != nil && old?["ceilingFill"] != .null {
+                guard command["light"]["intensity"] == original["intensity"] else { throw Self.invalid }
+            }
             if let attachment = fields["attachment"], attachment != .null { try Self.checkAttachment(attachment) }
         case "set-room-base-light-placement":
             guard Set(fields.keys) == ["type", "lightId", "basePlacement"],
                   let value = command["basePlacement"].string, let placement = RoomBaseLightPlacement(rawValue: value) else { throw Self.invalid }
             _ = try RoomBaseLightIntent.setPlacement(placement, lightId: actualId, in: frame.draft.candidate)
+        case "set-room-ceiling-fill-brightness":
+            guard Set(fields.keys) == ["type", "lightId", "brightness"], let brightness = command["brightness"].double,
+                  brightness.isFinite, (0...1).contains(brightness) else { throw Self.invalid }
+            _ = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, lightId: actualId, in: frame.draft.candidate)
         case "set-light-fixture":
             guard Set(fields.keys) == ["type", "lightId", "visual"] else { throw Self.invalid }
             if command["visual"] != .null {
@@ -206,6 +214,9 @@ public struct LightObjectRequest: Sendable {
         case "set-room-base-light-placement":
             guard let raw = command["basePlacement"].string, let placement = RoomBaseLightPlacement(rawValue: raw) else { throw Self.changed }
             next = try RoomBaseLightIntent.setPlacement(placement, lightId: sourceLightId, in: next)
+        case "set-room-ceiling-fill-brightness":
+            guard let brightness = command["brightness"].double else { throw Self.changed }
+            next = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, lightId: sourceLightId, in: next)
         case "set-light-fixture":
             let visual = command["visual"]
             var settings = try NativeLightFixture.settings(in: frame.draft, lightId: sourceLightId)
@@ -353,7 +364,7 @@ public struct LightObjectRequest: Sendable {
     }
     private static func checkSettings(_ value: DocumentValue) throws {
         guard case .object(let fields) = value, fields["fixture"] != nil,
-              Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "trackAim"]),
+              Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "ceilingFill", "trackAim"]),
               let fixture = value["fixture"].string, NativeLightFixture(rawValue: fixture) != nil,
               fields["purpose"].map({ $0 == .string("room-base") }) ?? true else { throw invalid }
         if let trackAim = fields["trackAim"] {
@@ -363,6 +374,9 @@ public struct LightObjectRequest: Sendable {
         }
         if let placement = fields["basePlacement"] {
             guard let raw = placement.string, RoomBaseLightPlacement(rawValue: raw) != nil else { throw invalid }
+        }
+        if let fill = fields["ceilingFill"] {
+            _ = try RoomCeilingFill.brightness(in: fill)
         }
         if let aim = fields["aim"] {
             guard case .object(let keys) = aim, let kind = aim["kind"].string,

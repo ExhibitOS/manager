@@ -135,23 +135,31 @@ struct SelectedLightInspector: View {
                     } else if model.trackSpotAimForm == nil, let fields = model.light {
                         if fields.isRoomBaseLight {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text("공간 기본 조명").font(.headline)
+                                Text(fields.ceilingFillBrightness == nil ? "공간 기본 조명" : "천장 면조명").font(.headline)
                                 Text(fields.basePlacement == .auto ? "자동 배치 · 공간 크기에 맞춤" : fields.basePlacement == .manual ? "직접 배치" : "배치 기록 없음 · 기존 위치 유지")
                                     .foregroundStyle(.secondary)
                                 Text("밝기와 색상은 배치 방식과 별개입니다. 밝기 0도 그대로 유지됩니다.").font(.caption).foregroundStyle(.secondary)
                                 HStack {
                                     Button("자동 배치 미리보기") { Task { await model.previewRoomBaseLightPlacement(.auto) } }
-                                        .disabled(!ready || !model.canPreviewRoomBaseLightPlacement || row["type"] != .string("point"))
+                                        .disabled(!ready || !model.canPreviewRoomBaseLightPlacement
+                                            || (row["type"] != .string("point") && fields.ceilingFillBrightness == nil))
                                     Button("직접 배치로 전환") { Task { await model.previewRoomBaseLightPlacement(.manual) } }
                                         .disabled(!ready || !model.canPreviewRoomBaseLightPlacement || fields.basePlacement == .manual)
                                 }
-                                Text("자동 배치는 점광원의 위치와 범위를 공간에 맞추고 천장 부착·비출 대상을 해제합니다. 확인 후 조명 적용을 누르세요.").font(.caption).foregroundStyle(.secondary)
+                                if let brightness = fields.ceilingFillBrightness {
+                                    RoomCeilingFillBrightnessControl(model: model, savedBrightness: brightness,
+                                        enabled: ready && model.canPreviewRoomBaseLightPlacement)
+                                        .id(fields.lightId)
+                                } else {
+                                    Text("자동 배치는 점광원의 위치와 범위를 공간에 맞추고 천장 부착·비출 대상을 해제합니다. 확인 후 조명 적용을 누르세요.").font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                         }
                         VStack(alignment: .leading, spacing: 12) {
                             Picker("빛의 종류", selection: Binding(get: { fields.type }, set: { value in
                                 guard var next = model.light else { return }; next.changeType(value); model.light = next
                             })) { ForEach(NativeLightType.allCases, id: \.self) { Text($0.title).tag($0) } }
+                                .disabled(fields.ceilingFillBrightness != nil)
                             Text("빛의 계산 방식을 선택합니다. 종류를 바꿔 단위가 달라지면 밝기는 기본값 100으로 바뀝니다.").font(.caption).foregroundStyle(.secondary)
                             if fields.type == .spot || fields.type == .directional || fields.shadowPreference {
                                 Toggle("그림자 기준 조명으로 우선 사용", isOn: Binding(get: { fields.shadowPreference }, set: { value in
@@ -198,6 +206,7 @@ struct SelectedLightInspector: View {
                             ColorPicker("빛 색상", selection: color, supportsOpacity: false).disabled(fields.colorMode == .temperature)
                             LabeledContent("밝기 · \(fields.type.unitSymbol)") {
                                 TextField("밝기 · \(fields.type.unitSymbol)", text: field(\.intensity)).labelsHidden()
+                                    .disabled(fields.ceilingFillBrightness != nil)
                             }
                             if fields.type == .spot { TextField("빔 전체각 · °", text: field(\.beamDegrees)) }
                             if fields.type == .area {
@@ -246,7 +255,7 @@ struct SelectedLightInspector: View {
                             Button("조명 적용") { Task { await model.applyLight() } }.disabled(!ready || !model.canApplyLight)
                             Button("조명 입력 취소") { model.discardLight() }.disabled(!model.lightDirty || model.busy || model.pending || model.architectureApplying)
                         }
-                        if model.lightObjectProposalAvailable {
+                        if model.lightObjectProposalAvailable && fields.ceilingFillBrightness == nil {
                             DisclosureGroup("천장 부착 위치", isExpanded: $mountDetails) {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Picker("천장 표면", selection: $model.lightMountSurfaceId) {
@@ -280,5 +289,31 @@ struct SelectedLightInspector: View {
                 }
             }.padding(16)
         }.inspectorColumnWidth(min: 280, ideal: 320, max: 420)
+    }
+}
+
+private struct RoomCeilingFillBrightnessControl: View {
+    @ObservedObject var model: ExhibitionModel
+    let savedBrightness: Double
+    let enabled: Bool
+    @State private var brightness: Double
+
+    init(model: ExhibitionModel, savedBrightness: Double, enabled: Bool) {
+        self.model = model
+        self.savedBrightness = savedBrightness
+        self.enabled = enabled
+        self._brightness = State(initialValue: savedBrightness)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Slider(value: $brightness, in: 0...1, step: 0.01) { Text("천장 면조명 밝기") }
+                .accessibilityValue(brightness.formatted(.percent.precision(.fractionLength(0))))
+            LabeledContent("천장 면조명 밝기", value: brightness.formatted(.percent.precision(.fractionLength(0))))
+            Button("밝기 미리보기") { Task { await model.previewRoomCeilingFillBrightness(brightness) } }
+                .disabled(brightness == savedBrightness)
+        }
+        .disabled(!enabled)
+        .onChange(of: savedBrightness) { _, value in brightness = value }
     }
 }

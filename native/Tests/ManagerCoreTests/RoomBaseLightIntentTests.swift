@@ -51,6 +51,33 @@ final class RoomBaseLightIntentTests: XCTestCase {
             XCTAssertThrowsError(try RoomBaseLightIntent.range(width: bad, height: 4, depth: 8))
         }
     }
+
+    func testCeilingFillUsesExactProducerBitsAndRetainsManualPoseAtZero() throws {
+        var draft = try NativeExhibitionDraft.new(roomBaseLight: true, ceilingFill: true)
+        let lightId = try id(draft)
+        let roomId = try XCTUnwrap(draft.rooms.first?["id"].string)
+        XCTAssertEqual(light(draft)["type"], .string("area"))
+        XCTAssertEqual(light(draft)["intensity"].double?.bitPattern, 0x40565381fbdf09e0)
+        XCTAssertEqual(light(draft)["transform"]["position"], .vector([0, 3.98, 0]))
+        XCTAssertEqual(details(draft.candidate)["ceilingFill"]["brightness"], .number(0.5))
+        XCTAssertEqual(details(draft.candidate)["range"], .null)
+        try draft.updateRoom(roomId, name: "Resized", width: 8, height: 5, depth: 12)
+        XCTAssertEqual(light(draft)["intensity"].double?.bitPattern, 0x405ab58eb3763fe8)
+
+        let manual = try RoomBaseLightIntent.setPlacement(.manual, lightId: lightId, in: draft.candidate)
+        try draft.replaceCandidate(manual)
+        let edit = try request(.object(["type": .string("set-room-ceiling-fill-brightness"),
+            "lightId": .string(lightId), "brightness": .integer(0)]), draft)
+        let expected = try RoomBaseLightIntent.setCeilingFillBrightness(0, lightId: lightId, in: manual)
+        XCTAssertEqual(expected["lights"][0]["intensity"].double, 0)
+        XCTAssertEqual(expected["lights"][0]["transform"], manual["lights"][0]["transform"])
+        XCTAssertEqual(expected["lights"][0]["dimensions"], manual["lights"][0]["dimensions"])
+        XCTAssertEqual(details(expected)["basePlacement"], .string("manual"))
+        _ = try edit.checkedReply(reply(edit, candidate: expected))
+        var altered = expected
+        altered["lights"][0]["transform"]["position"] = .vector([0, 4, 0])
+        XCTAssertThrowsError(try edit.checkedReply(reply(edit, candidate: altered)))
+    }
     func testPlacementMarkerIsIndependentOptionalCapability() throws {
         var raw = ["userId": "u", "tenantId": "t", "role": "admin", "csrfToken": "csrf", "expiresAt": "later", "roomBaseLightProfile": "room-base-light-v1"]
         func decode() throws -> AuthoringSession { try JSONDecoder().decode(AuthoringSession.self, from: JSONEncoder().encode(raw)) }

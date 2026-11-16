@@ -60,6 +60,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var workspaceCeilingRailProfile: String? = nil
     public var roomBaseLightProfile: String? = nil
     public var roomBaseLightPlacementProfile: String? = nil
+    public var roomCeilingFillProfile: String? = nil
 
     public var advertisesFurnishingWalkingCollision: Bool {
         nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile
@@ -68,6 +69,9 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var advertisesRoomBaseLight: Bool { roomBaseLightProfile == RoomBaseLightAction.profile }
     public var advertisesRoomBaseLightPlacement: Bool {
         advertisesRoomBaseLight && roomBaseLightPlacementProfile == RoomBaseLightPlacement.profile
+    }
+    public var advertisesRoomCeilingFill: Bool {
+        advertisesRoomBaseLightPlacement && roomCeilingFillProfile == RoomCeilingFill.profile
     }
     public var advertisesRenderedArtworkThumbnail: Bool {
         nativeRenderedArtworkThumbnailProfile == ViewportRenderedThumbnail.profile
@@ -4193,7 +4197,8 @@ public actor AuthoringAPI {
         guard admitted,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session,
-              operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement else {
+              operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
+              operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),

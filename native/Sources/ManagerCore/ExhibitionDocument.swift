@@ -79,7 +79,8 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
     }
     public init(from decoder: Decoder) throws { try self.init(document: DocumentValue(from: decoder)) }
     public func encode(to encoder: Encoder) throws { try document.encode(to: encoder) }
-    public static func new(title: String = "새 전시", now: Date = Date(), roomBaseLight: Bool = false) throws -> Self {
+    public static func new(title: String = "새 전시", now: Date = Date(), roomBaseLight: Bool = false,
+                           ceilingFill: Bool = false) throws -> Self {
         let timestamp = ISO8601DateFormatter().string(from: now), id = UUID().uuidString.lowercased()
         var candidate: [String: DocumentValue] = ["schemaVersion": .string("1.0.0-draft.1"), "kind": .string("exhibition-revision"), "id": .string(id), "revisionId": .string(UUID().uuidString.lowercased()), "revision": .integer(1), "createdAt": .string(timestamp), "title": .string(title), "units": .string("meter"), "coordinates": .string("right-handed-y-up")]
         let room = RoomBaseLightAction.newRoom(id: UUID().uuidString.lowercased(), name: "첫 공간")
@@ -88,7 +89,7 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
         candidate["accessibility"] = .object(["alternativeView": .string("list"), "keyboardNavigation": .bool(true), "reducedMotion": .bool(true), "stationaryNavigation": .bool(true), "routeIds": .array([]), "artworkDescriptions": .array([])])
         let seed: DocumentValue = .object(candidate)
         let initial = roomBaseLight
-            ? try RoomBaseLightAction.appendingLight(to: seed, room: room, lightId: UUID().uuidString.lowercased())
+            ? try RoomBaseLightAction.appendingLight(to: seed, room: room, lightId: UUID().uuidString.lowercased(), ceilingFill: ceilingFill)
             : seed
         return try Self(document: .object(["schemaVersion": .string("1.0.0-draft.1"), "kind": .string("exhibition-draft"), "id": .string(UUID().uuidString.lowercased()), "exhibitionId": .string(id), "editVersion": .integer(1), "createdAt": .string(timestamp), "updatedAt": .string(timestamp), "candidate": initial]))
     }

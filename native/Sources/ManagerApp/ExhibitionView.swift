@@ -2420,16 +2420,19 @@ final class ExhibitionModel: ObservableObject {
             && viewportController.connected && viewportController.editingContextActive
             && !ordinaryBoundedRuntime && boundedPlacementCapability == nil && !immutable
     }
+    var canUseRoomCeilingFill: Bool {
+        canUseRoomBaseLight && session?.advertisesRoomCeilingFill == true && viewportController.roomCeilingFillSupported
+    }
     var canEnsureRoomBaseLight: Bool {
         canUseRoomBaseLight && !roomId.isEmpty && viewportSelection == ViewportSelection(kind: "room", id: roomId)
     }
     func acceptRoomBaseLightCandidate(_ candidate: DocumentValue, base: NativeExhibitionDraft,
                                       action: RoomBaseLightAction, access: UUID) async {
         await work {
-            guard canUseRoomBaseLight, access == viewportAccessID, !pending, !formDirty, !positionDirty,
+            guard canUseRoomBaseLight, !action.requestsCeilingFill || canUseRoomCeilingFill, access == viewportAccessID, !pending, !formDirty, !positionDirty,
                   !architectureDirty, !architectureApplying, !placingArtwork,
                   draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-            if case .ensure(let target) = action, target != roomId { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            if case .ensure(let target, _) = action, target != roomId { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             guard try action.apply(candidate, to: &next, selected: viewportSelection) else {
                 notice = "이 공간에는 이미 기본 조명이 있습니다."
                 return
@@ -3099,16 +3102,25 @@ final class ExhibitionModel: ObservableObject {
     }
     var canPreviewRoomBaseLightPlacement: Bool {
         canPreviewLightObjectAction && session?.advertisesRoomBaseLightPlacement == true && light?.isRoomBaseLight == true
+            && (light?.ceilingFillBrightness == nil || session?.advertisesRoomCeilingFill == true)
     }
     func previewRoomBaseLightPlacement(_ placement: RoomBaseLightPlacement) async {
         guard canPreviewRoomBaseLightPlacement else { return }
         await previewLightObject(.object(["type": .string("set-room-base-light-placement"),
             "lightId": .string(selectedLightId), "basePlacement": .string(placement.rawValue)]))
     }
+    func previewRoomCeilingFillBrightness(_ brightness: Double) async {
+        guard canPreviewLightObjectAction, session?.advertisesRoomCeilingFill == true,
+              let savedBrightness = light?.ceilingFillBrightness, savedBrightness != brightness,
+              brightness.isFinite, (0...1).contains(brightness) else { return }
+        await previewLightObject(.object(["type": .string("set-room-ceiling-fill-brightness"),
+            "lightId": .string(selectedLightId), "brightness": .number(brightness)]))
+    }
     private func lightObjectCommandAvailable(_ command: DocumentValue) -> Bool {
         let needsAim = NativeTrackSpotAim.requiresCapability(command) || selectedLightUsesTrackAim
         return (!needsAim || trackSpotAimAvailable)
             && (command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true)
+            && (command["type"] != .string("set-room-ceiling-fill-brightness") || session?.advertisesRoomCeilingFill == true)
     }
     func previewLightObjectAction(_ type: String) async {
         guard canPreviewLightObjectAction,
@@ -3551,7 +3563,8 @@ final class ExhibitionModel: ObservableObject {
             openingStage = .creating
             defer { openingStage = nil }
             guard !ordinaryBoundedRuntime, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
-            value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLightPlacement == true)
+            value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLightPlacement == true,
+                ceilingFill: session?.advertisesRoomCeilingFill == true)
             value.etag = nil; value.savedEditVersion = nil
             try await persist(value); storedImmutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "새 전시를 이 Mac에 보관했습니다. 공간과 작품을 구성한 뒤 전시를 저장하세요."
