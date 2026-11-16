@@ -7307,9 +7307,9 @@ impl Payload {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn open_private_exb_pair(source: &Path, codec: &Path) -> Result<Self> {
         const CODEC: RuntimeTuple = (
-            "93a7c0d2def81e21a2e6e75683b69cb0a7adbf44",
-            "fa32efb8e1e8b2381dade949d7f29f803108f6e356216c04b69bf7371dac8227",
-            "52781c1c5d06788e2cc99f077776af30abd7c00d3037cc1679d977842d3a9792",
+            "45d52c116dc14b57113005293b24b17204a8df91",
+            "8e7374be46c900aa01fd1c0385b936077812c9aad988322334c5b04077dbfaa6",
+            "f5267e7123e8562c018feb2f446759beaa0e8878ab0cd36be67d447dfe4c2f0d",
         );
         let mut source = Self::open_workspace_v5_validation(source, false)?;
         let codec = Self::open(codec)?;
