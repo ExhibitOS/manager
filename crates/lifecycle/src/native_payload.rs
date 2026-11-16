@@ -691,6 +691,13 @@ pub(crate) fn private_exb_restore_host_matches(tuple: (&str, &str, &str), codec:
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = (tuple, codec); false }
 }
+pub(crate) fn private_exb_restore_seals_match(payload: &str, codec: &str) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return payload == FIXED64_PUBLICATION_REPAIR_TARGET.2 && codec == PRIVATE_EXB_CODEC.2;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = (payload, codec); false }
+}
+
 // Exact default1.18 known articulated track aim; ordinary authoring only.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const KNOWN_TRACK_AIM_TARGET: RuntimeTuple = (

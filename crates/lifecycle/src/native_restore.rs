@@ -13,7 +13,7 @@ use std::{
 #[path = "native_restore_carried.rs"]
 mod carried;
 pub use carried::Input as CarriedInput;
-pub(crate) use carried::Observation as CarriedObservation;
+pub(crate) use carried::{Observation as CarriedObservation, catalog52_source_pinned};
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -650,9 +650,13 @@ fn valid_plan(plan: &Plan, target: &Path) -> Result<()> {
         || plan.files.len() < 3
         || plan.files.len() > 8
         || plan.private_codec_manifest_sha256.as_ref().is_some_and(|codec|
-            !hash_valid(codec) || plan.kind != "personal" || plan.restore_proof.is_some() || plan.carried_restore.is_some())
+            !hash_valid(codec) || plan.kind != "personal" || plan.restore_proof.is_some())
         || plan.carried_restore.as_ref().is_some_and(|carried| plan.restore_proof.is_some() || plan.kind != "personal"
-            || !carried.proof.matches(&plan.manifest_sha256, &plan.system_identifier))
+            || !match plan.private_codec_manifest_sha256.as_deref() {
+                Some(codec) => crate::native_payload::private_exb_restore_seals_match(&plan.payload_sha256, codec)
+                    && carried.proof.matches_catalog52(&plan.manifest_sha256, &plan.system_identifier, &plan.id, &plan.backup_id),
+                None => carried.proof.matches(&plan.manifest_sha256, &plan.system_identifier),
+            })
         || plan.restore_proof.as_ref().is_some_and(|proof|
             plan.kind != "personal" || !proof.matches(&plan.id, &plan.backup_id, &plan.manifest_sha256, &plan.system_identifier))
     {
@@ -817,7 +821,7 @@ impl InstallationController {
             let source_manifest_sha256 = digest(&source_manifest);
             drop(source_manifest_bytes);
             drop(source_manifest);
-            if crate::native_payload::catalog45_carried_restore_payload(&payload) != input.carried_restore.is_some() {
+            if crate::native_payload::catalog45_carried_restore_payload(&payload) && input.carried_restore.is_none() {
                 return Err(bad());
             }
             let carried = input.carried_restore.as_ref().map(|handoff|
@@ -825,6 +829,9 @@ impl InstallationController {
             let archive_payload = carried.as_ref().map_or(payload.as_ref(), |handoff| &handoff.source_payload);
             let system_identifier=session.maintenance_system_identifier()?;
             let furnishing_target = session.furnishing_restore_target_identity()?;
+            if let Some(handoff) = &carried {
+                handoff.check_target(furnishing_target, &system_identifier)?;
+            }
             let pending:Option<Pending>=if exists(&service.root,MARKER)?{Some(json(&service.root,MARKER,4096)?)}else{None};
             let config = service.root.join("config");
             let expected = if private_signing && pending.is_some() && exists(&config, SIGNING_CONFIGURATION)? {
@@ -1137,7 +1144,7 @@ impl InstallationController {
             }
             let source: SourceMap =
                 json(&restored.join("configuration"), "native-source.json", 65536)?;
-            if crate::native_payload::catalog45_carried_restore_payload(&payload) != plan.carried_restore.is_some() {
+            if crate::native_payload::catalog45_carried_restore_payload(&payload) && plan.carried_restore.is_none() {
                 return Err(bad());
             }
             let carried = plan.carried_restore.as_ref().map(|value| {
@@ -1148,6 +1155,9 @@ impl InstallationController {
                 carried::Handoff::open(&value.input, &profile.root, &payload, &intent.source_manifest_sha256)
             }).transpose()?;
             let archive_payload = carried.as_ref().map_or(payload.as_ref(), |handoff| &handoff.source_payload);
+            if let Some(handoff) = &carried {
+                handoff.check_catalog52_archive(&source, &manifest_value, &plan.manifest_sha256, &plan.backup_id)?;
+            }
             let imported = validate_source(&source, &plan.kind, &archive_payload.context().manifest_sha256, &service.root)?;
             if imported != completion.is_some() || plan.files.len() != 3 + source.journal_names.len() { return Err(bad()); }
             let (mut registry, previous) = load(&profile.root)?.ok_or_else(bad)?;
@@ -1325,6 +1335,9 @@ fn observe(
     carried: Option<&carried::Handoff>,
 ) -> Result<(Option<RestoreProof>, Option<CarriedObservation>)> {
     session.verify_furnishing_restore_target(&plan.id)?;
+    if let Some(handoff) = carried {
+        handoff.check_target(session.furnishing_restore_target_identity()?, &plan.system_identifier)?;
+    }
     let mut args = vec![
             "check-restored-inventory".into(),
             "--manifest-file".into(),
