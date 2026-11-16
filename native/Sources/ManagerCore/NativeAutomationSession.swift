@@ -2192,15 +2192,38 @@ public actor NativeAutomationSession {
             let (_, _, refreshed) = try await checked(request)
             guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
         case "viewer-budget-inspect":
-            guard case .object(let options) = request["command"], Set(options.keys).isSubset(of: ["profile", "context", "automaticProfile"]),
+            guard case .object(let options) = request["command"],
                   options.values.allSatisfy({ $0.string != nil }) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let analysis = try await api.viewerBudgetAnalysis(in: current, requestedProfile: options["profile"]?.string,
-                context: options["context"]?.string ?? "viewer", automaticProfile: options["automaticProfile"]?.string ?? "standard")
+            let analysis: DocumentValue
+            if Set(options.keys) == ["publicationId", "revisionSha256"],
+               let publicationId = options["publicationId"]?.string,
+               let revisionSha256 = options["revisionSha256"]?.string {
+                let input = try ViewerBudgetPublicationRequest(publicationId: publicationId, revisionSha256: revisionSha256)
+                let saved = try await bridge.publicationState(context)
+                guard saved.workspaceId == current.workspaceId, saved.tenantId == current.tenantId,
+                      saved.principalId == current.principalId, saved.pending == nil,
+                      !current.dirty, let completed = saved.completed, completed.publication.status == "published",
+                      completed.sourceExhibitionId == current.draft?.id, completed.sourceEtag == current.etag,
+                      input == (try ViewerBudgetPublicationRequest(publication: completed.publication)) else {
+                    throw BridgeFailure("PUBLICATION_SCOPE_CHANGED")
+                }
+                analysis = try await api.publicationViewerBudget(input)
+                guard try await bridge.publicationState(context) == saved else {
+                    throw BridgeFailure("PUBLICATION_SCOPE_CHANGED")
+                }
+            } else {
+                guard Set(options.keys).isSubset(of: ["profile", "context", "automaticProfile"]) else {
+                    throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+                }
+                analysis = try await api.viewerBudgetAnalysis(in: current, requestedProfile: options["profile"]?.string,
+                    context: options["context"]?.string ?? "viewer", automaticProfile: options["automaticProfile"]?.string ?? "standard")
+            }
             let (_, _, latest) = try await checked(request)
             guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
             let status = analysis["estimates"]["wholeExhibition"]["evaluation"]["status"].string ?? "unknown"
             let label = status == "within" ? "정상" : status == "warning" ? "주의" : status == "admission-exceeded" ? "한도 초과" : "알 수 없음"
-            result = .object(["analysis": analysis, "summary": .string("목표 Viewer · \(analysis["selection"]["effectiveProfile"].string ?? "unknown") · 전시 전체 \(label)")])
+            let target = analysis["binding"]["source"] == .string("publication") ? "공개용 저장본의 Viewer" : "목표 Viewer"
+            result = .object(["analysis": analysis, "summary": .string("\(target) · \(analysis["selection"]["effectiveProfile"].string ?? "unknown") · 전시 전체 \(label)")])
         case "viewer-budget-prepare":
             guard selectedOEXFormat == nil, let etag = current.etag else { throw BridgeFailure("VIEWER_BUDGET_POLICY_UNAVAILABLE") }
             let proposal = try await api.prepareViewerBudgetPolicy(request["command"], in: current)

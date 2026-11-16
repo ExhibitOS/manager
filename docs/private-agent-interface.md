@@ -324,6 +324,12 @@ Operations:
   API publication preparation and native private static exporter. No hosting or
   internet deployment is performed. Export snapshot identity may differ from the
   authoring source identity and must be recorded separately.
+- `viewer-budget-inspect`: use the existing draft options for a saved or dirty
+  document. To inspect the current completed publication, send exactly
+  `publicationId` and `revisionSha256` as the command. The response binds to that
+  immutable output and carries the analysis input, projected asset membership,
+  named scenario, selection budget and existing estimates. If the binding or
+  scenario is unavailable, the inspection reports that condition.
 - `cancel` / `close`: include the active `jobId` when a task is running. Foreign
   scope and mismatched job IDs refuse before side effects. A cancelled operation
   retains uncertain writes; `operationTaskFinished` is not a worker-drain claim.

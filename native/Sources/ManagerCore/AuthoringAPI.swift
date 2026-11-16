@@ -2099,6 +2099,15 @@ public actor AuthoringAPI {
         guard result.items.count <= 100 else { throw AuthoringFailure("PUBLICATION_RESPONSE_INVALID") }
         return try result.items.map { try $0.validated() }
     }
+    public func publicationViewerBudget(_ input: ViewerBudgetPublicationRequest,
+                                        timeout: TimeInterval = 125) async throws -> DocumentValue {
+        guard nativeSession, !authenticationBusy else { throw AuthoringFailure("AUTH_REQUIRED") }
+        let path = studioPrefix + "/publications/" + (try identifier(input.publicationId))
+        let value: DocumentValue = try await request(path + "/viewer-budget?revisionSha256=" + input.revisionSha256,
+                                                      timeout: timeout)
+        try Task.checkCancellation()
+        return try input.checkedReply(value)
+    }
     public func unpublish(_ expected: NativePublication) async throws -> NativePublication {
         _ = try expected.validated()
         guard expected.status == "published" else { throw AuthoringFailure("PUBLICATION_STATUS_UNCONFIRMED") }

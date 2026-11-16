@@ -29,6 +29,31 @@ final class ViewerBudgetAPITests: XCTestCase {
             origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
         return api
     }
+    func testPreparedInspectionUsesExactAuthenticatedReadAndRejectsStaleOrUnnamedAnalysis() async throws {
+        let input = try ViewerBudgetPublicationRequest(publicationId: "44444444-4444-4444-8444-444444444444",
+                                                        revisionSha256: String(repeating: "a", count: 64))
+        let state = try document()
+        let api = try await connect(state)
+        let analysis = try await api.publicationViewerBudget(input)
+        XCTAssertEqual(analysis["estimateTarget"]["selectionBudget"]["maxTriangles"], .integer(150_000))
+        XCTAssertEqual(analysis["binding"]["projectionAssetsSHA256"], .string(String(repeating: "d", count: 64)))
+        XCTAssertEqual(analysis["estimates"]["wholeExhibition"]["evaluation"]["status"], .string("admission-exceeded"))
+        let call = try XCTUnwrap(ViewerBudgetAPIProtocol.calls().last)
+        XCTAssertEqual(call.httpMethod, "GET")
+        XCTAssertEqual(call.url?.path, "/api/v1/tenants/\(state.tenantId)/studio/publications/\(input.publicationId)/viewer-budget")
+        XCTAssertEqual(call.url?.query, "revisionSha256=" + input.revisionSha256)
+        XCTAssertNil(call.httpBody)
+        for mode in ["wrong-publication", "wrong-output-revision", "draft-binding", "bad-input-hash", "bad-assets-hash",
+                     "unnamed-target", "no-model-budget", "wrong-scenario-hints"] {
+            let rejected = try await connect(state, mode: mode)
+            do { _ = try await rejected.publicationViewerBudget(input); XCTFail(mode) }
+            catch let failure as AuthoringFailure {
+                XCTAssertEqual(failure.code, ["unnamed-target", "no-model-budget", "wrong-scenario-hints"].contains(mode)
+                    ? "VIEWER_BUDGET_PRODUCER_UNAVAILABLE" : "VIEWER_BUDGET_ANALYSIS_STALE")
+            }
+        }
+    }
+
     func testDirtyAnalysisPostsExactDraftAndServerCASWithoutSaveOrViewport() async throws {
         let state = try document(dirty: true), api = try await connect(state)
         let response = try await api.viewerBudgetAnalysis(in: state, requestedProfile: "compact")
@@ -155,6 +180,34 @@ private final class ViewerBudgetAPIProtocol: URLProtocol, @unchecked Sendable {
                 "role": .string("admin"), "csrfToken": .string("synthetic-csrf"), "expiresAt": .string("2099-01-01T00:00:00Z")])
             if mode != "missing-profile" { session["nativeViewerBudgetPolicyProfile"] = .string(mode == "unknown-profile" ? "unknown" : "viewer-budget-policy-v1") }
             return (try JSONEncoder().encode(session), nil)
+        }
+        if path.contains("/studio/publications/"), path.hasSuffix("/viewer-budget") {
+            let publicationId = "44444444-4444-4444-8444-444444444444"
+            let revision = String(repeating: "a", count: 64)
+            var answer: DocumentValue = .object(["version": .integer(1), "policyVersion": .integer(1),
+                "accountingVersion": .integer(1), "analysisComplete": .bool(true), "policySHA256": .string(String(repeating: "b", count: 64)),
+                "binding": .object(["source": .string("publication"), "publicationId": .string(publicationId), "revisionSha256": .string(revision),
+                    "inputSHA256": .string(revision), "projectionAssetsSHA256": .string(String(repeating: "d", count: 64))]),
+                "selection": .object(["effectiveProfile": .string("standard")]),
+                "resolvedPolicy": .object(["profile": .string("standard"), "policyVersion": .integer(1), "accountingVersion": .integer(1)]),
+                "exportConfiguration": .object(["performanceAdvisoryOnly": .bool(true)]),
+                "estimates": .object(["wholeExhibition": .object(["evaluation": .object(["profile": .string("standard"),
+                    "scope": .string("wholeExhibition"), "status": .string("admission-exceeded")])])]),
+                "estimateTarget": .object(["scenario": .string("fine-pointer-no-memory-hint-auto-v1"), "requestedMode": .string("auto"),
+                    "hints": .object(["finePointer": .bool(true), "coarsePointer": .bool(false)]),
+                    "selectionBudget": .object(["maxTriangles": .integer(150_000), "maxTextureSize": .integer(2048)])])])
+            switch mode {
+            case "wrong-publication": answer["binding"]["publicationId"] = .string(UUID().uuidString.lowercased())
+            case "wrong-output-revision": answer["binding"]["revisionSha256"] = .string(String(repeating: "b", count: 64))
+            case "draft-binding": answer["binding"]["source"] = .string("draft")
+            case "bad-input-hash": answer["binding"]["inputSHA256"] = .string(String(repeating: "e", count: 64))
+            case "bad-assets-hash": answer["binding"]["projectionAssetsSHA256"] = .string("invalid")
+            case "unnamed-target": answer["estimateTarget"] = .null
+            case "no-model-budget": answer["estimateTarget"]["selectionBudget"]["maxTextureSize"] = .null
+            case "wrong-scenario-hints": answer["estimateTarget"]["hints"]["finePointer"] = .bool(false)
+            default: break
+            }
+            return (try JSONEncoder().encode(answer), nil)
         }
         let responseETag = mode == "bad-etag" ? "\"unexpected\"" : state.etag
         if path.hasSuffix("/viewer-budget-analysis") {

@@ -85,6 +85,18 @@ final class PublicationModel: ObservableObject {
         guard statusVerified(completed), completed.publication.status == "published" else { return false }
         return completedRefersToSource(completed, source: source)
     }
+    func preparedViewerBudget(_ completed: NativePublicationCompleted, source: ExhibitionModel) async throws -> DocumentValue {
+        guard let api, completedMatches(completed, source: source) else {
+            throw AuthoringFailure("VIEWER_BUDGET_ANALYSIS_STALE")
+        }
+        let generation = runtimeGeneration
+        let input = try ViewerBudgetPublicationRequest(publication: completed.publication)
+        let value = try await api.publicationViewerBudget(input, timeout: 15)
+        guard generation == runtimeGeneration, self.api === api, completedMatches(completed, source: source) else {
+            throw AuthoringFailure("VIEWER_BUDGET_ANALYSIS_STALE")
+        }
+        return value
+    }
     func statusVerified(_ completed: NativePublicationCompleted) -> Bool { verifiedCompleted == completed && state?.completed == completed }
     var preparationStatusKnown: Bool {
         guard let state else { return false }
@@ -421,7 +433,8 @@ struct NativePublicationView: View {
             if !model.notice.isEmpty { Text(model.notice).foregroundStyle(.secondary) }
             NativeStaticExportView(model: staticExport, completed: model.state?.completed.flatMap { completed in
                 model.completedMatches(completed, source: source) ? completed : nil
-            }, ready: ready && !model.busy && !hosting.running && !hosting.busy)
+            }, ready: ready && !model.busy && !hosting.running && !hosting.busy,
+                inspectBudget: { try await model.preparedViewerBudget($0, source: source) })
             NativeHostingView(model: hosting, receipt: staticExport.status?.privateEditor == true ? nil : staticExport.status?.receipt.flatMap { receipt in
                 model.state?.completed.flatMap { completed in
                     completed.publication.publicationId == receipt.publicationId && model.completedMatches(completed, source: source) ? receipt : nil
