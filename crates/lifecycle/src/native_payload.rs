@@ -625,9 +625,9 @@ pub(crate) const KNOWN_TRACK_AIM_TARGET: RuntimeTuple = (
 // Exact ordinary successor with source-bound bench base-color preparation.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const BENCH_BASECOLOR_PREPARATION_TARGET: RuntimeTuple = (
-    "c9dbf015fb1c93477603e2aef588bf80e5245b7d",
-    "49fd14b853b4e871c928c9beaec053d31cecd4b728d5951306f06720c87c367e",
-    "4dbbd5412ed794def04f0e58eb12a80603279e5c124dfa0ef3169adc22d7889c",
+    "337351a3fb8ae99dc28b80782e45eddf6b5f4416",
+    "af7e7e22aa34866e0be275baa334866a36c2b885253d8cf56991be0411fabe33",
+    "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd",
 );
 const BENCH_BASECOLOR_PREPARATION_DIRECTORY: &str = "platform/database/native-workspace-bench-basecolor-preparation/";
 const BENCH_BASECOLOR_PREPARATION_SCHEMA: (&str, u64, &str) = (
