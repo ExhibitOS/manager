@@ -2473,6 +2473,19 @@ const { isDeepStrictEqual } = require('node:util');
         marker: bool,
         owner_setup: Option<&owner_channel::Setup>,
     ) -> Result<Owned> {
+        self.spawn_with_signing_output(program, args, extra, input, capture, marker, owner_setup, None)
+    }
+    fn spawn_with_signing_output(
+        &self,
+        program: &Path,
+        args: &[String],
+        extra: &[(&str, String)],
+        input: Option<&[u8]>,
+        capture: bool,
+        marker: bool,
+        owner_setup: Option<&owner_channel::Setup>,
+        signing_output: Option<&std::io::PipeWriter>,
+    ) -> Result<Owned> {
         let log = self
             .log
             .as_ref()
@@ -2501,6 +2514,25 @@ const { isDeepStrictEqual } = require('node:util');
             command.env(key, value);
         }
         if let Some(setup) = owner_setup { setup.configure(&mut command)?; }
+        if let Some(writer) = signing_output {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let descriptor = writer.as_raw_fd();
+            if descriptor < 3 {
+                return Err(err("NATIVE_BACKUP_FAILED"));
+            }
+            command.env("EXHIBITOS_NATIVE_SIGNING_OUTPUT_FD", descriptor.to_string());
+            // Only this child inherits the write end. Its normal streams carry
+            // metadata, leaving the signing payload outside the runtime log.
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(descriptor, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         let mut child = command
             .spawn()
             .map_err(|_| err("NATIVE_PROCESS_START_FAILED"))?;
@@ -2605,8 +2637,21 @@ const { isDeepStrictEqual } = require('node:util');
         input: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<(i32, Vec<u8>)> {
+        self.auxiliary_timed_with_signing_output(program, args, extra, input, timeout, None)
+    }
+    fn auxiliary_timed_with_signing_output(
+        &mut self,
+        program: PathBuf,
+        args: Vec<String>,
+        extra: Vec<(&str, String)>,
+        input: Option<&[u8]>,
+        timeout: Duration,
+        signing_output: Option<std::io::PipeWriter>,
+    ) -> Result<(i32, Vec<u8>)> {
         self.check_maintenance_space()?;
-        self.auxiliary = Some(self.spawn(&program, &args, &extra, input, true, false, None)?);
+        let child = self.spawn_with_signing_output(&program, &args, &extra, input, true, false, None, signing_output.as_ref())?;
+        drop(signing_output);
+        self.auxiliary = Some(child);
         self.record()?;
         let deadline = Instant::now() + timeout;
         loop {
@@ -3932,6 +3977,61 @@ const { isDeepStrictEqual } = require('node:util');
         budget_bytes: u64,
         scratch: &Path,
     ) -> Result<Value> {
+        self.backup_configuration_tool(false, args, configuration, deployment, budget_bytes, scratch)
+    }
+    pub(crate) fn backup_configuration_tool(
+        &mut self,
+        private_signing: bool,
+        args: Vec<String>,
+        configuration: String,
+        deployment: String,
+        budget_bytes: u64,
+        scratch: &Path,
+    ) -> Result<Value> {
+        self.run_backup_tool(args, configuration, deployment, budget_bytes, scratch, private_signing, None)
+    }
+    pub(crate) fn read_backup_signing_configuration(
+        &mut self,
+        args: Vec<String>,
+        budget_bytes: u64,
+        scratch: &Path,
+        expected_bytes: u64,
+        expected_sha256: &str,
+    ) -> Result<crate::installations::native_backup::Secret> {
+        use crate::installations::native_backup::Secret;
+        let (reader, writer) = std::io::pipe().map_err(|_| err("NATIVE_BACKUP_FAILED"))?;
+        let receive = thread::spawn(move || {
+            let mut secret = Secret(Vec::new());
+            reader.take(65_537).read_to_end(&mut secret.0).map_err(|_| err("NATIVE_BACKUP_FAILED"))?;
+            Ok::<_, crate::LifecycleError>(secret)
+        });
+        let reply = self.run_backup_tool(args, "{}".into(), "{}".into(), budget_bytes, scratch, true, Some(writer));
+        let bytes = receive.join().map_err(|_| err("NATIVE_BACKUP_FAILED"))??;
+        let reply = reply?;
+        if reply != serde_json::json!({
+            "operation": "signing-configuration-read",
+            "bytes": expected_bytes,
+            "sha256": expected_sha256,
+        }) || expected_bytes == 0 || expected_bytes > 65_536
+            || bytes.0.len() as u64 != expected_bytes || digest(&bytes.0) != expected_sha256
+        {
+            return Err(err("NATIVE_BACKUP_FAILED"));
+        }
+        Ok(bytes)
+    }
+    fn run_backup_tool(
+        &mut self,
+        args: Vec<String>,
+        configuration: String,
+        deployment: String,
+        budget_bytes: u64,
+        scratch: &Path,
+        private_signing: bool,
+        signing_output: Option<std::io::PipeWriter>,
+    ) -> Result<Value> {
+        if private_signing && !self.payload.private_signing_configuration() {
+            return Err(err("NATIVE_BACKUP_UNAVAILABLE"));
+        }
         if self.status()?.state != "database_ready"
             || self.guard.is_none()
             || self.node.is_some()
@@ -3971,10 +4071,7 @@ const { isDeepStrictEqual } = require('node:util');
         }
         let mut command = vec![tools.script.to_string_lossy().into_owned()];
         command.extend(args);
-        let result = self.auxiliary_timed(
-            self.payload.node(),
-            command,
-            vec![
+        let mut environment = vec![
                 ("DATABASE_URL", database),
                 (
                     "BLOB_ROOT",
@@ -4008,9 +4105,12 @@ const { isDeepStrictEqual } = require('node:util');
                     "EXHIBITOS_NATIVE_RESTORE_SYSTEM_IDENTIFIER",
                     resume_identifier.unwrap_or_default(),
                 ),
-            ],
-            None,
-            Duration::from_secs(3600),
+        ];
+        if private_signing {
+            environment.push(("EXHIBITOS_NATIVE_PRIVATE_SIGNING_CONFIGURATION", "1".into()));
+        }
+        let result = self.auxiliary_timed_with_signing_output(
+            self.payload.backup_node(), command, environment, None, Duration::from_secs(3600), signing_output,
         );
         self.maintenance_space.clear();
         match result {

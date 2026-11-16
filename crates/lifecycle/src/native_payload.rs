@@ -84,6 +84,7 @@ pub struct Payload {
     workspace_import: Option<(WorkspaceImport, bool)>,
     // Constructor-only authority; never grants an OEX import version.
     fresh_catalog52_constructor: bool,
+    private_backup_codec: Option<Box<Payload>>,
 }
 const STATIC_DETAIL_MARKER: &str = "platform/scripts/native-detail-static-export-capability-v1.json";
 const STATIC_DETAIL_MARKER_SHA256: &str = "9663e0fb346c78ebbd1b9e883bbd2400a1b968368d101102f0e0285c8e7deaef";
@@ -2528,7 +2529,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
     }
 
     fn furnishing_ledger_fixture() -> Payload {
-        let mut payload = Payload { root: PathBuf::new(), manifest: local_fixture(), manifest_sha256: "a".repeat(64), workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false };
+        let mut payload = Payload { root: PathBuf::new(), manifest: local_fixture(), manifest_sha256: "a".repeat(64), workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false, private_backup_codec: None };
         for index in (1..=36).rev().filter(|index| !matches!(*index, 26 | 27)) {
             let dir = match index {
                 1..=25 => "migrations",
@@ -5557,7 +5558,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
 
         let mut payload = Payload {
             root: PathBuf::new(), manifest, manifest_sha256: pinned_manifest.to_string(),
-            workspace_v5_validation: false, workspace_import: Some((WorkspaceImport::V7, false)), fresh_catalog52_constructor: false,
+            workspace_v5_validation: false, workspace_import: Some((WorkspaceImport::V7, false)), fresh_catalog52_constructor: false, private_backup_codec: None,
         };
         assert!(payload.workspace_import_version() == Some(WorkspaceImport::V7));
         assert!(!payload.workspace_import_selected_input());
@@ -5609,7 +5610,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
         let mut manifest = local_fixture();
         manifest.source_commit = source.into();
         manifest.producer_sha256 = producer.into();
-        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into(), workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false };
+        let mut payload = Payload { root: PathBuf::new(), manifest, manifest_sha256: hash.into(), workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false, private_backup_codec: None };
         assert!(payload.normal_oex_030_concrete_tuple());
         assert!(!payload.normal_oex_029_floor_tuple());
         assert!(!normal_oex_030_concrete_inventory_matches(&payload.manifest));
@@ -6047,7 +6048,7 @@ impl Payload {
             root,
             manifest,
             manifest_sha256: digest(&bytes),
-            workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false,
+            workspace_v5_validation: false, workspace_import: None, fresh_catalog52_constructor: false, private_backup_codec: None,
         })
     }
     /// Available only to the fresh selected validation entry. The normal
@@ -7303,14 +7304,56 @@ impl Payload {
         }
         Ok(pins)
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn open_private_exb_pair(source: &Path, codec: &Path) -> Result<Self> {
+        const CODEC: RuntimeTuple = (
+            "93a7c0d2def81e21a2e6e75683b69cb0a7adbf44",
+            "fa32efb8e1e8b2381dade949d7f29f803108f6e356216c04b69bf7371dac8227",
+            "52781c1c5d06788e2cc99f077776af30abd7c00d3037cc1679d977842d3a9792",
+        );
+        let mut source = Self::open_workspace_import_validation(source, WorkspaceImport::V7, false)?;
+        let codec = Self::open(codec)?;
+        let tuple = |payload: &Self, expected: RuntimeTuple| {
+            payload.manifest.source_commit == expected.0
+                && payload.manifest.producer_sha256 == expected.1
+                && payload.manifest_sha256 == expected.2
+        };
+        if !tuple(&source, FIXED64_PUBLICATION_REPAIR_TARGET) || !tuple(&codec, CODEC)
+            || !codec.has_private_signing_marker()
+        {
+            return Err(err("NATIVE_BACKUP_UNAVAILABLE"));
+        }
+        source.private_backup_codec = Some(Box::new(codec));
+        Ok(source)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn has_private_signing_marker(&self) -> bool {
+        self.manifest.files.iter().any(|file| {
+            file.path == "platform/scripts/native-private-signing-configuration-capability-v1.json"
+                && file.link.is_none()
+                && file.executable == Some(false)
+                && file.bytes == Some(70)
+                && file.sha256.as_deref() == Some("2c6f28eda54bd34452aefd54801e51aec13828eb9229f9943ebaa5a2faf8581e")
+        })
+    }
+    pub(crate) fn private_signing_configuration(&self) -> bool {
+        self.private_backup_codec.is_some()
+    }
+    pub(crate) fn backup_node(&self) -> PathBuf {
+        self.private_backup_codec.as_deref().unwrap_or(self).node()
+    }
     pub fn backup_resources(&self) -> Result<BackupResources> {
+        let codec = self.private_backup_codec.as_deref().unwrap_or(self);
+        if self.private_signing_configuration() {
+            codec.recheck()?;
+        }
         for (name, executable) in [
             ("platform/scripts/service-backup.mjs", false),
             ("platform/scripts/native-service-backup.mjs", false),
             ("postgres/bin/pg_dump", true),
             ("postgres/bin/pg_restore", true),
         ] {
-            if !self
+            if !codec
                 .manifest
                 .files
                 .iter()
@@ -7320,9 +7363,9 @@ impl Payload {
             }
         }
         Ok(BackupResources {
-            script: self.root.join("platform/scripts/native-service-backup.mjs"),
-            pg_dump: self.root.join("postgres/bin/pg_dump"),
-            pg_restore: self.root.join("postgres/bin/pg_restore"),
+            script: codec.root.join("platform/scripts/native-service-backup.mjs"),
+            pg_dump: codec.root.join("postgres/bin/pg_dump"),
+            pg_restore: codec.root.join("postgres/bin/pg_restore"),
         })
     }
     pub(crate) fn backup_runtime_bytes(&self) -> Result<u64> {

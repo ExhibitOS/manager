@@ -420,6 +420,7 @@ impl InstallationController {
             new_directory(&directory)?;
             let scratch = directory.join("scratch"); new_directory(&scratch)?;
             write_json(&directory, "job.json", &serde_json::json!({"format":1,"id":id,"state":"preparing"}))?;
+            let private_signing = session.maintenance_payload().private_signing_configuration();
             let result: Result<AuthenticatedNativeBackup> = (|| {
                 let mut sources = Vec::new();
                 let mut configuration = BTreeMap::new();
@@ -430,8 +431,14 @@ impl InstallationController {
                     if required && bytes.is_none() { return Err(err("NATIVE_BACKUP_SOURCE_REQUIRED")); }
                     let sha256 = bytes.as_ref().map(|v| digest(&v.0));
                     if let Some(bytes) = bytes {
-                        write_private_new(&directory, logical, &bytes.0, limit as usize)?;
-                        let path = text(&directory.join(logical))?;
+                        let path = if private_signing && logical == "freeze-signing-key.json" {
+                            // The codec reads the source through its private file map.
+                            // ConfigurationDirectory and Source still fence it.
+                            text(&root.join(name))?
+                        } else {
+                            write_private_new(&directory, logical, &bytes.0, limit as usize)?;
+                            text(&directory.join(logical))?
+                        };
                         if journal {
                             deployment.insert(format!("native-authoring/{logical}"), serde_json::json!({"path":path,"bytes":bytes.0.len(),"sha256":sha256}));
                             journal_names.insert(logical.to_string(), name.to_string());
@@ -477,13 +484,13 @@ impl InstallationController {
                 for source in &sources { source.check()?; }
                 write_json(&directory, "job.json", &serde_json::json!({"format":1,"id":id,"state":"creating"}))?;
                 let args = vec!["create".into(),"--key-file".into(),text(&input.key_file)?,"--destination".into(),text(&input.destination)?,"--quiesced".into()];
-                let created = session.backup_tool(args, config_json.clone(), deployment_json.clone(), budget, &scratch)?;
+                let created = session.backup_configuration_tool(private_signing, args, config_json.clone(), deployment_json.clone(), budget, &scratch)?;
                 let backup_id = created["backupId"].as_str().filter(|v| uuid(v)).ok_or_else(|| err("NATIVE_BACKUP_FAILED"))?.to_string();
                 let verified = directory.join("verified");
                 let (complete_bytes, complete_pin) = crate::hosted_runtime_file::bounded(&input.destination.join("complete.json"), 65536)?;
                 let (cipher_bytes, cipher_pin) = crate::hosted_runtime_file::bounded(&input.destination.join("manifest.gcm"), 17*1024*1024)?;
                 let cipher_sha256 = digest(&cipher_bytes); drop(cipher_bytes);
-                session.backup_tool(vec!["verify".into(),"--key-file".into(),text(&input.key_file)?,"--source".into(),text(&input.destination)?,"--destination".into(),text(&verified)?], config_json.clone(), deployment_json.clone(), budget, &scratch)?;
+                session.backup_configuration_tool(private_signing, vec!["verify".into(),"--key-file".into(),text(&input.key_file)?,"--source".into(),text(&input.destination)?,"--destination".into(),text(&verified)?], config_json.clone(), deployment_json.clone(), budget, &scratch)?;
                 let manifest = installation_backup::source_bytes(&verified, "manifest.json", 16*1024*1024, true)?;
                 complete_pin.check()?; cipher_pin.check()?;
                 let (retained_manifest, manifest_pin) = crate::hosted_runtime_file::bounded(&verified.join("manifest.json"), 16*1024*1024)?;
