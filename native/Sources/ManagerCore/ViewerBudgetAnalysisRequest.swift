@@ -43,3 +43,55 @@ public struct ViewerBudgetAnalysisRequest: Sendable {
         return value
     }
 }
+
+/// Read-only analysis of the exact prepared public projection used by static export.
+public struct ViewerBudgetPublicationRequest: Equatable, Sendable {
+    public let publicationId: String
+    public let revisionSha256: String
+
+    public init(publicationId: String, revisionSha256: String) throws {
+        guard UUID(uuidString: publicationId)?.uuidString.lowercased() == publicationId,
+              nativeImportDigest(revisionSha256) else {
+            throw AuthoringFailure("VIEWER_BUDGET_ANALYSIS_INPUT_INVALID")
+        }
+        self.publicationId = publicationId
+        self.revisionSha256 = revisionSha256
+    }
+
+    public init(publication: NativePublication) throws {
+        guard try publication.validated().status == "published" else {
+            throw AuthoringFailure("VIEWER_BUDGET_ANALYSIS_STALE")
+        }
+        try self.init(publicationId: publication.publicationId, revisionSha256: publication.revisionSha256)
+    }
+
+    public func checkedReply(_ value: DocumentValue) throws -> DocumentValue {
+        let binding = value["binding"]
+        let target = value["estimateTarget"]
+        let evaluation = value["estimates"]["wholeExhibition"]["evaluation"]
+        guard value["version"] == .integer(1), value["policyVersion"] == .integer(1),
+              value["accountingVersion"] == .integer(1),
+              binding["source"] == .string("publication"), binding["publicationId"] == .string(publicationId),
+              binding["revisionSha256"] == .string(revisionSha256),
+              binding["inputSHA256"] == .string(revisionSha256),
+              let assets = binding["projectionAssetsSHA256"].string, nativeImportDigest(assets),
+              let policy = value["policySHA256"].string, nativeImportDigest(policy),
+              let effective = value["selection"]["effectiveProfile"].string, ["standard", "compact"].contains(effective),
+              value["resolvedPolicy"]["profile"] == .string(effective),
+              value["resolvedPolicy"]["policyVersion"] == .integer(1),
+              value["resolvedPolicy"]["accountingVersion"] == .integer(1),
+              value["exportConfiguration"]["performanceAdvisoryOnly"] == .bool(true),
+              evaluation["profile"] == .string(effective), evaluation["scope"] == .string("wholeExhibition"),
+              case .bool = value["analysisComplete"] else {
+            throw AuthoringFailure("VIEWER_BUDGET_ANALYSIS_STALE")
+        }
+        guard target["scenario"] == .string("fine-pointer-no-memory-hint-auto-v1"),
+              target["requestedMode"] == .string("auto"),
+              target["hints"]["finePointer"] == .bool(true), target["hints"]["coarsePointer"] == .bool(false),
+              target["selectionBudget"]["maxTriangles"].integer.map({ $0 > 0 }) == true,
+              target["selectionBudget"]["maxTextureSize"].integer.map({ $0 > 0 }) == true else {
+            throw AuthoringFailure("VIEWER_BUDGET_PRODUCER_UNAVAILABLE")
+        }
+        return value
+    }
+}

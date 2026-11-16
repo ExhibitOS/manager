@@ -277,6 +277,32 @@ struct NativeEditorBudgetStatusView: View {
     }
 }
 
+struct PreparedViewerBudgetStatusView: View {
+    let analysis: DocumentValue?
+    let calculating: Bool
+
+    var body: some View {
+        ViewerBudgetEvaluationView(title: "공개용 저장본의 Viewer 추정",
+            evaluation: analysis?["estimates"]["wholeExhibition"]["evaluation"], calculating: calculating)
+        if let analysis {
+            let budget = analysis["estimateTarget"]["selectionBudget"]
+            DisclosureGroup("Viewer 분석 조건") {
+                LabeledContent("입력 시나리오", value: "정밀 포인터 · 메모리 힌트 없음 · 자동 선택")
+                if let profile = analysis["selection"]["effectiveProfile"].string {
+                    LabeledContent("선택 프로필", value: profile == "compact" ? "간소" : "표준")
+                }
+                LabeledContent("모델별 최대 삼각형 수", value: BudgetLabels.number(budget["maxTriangles"]))
+                LabeledContent("모델별 최대 텍스처 크기", value: BudgetLabels.number(budget["maxTextureSize"]))
+                LabeledContent("분석 입력 SHA-256", value: analysis["binding"]["inputSHA256"].string ?? "")
+                LabeledContent("제공 파일 목록 SHA-256", value: analysis["binding"]["projectionAssetsSHA256"].string ?? "")
+            }.font(.caption).textSelection(.enabled)
+        } else if !calculating {
+            Text("내보낼 공개본과 일치하는 분석을 확인할 수 없습니다. 파일 저장은 계속할 수 있습니다.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 struct TargetViewerBudgetStatusView: View {
     @ObservedObject var model: ExhibitionModel
     let mode: Mode

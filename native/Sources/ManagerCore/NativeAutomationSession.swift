@@ -36,6 +36,22 @@ public actor NativeAutomationSession {
         }
     }
 
+    private static let preparedBudgetReadbackManifest = "72495f5c9da5a4bf4cb772e077d4bd5e0e4d9059683505b18d3e2335eab7b4a1"
+
+    static func admitsPreparedBudgetReadback(manifest: String?, publicationProfile: String?) -> Bool {
+        #if DEBUG
+        return manifest == preparedBudgetReadbackManifest && publicationProfile == "bounded-local-v1"
+        #else
+        return false
+        #endif
+    }
+
+    static func checkPreparedBudgetReadbackOperation(manifest: String?, operation: String) throws {
+        if manifest == preparedBudgetReadbackManifest && !["read", "viewer-budget-inspect"].contains(operation) {
+            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
+    }
+
     private var bridge: NativeBridge
     private var bridgeOpen = true
     private var closeFailure: Error?
@@ -396,6 +412,8 @@ public actor NativeAutomationSession {
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
+        let admitsPreparedBudget = Self.admitsPreparedBudgetReadback(manifest: config.manifestSha256,
+            publicationProfile: session.nativePublicationProfile)
         let admitsDefaultSeats = await api.admitsWorkspaceDefaultSeatProposal
         let requiresDefaultSeatProfile = AuthoringAPI.supportsDefaultSeatRuntime(manifest: config.manifestSha256)
             || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: config.manifestSha256)
@@ -411,7 +429,7 @@ public actor NativeAutomationSession {
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
-                || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
+                || admitsPreparedBudget || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
@@ -2010,6 +2028,7 @@ public actor NativeAutomationSession {
             throw BridgeFailure("APPLIED_DRAFT_RECOVERY_ONLY")
         }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
+        try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
@@ -2192,15 +2211,38 @@ public actor NativeAutomationSession {
             let (_, _, refreshed) = try await checked(request)
             guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
         case "viewer-budget-inspect":
-            guard case .object(let options) = request["command"], Set(options.keys).isSubset(of: ["profile", "context", "automaticProfile"]),
+            guard case .object(let options) = request["command"],
                   options.values.allSatisfy({ $0.string != nil }) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-            let analysis = try await api.viewerBudgetAnalysis(in: current, requestedProfile: options["profile"]?.string,
-                context: options["context"]?.string ?? "viewer", automaticProfile: options["automaticProfile"]?.string ?? "standard")
+            let analysis: DocumentValue
+            if Set(options.keys) == ["publicationId", "revisionSha256"],
+               let publicationId = options["publicationId"]?.string,
+               let revisionSha256 = options["revisionSha256"]?.string {
+                let input = try ViewerBudgetPublicationRequest(publicationId: publicationId, revisionSha256: revisionSha256)
+                let saved = try await bridge.publicationState(context)
+                guard saved.workspaceId == current.workspaceId, saved.tenantId == current.tenantId,
+                      saved.principalId == current.principalId, saved.pending == nil,
+                      !current.dirty, let completed = saved.completed, completed.publication.status == "published",
+                      completed.sourceExhibitionId == current.draft?.id, completed.sourceEtag == current.etag,
+                      input == (try ViewerBudgetPublicationRequest(publication: completed.publication)) else {
+                    throw BridgeFailure("PUBLICATION_SCOPE_CHANGED")
+                }
+                analysis = try await api.publicationViewerBudget(input)
+                guard try await bridge.publicationState(context) == saved else {
+                    throw BridgeFailure("PUBLICATION_SCOPE_CHANGED")
+                }
+            } else {
+                guard Set(options.keys).isSubset(of: ["profile", "context", "automaticProfile"]) else {
+                    throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+                }
+                analysis = try await api.viewerBudgetAnalysis(in: current, requestedProfile: options["profile"]?.string,
+                    context: options["context"]?.string ?? "viewer", automaticProfile: options["automaticProfile"]?.string ?? "standard")
+            }
             let (_, _, latest) = try await checked(request)
             guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
             let status = analysis["estimates"]["wholeExhibition"]["evaluation"]["status"].string ?? "unknown"
             let label = status == "within" ? "정상" : status == "warning" ? "주의" : status == "admission-exceeded" ? "한도 초과" : "알 수 없음"
-            result = .object(["analysis": analysis, "summary": .string("목표 Viewer · \(analysis["selection"]["effectiveProfile"].string ?? "unknown") · 전시 전체 \(label)")])
+            let target = analysis["binding"]["source"] == .string("publication") ? "공개용 저장본의 Viewer" : "목표 Viewer"
+            result = .object(["analysis": analysis, "summary": .string("\(target) · \(analysis["selection"]["effectiveProfile"].string ?? "unknown") · 전시 전체 \(label)")])
         case "viewer-budget-prepare":
             guard selectedOEXFormat == nil, let etag = current.etag else { throw BridgeFailure("VIEWER_BUDGET_POLICY_UNAVAILABLE") }
             let proposal = try await api.prepareViewerBudgetPolicy(request["command"], in: current)

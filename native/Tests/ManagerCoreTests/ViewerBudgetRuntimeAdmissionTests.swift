@@ -3,6 +3,24 @@ import XCTest
 @testable import ManagerCore
 
 final class ViewerBudgetRuntimeAdmissionTests: XCTestCase {
+    func testPreparedBudgetReadbackRequiresExactManifestAndAllowsNoMutationOrExport() throws {
+        let target = "72495f5c9da5a4bf4cb772e077d4bd5e0e4d9059683505b18d3e2335eab7b4a1"
+        #if DEBUG
+        XCTAssertTrue(NativeAutomationSession.admitsPreparedBudgetReadback(manifest: target, publicationProfile: "bounded-local-v1"))
+        #else
+        XCTAssertFalse(NativeAutomationSession.admitsPreparedBudgetReadback(manifest: target, publicationProfile: "bounded-local-v1"))
+        #endif
+        XCTAssertFalse(NativeAutomationSession.admitsPreparedBudgetReadback(manifest: target, publicationProfile: nil))
+        XCTAssertFalse(NativeAutomationSession.admitsPreparedBudgetReadback(manifest: target.uppercased(), publicationProfile: "bounded-local-v1"))
+        for operation in ["read", "viewer-budget-inspect"] {
+            XCTAssertNoThrow(try NativeAutomationSession.checkPreparedBudgetReadbackOperation(manifest: target, operation: operation))
+        }
+        for operation in ["save", "reopen-saved", "viewer-budget-prepare", "export-static", "export-static-saved-head"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkPreparedBudgetReadbackOperation(manifest: target, operation: operation))
+            XCTAssertNoThrow(try NativeAutomationSession.checkPreparedBudgetReadbackOperation(manifest: nil, operation: operation))
+        }
+    }
+
     func testExactQualifiedSuccessorsPreserveExistingReaderEligibility() throws {
         for manifest in ["290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354",
                          "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29",

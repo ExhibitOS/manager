@@ -671,6 +671,13 @@ const ROOM_CEILING_FILL_TARGET: RuntimeTuple = (
     "c40e6a0cc24843c9e7e627dca23d01648e9b3d64981a8cace278b32afa077ecd",
     "ea87410d9f4166538ff692b380e86ea42c8cddce743c991a0450e1db3ca962ab",
 );
+// Exact ordinary Viewer budget successor over the existing ceiling-fill catalog.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const PREPARED_VIEWER_BUDGET_TARGET: RuntimeTuple = (
+    "56b8c54755167e3fd1f0c9ff1abe811981fa59cc",
+    "bd28e74fb04b4e0ec579a943000a4aa678b1c9ec544054d44d05d5d1e5586a81",
+    "72495f5c9da5a4bf4cb772e077d4bd5e0e4d9059683505b18d3e2335eab7b4a1",
+);
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const PRIVATE_EXB_CODEC: RuntimeTuple = (
     "45d52c116dc14b57113005293b24b17204a8df91",
@@ -781,7 +788,7 @@ pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool
 // carried restore retain their existing combined-thumbnail host set.
 pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET].contains(&tuple) { return true; }
+    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET].contains(&tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
 // Both fresh binding admission and its mandatory inherited channel use this
@@ -1767,6 +1774,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || VIEWER_BUDGET_TARGET.2 == manifest
         || RECTANGLE_FIXED64_TARGET.2 == manifest
         || FIXED64_PUBLICATION_REPAIR_TARGET.2 == manifest
+        || PREPARED_VIEWER_BUDGET_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1820,7 +1828,13 @@ impl FurnishingTransition {
             if source == CURRENT_IMAGE_THUMBNAIL_051_TARGET && target == CURRENT_IMAGE_THUMBNAIL_AREA_TARGET)
     }
 
+    pub(crate) fn is_prepared_viewer_budget_refresh(self) -> bool {
+        matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }
+            if source == ROOM_CEILING_FILL_TARGET && target == PREPARED_VIEWER_BUDGET_TARGET)
+    }
+
     pub(crate) fn is_combined_thumbnail_runtime_refresh(self) -> bool {
+        self.is_prepared_viewer_budget_refresh() ||
         matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }
             if (source == COMBINED_THUMBNAIL_TARGET && target == STATIC_DETAIL_PHASE_TARGET)
                 || (source == STATIC_DETAIL_PHASE_TARGET && target == CONTACT_EMITTER_CARD_TARGET)
@@ -1848,6 +1862,10 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair == (ROOM_CEILING_FILL_TARGET.2, PREPARED_VIEWER_BUDGET_TARGET.2) {
+            return Some(Self::SameCatalog { source: ROOM_CEILING_FILL_TARGET, target: PREPARED_VIEWER_BUDGET_TARGET,
+                catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+        }
         if fixed64_publication_repair_clean_transition(pair) {
             return Some(Self::SameCatalog { source: RECTANGLE_FIXED64_TARGET, target: FIXED64_PUBLICATION_REPAIR_TARGET,
                 catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -2800,6 +2818,59 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(!fresh.normal_oex_selected_input().unwrap());
         assert_eq!(fresh.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).unwrap().lines().count(), 47);
         assert_eq!(Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn prepared_viewer_budget_tuple_is_exact_with_one_clean_parent() {
+        let target = PREPARED_VIEWER_BUDGET_TARGET;
+        let parent = ROOM_CEILING_FILL_TARGET;
+        assert!(combined_thumbnail_ordinary_host_matches(target));
+        assert!(!combined_thumbnail_fresh_host_matches(target));
+        assert!(!combined_thumbnail_host_matches(target));
+        assert!(combined_thumbnail_carried_receipt_payload(target).is_none());
+        assert!(!current52_interrupted_host_matches(target));
+        assert!(!current_rail_host_matches(target));
+        assert!(saved_workspace_transition_target(target.2));
+        assert!(!saved_workspace_transition_target(parent.2));
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
+        let pair = (parent.2, target.2);
+        let step = FurnishingTransition::from_manifests(pair).unwrap();
+        assert!(step.is_prepared_viewer_budget_refresh());
+        assert!(step.is_combined_thumbnail_runtime_refresh());
+        assert!(!step.upgrades_catalog());
+        assert!(saved_workspace_transition_supported(pair));
+        assert!(!current_image_thumbnail_transition(pair));
+        for denied in [(target.2, parent.2), (target.2, target.2), (FIXED64_PUBLICATION_REPAIR_TARGET.2, target.2)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        for mixed in [(parent.0, target.1, target.2), (target.0, parent.1, target.2), (target.0, target.1, parent.2)] {
+            assert!(!combined_thumbnail_ordinary_host_matches(mixed));
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed prepared Viewer budget runtime; read-only payload validation"]
+    fn prepared_viewer_budget_actual_runtime_ordinary_opener() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PREPARED_VIEWER_BUDGET_RUNTIME").unwrap());
+        let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let target = PREPARED_VIEWER_BUDGET_TARGET;
+        assert_eq!((ordinary.manifest.source_commit.as_str(), ordinary.producer_sha256(), ordinary.manifest_sha256.as_str()), target);
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!(ordinary.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(ordinary.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 47);
+        assert!(!ordinary.workspace_import_selected_input());
+        assert!(!ordinary.fresh_catalog52_constructor());
+        assert!(ordinary.static_export_resources(false).is_ok());
+        assert!(Payload::open_fresh_workspace_v7_validation(&root).is_err());
+        let parent_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PREPARED_VIEWER_BUDGET_PARENT").unwrap());
+        let transition_parent = Payload::open_saved_workspace_transition(&parent_root).unwrap();
+        let transition_target = Payload::open_saved_workspace_transition(&root).unwrap();
+        assert_eq!(transition_parent.context().manifest_sha256, ROOM_CEILING_FILL_TARGET.2);
+        assert_eq!(transition_target.context().manifest_sha256, PREPARED_VIEWER_BUDGET_TARGET.2);
+        assert_eq!(transition_parent.workspace_furnishing_ledger(catalog).unwrap(),
+                   transition_target.workspace_furnishing_ledger(catalog).unwrap());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -6189,7 +6260,7 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
-        if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET].contains(&(
+        if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&(
             &*context.source_commit, payload.producer_sha256(), &*context.manifest_sha256
         )) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));

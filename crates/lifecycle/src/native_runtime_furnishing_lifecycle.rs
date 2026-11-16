@@ -398,6 +398,11 @@ impl Binding {
                 Ok(None)
             } else { Err(err(ERROR)) };
         }
+        if transition.is_prepared_viewer_budget_refresh() {
+            return if self.phase == Phase::Clean && self.admission_kind == Admission::CleanReopen && self.restore.is_none() {
+                Ok(None)
+            } else { Err(err(ERROR)) };
+        }
         if matches!(transition, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || transition.is_current_image_thumbnail_refresh() || transition.is_combined_thumbnail_runtime_refresh() {
             return if self.admission_kind == Admission::CleanReopen
                 && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some())
@@ -1519,6 +1524,35 @@ mod tests {
         multimap.consume(&prior).unwrap();
         assert_eq!(multimap.catalog, 40);
         assert_eq!(multimap.admission_kind, Admission::CleanReopen);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn prepared_viewer_budget_refresh_requires_clean_reopen_without_restore() {
+        let step = FurnishingTransition::from_manifests((
+            "ea87410d9f4166538ff692b380e86ea42c8cddce743c991a0450e1db3ca962ab",
+            "72495f5c9da5a4bf4cb772e077d4bd5e0e4d9059683505b18d3e2335eab7b4a1",
+        )).unwrap();
+        let mut prior = binding(GENERATION);
+        prior.phase = Phase::Clean;
+        prior.admission_kind = Admission::CleanReopen;
+        assert!(matches!(prior.transition_restore(step), Ok(None)));
+        prior.phase = Phase::Active;
+        assert!(prior.transition_restore(step).is_err());
+        prior.phase = Phase::Clean;
+        prior.admission_kind = Admission::FreshEmpty;
+        assert!(prior.transition_restore(step).is_err());
+        prior.admission_kind = Admission::CleanReopen;
+        prior.restore = Some(Restore {
+            id: "10000000-0000-4000-8000-000000000007".into(),
+            backup_id: "10000000-0000-4000-8000-000000000008".into(),
+            archive_manifest_sha256: "5".repeat(64),
+            target_system_identifier: "123".into(),
+            provenance: None,
+            carried_provenance: None,
+            private_codec_manifest_sha256: None,
+        });
+        assert!(prior.transition_restore(step).is_err());
     }
 
     #[test]
