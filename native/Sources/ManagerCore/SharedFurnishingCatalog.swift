@@ -42,19 +42,27 @@ public enum SharedFurnishingCatalog {
         }
         return ids.map { "api/v1/tenants/\(tenantId)/studio/furnishings/\($0)/1/model" }
     }
-    /// Require the exact known records for the negotiated profile, independently of ordering.
-    /// A future/changed record is not silently made editable.
+    /// Validate the complete server response before exposing choices for this session.
+    /// Some servers include the known articulated record without advertising its proposal capability.
     public static func checkedCatalog(_ value: DocumentValue, articulated: Bool = false) throws -> [DocumentValue] {
         guard case .object(let fields) = value, Set(fields.keys) == ["version", "items"], value["version"] == .integer(1),
-              let items = value["items"].items, let all = try source()["catalog"]["items"].items else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
-        let expected = all.filter { articulated || $0["catalogId"] != .string(NativeTrackSpotAim.catalogue) }
-        guard items.count == expected.count else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+              let items = value["items"].items, let expected = try source()["catalog"]["items"].items else {
+            throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
+        }
+        let articulatedID = NativeTrackSpotAim.catalogue
+        let ordinaryIDs = Set(expected.compactMap { $0["catalogId"].string }.filter { $0 != articulatedID })
         var seen = Set<String>()
         for item in items {
             guard let id = item["catalogId"].string, seen.insert(id).inserted,
-                  let original = expected.first(where: { $0["catalogId"].string == id }), item == original else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
+                  let original = expected.first(where: { $0["catalogId"].string == id }), item == original else {
+                throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
+            }
         }
-        return items
+        let fullIDs = ordinaryIDs.union([articulatedID])
+        guard seen == fullIDs || (!articulated && seen == ordinaryIDs) else {
+            throw AuthoringFailure("FURNISHING_CATALOG_INVALID")
+        }
+        return articulated ? items : items.filter { $0["catalogId"] != .string(articulatedID) }
     }
     /// Reproduce only the shared immutable asset record for a minted identity.
     /// This is correspondence checking, not an alternative admission path.

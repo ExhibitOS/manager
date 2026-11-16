@@ -78,6 +78,33 @@ final class SharedFurnishingCatalogTests: XCTestCase {
         XCTAssertThrowsError(try SharedFurnishingCatalog.asset(catalogId: "chair", id: id))
         XCTAssertThrowsError(try SharedFurnishingCatalog.asset(catalogId: "backless-oak-bench", id: "bad"))
     }
+    func testArticulatedCatalogRowIsValidatedBeforeSessionFiltering() throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/shared-furnishing-catalog-fixture.json")
+        let ordinary = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: fixture))
+        let oldItems = try XCTUnwrap(ordinary["items"].items)
+        let articulated = try SharedFurnishingCatalog.descriptor(NativeTrackSpotAim.catalogue)
+        var complete = ordinary
+        complete["items"] = .array([articulated] + oldItems)
+
+        XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(ordinary), oldItems)
+        XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(ordinary, articulated: true))
+        XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(complete), oldItems)
+        XCTAssertEqual(try SharedFurnishingCatalog.checkedCatalog(complete, articulated: true), [articulated] + oldItems)
+
+        var tampered = articulated
+        tampered["bytes"] = .integer(1)
+        var unknown = articulated
+        unknown["catalogId"] = .string("unknown-profile")
+        for rows in [[tampered] + oldItems, [unknown] + oldItems, [articulated, articulated] + Array(oldItems.dropLast()),
+                     [articulated] + Array(oldItems.dropLast())] {
+            var invalid = complete
+            invalid["items"] = .array(rows)
+            XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(invalid))
+            XCTAssertThrowsError(try SharedFurnishingCatalog.checkedCatalog(invalid, articulated: true))
+        }
+    }
+
     func testPedestalCorrespondenceRejectsUnrelatedMutationAndPreservesHostOnRemoval() throws {
         let host = "11111111-1111-4111-8111-111111111111", assetId = "33333333-3333-4333-8333-333333333333"
         var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
