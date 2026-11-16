@@ -7311,7 +7311,7 @@ impl Payload {
             "fa32efb8e1e8b2381dade949d7f29f803108f6e356216c04b69bf7371dac8227",
             "52781c1c5d06788e2cc99f077776af30abd7c00d3037cc1679d977842d3a9792",
         );
-        let mut source = Self::open_workspace_import_validation(source, WorkspaceImport::V7, false)?;
+        let mut source = Self::open_workspace_v5_validation(source, false)?;
         let codec = Self::open(codec)?;
         let tuple = |payload: &Self, expected: RuntimeTuple| {
             payload.manifest.source_commit == expected.0
