@@ -4,6 +4,7 @@
 use super::*;
 const LIMIT: u64 = 2_200_000;
 const PRODUCT_IMAGE_ORIGIN: &str = "product-image-pair-2048-512-v1";
+const APPLIED_DRAFT_ORIGIN: &str = "automation-applied-draft-v1";
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Pending {
@@ -120,12 +121,14 @@ pub(crate) fn validate(s: &DocumentState) -> Result<()> {
     if let Some(p) = &s.pending
         && (!uuid(&p.request_id)
             || p.origin.as_deref().is_some_and(|v| !matches!(v,
-                "bounded-placement-v1" | "bounded-import-v1" | "approved-model-candidate-v1" | "viewer-budget-policy-v1" | PRODUCT_IMAGE_ORIGIN))
+                "bounded-placement-v1" | "bounded-import-v1" | "approved-model-candidate-v1" | "viewer-budget-policy-v1" | PRODUCT_IMAGE_ORIGIN | APPLIED_DRAFT_ORIGIN))
             || (p.origin.as_deref() == Some("approved-model-candidate-v1")) != p.model_candidate.is_some()
             || (p.origin.as_deref() == Some(PRODUCT_IMAGE_ORIGIN)) != p.product_image.is_some()
-            || (p.origin.as_deref() == Some("viewer-budget-policy-v1")
+            || (matches!(p.origin.as_deref(), Some("viewer-budget-policy-v1" | APPLIED_DRAFT_ORIGIN))
                 && (s.draft.as_ref() != Some(&p.draft)
                     || s.saved_edit_version.and_then(|v| v.checked_add(1)) != p.draft["editVersion"].as_u64()))
+            || (p.origin.as_deref() == Some(APPLIED_DRAFT_ORIGIN)
+                && p.etag.as_ref().and_then(|v| etag_revision(v)).is_none_or(|v| v == 2_147_483_647))
             || p.model_candidate.as_ref().is_some_and(|candidate|
                 !uuid(&candidate.artwork_id) || !uuid(&candidate.import_job_id) || !uuid(&candidate.placement_id)
                     || !(1..=2_147_483_647).contains(&candidate.artwork_revision))
@@ -159,6 +162,47 @@ fn matches_product_image_transition(current: &DocumentState, state: &DocumentSta
         }
         _ => true,
     }
+}
+
+fn etag_revision(value: &str) -> Option<u32> {
+    valid_etag(value).then_some(())?;
+    value.strip_prefix("\"studio-r")?.split_once('-')?.0.parse().ok()
+}
+
+fn matches_applied_draft_transition(current: &DocumentState, state: &DocumentState) -> bool {
+    if let Some(pending) = current.pending.as_ref().filter(|p| p.origin.as_deref() == Some(APPLIED_DRAFT_ORIGIN)) {
+        // No writes may replace, edit or gratuitously re-version this retained
+        // intent. Only the exact confirmed Save can clear it.
+        let Some(before_etag) = &pending.etag else { return false; };
+        let Some(after_etag) = &state.etag else { return false; };
+        if state.pending.is_some() || before_etag == after_etag
+            || etag_revision(before_etag).and_then(|v| v.checked_add(1)) != etag_revision(after_etag) {
+            return false;
+        }
+        let mut expected = current.clone();
+        expected.pending = None;
+        expected.etag = state.etag.clone();
+        expected.saved_edit_version = pending.draft["editVersion"].as_u64();
+        expected.draft = Some(pending.draft.clone());
+        return &expected == state;
+    }
+    if state.pending.as_ref().is_some_and(|p| p.origin.as_deref() == Some(APPLIED_DRAFT_ORIGIN)) {
+        let (Some(before), Some(after), Some(saved), Some(etag)) =
+            (&current.draft, &state.draft, current.saved_edit_version, &current.etag) else { return false; };
+        if current.pending.is_some() || current.revision == 0 || current.revision > i64::MAX as u64 - 2
+            || before["editVersion"].as_u64() != Some(saved)
+            || state.saved_edit_version != Some(saved) || state.etag.as_ref() != Some(etag)
+            || before["candidate"] == after["candidate"] {
+            return false;
+        }
+        let (Some(mut before_fields), Some(mut after_fields)) =
+            (before.as_object().cloned(), after.as_object().cloned()) else { return false; };
+        for key in ["candidate", "editVersion", "updatedAt"] {
+            before_fields.remove(key); after_fields.remove(key);
+        }
+        return before_fields == after_fields;
+    }
+    true
 }
 
 impl InstallationController {
@@ -232,6 +276,7 @@ impl InstallationController {
             }
             if state.revision != current.revision
                 || !matches_product_image_transition(&current, &state)
+                || !matches_applied_draft_transition(&current, &state)
             {
                 return Err(err("NATIVE_DOCUMENT_STATE_CHANGED"));
             }
@@ -260,6 +305,63 @@ mod pending_origin_tests {
     #[allow(dead_code)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct LegacyPending { request_id: String, etag: Option<String>, draft: Value }
+
+    fn applied_states() -> (DocumentState, DocumentState) {
+        let exhibition = Uuid::new_v4().to_string();
+        let draft = serde_json::json!({"kind":"exhibition-draft","schemaVersion":"1.0.0-draft.1",
+            "id":Uuid::new_v4().to_string(),"exhibitionId":exhibition,"editVersion":1,
+            "candidate":{"id":exhibition,"title":"before"}});
+        let before = DocumentState { format:1, revision:40, workspace_id:Uuid::new_v4().to_string(),
+            tenant_id:Uuid::new_v4().to_string(), principal_id:Uuid::new_v4().to_string(),
+            draft:Some(draft.clone()), etag:Some(format!("\"studio-r12-{}\"","a".repeat(64))),
+            saved_edit_version:Some(1), pending:None };
+        let mut after_draft = draft;
+        after_draft["editVersion"] = serde_json::json!(2);
+        after_draft["candidate"]["title"] = serde_json::json!("applied");
+        let mut staged = before.clone();
+        staged.draft = Some(after_draft.clone());
+        staged.pending = Some(Pending {request_id:Uuid::new_v4().to_string(), etag:before.etag.clone(),
+            draft:after_draft, origin:Some(APPLIED_DRAFT_ORIGIN.into()), model_candidate:None, product_image:None});
+        (before, staged)
+    }
+
+    #[test]
+    fn applied_intent_is_atomic_and_cannot_be_edited_or_restaged() {
+        let (before, staged) = applied_states();
+        assert!(validate(&staged).is_ok());
+        assert!(matches_applied_draft_transition(&before, &staged));
+        let mut persisted = staged.clone(); persisted.revision += 1;
+        assert!(!matches_applied_draft_transition(&persisted, &persisted));
+        let mut unrelated = persisted.clone();
+        unrelated.draft.as_mut().unwrap()["candidate"]["title"] = serde_json::json!("unrelated");
+        assert!(validate(&unrelated).is_err());
+        unrelated.pending.as_mut().unwrap().draft = unrelated.draft.clone().unwrap();
+        assert!(validate(&unrelated).is_ok());
+        assert!(!matches_applied_draft_transition(&persisted, &unrelated));
+        let mut wrong_before = before.clone(); wrong_before.draft.as_mut().unwrap()["editVersion"] = serde_json::json!(3);
+        assert!(!matches_applied_draft_transition(&wrong_before, &staged));
+        let mut changed_envelope = staged;
+        changed_envelope.draft.as_mut().unwrap()["id"] = serde_json::json!(Uuid::new_v4().to_string());
+        changed_envelope.pending.as_mut().unwrap().draft = changed_envelope.draft.clone().unwrap();
+        assert!(!matches_applied_draft_transition(&before, &changed_envelope));
+    }
+
+    #[test]
+    fn applied_intent_only_clears_for_exact_save_success() {
+        let (_, mut pending) = applied_states(); pending.revision += 1;
+        let mut saved = pending.clone(); saved.pending = None; saved.saved_edit_version = Some(2);
+        saved.etag = Some(format!("\"studio-r13-{}\"","b".repeat(64)));
+        assert!(validate(&saved).is_ok());
+        assert!(matches_applied_draft_transition(&pending, &saved));
+        for wrong in [None, pending.etag.clone(), Some(format!("\"studio-r14-{}\"","c".repeat(64)))] {
+            let mut rejected = saved.clone(); rejected.etag = wrong;
+            assert!(!matches_applied_draft_transition(&pending, &rejected));
+        }
+        let mut other = saved.clone(); other.draft.as_mut().unwrap()["candidate"]["title"] = serde_json::json!("unrelated");
+        assert!(!matches_applied_draft_transition(&pending, &other));
+        other = saved; other.saved_edit_version = Some(1);
+        assert!(!matches_applied_draft_transition(&pending, &other));
+    }
 
     #[test]
     fn qualified_draft_requires_matching_candidate_schema() {

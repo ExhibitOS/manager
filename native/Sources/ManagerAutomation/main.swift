@@ -17,6 +17,7 @@ struct Configuration: Decodable {
     let workspaceV6ValidationRuntime: String?
     let workspaceV7ValidationRuntime: String?
     let existingWorkspaceV5: NativeAutomationSession.ExistingWorkspaceV5?
+    let appliedDraftRecoveryPath: String?
 }
 actor Driver {
     let session: NativeAutomationSession
@@ -103,6 +104,7 @@ func run() async -> Int32 {
         optional.insert("workspaceV6ValidationRuntime")
         optional.insert("workspaceV7ValidationRuntime")
         optional.insert("existingWorkspaceV5")
+        optional.insert("appliedDraftRecoveryPath")
         #endif
         guard names.subtracting(optional) == ["helper", "profile", "ports", "outputRoot", "temporaryRoot", "inputs"] else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
         let config = try JSONDecoder().decode(Configuration.self, from: data)
@@ -120,12 +122,18 @@ func run() async -> Int32 {
                 throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
             }
         }
+        if names.contains("appliedDraftRecoveryPath") {
+            guard config.appliedDraftRecoveryPath?.hasPrefix("/") == true, config.existingWorkspaceV5 != nil else {
+                throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+            }
+        }
         guard setenv("TMPDIR", config.temporaryRoot, 1) == 0 else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         let owned = try NativeAutomationSession(helper: URL(fileURLWithPath: config.helper), profile: URL(fileURLWithPath: config.profile), ports: config.ports, outputRoot: URL(fileURLWithPath: config.outputRoot), temporaryRoot: URL(fileURLWithPath: config.temporaryRoot), inputs: config.inputs, selectedOEX9: config.selectedOEX9 ?? false, selectedOEX10: config.selectedOEX10 ?? false,
                                                 workspaceV5ValidationRuntime: config.workspaceV5ValidationRuntime.map { URL(fileURLWithPath: $0) },
                                                 existingWorkspaceV5: config.existingWorkspaceV5,
                                                 workspaceV6ValidationRuntime: config.workspaceV6ValidationRuntime.map { URL(fileURLWithPath: $0) },
-                                                workspaceV7ValidationRuntime: config.workspaceV7ValidationRuntime.map { URL(fileURLWithPath: $0) })
+                                                workspaceV7ValidationRuntime: config.workspaceV7ValidationRuntime.map { URL(fileURLWithPath: $0) },
+                                                appliedDraftRecoveryPath: config.appliedDraftRecoveryPath)
         session = owned
         let driver = Driver(owned)
         await driver.emit(.object(["version": .integer(1), "event": .string("ready"), "result": try await owned.open()]))

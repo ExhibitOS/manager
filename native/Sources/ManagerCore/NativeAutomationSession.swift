@@ -8,7 +8,7 @@ import Darwin
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "room-audio-intake", "room-audio-status", "room-audio-approve",
-        "workspace-bench-visual-check", "viewer-budget-inspect",
+        "workspace-bench-visual-check", "viewer-budget-inspect", "applied-draft-save-resume",
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
@@ -49,6 +49,7 @@ public actor NativeAutomationSession {
     private let workspaceV6ValidationRuntime: URL?
     private let workspaceV7ValidationRuntime: URL?
     private let existingWorkspaceV5: ExistingWorkspaceV5?
+    private let appliedDraftRecovery: NativeAppliedDraftSave.Anchor?
     private let root: URL
     private let installedAuthoringCLI: Bool
     private let installedImageCLI: Bool
@@ -96,7 +97,7 @@ public actor NativeAutomationSession {
     private var selectedOEXFormat: String?
     private var runtimeStopped = false
 
-    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil) throws {
+    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil) throws {
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
@@ -146,10 +147,19 @@ public actor NativeAutomationSession {
                   (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
                   url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         }
+        if let path = appliedDraftRecoveryPath {
+            guard existingWorkspaceV5 != nil, workspaceV5ValidationRuntime == nil,
+                  workspaceV6ValidationRuntime == nil, workspaceV7ValidationRuntime == nil,
+                  selectedOEXFormat == nil, let pin = inputs[path], nativeImportDigest(pin) else {
+                throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+            }
+            appliedDraftRecovery = try NativeAppliedDraftSave.Anchor(Self.sharedBenchReply(root: outputRoot, path: path, expectedSHA256: pin))
+        } else { appliedDraftRecovery = nil }
         bridge = try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: selectedOEXFormat != nil,
                                   freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
-                                  workspaceV7ValidationRuntime: workspaceV7ValidationRuntime)
+                                  workspaceV7ValidationRuntime: workspaceV7ValidationRuntime,
+                                  requireExistingManagedProfile: appliedDraftRecovery != nil)
     }
     /// The installed entry supplies its bundled helper and the default or
     /// explicitly selected managed profile.
@@ -186,6 +196,7 @@ public actor NativeAutomationSession {
         self.workspaceV6ValidationRuntime = nil
         self.workspaceV7ValidationRuntime = nil
         self.existingWorkspaceV5 = nil
+        self.appliedDraftRecovery = nil
         bridge = try NativeBridge(helper: helper, profile: profile,
                                   requireExistingManagedProfile: requireExistingManagedProfile)
     }
@@ -311,14 +322,25 @@ public actor NativeAutomationSession {
 
     private func openExistingWorkspace(_ expected: ExistingWorkspaceV5, context: Context) async throws -> DocumentValue {
         let directory = try profileIdentity()
-        let status = try await bridge.nativeStatus(context)
-        let saved = try await bridge.documentState(context)
+        let status: NativeHostStatus
+        let saved: NativeDocumentState
+        if let anchor = appliedDraftRecovery {
+            // Reject an unrelated dirty/owner/revision before even the normal
+            // runtime status refresh can settle an owned export operation.
+            saved = try await bridge.documentState(context)
+            _ = try anchor.state(saved, manifest: expected.manifestSHA256)
+            status = try await bridge.nativeStatus(context)
+        } else {
+            status = try await bridge.nativeStatus(context)
+            saved = try await bridge.documentState(context)
+        }
         guard !status.needsShutdown, !status.accountRequired, status.selectedOex != true, status.errorCode == nil,
               let config = status.configuration, config.manifestSha256 == expected.manifestSHA256,
               config.tenantId == expected.tenantId, config.ports.web == ports["web"],
               config.ports.api == ports["api"], config.ports.database == ports["database"],
               saved.workspaceId == expected.workspaceId, saved.tenantId == expected.tenantId,
-              saved.principalId == expected.principalId, !saved.dirty, let draft = saved.draft, let etag = saved.etag else {
+              saved.principalId == expected.principalId, (!saved.dirty || appliedDraftRecovery != nil),
+              let draft = saved.draft, let etag = saved.etag else {
             throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
         }
         _ = try await bridge.start(context)
@@ -361,6 +383,11 @@ public actor NativeAutomationSession {
         let stored = try await api.exhibition(draft.id)
         guard try value(await bridge.documentState(context)) == value(saved) else {
             throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        if let anchor = appliedDraftRecovery {
+            try anchor.checkHead(stored, current: saved, manifest: config.manifestSha256)
+            self.api = api; authoringSession = session; runtimeManifest = config.manifestSha256; identity = saved
+            return try await statusValue()
         }
         let recovery = try Self.replacementRecoveryAttempt(ordinaryPath: replacementAttemptPath,
             repairPath: repairAttemptPath, document: saved)
@@ -728,7 +755,7 @@ public actor NativeAutomationSession {
               !FileManager.default.fileExists(atPath: url.path) else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
         return url
     }
-    static func sharedBenchReply(root: URL, path: String) throws -> DocumentValue {
+    static func sharedBenchReply(root: URL, path: String, expectedSHA256: String? = nil) throws -> DocumentValue {
         let url = URL(fileURLWithPath: path)
         guard path == url.path, url.deletingLastPathComponent() == root else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
         let parent = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -749,8 +776,61 @@ public actor NativeAutomationSession {
               fstat(fd, &after) == 0, after.st_size == info.st_size,
               after.st_mtimespec.tv_sec == info.st_mtimespec.tv_sec,
               after.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        guard expectedSHA256 == nil || expectedSHA256 == digest(bytes) else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
         return try JSONDecoder().decode(DocumentValue.self, from: bytes)
     }
+    private func resumeAppliedDraftSave(_ request: DocumentValue, id: String, context: Context,
+                                       api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
+        try checkedRevision(request, current)
+        guard existingWorkspaceV5 != nil, selectedOEXFormat == nil,
+              let manifest = runtimeManifest else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        let anchor: NativeAppliedDraftSave.Anchor
+        if request["command"] != .null {
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["applyRequestId"])
+            guard appliedDraftRecovery == nil, let applyId = command["applyRequestId"].string,
+                  let seen = seenRequests[applyId], let recorded = replay[applyId], recorded.0 == seen else {
+                throw BridgeFailure("APPLIED_DRAFT_SAME_SESSION_INTENT_UNAVAILABLE")
+            }
+            let original = try JSONDecoder().decode(DocumentValue.self, from: seen)
+            guard original["capability"] == .string(capability) else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+            anchor = try .sameSession(request: original, response: recorded.1, manifest: manifest)
+        } else {
+            guard let path = request["inputPath"].string, let pin = inputs[path], nativeImportDigest(pin) else {
+                throw BridgeFailure("AUTOMATION_INPUT_INVALID")
+            }
+            anchor = try NativeAppliedDraftSave.Anchor(Self.sharedBenchReply(root: root, path: path, expectedSHA256: pin))
+        }
+        guard id != anchor.requestId, appliedDraftRecovery == nil || anchor == appliedDraftRecovery else {
+            throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT")
+        }
+        let position = try anchor.state(current, manifest: manifest)
+        let host = try await bridge.nativeStatus(context)
+        guard !host.busy, host.selectedOex != true, host.runtime?.readiness.ready == true,
+              let job = host.runtime?.jobId, host.configuration?.manifestSha256 == manifest,
+              authoringSession?.userId == anchor.principalId, authoringSession?.tenantId == anchor.tenantId else {
+            throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT")
+        }
+        var policyState = current
+        let head = try await api.exhibition(anchor.exhibitionId)
+        try anchor.checkHead(head, current: current, manifest: manifest)
+        policyState.draft = head.draft; policyState.etag = head.etag
+        try await checkSavedEditPolicy(policyState, api: api, unsupportedCode: "APPLIED_DRAFT_RECOVERY_CONFLICT")
+        let saved = try await NativeAppliedDraftSave.replayOriginal(anchor, current: current, manifest: manifest, api: api)
+        try Task.checkCancellation()
+        let (_, _, latest) = try await checked(request)
+        let live = try await bridge.nativeStatus(context)
+        guard try value(latest) == value(current), live.runtime?.jobId == job,
+              live.runtime?.readiness.ready == true, live.configuration?.manifestSha256 == manifest,
+              !live.busy, live.selectedOex != true else { throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT") }
+        if position == .saved {
+            return .object(["status": .string("already-saved"), "document": try value(current)])
+        }
+        var next = current
+        next.draft = saved.draft; next.etag = saved.etag
+        next.savedEditVersion = saved.draft.document["editVersion"].integer; next.pending = nil
+        return .object(["status": .string("saved"), "document": try value(await bridge.saveDocumentState(context, state: next))])
+    }
+
     private func checkSavedEditPolicy(_ state: NativeDocumentState, api: AuthoringAPI, unsupportedCode: String = "NATIVE_BENCH_CAPABILITY_UNAVAILABLE") async throws {
         guard let draft = state.draft, let etag = state.etag else { return }
         let policy = try await api.nativeViewportPolicy(draft.id)
@@ -1867,7 +1947,21 @@ public actor NativeAutomationSession {
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
-              Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+              Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat", "retainSaveIntent"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        if fields["retainSaveIntent"] != nil {
+            guard NativeAppliedDraftSave.applyOperations.contains(operation),
+                  request["retainSaveIntent"] == .bool(true) || request["retainSaveIntent"] == .bool(false),
+                  existingWorkspaceV5 != nil, selectedOEXFormat == nil else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        }
+        if operation == "applied-draft-save-resume" {
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
+            guard Set(fields.keys) == common.union(["inputPath"]) || Set(fields.keys) == common.union(["command"]) else {
+                throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
+            }
+        }
+        if appliedDraftRecovery != nil && !["read", "applied-draft-save-resume"].contains(operation) {
+            throw BridgeFailure("APPLIED_DRAFT_RECOVERY_ONLY")
+        }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
@@ -1910,7 +2004,8 @@ public actor NativeAutomationSession {
         if ["plaque-prepare", "plaque-apply", "plaque-cancel", "wall-finish-prepare", "wall-finish-apply", "wall-finish-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-object-prepare", "light-object-apply", "light-object-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel"].contains(operation) {
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
             let extra: Set<String> = operation.hasSuffix("-prepare") ? ["command"] : ["proposalId"]
-            guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+            let optional: Set<String> = NativeAppliedDraftSave.applyOperations.contains(operation) ? ["retainSaveIntent"] : []
+            guard Set(fields.keys).subtracting(optional) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
         if operation == "shared-bench-prepare" || operation == "shared-bench-apply" {
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion"]
@@ -1965,6 +2060,9 @@ public actor NativeAutomationSession {
         let bytes = try encoder.encode(request)
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
+        if current.pending?.origin == NativeAppliedDraftSave.origin && !["read", "applied-draft-save-resume"].contains(operation) {
+            throw BridgeFailure("APPLIED_DRAFT_RECOVERY_ONLY")
+        }
         if ["viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"].contains(operation) {
             try checkedRevision(request, current)
         }
@@ -2159,7 +2257,12 @@ public actor NativeAutomationSession {
                 var next = current; next.draft = try preview.apply(to: draft)
                 try Task.checkCancellation()
                 if next.draft == draft { result = try value(current) }
-                else { result = try value(await bridge.saveDocumentState(context, state: next)) }
+                else {
+                    if request["retainSaveIntent"] == .bool(true) {
+                        next = try NativeAppliedDraftSave.stage(current, draft: next.draft!, requestId: id)
+                    }
+                    result = try value(await bridge.saveDocumentState(context, state: next))
+                }
                 sceneProposals.removeValue(forKey: proposalId)
             }
         case "thumbnail-prepare", "thumbnail-status", "thumbnail-select":
@@ -3472,6 +3575,8 @@ public actor NativeAutomationSession {
             var next = current
             next.draft = draft
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "applied-draft-save-resume":
+            result = try await resumeAppliedDraftSave(request, id: id, context: context, api: api, current: current)
         case "save":
             guard let draft = current.draft else { throw BridgeFailure("EXHIBITION_REQUIRED") }
             var next = current
