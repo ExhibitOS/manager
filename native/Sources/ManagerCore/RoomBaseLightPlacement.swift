@@ -296,7 +296,7 @@ public enum RoomBaseLightIntent {
             || (fields["range"] != nil && settings["range"] != (prior?["range"] ?? .null))
         let old = prior?["basePlacement"].string.flatMap(RoomBaseLightPlacement.init(rawValue:))
         let placement: RoomBaseLightPlacement? = old == .auto && (spatialChanged || mounted) ? .manual : old
-        if placement == .auto, fields["range"] == nil, let range = prior?["range"] { fields["range"] = range }
+        if placement == .auto, fields["range"] == nil, let range = prior?["range"], range != .null { fields["range"] = range }
         if let purpose = prior?["purpose"], purpose != .null { fields["purpose"] = purpose }
         if let placement { fields["basePlacement"] = .string(placement.rawValue) }
         return .object(fields)
