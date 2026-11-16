@@ -3127,7 +3127,7 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsBenchBaseColorPreparationRuntime(manifest: String) -> Bool {
         #if DEBUG
-        manifest == "4dbbd5412ed794def04f0e58eb12a80603279e5c124dfa0ef3169adc22d7889c"
+        manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
         #else
         false
         #endif
