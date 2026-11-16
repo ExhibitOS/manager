@@ -17,6 +17,14 @@ pub(crate) struct WriterIdentity {
     pub(super) lock_inode: u64,
 }
 
+impl WriterIdentity {
+    pub(crate) fn is_separate_from(&self, source: &Self) -> bool {
+        self.root_inode != 0 && self.lock_inode != 0 && source.root_inode != 0 && source.lock_inode != 0
+            && (self.root_device, self.root_inode) != (source.root_device, source.root_inode)
+            && (self.lock_device, self.lock_inode) != (source.lock_device, source.lock_inode)
+    }
+}
+
 pub(super) struct ProbedWriter {
     file: File,
     pub(super) identity: WriterIdentity,

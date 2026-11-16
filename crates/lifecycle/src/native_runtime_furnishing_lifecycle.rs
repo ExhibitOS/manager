@@ -169,7 +169,9 @@ impl Binding {
         let private_codec = self.restore.as_ref().and_then(|restore| restore.private_codec_manifest_sha256.as_deref());
         let private_exb = self.catalog == 52
             && matches!(self.admission_kind, Admission::VerifiedRestore | Admission::CleanReopen)
-            && self.restore.as_ref().is_some_and(|restore| restore.provenance.is_none() && restore.carried_provenance.is_none())
+            && self.restore.as_ref().is_some_and(|restore| restore.provenance.is_none()
+                && restore.carried_provenance.as_ref().is_none_or(|proof| proof.matches_catalog52(
+                    &restore.archive_manifest_sha256, &restore.target_system_identifier, &restore.id, &restore.backup_id)))
             && private_codec.is_some_and(|codec| crate::native_payload::private_exb_restore_host_matches(tuple, codec));
         let combined_thumbnail = self.catalog == 52
             && (matches!(self.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
@@ -291,8 +293,13 @@ impl Binding {
                         })
                 || proof.carried_provenance.as_ref().is_some_and(|provenance|
                     !self.admission_kind.allows_carried_v4()
-                        || !(carried_restore || thumbnail || gpu || current_thumbnail || combined_thumbnail) || proof.provenance.is_some()
-                        || !provenance.matches(&proof.archive_manifest_sha256, &proof.target_system_identifier))
+                        || proof.provenance.is_some()
+                        || if private_codec.is_some() {
+                            !private_exb
+                        } else {
+                            !(carried_restore || thumbnail || gpu || current_thumbnail || combined_thumbnail)
+                                || !provenance.matches(&proof.archive_manifest_sha256, &proof.target_system_identifier)
+                        })
                 || proof.provenance.as_ref().is_some_and(|provenance|
                     !(retained_restore || crate::native_payload::native_restore_provenance_host_matches(self.catalog, tuple))
                         || !provenance.matches(&proof.id, &proof.backup_id, &proof.archive_manifest_sha256, &proof.target_system_identifier))
