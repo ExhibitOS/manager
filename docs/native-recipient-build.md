@@ -47,11 +47,14 @@ directories, and an unused port triple to initialize the owned workspace.
 Close that owner session after verifying preparation. The preview is headless.
 For GUI validation, use the existing fixed `scripts/manager-validation-gui.py`
 entry with the reviewed source build, runtime, profile, and approved signature.
-The fixed launcher verifies the installed bundle before launch. Run `attach`
-with the PID from the launch receipt before selecting the running app in
-Computer Use. Pass the absolute `app` path from the verified attachment
-receipt. App display-name resolution can start a different installed copy.
-If the verified process exits or the path changes, return to the fixed launcher
-before resuming. Verify Help from the approved instance when its source
+The fixed launcher verifies the installed bundle before launch. Pass
+`--owner` on a shared validation run and retain the launch JSON with its PID
+and profile. Run `attach` with that PID before selecting the app in Computer
+Use. Pass the absolute `app` path from the verified attachment receipt.
+After normal Stop and Quit, check the running-app inventory without selecting
+the app again. On macOS, `getApp` can start the app even when given its path.
+While still holding the shared validation lease, run
+`return-check --launch-receipt <launch.json>` with the same profile and build
+pins to confirm that the fixed GUI, helper and both profile leases have returned. Use the fixed launcher for any subsequent launch. Verify Help from the approved instance when its source
 resources have been prepared. Keep the source checkout, runtime inventory, and
 verification results together.

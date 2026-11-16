@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
+import fcntl
+import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import plistlib
 import subprocess
@@ -25,6 +28,68 @@ class ManagerValidationGuiTests(unittest.TestCase):
             {"path": p.name, "bytes": p.stat().st_size, "sha256": launcher.sha(p)} for p in sorted(legal.iterdir())
         ]}))
         return legal, inventory
+
+    def test_return_check_requires_matching_receipt_and_both_free_profile_leases(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(launcher, "preflight"), \
+             patch.object(launcher, "pids", return_value=set()) as running, \
+             patch.object(launcher, "launch_services_has_app", return_value=False):
+            root = Path(temp).resolve()
+            profile = root / "profile"
+            profile.mkdir()
+            anchor = hashlib.sha256(str(profile).encode()).hexdigest()
+            paths = (root / f".exhibitos-profile-session-{anchor}.lock", profile / "profile-session.lock")
+            for path in paths:
+                path.touch(mode=0o600)
+            receipt = root / "launch.json"
+            pins = {"runtimeManifest": "f" * 64}
+            value = {"app": str(launcher.APP), "bundleId": launcher.BUNDLE_ID, "profile": str(profile),
+                     "pins": pins, "pid": 1234, "owner": "Manager Native"}
+            receipt.write_text(json.dumps(value))
+            returned = launcher.check_return(launcher.APP, profile, pins, receipt)
+            self.assertEqual(returned["pid"], 1234)
+            self.assertEqual(returned["owner"], "Manager Native")
+            self.assertTrue(returned["returnVerified"])
+            for path in paths:
+                with path.open("r") as held:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with self.assertRaisesRegex(launcher.ValidationError, "profile lease is still held"):
+                        launcher.check_return(launcher.APP, profile, pins, receipt)
+            paths[1].chmod(0o644)
+            with self.assertRaisesRegex(launcher.ValidationError, "unexpected custody"):
+                launcher.check_return(launcher.APP, profile, pins, receipt)
+            paths[1].unlink()
+            os.mkfifo(paths[1], mode=0o600)
+            with self.assertRaisesRegex(launcher.ValidationError, "unexpected custody"):
+                launcher.check_return(launcher.APP, profile, pins, receipt)
+            paths[1].unlink()
+            paths[1].touch(mode=0o600)
+
+            checks = 0
+
+            def registry_replaces_anchor(*, strict=False):
+                nonlocal checks
+                checks += 1
+                self.assertTrue(strict)
+                if checks == 2:
+                    paths[0].rename(root / "old-anchor")
+                    paths[0].touch(mode=0o600)
+                return False
+
+            with patch.object(launcher, "launch_services_has_app", side_effect=registry_replaces_anchor):
+                with self.assertRaisesRegex(launcher.ValidationError, "no longer matches"):
+                    launcher.check_return(launcher.APP, profile, pins, receipt)
+            running.side_effect = lambda executable=launcher.GUI: {1235} if executable == launcher.HELPER else set()
+            with self.assertRaisesRegex(launcher.ValidationError, "helper is still registered"):
+                launcher.check_return(launcher.APP, profile, pins, receipt)
+            receipt.write_text(json.dumps({**value, "profile": str(root / "other")}))
+            with self.assertRaisesRegex(launcher.ValidationError, "launch receipt must match"):
+                launcher.check_return(launcher.APP, profile, pins, receipt)
+
+    def test_return_registry_check_does_not_treat_probe_failure_as_absence(self):
+        failed = subprocess.CompletedProcess([], 1, stdout="", stderr="unavailable")
+        with patch.object(launcher.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(launcher.ValidationError, "Unable to verify"):
+                launcher.launch_services_has_app(strict=True)
 
     def test_rejects_per_run_path_before_checking_bundle_or_profile(self):
         with patch.object(launcher, "output") as run, patch.object(launcher, "launch_services_has_app") as services:
