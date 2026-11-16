@@ -3433,6 +3433,12 @@ const { isDeepStrictEqual } = require('node:util');
             trial.generation.clone()
         } else { id };
         let prior_binding = prior.as_ref().and_then(|current| current.furnishing.clone());
+        if self.payload.private_signing_configuration() && matches!(mode, StartMode::Database) {
+            let binding = prior_binding.as_ref()
+                .filter(|binding| binding.phase == Phase::Clean)
+                .ok_or_else(|| err(furnishing_lifecycle::ERROR))?;
+            unconsumed_furnishing_completion(&self.service.root, binding)?;
+        }
         let catalog = self.payload.workspace_furnishing_catalog()?;
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if self.oex_retained_cleanup.is_some() {
