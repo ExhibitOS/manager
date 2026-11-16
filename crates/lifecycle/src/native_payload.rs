@@ -1391,8 +1391,7 @@ pub(crate) fn current_image_thumbnail_transition(pair: (&str, &str)) -> bool {
             (GROUPED_RAIL_CONTACT_TARGET.2, WHITE_RAIL_OPPOSITE_TARGET.2),
             (WHITE_RAIL_OPPOSITE_TARGET.2, VIEWER_BUDGET_TARGET.2),
             (WHITE_RAIL_OPPOSITE_TARGET.2, RECTANGLE_FIXED64_TARGET.2),
-            (RECTANGLE_FIXED64_TARGET.2, FIXED64_PUBLICATION_REPAIR_TARGET.2),
-            (ROOM_CEILING_FILL_TARGET.2, PREPARED_VIEWER_BUDGET_TARGET.2)].contains(&pair);
+            (RECTANGLE_FIXED64_TARGET.2, FIXED64_PUBLICATION_REPAIR_TARGET.2)].contains(&pair);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = pair; false }
 }
@@ -2840,7 +2839,8 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(step.is_prepared_viewer_budget_refresh());
         assert!(step.is_combined_thumbnail_runtime_refresh());
         assert!(!step.upgrades_catalog());
-        assert!(current_image_thumbnail_transition(pair) && saved_workspace_transition_supported(pair));
+        assert!(saved_workspace_transition_supported(pair));
+        assert!(!current_image_thumbnail_transition(pair));
         for denied in [(target.2, parent.2), (target.2, target.2), (FIXED64_PUBLICATION_REPAIR_TARGET.2, target.2)] {
             assert!(!saved_workspace_transition_supported(denied));
         }
