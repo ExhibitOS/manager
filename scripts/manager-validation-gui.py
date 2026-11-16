@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prepare and launch the approved, fixed local Manager validation app."""
 import argparse
+from contextlib import ExitStack
 import fcntl
 import hashlib
 import json
@@ -160,15 +161,54 @@ def check_fixed_path(path):
             f"Validation bundle parent is redirected: {path.parent}. Restore the fixed directory.")
 
 
-def pids():
+def pids(executable=GUI):
     rows = (line.strip().split(maxsplit=1) for line in output("/bin/ps", "-axo", "pid=,comm=").splitlines())
-    return {int(row[0]) for row in rows if len(row) == 2 and row[1] == str(APP / GUI)}
+    return {int(row[0]) for row in rows if len(row) == 2 and row[1] == str(APP / executable)}
 
 
 def launch_services_has_app():
     result = subprocess.run(("/usr/bin/lsappinfo", "find", f"bundleID={BUNDLE_ID}"),
                             text=True, capture_output=True, check=False)
     return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def valid_owner(owner):
+    return isinstance(owner, str) and 0 < len(owner) <= 120 and owner.strip() == owner and owner.isprintable()
+
+
+def check_return(bundle, profile, pins, receipt_path):
+    preflight(bundle, profile, pins)
+    with os.fdopen(os.open(receipt_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as receipt_file:
+        require(stat.S_ISREG(os.fstat(receipt_file.fileno()).st_mode), "Use a regular fixed launch receipt.")
+        receipt_bytes = receipt_file.read(8193)
+    require(len(receipt_bytes) <= 8192, "The fixed launch receipt exceeds 8 KiB.")
+    receipt = json.loads(receipt_bytes)
+    require(isinstance(receipt, dict) and receipt.get("app") == str(bundle)
+            and receipt.get("bundleId") == BUNDLE_ID and receipt.get("profile") == str(profile)
+            and receipt.get("pins") == pins and valid_owner(receipt.get("owner"))
+            and type(receipt.get("pid")) is int and receipt["pid"] > 0,
+            "The retained launch receipt must match the owner, PID, bundle, profile and pins.")
+
+    def verify_exited():
+        require(not pids() and not pids(HELPER) and not launch_services_has_app(),
+                "The fixed GUI or its helper is still registered. Have the owner finish normal Quit.")
+
+    verify_exited()
+    anchor = hashlib.sha256(os.fsencode(profile)).hexdigest()
+    paths = (profile.parent / f".exhibitos-profile-session-{anchor}.lock", profile / "profile-session.lock")
+    with ExitStack() as locks:
+        for path in paths:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            locks.callback(os.close, fd)
+            info = os.fstat(fd)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and info.st_nlink == 1,
+                    "The profile lease file has unexpected custody.")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise ValidationError("The fixed profile lease is still held. Wait for its normal return.") from error
+        verify_exited()
+    return {**receipt, "returnVerified": True, "innerProfileLeasesAvailable": True}
 
 
 def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, scene_capture_cli=False):
@@ -356,7 +396,7 @@ def capture(bundle, profile, pins, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "verify", "launch", "attach", "capture"))
+    parser.add_argument("action", choices=("prepare", "verify", "launch", "attach", "capture", "return-check"))
     parser.add_argument("--app", type=Path, default=APP)
     parser.add_argument("--profile", type=Path, required=True)
     for option in ("gui-sha", "helper-sha", "runtime-manifest-sha"):
@@ -367,12 +407,18 @@ def main():
     parser.add_argument("--legal-inventory", type=Path)
     parser.add_argument("--legal-inventory-sha")
     parser.add_argument("--pid", type=int)
+    parser.add_argument("--owner")
+    parser.add_argument("--launch-receipt", type=Path)
     parser.add_argument("--request", type=Path)
     parser.add_argument("--scene-capture-cli", action="store_true")
     args = parser.parse_args()
     try:
         require(not args.scene_capture_cli or args.action == "prepare", "--scene-capture-cli is a reviewed prepare-only admission.")
         require((args.request is not None) == (args.action == "capture"), "Only capture requires --request.")
+        require(args.owner is None or (args.action == "launch" and valid_owner(args.owner)),
+                "A named owner is accepted only on launch.")
+        require((args.launch_receipt is not None) == (args.action == "return-check"),
+                "Only return-check requires --launch-receipt.")
         check_fixed_path(args.app)
         pins = dict(unsignedGUI=args.gui_sha, unsignedHelper=args.helper_sha, runtimeManifest=args.runtime_manifest_sha)
         require(all(re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins.values()),
@@ -406,6 +452,10 @@ def main():
                 result = capture(args.app, args.profile, pins, args.request)
             elif args.action == "launch":
                 result["pid"] = launch(args.app, args.profile, pins)
+                if args.owner is not None:
+                    result["owner"] = args.owner
+            elif args.action == "return-check":
+                result = check_return(args.app, args.profile, pins, args.launch_receipt)
             else:
                 preflight(args.app, args.profile, pins)
             if args.action == "attach":
