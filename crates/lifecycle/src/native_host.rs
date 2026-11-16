@@ -144,6 +144,7 @@ pub struct Host {
     resources: PathBuf,
     prepare_ports: Ports,
     fresh_ordinary_root: Option<(PathBuf, Arc<crate::maintenance_source::DirectoryPin>)>,
+    private_exb_maintenance: bool,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     workspace_v5_maintenance_only: bool,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -176,6 +177,7 @@ impl Host {
             resources,
             prepare_ports: Ports::default(),
             fresh_ordinary_root: None,
+            private_exb_maintenance: false,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             workspace_v5_maintenance_only: false,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -311,6 +313,24 @@ impl Host {
         let controller = InstallationController::open_existing_managed(profile)?;
         let mut host = Self::new(Arc::new(controller), resources);
         host.workspace_v5_maintenance_only = true;
+        Ok(host)
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub fn private_exb_validation(profile: PathBuf, source: PathBuf, codec: PathBuf, recovery: Option<Ports>) -> Result<Self> {
+        let payload = Payload::open_private_exb_pair(&source, &codec)?;
+        let mut host = if let Some(ports) = recovery {
+            ports.validate()?;
+            use std::os::unix::fs::DirBuilderExt;
+            if !profile.is_absolute() { return Err(err("NATIVE_PROFILE_REQUIRED")); }
+            fs::DirBuilder::new().mode(0o700).create(&profile).map_err(|_| err("NATIVE_FRESH_WORKSPACE_REQUIRED"))?;
+            let controller = Arc::new(InstallationController::new(profile, None)?);
+            let mut host = Self::new_with_ports(controller, source, ports)?;
+            host.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.payload = Some(Arc::new(payload));
+            host
+        } else {
+            Self::reopen_workspace_validation(profile, source, payload)?
+        };
+        host.private_exb_maintenance = true;
         Ok(host)
     }
     fn from_fresh_selected_payload(profile: PathBuf, resources: PathBuf, ports: Ports, payload: Arc<Payload>) -> Result<Self> {
@@ -524,6 +544,13 @@ impl Host {
         let resources = self.resources.clone();
         let prepare_ports = self.prepare_ports;
         let fresh_ordinary_root = self.fresh_ordinary_root.clone();
+        let private_exb = if self.private_exb_maintenance {
+            Some(self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.payload
+                .clone().filter(|payload| payload.private_signing_configuration())
+                .ok_or_else(|| err("NATIVE_BACKUP_UNAVAILABLE"))?)
+        } else {
+            None
+        };
         self.worker = Some(thread::spawn(move || {
             let mut preserved_backup = false;
             let mut oex_owned_session = false;
@@ -533,7 +560,10 @@ impl Host {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
                     match work {
                         Work::Restore(input) => {
-                            let payload = Arc::new(Payload::open(&resources)?);
+                            let payload = match private_exb.as_ref() {
+                                Some(payload) => payload.clone(),
+                                None => Arc::new(Payload::open(&resources)?),
+                            };
                             payload.backup_resources()?;
                             let mut session =
                                 controller.with_current_mutation(&token, |service| {
@@ -570,7 +600,10 @@ impl Host {
                             stopped?;
                         }
                         Work::Activate(id) => {
-                            let payload = Arc::new(Payload::open(&resources)?);
+                            let payload = match private_exb.as_ref() {
+                                Some(payload) => payload.clone(),
+                                None => Arc::new(Payload::open(&resources)?),
+                            };
                             let result =
                                 controller.activate_native_restore(&token, &id, payload.clone());
                             let pending = controller.native_pending_restoration(&token)?;
@@ -1019,6 +1052,21 @@ impl Host {
     pub fn handle(&mut self, request: Request) -> Result<Value> {
         if request.version != 1 || request.id > 9_007_199_254_740_991 {
             return Err(err("NATIVE_PROTOCOL_INVALID"));
+        }
+        if self.private_exb_maintenance {
+            use super::installations::native_maintenance::Input;
+            let recovery = self.fresh_ordinary_root.is_some();
+            let permitted = match &request.command {
+                UiCommand::Context | UiCommand::NativeStatus { .. } | UiCommand::NativeStop { .. }
+                | UiCommand::DocumentState { .. } => true,
+                UiCommand::NativePrepare { account: None, .. } => recovery,
+                UiCommand::NativeBackup { .. } => !recovery,
+                UiCommand::NativeMaintenance { maintenance: Input::CreateKey { .. }, .. } => !recovery,
+                UiCommand::NativeMaintenance { maintenance: Input::CreateRecovery { .. }
+                    | Input::StageRestore { carried_restore: None, .. } | Input::ActivateRestore { .. }, .. } => recovery,
+                _ => false,
+            };
+            if !permitted { return Err(err("NATIVE_PROTOCOL_INVALID")); }
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         {

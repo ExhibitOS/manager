@@ -97,6 +97,24 @@ fn main() {
         match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }
     }
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    if (args.len() == 6 || args.len() == 7) && args[1] == "--profile" && args[3] == "--private-exb-validation" {
+        let profile = (&args[2]).into();
+        let source = (&args[4]).into();
+        let codec = (&args[5]).into();
+        let recovery = args.get(6).map(|argument| {
+            argument.to_str().and_then(|raw|
+                serde_json::from_str::<exhibitos_lifecycle::native_installation::Ports>(raw).ok())
+                .ok_or("NATIVE_PORTS_INVALID")
+        }).transpose();
+        let host = recovery.map_err(str::to_owned).and_then(|recovery|
+            exhibitos_lifecycle::native_host::Host::private_exb_validation(profile, source, codec, recovery)
+                .map_err(|error| error.code));
+        match host {
+            Ok(host) => std::process::exit(run_host(host)),
+            Err(code) => { eprintln!("{code}"); std::process::exit(1); }
+        }
+    }
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     if args.len() == 5 && args[1] == "--profile" && args[3] == "--reopen-workspace-v7-validation" {
         let result = exhibitos_lifecycle::native_host::Host::reopen_workspace_v7_validation((&args[2]).into(), (&args[4]).into());
         match result { Ok(host) => std::process::exit(run_host(host)), Err(error) => { eprintln!("{}", error.code); std::process::exit(1); } }

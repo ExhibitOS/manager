@@ -83,6 +83,8 @@ pub(super) struct Restore {
     pub(super) provenance: Option<RestoreProof>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) carried_provenance: Option<crate::installations::native_restore::CarriedObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) private_codec_manifest_sha256: Option<String>,
 }
 
 /// Canonical Active bytes are serde's compact JSON for this closed structure
@@ -161,6 +163,11 @@ impl Binding {
         let ordinary_combined = self.catalog == 52 && self.restore.is_none()
             && (fresh_contact || self.admission_kind == Admission::CleanReopen)
             && crate::native_payload::combined_thumbnail_ordinary_host_matches(tuple);
+        let private_codec = self.restore.as_ref().and_then(|restore| restore.private_codec_manifest_sha256.as_deref());
+        let private_exb = self.catalog == 52
+            && matches!(self.admission_kind, Admission::VerifiedRestore | Admission::CleanReopen)
+            && self.restore.as_ref().is_some_and(|restore| restore.provenance.is_none() && restore.carried_provenance.is_none())
+            && private_codec.is_some_and(|codec| crate::native_payload::private_exb_restore_host_matches(tuple, codec));
         let combined_thumbnail = self.catalog == 52
             && (matches!(self.admission_kind, Admission::CatalogUpgrade051To050051 | Admission::CleanReopen)
                 || fresh_contact || (interrupted && self.restore.is_none()
@@ -178,7 +185,8 @@ impl Binding {
             _ => false,
         };
         if self.version != 1
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail
+            || (private_codec.is_some() && !private_exb)
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail || private_exb
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -295,16 +303,23 @@ impl Binding {
     pub(super) fn verify_restore_activation(&self, root: &Path) -> Result<()> {
         self.check()?;
         let proof = self.restore.as_ref().ok_or_else(|| err(ERROR))?;
+        crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
+            &proof.archive_manifest_sha256, &proof.target_system_identifier, self.restore_receipt_payload(proof), proof.provenance.as_ref(),
+            proof.carried_provenance.as_ref(), proof.private_codec_manifest_sha256.as_deref())
+    }
+
+    fn restore_receipt_payload(&self, proof: &Restore) -> &str {
+        if proof.private_codec_manifest_sha256.is_some() {
+            return &self.payload_manifest_sha256;
+        }
         let tuple = (self.source_commit.as_str(), self.producer_sha256.as_str(), self.payload_manifest_sha256.as_str());
-        let receipt_payload = crate::native_payload::catalog45_retained_restore_payload(tuple)
+        crate::native_payload::catalog45_retained_restore_payload(tuple)
             .or_else(|| crate::native_payload::catalog45_adoption_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::furnishing_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::current_image_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::combined_thumbnail_carried_receipt_payload(tuple))
             .or_else(|| crate::native_payload::gpu_model_carried_receipt_payload(tuple))
-            .unwrap_or(self.payload_manifest_sha256.as_str());
-        crate::installations::native_restore::verify_ordinary_activation(root, &proof.id, &proof.backup_id,
-            &proof.archive_manifest_sha256, &proof.target_system_identifier, receipt_payload, proof.provenance.as_ref(), proof.carried_provenance.as_ref())
+            .unwrap_or(self.payload_manifest_sha256.as_str())
     }
 
     pub(super) fn same_installation(&self, other: &Self) -> bool {
@@ -770,7 +785,7 @@ mod tests {
         let mut restored = prior.clone();
         restored.restore = Some(Restore { id: NEXT.into(), backup_id: LATER.into(),
             archive_manifest_sha256: "a".repeat(64), target_system_identifier: "123".into(),
-            provenance: None, carried_provenance: None });
+            provenance: None, carried_provenance: None, private_codec_manifest_sha256: None });
         assert!(make(NEXT, NEW).consume_furnishing_transition(&restored, step).is_err());
     }
 
@@ -890,6 +905,7 @@ mod tests {
             archive_manifest_sha256: "c".repeat(64), target_system_identifier: "220".into(),
             provenance: Some(proof),
             carried_provenance: None,
+            private_codec_manifest_sha256: None,
         });
         let mut active = binding(NEXT);
         active.catalog = 40;
@@ -1481,6 +1497,7 @@ mod tests {
             target_system_identifier: "123".into(),
             provenance: None,
             carried_provenance: None,
+            private_codec_manifest_sha256: None,
         });
         let mut next = binding(NEXT);
         next.catalog = 38;
@@ -1522,6 +1539,7 @@ mod tests {
             target_system_identifier: "123".into(),
             provenance: None,
             carried_provenance: None,
+            private_codec_manifest_sha256: None,
         });
         activated.sha256().unwrap();
         let proof: RestoreProof = serde_json::from_value(serde_json::json!({
@@ -1600,6 +1618,7 @@ mod tests {
             target_system_identifier: "123".into(),
             provenance: None,
             carried_provenance: None,
+            private_codec_manifest_sha256: None,
         });
         assert!(pin(NEXT, target).consume_furnishing_transition(&prior, transition).is_err());
         prior.restore.as_mut().unwrap().provenance = Some(proof.clone());
@@ -1669,6 +1688,7 @@ mod tests {
         invalid.restore = Some(Restore {
             id: NEXT.into(), backup_id: LATER.into(), archive_manifest_sha256: "5".repeat(64),
             target_system_identifier: "123".into(), provenance: None, carried_provenance: None,
+            private_codec_manifest_sha256: None,
         });
         assert!(invalid.check().is_err());
         invalid = fresh.clone();
@@ -1748,6 +1768,7 @@ mod tests {
             archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
             target_system_identifier:"330".into(),provenance:None,
             carried_provenance:Some(serde_json::from_value(observation.clone()).unwrap()),
+            private_codec_manifest_sha256: None,
         });
         let mut restored = pin(NEXT, target);
         restored.consume_furnishing_transition(&prior, transition).unwrap();
@@ -1828,6 +1849,7 @@ mod tests {
             archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
             target_system_identifier:"330".into(),provenance:None,
             carried_provenance:Some(serde_json::from_value(observation.clone()).unwrap()),
+            private_codec_manifest_sha256: None,
         });
         let mut restored = pin(NEXT, target);
         restored.consume_furnishing_transition(&prior, transition).unwrap();
@@ -1911,6 +1933,7 @@ mod tests {
                 archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
                 target_system_identifier:"330".into(),provenance:None,
                 carried_provenance:Some(serde_json::from_value(observation.clone()).unwrap()),
+                private_codec_manifest_sha256: None,
             });
             let mut restored = pin(NEXT, target);
             restored.consume_furnishing_transition(&prior, transition).unwrap();
@@ -1970,6 +1993,7 @@ mod tests {
             archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
             target_system_identifier:"330".into(), provenance:None,
             carried_provenance:Some(serde_json::from_value(observation).unwrap()),
+            private_codec_manifest_sha256: None,
         });
         prior.check().unwrap();
         let mut upgraded = pin(NEXT, 51, target);
@@ -2075,6 +2099,7 @@ mod tests {
             archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
             target_system_identifier:"330".into(), provenance:None,
             carried_provenance:Some(serde_json::from_value(observation).unwrap()),
+            private_codec_manifest_sha256: None,
         });
         let assert_carried_exchange = |value: &Binding| {
             let key = [0x55; 32];
@@ -2207,6 +2232,7 @@ mod tests {
             archive_manifest_sha256:"7a65e63f34d4bb036a346a611c8c9eacda4f02411caca320263e9f4b5ecb3e55".into(),
             target_system_identifier:"330".into(), provenance:None,
             carried_provenance:Some(serde_json::from_value(observation).unwrap()),
+            private_codec_manifest_sha256: None,
         });
         let assert_carried_exchange = |value: &Binding| {
             let key = [0x55; 32];
@@ -2447,6 +2473,7 @@ mod tests {
             target_system_identifier: "1234".into(),
             provenance: None,
             carried_provenance: None,
+            private_codec_manifest_sha256: None,
         });
         let mut copied = binding(NEXT);
         copied.physical.root_inode += 1;
@@ -2461,6 +2488,53 @@ mod tests {
         later.consume(&next).unwrap();
         assert_eq!(later.admission_kind, Admission::CleanReopen);
         assert_eq!(later.restore, prior.restore);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn private_exb_restore_requires_the_exact_pair_and_retains_the_receipt() {
+        let (source, producer, manifest) = crate::native_payload::FIXED64_PUBLICATION_REPAIR_TARGET;
+        let make_binding = |generation| {
+            let mut binding = binding(generation);
+            binding.catalog = 52;
+            binding.source_commit = source.into();
+            binding.producer_sha256 = producer.into();
+            binding.payload_manifest_sha256 = manifest.into();
+            binding
+        };
+        let mut prior = make_binding(GENERATION);
+        prior.phase = Phase::ActivatedRestore;
+        prior.admission_kind = Admission::VerifiedRestore;
+        prior.restore = Some(Restore {
+            id: NEXT.into(),
+            backup_id: LATER.into(),
+            archive_manifest_sha256: "6".repeat(64),
+            target_system_identifier: "1234".into(),
+            provenance: None,
+            carried_provenance: None,
+            private_codec_manifest_sha256: None,
+        });
+        assert!(prior.check().is_err());
+        prior.restore.as_mut().unwrap().private_codec_manifest_sha256 = Some("7".repeat(64));
+        assert!(prior.check().is_err());
+        prior.restore.as_mut().unwrap().private_codec_manifest_sha256 =
+            Some("f5267e7123e8562c018feb2f446759beaa0e8878ab0cd36be67d447dfe4c2f0d".into());
+        prior.check().unwrap();
+        let mut invalid = prior.clone();
+        invalid.payload_manifest_sha256 = "8".repeat(64);
+        assert!(invalid.check().is_err());
+        let mut moved = make_binding(NEXT);
+        moved.physical.root_inode += 1;
+        assert!(moved.consume(&prior).is_err());
+        let mut first = make_binding(NEXT);
+        first.consume(&prior).unwrap();
+        assert_eq!(first.admission_kind, Admission::VerifiedRestore);
+        first.phase = Phase::Clean;
+        let mut reopened = make_binding(LATER);
+        reopened.consume(&first).unwrap();
+        assert_eq!(reopened.admission_kind, Admission::CleanReopen);
+        assert_eq!(reopened.restore, prior.restore);
+        assert_eq!(reopened.restore_receipt_payload(reopened.restore.as_ref().unwrap()), manifest);
     }
 
     #[test]

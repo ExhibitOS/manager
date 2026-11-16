@@ -7,7 +7,7 @@ use super::*;
 use crate::{native_installation::Ports, native_payload::Payload, native_runtime::{FurnishingWriterIdentity, Session}};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
 };
 
 #[path = "native_restore_carried.rs"]
@@ -120,7 +120,7 @@ impl Intent {
         Ok(())
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ActivationFile {
     profile: bool,
@@ -154,6 +154,8 @@ struct Plan {
     restore_proof: Option<RestoreProof>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     carried_restore: Option<CarriedPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    private_codec_manifest_sha256: Option<String>,
 }
 struct Fields(BTreeMap<String, String>);
 impl Drop for Fields {
@@ -385,7 +387,12 @@ fn journal_value(logical: &str, bytes: &[u8]) -> Result<Value> {
     }
     serde_json::from_slice(bytes).map_err(|_| bad())
 }
-fn authenticated_configuration(restored: &Path, kind: &str) -> Result<()> {
+const SIGNING_CONFIGURATION: &str = "freeze-signing-key.json";
+const SIGNING_TARGET: &str = "config/freeze-signing-key.json";
+const SIGNING_LIMIT: u64 = 65_536;
+const SIGNING_STAGE_PLAN: &str = "pending-signing-plan.json";
+
+fn authenticated_configuration(restored: &Path, kind: &str, private_signing: bool) -> Result<Option<ActivationFile>> {
     let owner = owner_name(kind)?;
     let expected: BTreeSet<String> = [
         "native-source.json",
@@ -399,12 +406,30 @@ fn authenticated_configuration(restored: &Path, kind: &str) -> Result<()> {
     let manifest: Value = json(restored, "manifest.json", 16 * 1024 * 1024)?;
     let entries = manifest["files"].as_array().ok_or_else(bad)?;
     let configuration = restored.join("configuration");
-    names(&configuration, &expected)?;
+    let mut materialized = expected.clone();
+    if private_signing {
+        materialized.remove(SIGNING_CONFIGURATION);
+    }
+    names(&configuration, &materialized)?;
+    let mut signing = None;
     let mut found = BTreeSet::new();
     for entry in entries.iter().filter(|v| v["role"] == "configuration") {
         let name = entry["name"].as_str().ok_or_else(bad)?;
         if !expected.contains(name) || !found.insert(name.to_string()) {
             return Err(bad());
+        }
+        if private_signing && name == SIGNING_CONFIGURATION {
+            let bytes = entry["bytes"].as_u64().filter(|bytes| (1..=SIGNING_LIMIT).contains(bytes)).ok_or_else(bad)?;
+            let sha256 = entry["sha256"].as_str().filter(|hash| hash_valid(hash)).ok_or_else(bad)?;
+            signing = Some(ActivationFile {
+                profile: false,
+                name: SIGNING_TARGET.into(),
+                staged: SIGNING_CONFIGURATION.into(),
+                bytes,
+                sha256: sha256.into(),
+                previous: None,
+            });
+            continue;
         }
         let bytes = Secret(installation_backup::source_bytes(
             &configuration,
@@ -419,6 +444,92 @@ fn authenticated_configuration(restored: &Path, kind: &str) -> Result<()> {
         }
     }
     if found != expected {
+        return Err(bad());
+    }
+    if private_signing != signing.is_some() {
+        return Err(bad());
+    }
+    Ok(signing)
+}
+fn require_signing_plan(plan: &Plan, signing: &ActivationFile, activation: &Path) -> Result<()> {
+    let file = plan.files.iter().find(|file| file.name == SIGNING_TARGET).ok_or_else(bad)?;
+    if file.profile || file.staged != signing.staged || file.sha256 != signing.sha256
+        || file.bytes != signing.bytes || file.previous.is_some()
+        || exists(activation, SIGNING_CONFIGURATION)?
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
+fn publish_signing_plan(directory: &Path) -> Result<()> {
+    if exists(directory, "stage.json")? { return Err(bad()); }
+    fs::rename(directory.join(SIGNING_STAGE_PLAN), directory.join("stage.json")).map_err(|_| bad())?;
+    File::open(directory).and_then(|directory| directory.sync_all()).map_err(|_| bad())
+}
+
+fn install_authenticated_signing(
+    session: &mut Session,
+    input: &Input,
+    root: &Path,
+    manifest: &Path,
+    manifest_sha256: &str,
+    signing: &ActivationFile,
+    budget: u64,
+    scratch: &Path,
+) -> Result<()> {
+    let secret = session.read_backup_signing_configuration(
+        vec![
+            "read-signing-configuration".into(),
+            "--source".into(), text(&input.source)?,
+            "--key-file".into(), text(&input.key_file)?,
+            "--manifest-file".into(), text(manifest)?,
+            "--manifest-sha256".into(), manifest_sha256.into(),
+        ],
+        budget,
+        scratch,
+        signing.bytes,
+        &signing.sha256,
+    )?;
+    write_pending_signing(root, signing, &secret.0)
+}
+fn write_pending_signing(root: &Path, signing: &ActivationFile, secret: &[u8]) -> Result<()> {
+    if !exists(root, MARKER)? || secret.len() as u64 != signing.bytes || digest(secret) != signing.sha256 {
+        return Err(bad());
+    }
+    let config = root.join("config");
+    private_directory(&config)?;
+
+    // The restore marker fences the intended config path. An interrupted
+    // exclusive write can only be continued when its bytes are an exact
+    // prefix of the newly authenticated payload.
+    let path = config.join(SIGNING_CONFIGURATION);
+    let mut file = OpenOptions::new().read(true).append(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path);
+    if file.as_ref().is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound) {
+        file = OpenOptions::new().read(true).append(true).create_new(true).mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&path);
+    }
+    let mut file = file.map_err(|_| bad())?;
+    let metadata = file.metadata().map_err(|_| bad())?;
+    let unchanged = || {
+        fs::symlink_metadata(&path).is_ok_and(|named| named.is_file()
+            && named.uid() == unsafe { libc::geteuid() } && named.mode() & 0o7777 == 0o600
+            && named.nlink() == 1 && named.dev() == metadata.dev() && named.ino() == metadata.ino())
+    };
+    if !metadata.is_file() || metadata.len() > signing.bytes || !unchanged() {
+        return Err(bad());
+    }
+    let mut prefix = Secret(Vec::new());
+    Read::by_ref(&mut file).take(SIGNING_LIMIT + 1).read_to_end(&mut prefix.0).map_err(|_| bad())?;
+    if prefix.0.len() as u64 != metadata.len() || !secret.starts_with(&prefix.0) || !unchanged() {
+        return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT"));
+    }
+    file.write_all(&secret[prefix.0.len()..]).and_then(|_| file.sync_all()).map_err(|_| bad())?;
+    File::open(&config).and_then(|directory| directory.sync_all()).map_err(|_| bad())?;
+    if !unchanged() || file_hash(root, SIGNING_TARGET)?.as_deref() != Some(signing.sha256.as_str()) {
         return Err(bad());
     }
     Ok(())
@@ -538,6 +649,8 @@ fn valid_plan(plan: &Plan, target: &Path) -> Result<()> {
         || !hash_valid(&plan.payload_sha256)
         || plan.files.len() < 3
         || plan.files.len() > 8
+        || plan.private_codec_manifest_sha256.as_ref().is_some_and(|codec|
+            !hash_valid(codec) || plan.kind != "personal" || plan.restore_proof.is_some() || plan.carried_restore.is_some())
         || plan.carried_restore.as_ref().is_some_and(|carried| plan.restore_proof.is_some() || plan.kind != "personal"
             || !carried.proof.matches(&plan.manifest_sha256, &plan.system_identifier))
         || plan.restore_proof.as_ref().is_some_and(|proof|
@@ -669,6 +782,7 @@ impl InstallationController {
             let prepared = service.native_prepared()?.ok_or_else(bad)?;
             let owner = owner_name(&prepared.kind)?;
             let payload = session.maintenance_payload();
+            let private_signing = payload.private_signing_configuration();
             let free =
                 fs2::available_space(&service.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?;
             let budget = resource_budget(free, free)?;
@@ -682,7 +796,7 @@ impl InstallationController {
             {
                 return Err(err("NATIVE_BACKUP_RESOURCE_BUDGET"));
             }
-            names(&service.root.join("config"), &BTreeSet::new())?;
+
             for logical in [
                 "document.json",
                 "upload.json",
@@ -712,6 +826,13 @@ impl InstallationController {
             let system_identifier=session.maintenance_system_identifier()?;
             let furnishing_target = session.furnishing_restore_target_identity()?;
             let pending:Option<Pending>=if exists(&service.root,MARKER)?{Some(json(&service.root,MARKER,4096)?)}else{None};
+            let config = service.root.join("config");
+            let expected = if private_signing && pending.is_some() && exists(&config, SIGNING_CONFIGURATION)? {
+                BTreeSet::from([SIGNING_CONFIGURATION.to_owned()])
+            } else {
+                BTreeSet::new()
+            };
+            names(&config, &expected)?;
             let empty=session.maintenance_empty_target()?;
             if pending.is_none() && !empty{return Err(err("NATIVE_RESTORE_TARGET_NOT_EMPTY"));}
             if pending.as_ref().is_some_and(|p|p.format!=1 || !uuid(&p.id)){return Err(bad());}
@@ -722,12 +843,37 @@ impl InstallationController {
                 let intent:Intent=json(&directory,"intent.json",16384)?;
                 intent.check(&id,&input.source,&source_manifest_sha256,&system_identifier,&service.root,owner)?;
                 if intent.carried_restore != input.carried_restore { return Err(bad()); }
-                if exists(&directory,"stage.json")?{
-                    let plan:Plan=json(&directory,"stage.json",65536)?;valid_plan(&plan,&service.root)?;
+                let staged = exists(&directory, "stage.json")?;
+                let signing_pending = private_signing && exists(&directory, SIGNING_STAGE_PLAN)?;
+                if staged || signing_pending {
+                    if staged && signing_pending { return Err(bad()); }
+                    let name = if staged { "stage.json" } else { SIGNING_STAGE_PLAN };
+                    let plan:Plan=json(&directory,name,65536)?;valid_plan(&plan,&service.root)?;
                     if plan.id!=id || plan.system_identifier!=system_identifier
+                        || plan.payload_sha256 != payload.context().manifest_sha256
+                        || plan.private_codec_manifest_sha256.as_deref() != payload.private_backup_codec_manifest()
                         || plan.carried_restore.as_ref().map(|plan| &plan.input) != input.carried_restore.as_ref() {return Err(bad());}
+                    if private_signing {
+                        let restored = directory.join(format!("restored-{}", plan.attempt));
+                        let activation = directory.join(format!("activation-{}", plan.attempt));
+                        let signing = authenticated_configuration(&restored, &plan.kind, true)?.ok_or_else(bad)?;
+                        require_signing_plan(&plan, &signing, &activation)?;
+                        let scratch = directory.join("scratch");
+                        private_directory(&scratch)?;
+                        if staged {
+                            if file_hash(&service.root, SIGNING_TARGET)?.as_deref() != Some(signing.sha256.as_str()) {
+                                return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT"));
+                            }
+                        } else {
+                            install_authenticated_signing(session, &input, &service.root, &restored.join("manifest.json"),
+                                &plan.manifest_sha256, &signing, budget, &scratch)?;
+                            source_manifest_pin.check()?;
+                            publish_signing_plan(&directory)?;
+                        }
+                    }
                     return Ok(Receipt{id,backup_id:plan.backup_id,state:"staged".into()});
                 }
+                if !expected.is_empty() { return Err(bad()); }
             }else{
                 new_directory(&directory)?;
                 let intent=Intent{format:1,id:id.clone(),source:input.source.clone(),source_manifest_sha256,system_identifier:system_identifier.clone(),target_environment_sha256:file_hash(&service.root,"runtime.env")?.ok_or_else(bad)?,target_owner_sha256:file_hash(&service.root,owner)?.ok_or_else(bad)?,furnishing_target,carried_restore:input.carried_restore.clone()};
@@ -745,7 +891,8 @@ impl InstallationController {
             write_private_new(&directory,&format!("attempt-{attempt}.json"),&serde_json::to_vec(&serde_json::json!({"format":1,"id":id,"attempt":attempt,"operation":operation})).map_err(|_|bad())?,4096)?;
             // Existing codec authenticates the entire archive before DB/blob writes,
             // refuses original/nonempty DB, then verifies the original inventory.
-            let codec = session.backup_tool(
+            let codec = session.backup_configuration_tool(
+                private_signing,
                 vec![
                     operation.into(),
                     "--key-file".into(),
@@ -774,19 +921,8 @@ impl InstallationController {
             drop(manifest_bytes);
             drop(manifest);
             let configuration = restored.join("configuration");
-            authenticated_configuration(&restored, &prepared.kind)?;
-            names(
-                &configuration,
-                &[
-                    "native-source.json",
-                    "native-runtime.env",
-                    owner,
-                    "freeze-signing-key.json",
-                ]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            )?;
+            let signing = authenticated_configuration(&restored, &prepared.kind, private_signing)?;
+            if private_signing && !codec_authenticated { return Err(bad()); }
             let source: SourceMap = json(&configuration, "native-source.json", 65536)?;
             if validate_source(&source, &prepared.kind, &archive_payload.context().manifest_sha256, &service.root)? {
                 let (mut registry, _) = load(&profile.root)?.ok_or_else(bad)?;
@@ -849,20 +985,13 @@ impl InstallationController {
                     owner,
                     &serde_json::to_vec(&record).map_err(|_| bad())?,
                 )?,
-                staged_file(
-                    &activation,
-                    &service.root,
-                    false,
-                    "config/freeze-signing-key.json",
-                    "freeze-signing-key.json",
-                    &installation_backup::source_bytes(
-                        &configuration,
-                        "freeze-signing-key.json",
-                        65536,
-                        true,
-                    )?,
-                )?,
             ];
+            if let Some(signing) = signing.as_ref() {
+                files.push(signing.clone());
+            } else {
+                let signing = Secret(installation_backup::source_bytes(&configuration, SIGNING_CONFIGURATION, SIGNING_LIMIT, true)?);
+                files.push(staged_file(&activation, &service.root, false, SIGNING_TARGET, SIGNING_CONFIGURATION, &signing.0)?);
+            }
             let native_journals = restored.join("deployment/native-authoring");
             if !source.journal_names.is_empty() {
                 names(
@@ -898,10 +1027,11 @@ impl InstallationController {
                 attempt,
                 restore_proof: None,
                 carried_restore: None,
+                private_codec_manifest_sha256: payload.private_backup_codec_manifest().map(str::to_owned),
             };
             File::open(&activation).and_then(|v|v.sync_all()).map_err(|_|bad())?;
             valid_plan(&plan, &service.root)?;
-            let rebound = LifecycleService::bound_existing(activation)?;
+            let rebound = LifecycleService::bound_existing(activation.clone())?;
             let rebound_fields =
                 Fields(rebound.native_start_environment(&payload, prepared.ports)?);
             rebound_identity(&plan.kind, &original_fields, &rebound_fields)?;
@@ -909,12 +1039,23 @@ impl InstallationController {
             plan.restore_proof = ordinary;
             if plan.restore_proof.is_some() && !codec_authenticated { return Err(bad()); }
             if let Some(proof) = proof {
-                plan.carried_restore = Some(CarriedPlan { input: input.carried_restore.ok_or_else(bad)?, proof });
+                plan.carried_restore = Some(CarriedPlan { input: input.carried_restore.clone().ok_or_else(bad)?, proof });
             }
             valid_plan(&plan, &service.root)?;
             source_manifest_pin.check()?;
             manifest_pin.check()?;
-            write_json(&directory, "stage.json", &plan)?;
+            if let Some(signing) = signing.as_ref() {
+                require_signing_plan(&plan, signing, &activation)?;
+                write_json(&directory, SIGNING_STAGE_PLAN, &plan)?;
+                File::open(&directory).and_then(|root| root.sync_all()).map_err(|_| bad())?;
+                install_authenticated_signing(session, &input, &service.root, &restored.join("manifest.json"),
+                    &plan.manifest_sha256, signing, budget, &scratch)?;
+                source_manifest_pin.check()?;
+                manifest_pin.check()?;
+                publish_signing_plan(&directory)?;
+            } else {
+                write_json(&directory, "stage.json", &plan)?;
+            }
             let receipt = Receipt {
                 id,
                 backup_id,
@@ -951,7 +1092,9 @@ impl InstallationController {
             let restored = directory.join(format!("restored-{}", plan.attempt));
             let activation = directory.join(format!("activation-{}", plan.attempt));
             let validation_path = directory.join(format!("validation-{}", plan.attempt));
-            if plan.id != id || plan.payload_sha256 != payload.context().manifest_sha256 {
+            if plan.id != id || plan.payload_sha256 != payload.context().manifest_sha256
+                || plan.private_codec_manifest_sha256.as_deref() != payload.private_backup_codec_manifest()
+            {
                 return Err(bad());
             }
             let completion = plan.files.iter().find(|f| f.profile && f.staged == WORKSPACE_COMPLETION_ARCHIVE_NAME);
@@ -985,7 +1128,13 @@ impl InstallationController {
                 return Err(bad());
             }
             let manifest_value: Value = serde_json::from_slice(&manifest).map_err(|_| bad())?;
-            authenticated_configuration(&restored, &plan.kind)?;
+            let signing = authenticated_configuration(&restored, &plan.kind, payload.private_signing_configuration())?;
+            if let Some(signing) = signing.as_ref() {
+                require_signing_plan(&plan, signing, &activation)?;
+                if file_hash(&service.root, SIGNING_TARGET)?.as_deref() != Some(signing.sha256.as_str()) {
+                    return Err(err("NATIVE_RESTORE_CONFIGURATION_CONFLICT"));
+                }
+            }
             let source: SourceMap =
                 json(&restored.join("configuration"), "native-source.json", 65536)?;
             if crate::native_payload::catalog45_carried_restore_payload(&payload) != plan.carried_restore.is_some() {
@@ -1038,8 +1187,8 @@ impl InstallationController {
                     {
                         return Err(bad());
                     }
-                } else if file.name == "config/freeze-signing-key.json"
-                    && file_hash(&restored.join("configuration"), "freeze-signing-key.json")?
+                } else if file.name == SIGNING_TARGET && signing.is_none()
+                    && file_hash(&restored.join("configuration"), SIGNING_CONFIGURATION)?
                         .as_deref()
                         != Some(file.sha256.as_str())
                 {
@@ -1052,7 +1201,9 @@ impl InstallationController {
             // Complete/repair only the exact staged configuration before creating
             // a PG-only Session. No Node/API starts while the marker exists.
             for (index, file) in plan.files.iter().enumerate().filter(|(_, f)| !f.profile) {
-                install_file(&directory, &activation, &service.root, file, index)?;
+                if file.name != SIGNING_TARGET || signing.is_none() {
+                    install_file(&directory, &activation, &service.root, file, index)?;
+                }
             }
             let current = Fields(service.native_start_environment(&payload, plan.ports)?);
             rebound_identity(&plan.kind, &original_fields, &current)?;
@@ -1131,7 +1282,7 @@ impl InstallationController {
 }
 pub(crate) fn verify_ordinary_activation(
     root: &Path, id: &str, backup_id: &str, manifest_sha256: &str, system_identifier: &str, payload_sha256: &str,
-    restore_proof: Option<&RestoreProof>, carried_proof: Option<&CarriedObservation>,
+    restore_proof: Option<&RestoreProof>, carried_proof: Option<&CarriedObservation>, private_codec: Option<&str>,
 ) -> Result<()> {
     if !uuid(id) || exists(root, MARKER)? { return Err(bad()); }
     let directory = root.join(format!("native-restore-{id}"));
@@ -1145,16 +1296,21 @@ pub(crate) fn verify_ordinary_activation(
         || plan.payload_sha256 != payload_sha256 || plan.kind != "personal"
         || plan.restore_proof.as_ref() != restore_proof
         || plan.carried_restore.as_ref().map(|value| &value.proof) != carried_proof
+        || plan.private_codec_manifest_sha256.as_deref() != private_codec
     {
         return Err(bad());
     }
-    if restore_proof.is_some() || carried_proof.is_some() {
+    if restore_proof.is_some() || carried_proof.is_some() || private_codec.is_some() {
         let restored = directory.join(format!("restored-{}", plan.attempt));
         let manifest = installation_backup::source_bytes(&restored, "manifest.json", 16 * 1024 * 1024, true)?;
         if digest(&manifest) != manifest_sha256 { return Err(bad()); }
         let manifest = serde_json::from_slice(&manifest).map_err(|_| bad())?;
         if let Some(proof) = restore_proof { proof.matches_manifest(&manifest)?; }
         if let Some(proof) = carried_proof { proof.matches_manifest(&manifest, backup_id)?; }
+        if private_codec.is_some() {
+            let signing = authenticated_configuration(&restored, &plan.kind, true)?.ok_or_else(bad)?;
+            require_signing_plan(&plan, &signing, &directory.join(format!("activation-{}", plan.attempt)))?;
+        }
     }
     Ok(())
 }
@@ -1273,6 +1429,7 @@ mod tests {
             manifest_sha256: "a".repeat(64), payload_sha256: "b".repeat(64),
             system_identifier: "220".into(), kind: "personal".into(), ports: Ports::default(),
             files: vec![], attempt: Uuid::new_v4().to_string(), restore_proof: None, carried_restore: None,
+            private_codec_manifest_sha256: None,
         };
         let manifest = serde_json::json!({
             "id": plan.backup_id, "sourceIdentity": {"systemIdentifier":"110","databaseOid":"16000"},
@@ -1476,6 +1633,34 @@ mod tests {
         fs::remove_dir_all(profile).unwrap();
     }
     #[test]
+    fn private_signing_restore_resumes_only_exact_prefix_at_intended_path() {
+        let root = root();
+        let config = root.join("config");
+        new_directory(&config).unwrap();
+        let bytes = b"synthetic signing payload";
+        let signing = ActivationFile {
+            profile: false, name: SIGNING_TARGET.into(), staged: SIGNING_CONFIGURATION.into(),
+            sha256: digest(bytes), bytes: bytes.len() as u64, previous: None,
+        };
+        assert!(write_pending_signing(&root, &signing, bytes).is_err());
+        assert!(!config.join(SIGNING_CONFIGURATION).exists());
+
+        let pending = Pending { format: 1, id: Uuid::new_v4().to_string() };
+        write_json(&root, MARKER, &pending).unwrap();
+        assert!(write_pending_signing(&root, &signing, b"unverified").is_err());
+        write_private_new(&config, SIGNING_CONFIGURATION, &bytes[..7], SIGNING_LIMIT as usize).unwrap();
+        write_pending_signing(&root, &signing, bytes).unwrap();
+        write_pending_signing(&root, &signing, bytes).unwrap();
+        names(&config, &BTreeSet::from([SIGNING_CONFIGURATION.into()])).unwrap();
+        assert_eq!(fs::read(config.join(SIGNING_CONFIGURATION)).unwrap(), bytes);
+
+        fs::write(config.join(SIGNING_CONFIGURATION), b"conflicting bytes").unwrap();
+        assert!(write_pending_signing(&root, &signing, bytes).is_err());
+        assert_eq!(fs::read(config.join(SIGNING_CONFIGURATION)).unwrap(), b"conflicting bytes");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn activation_replays_partial_configuration_and_preserves_later_user_changes() {
         let root = root();
         let job = root.join("job");
@@ -1638,6 +1823,7 @@ mod tests {
             ports: Ports::default(),
             files,
             restore_proof: None, carried_restore: None,
+            private_codec_manifest_sha256: None,
         };
         valid_plan(&plan, &root).unwrap();
         plan.files[0].name = "../runtime.env".into();
