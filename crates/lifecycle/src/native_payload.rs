@@ -617,6 +617,12 @@ pub(crate) const FIXED64_PUBLICATION_REPAIR_TARGET: RuntimeTuple = (
     "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const ROOM_CEILING_FILL_TARGET: RuntimeTuple = (
+    "e70eee989fc18b815129a4b9adf159fc0616c873",
+    "c40e6a0cc24843c9e7e627dca23d01648e9b3d64981a8cace278b32afa077ecd",
+    "ea87410d9f4166538ff692b380e86ea42c8cddce743c991a0450e1db3ca962ab",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const PRIVATE_EXB_CODEC: RuntimeTuple = (
     "45d52c116dc14b57113005293b24b17204a8df91",
     "8e7374be46c900aa01fd1c0385b936077812c9aad988322334c5b04077dbfaa6",
@@ -726,14 +732,14 @@ pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool
 // carried restore retain their existing combined-thumbnail host set.
 pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&tuple) { return true; }
+    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET].contains(&tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
 // Both fresh binding admission and its mandatory inherited channel use this
 // exact set. Earlier combined targets retain their reopen/transition scope.
 pub(crate) fn combined_thumbnail_fresh_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&tuple);
+    return [CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -6100,7 +6106,7 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
-        if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&(
+        if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET].contains(&(
             &*context.source_commit, payload.producer_sha256(), &*context.manifest_sha256
         )) {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
@@ -7055,7 +7061,7 @@ impl Payload {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn admit_fresh_catalog52_constructor(&mut self) -> Result<()> {
         let tuple = (&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256);
-        if ![RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&tuple) || !combined_thumbnail_fresh_host_matches(tuple)
+        if ![RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET].contains(&tuple) || !combined_thumbnail_fresh_host_matches(tuple)
             || self.workspace_import.is_some() || self.workspace_v5_validation
             || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CombinedThumbnails052)
         { return Err(err("NATIVE_RUNTIME_UNQUALIFIED")); }
@@ -7066,7 +7072,7 @@ impl Payload {
     pub(crate) fn fresh_catalog52_constructor(&self) -> bool {
         if !self.fresh_catalog52_constructor { return false; }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        return [RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET]
+        return [RECTANGLE_FIXED64_TARGET, KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET]
             .contains(&(&*self.manifest.source_commit, &*self.manifest.producer_sha256, &*self.manifest_sha256))
             && self.workspace_import.is_none() && !self.workspace_v5_validation;
         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
