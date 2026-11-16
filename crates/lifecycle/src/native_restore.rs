@@ -154,6 +154,8 @@ struct Plan {
     restore_proof: Option<RestoreProof>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     carried_restore: Option<CarriedPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    private_codec_manifest_sha256: Option<String>,
 }
 struct Fields(BTreeMap<String, String>);
 impl Drop for Fields {
@@ -647,6 +649,8 @@ fn valid_plan(plan: &Plan, target: &Path) -> Result<()> {
         || !hash_valid(&plan.payload_sha256)
         || plan.files.len() < 3
         || plan.files.len() > 8
+        || plan.private_codec_manifest_sha256.as_ref().is_some_and(|codec|
+            !hash_valid(codec) || plan.kind != "personal" || plan.restore_proof.is_some() || plan.carried_restore.is_some())
         || plan.carried_restore.as_ref().is_some_and(|carried| plan.restore_proof.is_some() || plan.kind != "personal"
             || !carried.proof.matches(&plan.manifest_sha256, &plan.system_identifier))
         || plan.restore_proof.as_ref().is_some_and(|proof|
@@ -847,6 +851,7 @@ impl InstallationController {
                     let plan:Plan=json(&directory,name,65536)?;valid_plan(&plan,&service.root)?;
                     if plan.id!=id || plan.system_identifier!=system_identifier
                         || plan.payload_sha256 != payload.context().manifest_sha256
+                        || plan.private_codec_manifest_sha256.as_deref() != payload.private_backup_codec_manifest()
                         || plan.carried_restore.as_ref().map(|plan| &plan.input) != input.carried_restore.as_ref() {return Err(bad());}
                     if private_signing {
                         let restored = directory.join(format!("restored-{}", plan.attempt));
@@ -1022,6 +1027,7 @@ impl InstallationController {
                 attempt,
                 restore_proof: None,
                 carried_restore: None,
+                private_codec_manifest_sha256: payload.private_backup_codec_manifest().map(str::to_owned),
             };
             File::open(&activation).and_then(|v|v.sync_all()).map_err(|_|bad())?;
             valid_plan(&plan, &service.root)?;
@@ -1086,7 +1092,9 @@ impl InstallationController {
             let restored = directory.join(format!("restored-{}", plan.attempt));
             let activation = directory.join(format!("activation-{}", plan.attempt));
             let validation_path = directory.join(format!("validation-{}", plan.attempt));
-            if plan.id != id || plan.payload_sha256 != payload.context().manifest_sha256 {
+            if plan.id != id || plan.payload_sha256 != payload.context().manifest_sha256
+                || plan.private_codec_manifest_sha256.as_deref() != payload.private_backup_codec_manifest()
+            {
                 return Err(bad());
             }
             let completion = plan.files.iter().find(|f| f.profile && f.staged == WORKSPACE_COMPLETION_ARCHIVE_NAME);
@@ -1274,7 +1282,7 @@ impl InstallationController {
 }
 pub(crate) fn verify_ordinary_activation(
     root: &Path, id: &str, backup_id: &str, manifest_sha256: &str, system_identifier: &str, payload_sha256: &str,
-    restore_proof: Option<&RestoreProof>, carried_proof: Option<&CarriedObservation>,
+    restore_proof: Option<&RestoreProof>, carried_proof: Option<&CarriedObservation>, private_codec: Option<&str>,
 ) -> Result<()> {
     if !uuid(id) || exists(root, MARKER)? { return Err(bad()); }
     let directory = root.join(format!("native-restore-{id}"));
@@ -1288,16 +1296,21 @@ pub(crate) fn verify_ordinary_activation(
         || plan.payload_sha256 != payload_sha256 || plan.kind != "personal"
         || plan.restore_proof.as_ref() != restore_proof
         || plan.carried_restore.as_ref().map(|value| &value.proof) != carried_proof
+        || plan.private_codec_manifest_sha256.as_deref() != private_codec
     {
         return Err(bad());
     }
-    if restore_proof.is_some() || carried_proof.is_some() {
+    if restore_proof.is_some() || carried_proof.is_some() || private_codec.is_some() {
         let restored = directory.join(format!("restored-{}", plan.attempt));
         let manifest = installation_backup::source_bytes(&restored, "manifest.json", 16 * 1024 * 1024, true)?;
         if digest(&manifest) != manifest_sha256 { return Err(bad()); }
         let manifest = serde_json::from_slice(&manifest).map_err(|_| bad())?;
         if let Some(proof) = restore_proof { proof.matches_manifest(&manifest)?; }
         if let Some(proof) = carried_proof { proof.matches_manifest(&manifest, backup_id)?; }
+        if private_codec.is_some() {
+            let signing = authenticated_configuration(&restored, &plan.kind, true)?.ok_or_else(bad)?;
+            require_signing_plan(&plan, &signing, &directory.join(format!("activation-{}", plan.attempt)))?;
+        }
     }
     Ok(())
 }
@@ -1416,6 +1429,7 @@ mod tests {
             manifest_sha256: "a".repeat(64), payload_sha256: "b".repeat(64),
             system_identifier: "220".into(), kind: "personal".into(), ports: Ports::default(),
             files: vec![], attempt: Uuid::new_v4().to_string(), restore_proof: None, carried_restore: None,
+            private_codec_manifest_sha256: None,
         };
         let manifest = serde_json::json!({
             "id": plan.backup_id, "sourceIdentity": {"systemIdentifier":"110","databaseOid":"16000"},
@@ -1809,6 +1823,7 @@ mod tests {
             ports: Ports::default(),
             files,
             restore_proof: None, carried_restore: None,
+            private_codec_manifest_sha256: None,
         };
         valid_plan(&plan, &root).unwrap();
         plan.files[0].name = "../runtime.env".into();

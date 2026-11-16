@@ -616,6 +616,19 @@ pub(crate) const FIXED64_PUBLICATION_REPAIR_TARGET: RuntimeTuple = (
     "9506cea2a63d36f4ef1dffa4a0c75a7ac141b3445f193f189b1a830710136702",
     "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
 );
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const PRIVATE_EXB_CODEC: RuntimeTuple = (
+    "45d52c116dc14b57113005293b24b17204a8df91",
+    "8e7374be46c900aa01fd1c0385b936077812c9aad988322334c5b04077dbfaa6",
+    "f5267e7123e8562c018feb2f446759beaa0e8878ab0cd36be67d447dfe4c2f0d",
+);
+
+pub(crate) fn private_exb_restore_host_matches(tuple: (&str, &str, &str), codec: &str) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == FIXED64_PUBLICATION_REPAIR_TARGET && codec == PRIVATE_EXB_CODEC.2;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = (tuple, codec); false }
+}
 // Exact default1.18 known articulated track aim; ordinary authoring only.
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const KNOWN_TRACK_AIM_TARGET: RuntimeTuple = (
@@ -7306,11 +7319,6 @@ impl Payload {
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn open_private_exb_pair(source: &Path, codec: &Path) -> Result<Self> {
-        const CODEC: RuntimeTuple = (
-            "45d52c116dc14b57113005293b24b17204a8df91",
-            "8e7374be46c900aa01fd1c0385b936077812c9aad988322334c5b04077dbfaa6",
-            "f5267e7123e8562c018feb2f446759beaa0e8878ab0cd36be67d447dfe4c2f0d",
-        );
         let mut source = Self::open_workspace_v5_validation(source, false)?;
         let codec = Self::open(codec)?;
         let tuple = |payload: &Self, expected: RuntimeTuple| {
@@ -7318,7 +7326,7 @@ impl Payload {
                 && payload.manifest.producer_sha256 == expected.1
                 && payload.manifest_sha256 == expected.2
         };
-        if !tuple(&source, FIXED64_PUBLICATION_REPAIR_TARGET) || !tuple(&codec, CODEC)
+        if !tuple(&source, FIXED64_PUBLICATION_REPAIR_TARGET) || !tuple(&codec, PRIVATE_EXB_CODEC)
             || !codec.has_private_signing_marker()
         {
             return Err(err("NATIVE_BACKUP_UNAVAILABLE"));
@@ -7338,6 +7346,9 @@ impl Payload {
     }
     pub(crate) fn private_signing_configuration(&self) -> bool {
         self.private_backup_codec.is_some()
+    }
+    pub(crate) fn private_backup_codec_manifest(&self) -> Option<&str> {
+        self.private_backup_codec.as_ref().map(|codec| codec.manifest_sha256.as_str())
     }
     pub(crate) fn backup_node(&self) -> PathBuf {
         self.private_backup_codec.as_deref().unwrap_or(self).node()

@@ -3538,7 +3538,8 @@ const { isDeepStrictEqual } = require('node:util');
                         }
                         if active.admission_kind == Admission::VerifiedRestore
                             || active.restore.as_ref().is_some_and(|restore|
-                                restore.provenance.is_some() || restore.carried_provenance.is_some())
+                                restore.provenance.is_some() || restore.carried_provenance.is_some()
+                                    || restore.private_codec_manifest_sha256.is_some())
                         {
                             active.verify_restore_activation(&self.service.root)?;
                         }
@@ -3734,6 +3735,7 @@ const { isDeepStrictEqual } = require('node:util');
             target_system_identifier: target_system_identifier.into(),
             provenance,
             carried_provenance,
+            private_codec_manifest_sha256: self.payload.private_backup_codec_manifest().map(str::to_owned),
         });
         if let Some(prior) = &self.furnishing_binding {
             if prior.phase != Phase::ActivatedRestore || prior.restore != restored.restore || !restored.same_installation(prior) {
