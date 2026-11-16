@@ -8,7 +8,7 @@ import Darwin
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
         "room-audio-intake", "room-audio-status", "room-audio-approve",
-        "workspace-bench-visual-check", "viewer-budget-inspect", "applied-draft-save-resume",
+        "workspace-bench-visual-check", "workspace-bench-model-forward-check", "viewer-budget-inspect", "applied-draft-save-resume",
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
@@ -2059,7 +2059,8 @@ public actor NativeAutomationSession {
             let extra: Set<String> = operation == "shared-bench-prepare" ? ["command", "outputPath"] : ["proposalId", "inputPath"]
             guard Set(fields.keys) == common.union(extra) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
-        if ["workspace-bench-seat-attach", "workspace-default-seat-reconcile"].contains(operation) {
+        if ["workspace-bench-seat-attach", "workspace-default-seat-reconcile",
+            "workspace-bench-model-forward-check", "workspace-bench-model-forward-set"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                          "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
@@ -2539,6 +2540,28 @@ public actor NativeAutomationSession {
             } else {
                 var next = current; next.draft = prospective
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            }
+        case "workspace-bench-model-forward-check", "workspace-bench-model-forward-set":
+            guard selectedOEXFormat == nil else { throw BridgeFailure("BENCH_MODEL_FORWARD_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "benchId", "placementId",
+                "furnishingId", "furnishingVersion", "modelSha256", "expectedModelForward", "modelForward"])
+            guard let etag = current.etag, command["etag"].string == etag, case .object(var parameters) = command else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            parameters.removeValue(forKey: "etag")
+            let orientation = try WorkspaceBenchModelForward(value: .object(parameters))
+            let prospective = try await api.prepareWorkspaceBenchModelForward(orientation, in: current)
+            let (_, _, refreshed) = try await checked(request)
+            guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            if operation == "workspace-bench-model-forward-check" {
+                result = .object(["valid": .bool(true), "changed": .bool(prospective != nil)])
+            } else if let draft = prospective {
+                var next = current
+                next.draft = draft
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
             }
         case "workspace-bench-seat-attach":
             guard selectedOEXFormat == nil else { throw BridgeFailure("WORKSPACE_BENCH_SEAT_UNAVAILABLE") }
