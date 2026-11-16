@@ -143,6 +143,12 @@ public enum RoomBaseLightIntent {
             guard settings["purpose"] == .string("room-base"), let raw = value.string,
                   RoomBaseLightPlacement(rawValue: raw) != nil else { throw invalid }
         }
+        if let fill = fields["ceilingFill"] {
+            guard settings["purpose"] == .string("room-base"), fields["basePlacement"] != nil,
+                  settings["fixture"] == .string("none"), fields["aim"] == nil, fields["trackAim"] == nil,
+                  fields["range"] == nil, fields["penumbra"] == nil else { throw invalid }
+            _ = try RoomCeilingFill.brightness(in: fill)
+        }
     }
     public static func placement(in draft: NativeExhibitionDraft, lightId: String) throws -> RoomBaseLightPlacement? {
         let settings = try NativeLightFixture.settings(in: draft, lightId: lightId)

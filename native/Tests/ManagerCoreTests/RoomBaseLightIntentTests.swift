@@ -61,6 +61,14 @@ final class RoomBaseLightIntentTests: XCTestCase {
         XCTAssertEqual(light(draft)["transform"]["position"], .vector([0, 3.98, 0]))
         XCTAssertEqual(details(draft.candidate)["ceilingFill"]["brightness"], .number(0.5))
         XCTAssertEqual(details(draft.candidate)["range"], .null)
+        let form = try LightFormBuffer(draft: draft, selectedLightId: lightId)
+        XCTAssertEqual(form.ceilingFillBrightness, 0.5)
+        XCTAssertEqual(try form.command().proposedCandidate(in: draft, selectedLightId: lightId), draft.candidate)
+        var wideRoom = draft
+        try wideRoom.updateRoom(roomId, name: "Large", width: 200, height: 1_500, depth: 100)
+        XCTAssertGreaterThan(light(wideRoom)["intensity"].double ?? 0, 1_000_000)
+        let wideForm = try LightFormBuffer(draft: wideRoom, selectedLightId: lightId)
+        XCTAssertEqual(try wideForm.command().proposedCandidate(in: wideRoom, selectedLightId: lightId), wideRoom.candidate)
         try draft.updateRoom(roomId, name: "Resized", width: 8, height: 5, depth: 12)
         XCTAssertEqual(light(draft)["intensity"].double?.bitPattern, 0x405ab58eb3763fe8)
 
