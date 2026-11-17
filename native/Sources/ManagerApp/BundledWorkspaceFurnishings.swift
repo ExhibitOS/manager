@@ -43,12 +43,14 @@ enum BundledWorkspaceFurnishings {
     private static let generated: [String: WorkspaceFurnishingKind] = [
         "closed-exit-door": .barrier, "exit-pictogram-sign": .infoStand
     ]
+    private static let sculptureRoomOakBench = "sculpture-room-oak-bench"
     private static let sculptureBench = "sculpture-gallery-bench"
     private static let compactStand = "compact-caption-stand"
     private static let portals: [String: WorkspaceFurnishingKind] = [
         "portal-pale-mineral": .portalFinish, "portal-warm-oak": .portalFinish
     ]
     private static let manifests = [
+        27317: (version: "1.19.0", digest: "138b8307dba70f382f886c5c37b6396f1327b0b7311a202ec5d6932185743b08"),
         25957: (version: "1.18.0", digest: "83d9d1913850c310e63a1d5a77297ca8944da1fc9720cf017e3a9dad361b7e5a"),
         25051: (version: "1.17.0", digest: "4751b398f8a1d6edd362004449655932fabfdd78de3500b74b29453b05d5475a"),
         23170: (version: "1.16.0", digest: "9302a6472a603b2ad21a693f848fd4670c41d04b51e563bbeae088dade825e81"),
@@ -66,6 +68,10 @@ enum BundledWorkspaceFurnishings {
     ]
     private static func supportedItems(version: String) -> [String: WorkspaceFurnishingKind] {
         switch version {
+        case "1.19.0":
+            var items = supportedItems(version: "1.18.0")
+            items[sculptureRoomOakBench] = .bench
+            return items
         case "1.17.0", "1.18.0":
             var items = supportedItems(version: "1.16.0")
             items["painting-rectangular-dark-track"] = .ceilingRail
@@ -110,7 +116,8 @@ enum BundledWorkspaceFurnishings {
     }
     private static func directory(for id: String) -> String {
         let source: String
-        if id == "dark-track-network" || id == "painting-rectangular-dark-track" { source = "exhibitos-authored-20261115" }
+        if id == sculptureRoomOakBench { source = "exhibitos-authored-20261117" }
+        else if id == "dark-track-network" || id == "painting-rectangular-dark-track" { source = "exhibitos-authored-20261115" }
         else if id == "hayes-clear-protective-hood" || id == "sculpture-bench-refined-v6" { source = "exhibitos-authored-20261114" }
         else if id == compactStand { source = "exhibitos-authored-20261111" }
         else if portals[id] != nil { source = "exhibitos-authored-20261109" }
@@ -126,7 +133,7 @@ enum BundledWorkspaceFurnishings {
         let manifestURL = root.appendingPathComponent("assets/furnishings/default-manifest.json")
         guard root.resolvingSymlinksInPath() == root, manifestURL.resolvingSymlinksInPath() == manifestURL,
               manifestURL.path.hasPrefix(root.path + "/") else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
-        let data = try bounded(manifestURL, sizes: Set(manifests.keys), maximum: 25_957)
+        let data = try bounded(manifestURL, sizes: Set(manifests.keys), maximum: 27_317)
         guard let pin = manifests[data.count], digest(data) == pin.digest else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
         let manifest = try JSONDecoder().decode(Manifest.self, from: data)
         let supported = supportedItems(version: pin.version)
@@ -143,6 +150,14 @@ enum BundledWorkspaceFurnishings {
         let prefix = directory(for: item.id)
         guard item.model.path == prefix + "model.glb", item.rights.notice.path == prefix + "LICENSE-NOTICE.txt",
               item.model.mime == "model/gltf-binary", item.rights.licenseId == "CC0-1.0" else { return false }
+        if item.id == sculptureRoomOakBench {
+            let lineage = item.provenance
+            return item.catalogVersion == 1 && lineage.recipe == "bench-basecolor-512-v1"
+                && lineage.source?.path == prefix + "source.glb" && lineage.source?.sha256 == lineage.sourceSha256
+                && lineage.sourceSha256 != item.model.sha256
+                && lineage.runtimeManifestSHA256 == "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132"
+                && lineage.registeredReceiptSHA256 == "3bd188caeef7847d7def4f43c65731df609f3bfe90326e127e26d8885dcc47f4"
+        }
         if item.id == "exit-pictogram-sign" {
             let lineage = item.provenance
             return item.catalogVersion == 2 && lineage.recipe == "normalize-legacy-sign-texture-r1"

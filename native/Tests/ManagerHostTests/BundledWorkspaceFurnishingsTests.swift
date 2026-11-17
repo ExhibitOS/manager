@@ -5,6 +5,60 @@ import XCTest
 @testable import ManagerApp
 
 final class BundledWorkspaceFurnishingsTests: XCTestCase {
+    func testExactCatalog119LoadsTheIssuedSculptureBenchAndChecksAllThreeFiles() async throws {
+        guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_119_FIXTURE"] else {
+            throw XCTSkip("Set EXHIBITOS_DEFAULT_119_FIXTURE to the exact reviewed 1.19 assets")
+        }
+        let source = URL(fileURLWithPath: path), files = FileManager.default
+        let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true).resolvingSymlinksInPath()
+        defer { try? files.removeItem(at: root) }
+        let prefix = "assets/furnishings/exhibitos-authored-20261117/sculpture-room-oak-bench/"
+        let required = ["model.glb", "source.glb", "LICENSE-NOTICE.txt"]
+        try files.createDirectory(at: root.appendingPathComponent(prefix), withIntermediateDirectories: true)
+        let manifest = root.appendingPathComponent("assets/furnishings/default-manifest.json")
+        try files.copyItem(at: source.appendingPathComponent("manifest.json"), to: manifest)
+        for name in required {
+            try files.copyItem(at: source.appendingPathComponent(prefix + name), to: root.appendingPathComponent(prefix + name))
+        }
+        let catalog = try BundledWorkspaceFurnishings.catalog(root: root)
+        XCTAssertEqual(catalog.version, "1.19.0")
+        XCTAssertEqual(catalog.items.count, 15)
+        let item = try XCTUnwrap(catalog.items.first { $0.id == "sculpture-room-oak-bench" })
+        XCTAssertEqual(item.kind, .bench)
+        XCTAssertEqual(item.provenance.recipe, "bench-basecolor-512-v1")
+        XCTAssertEqual(item.provenance.source?.bytes, 877_872)
+        XCTAssertEqual(item.provenance.sourceSha256, "97c9486decc3e646adc76d40856084fd869e618bea72db5b423e415ec72f72ff")
+        XCTAssertEqual(item.provenance.runtimeManifestSHA256, "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132")
+        XCTAssertEqual(item.provenance.registeredReceiptSHA256, "3bd188caeef7847d7def4f43c65731df609f3bfe90326e127e26d8885dcc47f4")
+        XCTAssertTrue(catalog.items.contains { $0.id == "sculpture-gallery-bench" && $0.kind == .bench })
+        XCTAssertTrue(catalog.items.contains { $0.id == "painting-rectangular-dark-track" && $0.kind == .ceilingRail })
+        let model = try await BundledWorkspaceFurnishings.load(item.id, from: catalog)
+        XCTAssertEqual(model.data.count, 482_752)
+        XCTAssertEqual(model.sha256, "f6d9ed8840801843f19f64b19cb8aa1fd03520c70ff7ab07bf4d7972f20c7c39")
+
+        for name in required {
+            let target = root.appendingPathComponent(prefix + name)
+            let original = try Data(contentsOf: target)
+            var changed = original
+            changed[changed.startIndex] ^= 1
+            try changed.write(to: target)
+            do {
+                _ = try await BundledWorkspaceFurnishings.load(item.id, from: catalog)
+                XCTFail("Changed \(name) admitted")
+            } catch {}
+            try files.removeItem(at: target)
+            do {
+                _ = try await BundledWorkspaceFurnishings.load(item.id, from: catalog)
+                XCTFail("Missing \(name) admitted")
+            } catch {}
+            try original.write(to: target)
+        }
+        var changed = try Data(contentsOf: manifest)
+        changed[changed.startIndex] ^= 1
+        try changed.write(to: manifest)
+        XCTAssertThrowsError(try BundledWorkspaceFurnishings.catalog(root: root))
+    }
+
     func testExactCatalog114HoodAndNoticeStayBoundToReviewedOriginal() async throws {
         guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_DEFAULT_114_FIXTURE"] else {
             throw XCTSkip("Set EXHIBITOS_DEFAULT_114_FIXTURE to exact reviewed source checkout")
