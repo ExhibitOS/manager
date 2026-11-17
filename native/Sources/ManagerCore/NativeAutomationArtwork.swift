@@ -191,6 +191,13 @@ enum NativeAutomationArtworkRules {
 /// Reuses the GUI's durable native upload journal and transfer owner.
 @MainActor
 enum NativeAutomationArtworkTransfer {
+    // The dedicated Hayes queue already constructs this typed intent. Keep its
+    // immutable source binding through the same durable upload journal.
+    nonisolated static func acceptsHayesIntent(_ intent: NativeImportIntent) -> Bool {
+        guard let hayes = intent.hayesOriginal else { return true }
+        return intent.productImagePreparation == nil && hayes.matches(intent)
+    }
+
     static func run(bridge: NativeBridge, context: Context, state initial: NativeUploadState,
                     intent: NativeImportIntent, file: ImportFileSnapshot, derived: NativePreparedJPEG? = nil,
                     transport: any NativeImportTransport) async throws -> NativeImportJob {
@@ -200,7 +207,7 @@ enum NativeAutomationArtworkTransfer {
         let product = intent.productImagePreparation?.matches(intent) == true && derived == nil
         guard glb || reviewed || product, intent.modelDerivation == nil,
               intent.modelPreparation.map({ $0.matches(intent) }) ?? true,
-              intent.hayesOriginal == nil, intent.productImagePreparation == nil || product,
+              acceptsHayesIntent(intent), intent.productImagePreparation == nil || product,
               intent.scaleMeters.isFinite, intent.scaleMeters > 0, intent.scaleMeters <= 1_000_000,
               initial.intent == nil || initial.intent == intent else { throw BridgeFailure("IMPORT_INTENT_CHANGED") }
         var state = initial

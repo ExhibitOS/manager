@@ -14,6 +14,22 @@ final class NativeModelPreparationTests: XCTestCase {
         #endif
     }
 
+    func testDedicatedHayesQueuePreservesExactTypedOriginalThroughUploadAdmission() {
+        let artwork = UUID().uuidString.lowercased(), request = UUID().uuidString.lowercased()
+        let display = "694a9cf81dfbf12fd0841ae45240c5ae0f1d7cb129d0ee122be7cff86c4625bc"
+        let hayes = NativeHayesOriginalIntent(artworkRevision: 1, displayReferenceSha256: display)
+        func intent(_ sha256: String, _ scale: Double, hayes: NativeHayesOriginalIntent?) -> NativeImportIntent {
+            .init(artworkId: artwork, idempotencyKey: request, mime: "model/gltf-binary",
+                  sha256: sha256, bytes: NativeHayesOriginalIntent.sourceBytes,
+                  scaleMeters: scale, rights: .init(), hayesOriginal: hayes)
+        }
+        let original = NativeHayesOriginalIntent.sourceSHA256
+        XCTAssertTrue(NativeAutomationArtworkTransfer.acceptsHayesIntent(intent(original, 1, hayes: hayes)))
+        XCTAssertFalse(NativeAutomationArtworkTransfer.acceptsHayesIntent(intent(display, 1, hayes: hayes)))
+        XCTAssertFalse(NativeAutomationArtworkTransfer.acceptsHayesIntent(intent(original, 2, hayes: hayes)))
+        XCTAssertTrue(NativeAutomationArtworkTransfer.acceptsHayesIntent(intent(display, 1, hayes: nil)))
+    }
+
     func testFreshRequiredIntakeWaitsForNewUnapprovedArtworkRevision() throws {
         let artworkId = UUID().uuidString, artistId = UUID().uuidString
         let asset = NativeArtwork.Asset(id: UUID().uuidString, mime: "model/gltf-binary", state: "approved",
