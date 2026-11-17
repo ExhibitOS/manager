@@ -240,6 +240,8 @@ pub enum Command {
     #[cfg(target_os = "macos")]
     NativeStart {
         selection_token: String,
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        thumbnail_preview_trace_id: Option<String>,
     },
     #[cfg(target_os = "macos")]
     NativeOexSelect { selection_token: String },
@@ -305,10 +307,16 @@ struct WireRequest {
     hayes_preopen_claim: Option<crate::native_runtime::hayes_claim::Input>,
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes_preopen_terminal: Option<super::native_maintenance::RetainedHayesPreopen>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    thumbnail_preview_trace_id: Option<String>,
 }
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
     fn try_from(wire: WireRequest) -> std::result::Result<Self, Self::Error> {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if wire.thumbnail_preview_trace_id.is_some() && wire.command != "native_start" {
+            return Err("NATIVE_PROTOCOL_INVALID");
+        }
         #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
         if (wire.hayes_preopen_claim.is_some() && wire.command != "native_hayes_preopen_claim")
             || (wire.hayes_preopen_terminal.is_some() && wire.command != "native_hayes_preopen_terminal") {
@@ -621,7 +629,11 @@ impl TryFrom<WireRequest> for Request {
                 ("native_authoring_session", None) => {
                     Command::NativeAuthoringSession { selection_token }
                 }
-                ("native_start", None) => Command::NativeStart { selection_token },
+                ("native_start", None) => Command::NativeStart {
+                    selection_token,
+                    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                    thumbnail_preview_trace_id: wire.thumbnail_preview_trace_id,
+                },
                 ("native_oex_select", None) => Command::NativeOexSelect { selection_token },
                 ("native_oex_run", None) => Command::NativeOexRun { selection_token },
                 ("native_status", None) => Command::NativeStatus { selection_token },

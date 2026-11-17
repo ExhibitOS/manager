@@ -53,6 +53,7 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
     private var web: WKWebView?
     private var page: URL?
     private var failed = false
+    private(set) var previewTrace: DocumentValue?
 
     func cancel() {
         failed = true
@@ -63,7 +64,7 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
     }
 
     func render(credentials: LocalAuthoringSession, frame: ViewportFrame,
-                artworkId: String, revision: Int) async throws -> (ViewportThumbnailRequest, ViewportThumbnailReply) {
+                artworkId: String, revision: Int, previewTraceRequestID: String? = nil) async throws -> (ViewportThumbnailRequest, ViewportThumbnailReply) {
         guard web == nil, let page = URL(string: credentials.origin + "/native-viewport.html"),
               page.scheme == "http", page.host == "127.0.0.1", page.user == nil, page.password == nil,
               let port = page.port, port >= 1024,
@@ -112,13 +113,19 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
         guard let fields = accepted as? [String: Any], JSONSerialization.isValidJSONObject(fields) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
         let acceptance = try JSONDecoder().decode(ViewportAcceptance.self, from: JSONSerialization.data(withJSONObject: fields))
         guard acceptance.accepted, acceptance.supportsRenderedArtworkThumbnail else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
-        let request = try ViewportThumbnailRequest(frame: frame, artworkId: artworkId, expectedRevision: revision)
+        if previewTraceRequestID != nil, !acceptance.supportsArtworkThumbnailPreviewTrace {
+            throw AuthoringFailure("CATALOG_THUMBNAIL_TRACE_UNAVAILABLE")
+        }
+        let request = try ViewportThumbnailRequest(frame: frame, artworkId: artworkId, expectedRevision: revision,
+            requestID: previewTraceRequestID ?? UUID().uuidString.lowercased())
         let json = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
         let response: Any?
         let outcomeVersion = acceptance.artworkThumbnailOutcomeVersion
         if let outcomeVersion {
             do {
-                response = try await web.callAsyncJavaScript(outcomeVersion.invocation, arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                let invocation = previewTraceRequestID == nil ? outcomeVersion.invocation
+                    : "return await window.exhibitosViewport.thumbnailPreviewTraceV1(JSON.parse(requestJSON));"
+                response = try await web.callAsyncJavaScript(invocation, arguments: ["requestJSON": json], in: nil, contentWorld: .page)
             } catch {
                 try Task.checkCancellation()
                 guard !failed else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
@@ -129,7 +136,14 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
         }
         try Task.checkCancellation()
         guard !failed else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
-        guard let fields = response as? [String: Any] else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        guard var fields = response as? [String: Any] else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        if let previewTraceRequestID {
+            guard Set(fields.keys) == ["result", "trace"], let result = fields["result"] as? [String: Any] else {
+                throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+            }
+            previewTrace = NativeThumbnailPreviewTrace.webTrace(fields["trace"], requestID: previewTraceRequestID)
+            fields = result
+        }
         if let outcomeVersion, let failure = try NativeThumbnailPageFailure.checked(in: fields, version: outcomeVersion) {
             throw failure
         }

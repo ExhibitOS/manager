@@ -7420,6 +7420,13 @@ impl Payload {
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn thumbnail_preview_trace_supported(&self) -> bool {
+        // The paired payload adds its exact tuple after the source review.
+        const TARGET: Option<RuntimeTuple> = None;
+        TARGET == Some((self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn r285_greek_thumbnail_v2_outcome(&self) -> bool {
         (&*self.manifest.source_commit, self.producer_sha256(), &*self.manifest_sha256) == R285_GREEK_THUMBNAIL_V2_TARGET
     }

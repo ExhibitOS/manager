@@ -103,6 +103,7 @@ public struct NativeHostStatus: Decodable, Sendable {
     public let freshImageReleaseConfigured: Bool?
     public let hayesOriginalReady: Bool?
     public let hayesReceipt: NativeHayesReceipt?
+    let thumbnailPreviewTrace: DocumentValue?
     public var needsShutdown: Bool { busy || runtime?.hasOwnedProcesses == true }
 }
 public struct LocalAuthoringSession: Decodable, Sendable {
@@ -390,7 +391,12 @@ public actor NativeBridge {
         return try request("native_prepare", fields: fields)
     }
     public func start(_ context: Context) throws -> NativeHostStatus {
-        try request("native_start", fields: ["selection_token": context.selectionToken])
+        try start(context, thumbnailPreviewTraceID: nil)
+    }
+    func start(_ context: Context, thumbnailPreviewTraceID: String?) throws -> NativeHostStatus {
+        var fields = ["selection_token": context.selectionToken]
+        if let thumbnailPreviewTraceID { fields["thumbnail_preview_trace_id"] = thumbnailPreviewTraceID }
+        return try request("native_start", fields: fields)
     }
     public func selectBoundedOEX(_ context: Context) throws {
         let _: DocumentValue = try request("native_oex_select", fields: ["selection_token": context.selectionToken])

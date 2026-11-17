@@ -202,6 +202,9 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsRenderedArtworkThumbnail: Bool {
         supportsArtworkThumbnail && boundedReadOnly == false && capabilities?.contains("rendered-display-preview-v1") == true
     }
+    var supportsArtworkThumbnailPreviewTrace: Bool {
+        artworkThumbnailOutcomeVersion == .previewStep && capabilities?.contains("artwork-thumbnail-preview-trace-v1") == true
+    }
     var artworkThumbnailOutcomeVersion: NativeThumbnailPageFailure.Version? {
         guard supportsRenderedArtworkThumbnail else { return nil }
         if capabilities?.contains("artwork-thumbnail-outcome-v2") == true { return .previewStep }

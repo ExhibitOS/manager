@@ -24,12 +24,18 @@ public struct ViewportThumbnailRequest: Codable, Sendable {
         }
     }
     public init(frame: ViewportFrame, artworkId: String, expectedRevision: Int) throws {
+        try self.init(frame: frame, artworkId: artworkId, expectedRevision: expectedRevision,
+                      requestID: UUID().uuidString.lowercased())
+    }
+
+    init(frame: ViewportFrame, artworkId: String, expectedRevision: Int, requestID: String) throws {
         version = 1
         guard !frame.disabled, frame.sequence > 0, expectedRevision > 0, expectedRevision <= 2_147_483_647,
               let artwork = UUID(uuidString: artworkId), UUID(uuidString: frame.epoch) != nil,
               UUID(uuidString: frame.tenantId) != nil, UUID(uuidString: frame.principalId) != nil else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
         epoch = frame.epoch; sequence = frame.sequence; tenantId = frame.tenantId; principalId = frame.principalId
-        requestId = UUID().uuidString.lowercased(); self.artworkId = artwork.uuidString.lowercased(); self.expectedRevision = expectedRevision
+        guard NativeThumbnailPreviewTrace.validRequestID(requestID) else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+        requestId = requestID; self.artworkId = artwork.uuidString.lowercased(); self.expectedRevision = expectedRevision
     }
 }
 public struct ViewportRenderedThumbnail: Sendable {

@@ -58,6 +58,8 @@ pub(super) struct Setup {
     furnishing_writer: Option<super::furnishing_lifetime::ProbedWriter>,
     hayes: Option<HayesSetup>,
     adoption: Option<AdoptionSetup>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    thumbnail_preview_trace: Option<super::thumbnail_preview_trace::Writer>,
     #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     probe_source: Option<super::hayes_probe_source::ProbeSourceFd>,
 }
@@ -109,6 +111,8 @@ impl Setup {
         Ok(Self {parent,child:Some(child),secret,furnishing_writer:None,
             hayes: None,
             adoption: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            thumbnail_preview_trace: None,
             #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             probe_source: None,
         })
@@ -180,6 +184,10 @@ impl Setup {
             return Ok(bytes);
         }
         if let Some(hayes) = &self.hayes {
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if let Some(trace) = &self.thumbnail_preview_trace {
+                return hayes.bootstrap_with_thumbnail_trace(auth, generation, start, &self.secret, Some(trace.bootstrap()));
+            }
             return hayes.bootstrap(auth, generation, start, &self.secret);
         }
         if matches!(start, super::FurnishingStart::Upgrade040To044 | super::FurnishingStart::Upgrade044To045) {
@@ -207,6 +215,15 @@ impl Setup {
             return Err(err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"));
         }
         self.adoption = Some(AdoptionSetup::for_runtime(generation, manifest, workspace, payload)?);
+        Ok(self)
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn with_thumbnail_preview_trace(mut self, writer: super::thumbnail_preview_trace::Writer) -> Result<Self> {
+        if self.hayes.is_none() || self.adoption.is_some() || self.furnishing_writer.is_none() || self.thumbnail_preview_trace.is_some() {
+            return Err(err(super::thumbnail_preview_trace::ERROR));
+        }
+        self.thumbnail_preview_trace = Some(writer);
         Ok(self)
     }
 
@@ -264,8 +281,18 @@ impl Setup {
             command.env(adoption_bootstrap::SOCKET_ENV, socket.to_string());
             command.env(adoption_bootstrap::ROOT_ENV, root.to_string());
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let trace_fd = self.thumbnail_preview_trace.as_ref().map(super::thumbnail_preview_trace::Writer::fd);
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let trace_fd: Option<i32> = None;
+        if trace_fd.is_some_and(|trace| std::iter::once(fd).chain(writer).chain(hayes_fd).chain(probe_source)
+            .chain(adoption_fds.into_iter().flatten()).any(|fd| fd == trace))
+        {
+            return Err(err("NATIVE_THUMBNAIL_TRACE_UNAVAILABLE"));
+        }
         unsafe { command.pre_exec(move || {
-            for descriptor in std::iter::once(fd).chain(writer).chain(hayes_fd).chain(probe_source).chain(adoption_fds.into_iter().flatten()) {
+            for descriptor in std::iter::once(fd).chain(writer).chain(hayes_fd).chain(probe_source)
+                .chain(adoption_fds.into_iter().flatten()).chain(trace_fd) {
                 let flags = libc::fcntl(descriptor, libc::F_GETFD);
                 if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
                     return Err(std::io::Error::last_os_error());
@@ -278,6 +305,8 @@ impl Setup {
     pub(super) fn close_child(&mut self) {
         self.child.take();
         self.furnishing_writer.take();
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        self.thumbnail_preview_trace.take();
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         self.probe_source.take();
         if let Some(hayes) = self.hayes.as_mut() {

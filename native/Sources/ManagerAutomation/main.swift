@@ -19,6 +19,7 @@ struct Configuration: Decodable {
     let existingWorkspaceV5: NativeAutomationSession.ExistingWorkspaceV5?
     let appliedDraftRecoveryPath: String?
     let firstArchitectureEntry: Bool?
+    let thumbnailPreviewTraceRequestId: String?
 }
 actor Driver {
     let session: NativeAutomationSession
@@ -53,9 +54,15 @@ actor Driver {
                 // its structured task before EOF closes the owning helper.
                 let task = active, cancelledID = activeID; task?.cancel(); await task?.value
                 var runtimeDrained: DocumentValue = .null
-                if request["operation"].string == "close" { try await session.close(); closed = true; runtimeDrained = .bool(true) }
-                else if cancelledID != nil { runtimeDrained = .bool(try await session.cancelOwnedRuntime()) }
-                emit(.object(["version": .integer(1), "requestId": .string(id), "result": .object(["cancelledJobId": cancelledID.map(DocumentValue.string) ?? .null, "operationTaskFinished": .bool(true), "runtimeDrained": runtimeDrained, "closed": .bool(closed)])]))
+                var previewTrace: DocumentValue?
+                if request["operation"].string == "close" {
+                    previewTrace = try await session.closeWithThumbnailPreviewTrace()
+                    closed = true; runtimeDrained = .bool(true)
+                } else if cancelledID != nil { runtimeDrained = .bool(try await session.cancelOwnedRuntime()) }
+                var result: [String: DocumentValue] = ["cancelledJobId": cancelledID.map(DocumentValue.string) ?? .null,
+                    "operationTaskFinished": .bool(true), "runtimeDrained": runtimeDrained, "closed": .bool(closed)]
+                if let previewTrace { result["thumbnailPreviewTrace"] = previewTrace }
+                emit(.object(["version": .integer(1), "requestId": .string(id), "result": .object(result)]))
                 return
             }
             guard active == nil else { throw BridgeFailure("AUTOMATION_BUSY") }
@@ -107,6 +114,7 @@ func run() async -> Int32 {
         optional.insert("existingWorkspaceV5")
         optional.insert("appliedDraftRecoveryPath")
         optional.insert("firstArchitectureEntry")
+        optional.insert("thumbnailPreviewTraceRequestId")
         #endif
         guard names.subtracting(optional) == ["helper", "profile", "ports", "outputRoot", "temporaryRoot", "inputs"] else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
         let config = try JSONDecoder().decode(Configuration.self, from: data)
@@ -135,6 +143,9 @@ func run() async -> Int32 {
                   config.workspaceV6ValidationRuntime == nil, config.workspaceV7ValidationRuntime == nil,
                   config.appliedDraftRecoveryPath == nil else { throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID") }
         }
+        if names.contains("thumbnailPreviewTraceRequestId"), config.thumbnailPreviewTraceRequestId == nil {
+            throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+        }
         guard setenv("TMPDIR", config.temporaryRoot, 1) == 0 else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         let owned = try NativeAutomationSession(helper: URL(fileURLWithPath: config.helper), profile: URL(fileURLWithPath: config.profile), ports: config.ports, outputRoot: URL(fileURLWithPath: config.outputRoot), temporaryRoot: URL(fileURLWithPath: config.temporaryRoot), inputs: config.inputs, selectedOEX9: config.selectedOEX9 ?? false, selectedOEX10: config.selectedOEX10 ?? false,
                                                 workspaceV5ValidationRuntime: config.workspaceV5ValidationRuntime.map { URL(fileURLWithPath: $0) },
@@ -142,7 +153,8 @@ func run() async -> Int32 {
                                                 workspaceV6ValidationRuntime: config.workspaceV6ValidationRuntime.map { URL(fileURLWithPath: $0) },
                                                 workspaceV7ValidationRuntime: config.workspaceV7ValidationRuntime.map { URL(fileURLWithPath: $0) },
                                                 appliedDraftRecoveryPath: config.appliedDraftRecoveryPath,
-                                                firstArchitectureEntry: config.firstArchitectureEntry ?? false)
+                                                firstArchitectureEntry: config.firstArchitectureEntry ?? false,
+                                                thumbnailPreviewTraceRequestID: config.thumbnailPreviewTraceRequestId)
         session = owned
         let driver = Driver(owned)
         await driver.emit(.object(["version": .integer(1), "event": .string("ready"), "result": try await owned.open()]))

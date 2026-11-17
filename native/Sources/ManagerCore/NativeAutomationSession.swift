@@ -117,8 +117,25 @@ public actor NativeAutomationSession {
     private var architectureSaveRecovery: NativeArchitectureSaveRecovery?
     private var firstArchitectureRecoveryOnly = false
     private var runtimeStopped = false
+    private var thumbnailPreviewTraceRequestID: String?
+    private var thumbnailPreviewTraceUsed = false
+    private var thumbnailPreviewTraceOutcome: DocumentValue = .null
+    private var thumbnailPreviewWebTrace: DocumentValue?
 
-    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil, firstArchitectureEntry: Bool = false) throws {
+    public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil, firstArchitectureEntry: Bool = false, thumbnailPreviewTraceRequestID: String? = nil) throws {
+        if let thumbnailPreviewTraceRequestID {
+            #if DEBUG && os(macOS)
+            guard NativeThumbnailPreviewTrace.validRequestID(thumbnailPreviewTraceRequestID),
+                  existingWorkspaceV5 != nil, workspaceV5ValidationRuntime == nil,
+                  workspaceV6ValidationRuntime == nil, workspaceV7ValidationRuntime == nil,
+                  !selectedOEX9, !selectedOEX10, !firstArchitectureEntry, appliedDraftRecoveryPath == nil else {
+                throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+            }
+            self.thumbnailPreviewTraceRequestID = thumbnailPreviewTraceRequestID
+            #else
+            throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
+            #endif
+        }
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
@@ -406,7 +423,7 @@ public actor NativeAutomationSession {
               let draft = saved.draft, let etag = saved.etag else {
             throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
         }
-        _ = try await bridge.start(context)
+        _ = try await bridge.start(context, thumbnailPreviewTraceID: thumbnailPreviewTraceRequestID)
         let ready = try await waitStartup(manifest: expected.manifestSHA256)
         guard ready.runtime?.readiness.ready == true, ready.selectedOex != true,
               ready.configuration?.manifestSha256 == expected.manifestSHA256,
@@ -594,9 +611,14 @@ public actor NativeAutomationSession {
             guard let artworkId = command["artworkId"].string, let revision = command["artworkRevision"].integer,
                   (1...Int64(Int32.max)).contains(revision), !current.dirty, current.pending == nil,
                   let draft = current.draft, let etag = current.etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+            let traceID = thumbnailPreviewTraceRequestID
+            if let traceID, id != traceID || thumbnailPreviewTraceUsed {
+                throw BridgeFailure("CATALOG_THUMBNAIL_TRACE_UNAVAILABLE")
+            }
             let candidatePath = root.appendingPathComponent("thumbnail-\(id).json").path
             let pngPath = root.appendingPathComponent("thumbnail-\(id).png").path
             if FileManager.default.fileExists(atPath: candidatePath) {
+                guard traceID == nil else { throw BridgeFailure("CATALOG_THUMBNAIL_TRACE_UNAVAILABLE") }
                 let stored = try Self.sharedBenchReply(root: root, path: candidatePath)
                 let candidate = try JSONDecoder().decode(NativeThumbnailCandidate.self, from: JSONEncoder().encode(stored))
                 let rendered = try candidate.rendered(in: current)
@@ -613,11 +635,34 @@ public actor NativeAutomationSession {
                 tenantId: current.tenantId, principalId: current.principalId, draft: draft,
                 selection: nil, mode: "translate", view: "isometric", disabled: false,
                 workspaceId: current.workspaceId, baseETag: etag)
+            if traceID != nil {
+                thumbnailPreviewTraceUsed = true
+                thumbnailPreviewTraceOutcome = .object(["kind": .string("unavailable")])
+            }
             let renderer = await NativeThumbnailRenderer()
-            let (renderRequest, reply) = try await withTaskCancellationHandler {
-                try await renderer.render(credentials: credentials, frame: frame, artworkId: artworkId, revision: Int(revision))
-            } onCancel: {
-                Task { @MainActor in renderer.cancel() }
+            let renderRequest: ViewportThumbnailRequest
+            let reply: ViewportThumbnailReply
+            do {
+                (renderRequest, reply) = try await withTaskCancellationHandler {
+                    try await renderer.render(credentials: credentials, frame: frame, artworkId: artworkId,
+                                              revision: Int(revision), previewTraceRequestID: traceID)
+                } onCancel: {
+                    Task { @MainActor in renderer.cancel() }
+                }
+                if traceID != nil {
+                    thumbnailPreviewWebTrace = await renderer.previewTrace
+                }
+            } catch {
+                if traceID != nil {
+                    thumbnailPreviewWebTrace = await renderer.previewTrace
+                    if let failure = error as? NativeThumbnailPageFailure {
+                        let value = NativeAutomationFailure.value(failure)
+                        thumbnailPreviewTraceOutcome = value["thumbnailFailure"]
+                    } else {
+                        thumbnailPreviewTraceOutcome = .object(["kind": .string("unavailable")])
+                    }
+                }
+                throw error
             }
             let (_, _, refreshed) = try await checked(request)
             guard try value(refreshed) == value(current), await api.hasCatalogThumbnailAuthority(session) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
@@ -626,6 +671,7 @@ public actor NativeAutomationSession {
             let rendered = try candidate.rendered(in: current)
             try candidate.persist(root: root, name: URL(fileURLWithPath: candidatePath).lastPathComponent)
             try NativeThumbnailCandidate.materializePreview(rendered.pngData, root: root, name: URL(fileURLWithPath: pngPath).lastPathComponent)
+            if traceID != nil { thumbnailPreviewTraceOutcome = .object(["kind": .string("rendered")]) }
             return .object(["candidatePath": .string(candidatePath), "previewPath": .string(pngPath),
                 "pngSha256": .string(rendered.pngSha256), "selectionVersion": .integer(Int64(selection.selectionVersion)), "selected": .bool(false)])
         }
@@ -4311,6 +4357,21 @@ public actor NativeAutomationSession {
             if drained { throw error }
             throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
         }
+    }
+
+    public func closeWithThumbnailPreviewTrace() async throws -> DocumentValue? {
+        var trace: DocumentValue?
+        if let id = thumbnailPreviewTraceRequestID, thumbnailPreviewTraceUsed, let context, let manifest = runtimeManifest {
+            let drained = runtimeStopped ? true : ((try? await cancelOwnedRuntime()) == true)
+            let server = drained ? (try? await bridge.nativeStatus(context))?.thumbnailPreviewTrace : nil
+            trace = .object(["version": .integer(1), "requestId": .string(id), "runtimeManifestSHA256": .string(manifest),
+                "web": thumbnailPreviewWebTrace ?? .null,
+                "server": server?["requestId"].string == id ? (server ?? .null) : .null,
+                "outcome": thumbnailPreviewTraceOutcome])
+        }
+        try await close()
+        thumbnailPreviewTraceRequestID = nil
+        return trace
     }
 
     public func close() async throws {
