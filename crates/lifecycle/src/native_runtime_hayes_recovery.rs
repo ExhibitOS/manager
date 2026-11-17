@@ -66,7 +66,10 @@ impl Session {
         }
 
         let runtime = self.payload.context();
-        let predecessor = if self.scoped_hayes_binding_available() {
+        let greek_web_successor = self.payload.r285_greek_thumbnail_outcome();
+        let predecessor = if greek_web_successor {
+            crate::native_payload::R285_HAYES_PREOPEN_TERMINAL_TARGET.2
+        } else if self.scoped_hayes_binding_available() {
             runtime.manifest_sha256.as_str()
         } else {
             crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST
@@ -95,7 +98,7 @@ impl Session {
                 AND w.metadata->'displayReference'->>'assetSha256'='{display}'
                 AND r.runtime_manifest_sha256 IN ('{manifest}','{predecessor}')
                 AND (NOT {require_prior_approval} OR (
-                    r.runtime_manifest_sha256='{predecessor}'
+                    (r.runtime_manifest_sha256='{predecessor}' OR ({greek_web_successor} AND r.runtime_manifest_sha256='{manifest}'))
                     AND EXISTS (
                         SELECT 1 FROM artwork_approvals approved
                          WHERE (approved.tenant_id,approved.artwork_id,approved.revision,approved.asset_id)
@@ -112,7 +115,7 @@ impl Session {
             tenant=auth.tenant_id, workspace=auth.workspace_id, principal=auth.principal_id,
             job=binding.job_id, artwork=binding.artwork_id, historical_revision=binding.artwork_revision,
             display=display, manifest=runtime.manifest_sha256,
-            predecessor=predecessor,
+            predecessor=predecessor, greek_web_successor=greek_web_successor,
             require_prior_approval=text_successor || finished_artwork.is_some(),
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );

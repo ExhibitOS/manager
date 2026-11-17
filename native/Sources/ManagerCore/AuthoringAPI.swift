@@ -1171,9 +1171,11 @@ public actor AuthoringAPI {
 
     static let r285SettledHayesRuntime = "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f"
 
+    static let r285GreekThumbnailOutcomeRuntime = "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66"
+
     nonisolated static func supportsR285SettledHayesRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        manifest == r285SettledHayesRuntime
+        manifest == r285SettledHayesRuntime || manifest == r285GreekThumbnailOutcomeRuntime
         #else
         false
         #endif
@@ -1220,6 +1222,7 @@ public actor AuthoringAPI {
          r285InitialProductImageRuntime,
          r285ClosingArticulationRuntime,
          r285SettledHayesRuntime,
+         r285GreekThumbnailOutcomeRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
