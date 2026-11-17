@@ -668,21 +668,21 @@ impl Host {
                                     )?;
                                 }
                                 #[cfg(feature = "workspace-v5-owner-validation")]
-                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_saved_head, retained_product_image, retained_gpu_variant, retained_original_model, startup_cancellation_045 } => {
+                                LocalPersonalTransition::StageSaved { source_payload, staging, key_file, retained_saved_head, retained_product_image, retained_gpu_variant, retained_original_model, retained_hayes_preopen, startup_cancellation_045 } => {
                                     let source = Payload::open_saved_workspace_transition(&source_payload)?;
                                     let target = Payload::open_saved_workspace_transition(&resources)?;
                                     controller.prepare_saved_workspace_v5_transition(
                                         &token, &source, &target, &staging, &key_file,
                                         retained_saved_head.as_ref(),
-                                        TransitionRetention::from_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref(), retained_original_model.as_ref())?,
+                                        TransitionRetention::from_all_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref(), retained_original_model.as_ref(), retained_hayes_preopen.as_ref())?,
                                         startup_cancellation_045.as_ref(),
                                     )?;
                                 }
-                                LocalPersonalTransition::Activate { staging, key_file, retained_product_image, retained_gpu_variant, retained_original_model, startup_cancellation_045 } => {
+                                LocalPersonalTransition::Activate { staging, key_file, retained_product_image, retained_gpu_variant, retained_original_model, retained_hayes_preopen, startup_cancellation_045 } => {
                                     let target = Arc::new(Payload::open(&resources)?);
                                     controller.activate_local_personal_runtime_transition(
                                         &token, target, &staging, &key_file, saved_workspace_host,
-                                        TransitionRetention::from_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref(), retained_original_model.as_ref())?,
+                                        TransitionRetention::from_all_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref(), retained_original_model.as_ref(), retained_hayes_preopen.as_ref())?,
                                         startup_cancellation_045.as_ref(),
                                     )?;
                                 }
@@ -691,10 +691,10 @@ impl Host {
                                     let target = Arc::new(Payload::open_saved_workspace_transition(&resources)?);
                                     controller.activate_selected_recovery_045(&token, target, &staging, &key_file, selection)?;
                                 }
-                                LocalPersonalTransition::Recover { staging, key_file, retained_product_image, retained_gpu_variant, retained_original_model } => {
+                                LocalPersonalTransition::Recover { staging, key_file, retained_product_image, retained_gpu_variant, retained_original_model, retained_hayes_preopen } => {
                                     controller.recover_local_personal_runtime_transition(
                                         &token, &staging, &key_file, saved_workspace_host,
-                                        TransitionRetention::from_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref(), retained_original_model.as_ref())?,
+                                        TransitionRetention::from_all_proofs(retained_product_image.as_ref(), retained_gpu_variant.as_ref(), retained_original_model.as_ref(), retained_hayes_preopen.as_ref())?,
                                     )?;
                                 }
                                 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
@@ -1569,6 +1569,17 @@ impl Host {
                 return Err(denied());
             }
             return Ok(proof);
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+        if let UiCommand::NativeHayesPreopenTerminal { selection_token, proof } = &request.command {
+            let root = self.selected(selection_token)?;
+            let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+            if state.root.as_ref() != Some(&root) || state.busy || state.detail_closing || state.selected_oex {
+                return Err(err("NATIVE_NOT_READY"));
+            }
+            let session = state.session.as_mut().ok_or_else(|| err("NATIVE_NOT_READY"))?;
+            return self.controller.settle_retained_hayes_upload(selection_token, proof,
+                |saved, draft| session.terminalize_hayes_preopen(proof, saved, draft));
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if let UiCommand::NativeHayesRelease { selection_token, job_id, current_artwork_revision, finished_artwork } = &request.command {

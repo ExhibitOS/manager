@@ -79,6 +79,20 @@ fn selected_bootstrap_is_closed_and_legacy_has_no_hayes_pin() {
 }
 
 #[test]
+fn hayes_terminal_selector_is_only_on_the_reopen_fd_envelope() {
+    let auth = authority();
+    let ordinary = Setup::new().unwrap();
+    let hayes = HayesSetup::new(pin().with_hayes_preopen_selection(true)).unwrap();
+    for start in [FurnishingStart::Initialize, FurnishingStart::Upgrade044To045, FurnishingStart::SelectedImport040] {
+        assert!(hayes.bootstrap(&auth, GENERATION, start, &ordinary.secret).is_err());
+    }
+    let bytes = hayes.bootstrap(&auth, GENERATION, FurnishingStart::Reopen, &ordinary.secret).unwrap();
+    let selected = String::from_utf8(bytes).unwrap();
+    assert!(selected.contains("\"mode\":\"workspace-furnishing-036-reopen-v1\""));
+    assert!(selected.ends_with(&format!("\"runtimeManifestSha256\":\"{MANIFEST}\",\"selection\":\"hayes-preopen-retained-reopen-v1\"}}}}")));
+}
+
+#[test]
 fn furnishing_catalog_upgrades_to_44_and_45_require_both_owner_channels() {
     let auth = authority();
     let ordinary = Setup::new().unwrap();

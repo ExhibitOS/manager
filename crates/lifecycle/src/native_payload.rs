@@ -711,6 +711,34 @@ pub(crate) const R285_CLOSING_ARTICULATION_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const R285_HAYES_PREOPEN_TERMINAL_TARGET: RuntimeTuple = (
+    "45455c698f220ecb73ea3560847f0811c54b7a30",
+    "9c903f0d612f153929d586f6f34e328b236c640a7a097f966b90b3fe70028879",
+    "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn r285_hayes_preopen_terminal_transition(pair: (&str, &str)) -> bool {
+    pair == (R285_CLOSING_ARTICULATION_TARGET.2, R285_HAYES_PREOPEN_TERMINAL_TARGET.2)
+}
+
+pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    { R285_HAYES_PREOPEN_TERMINAL_TARGET == tuple }
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
+pub(crate) const HAYES_PREOPEN_TERMINAL_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-hayes-preopen-terminal/054_hayes_preopen_terminal.sql",
+    5118, "1adf273344e8382fa69cfa3eb76c1ba0555d91564351854a85fc1a2bc3520664",
+);
+const HAYES_PREOPEN_TERMINAL_MARKER: (&str, u64, &str) = (
+    "platform/scripts/native-hayes-preopen-terminal-capability-v1.json",
+    262, "2d2709a4993a617b61a3120724ed75b8cb68ce6ff588f3970141346ec83f6799",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn r285_closing_articulation_clean_transition(pair: (&str, &str)) -> bool {
     pair == (R285_INITIAL_PRODUCT_IMAGE_TARGET.2, R285_CLOSING_ARTICULATION_TARGET.2)
 }
@@ -852,6 +880,7 @@ pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)
         ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET,
         R285_ROOM_FILL_EXIT_TARGET, R285_SUPPLEMENTAL_FILL_TARGET, R285_INITIAL_PRODUCT_IMAGE_TARGET,
         R285_CLOSING_ARTICULATION_TARGET].contains(&tuple) { return true; }
+    if r285_hayes_preopen_terminal_host_matches(tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
 // Both fresh binding admission and its mandatory inherited channel use this
@@ -1842,6 +1871,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || R285_SUPPLEMENTAL_FILL_TARGET.2 == manifest
         || R285_INITIAL_PRODUCT_IMAGE_TARGET.2 == manifest
         || R285_CLOSING_ARTICULATION_TARGET.2 == manifest
+        || R285_HAYES_PREOPEN_TERMINAL_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1906,6 +1936,7 @@ impl FurnishingTransition {
             || r285_supplemental_fill_clean_transition((self.source().2, self.target().2))
             || r285_initial_product_image_clean_transition((self.source().2, self.target().2))
             || r285_closing_articulation_clean_transition((self.source().2, self.target().2))
+            || r285_hayes_preopen_terminal_transition((self.source().2, self.target().2))
             || matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }
             if (source == COMBINED_THUMBNAIL_TARGET && target == STATIC_DETAIL_PHASE_TARGET)
                 || (source == STATIC_DETAIL_PHASE_TARGET && target == CONTACT_EMITTER_CARD_TARGET)
@@ -1933,6 +1964,10 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if r285_hayes_preopen_terminal_transition(pair) {
+            return Some(Self::SameCatalog { source: R285_CLOSING_ARTICULATION_TARGET, target: R285_HAYES_PREOPEN_TERMINAL_TARGET,
+                catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+        }
         if r285_closing_articulation_clean_transition(pair) {
             return Some(Self::SameCatalog { source: R285_INITIAL_PRODUCT_IMAGE_TARGET, target: R285_CLOSING_ARTICULATION_TARGET,
                 catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -3298,6 +3333,33 @@ pub(crate) mod normal_oex_release_declaration_tests {
         for denied in [(pair.1, pair.0), (pair.1, pair.1), (R285_SUPPLEMENTAL_FILL_TARGET.2, pair.1)] {
             assert!(!saved_workspace_transition_supported(denied));
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires exact sealed 052 and 054 payloads; opens them offline"]
+    fn r285_hayes_preopen_only_admits_exact_saved_forward_pair() {
+        let parent = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_CLOSING_ARTICULATION_RUNTIME").unwrap());
+        let successor = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_HAYES_PREOPEN_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&parent).unwrap();
+        let target = Payload::open_saved_workspace_transition(&successor).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(!source.hayes_preopen_terminal());
+        assert!(target.hayes_preopen_terminal());
+        let parent_ledger = source.workspace_furnishing_ledger(catalog).unwrap();
+        let target_ledger = target.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(parent_ledger.lines().count(), 47);
+        assert_eq!(target_ledger, format!("{parent_ledger}\n054_hayes_preopen_terminal.sql|{}", HAYES_PREOPEN_TERMINAL_SCHEMA.2));
+        let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
+        let transition = FurnishingTransition::from_manifests(pair).unwrap();
+        assert!(transition.is_combined_thumbnail_runtime_refresh());
+        assert_eq!(crate::native_personal::physical_checkpoint::transition_source_ledger(&target, transition).unwrap(), parent_ledger);
+        assert!(!saved_workspace_transition_supported((pair.1, pair.0)));
+        assert!(!saved_workspace_transition_supported((pair.1, pair.1)));
+        assert!(Payload::open_workspace_v5_validation(&successor, false).is_ok());
+        assert!(Payload::open_fresh_workspace_v7_validation(&successor).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -6919,6 +6981,12 @@ impl Payload {
             file.path == GPU_MODEL_CAPABILITY_PATH || file.path.starts_with(GPU_MODEL_DIRECTORY));
         if gpu_declared != gpu_pinned { return Err(unqualified()); }
         let combined_thumbnail_pinned = combined_thumbnail_ordinary_host_matches(tuple);
+        let hayes_terminal = r285_hayes_preopen_terminal_host_matches(tuple);
+        if self.manifest.files.iter().any(|file| file.path == HAYES_PREOPEN_TERMINAL_MARKER.0)
+            != hayes_terminal
+        {
+            return Err(unqualified());
+        }
         let thumbnail_pinned = furnishing_thumbnail_host_matches(tuple);
         let thumbnail_declared = self.manifest.files.iter().any(|file|
             file.path == FURNISHING_THUMBNAIL_CAPABILITY.0 || file.path.starts_with(FURNISHING_THUMBNAIL_DIRECTORY));
@@ -7091,7 +7159,9 @@ impl Payload {
                                             return Ok(Some(WorkspaceFurnishingCatalog::FreshImagePreparation047));
                                         }
                                         if combined_thumbnail_pinned {
-                                            if !pinned_file(CURRENT_IMAGE_THUMBNAIL_CAPABILITY) || !pinned_file(CURRENT_IMAGE_THUMBNAIL_SCHEMA)
+                                            if (hayes_terminal && (!pinned_file(HAYES_PREOPEN_TERMINAL_MARKER)
+                                                || !pinned_file(HAYES_PREOPEN_TERMINAL_SCHEMA)))
+                                                || !pinned_file(CURRENT_IMAGE_THUMBNAIL_CAPABILITY) || !pinned_file(CURRENT_IMAGE_THUMBNAIL_SCHEMA)
                                                 || !pinned_file(FURNISHING_THUMBNAIL_CAPABILITY) || !pinned_file(FURNISHING_THUMBNAIL_SCHEMA)
                                                 || ["platform/scripts/native-model-adoption-capability-v1.json",
                                                     "platform/scripts/native-model-adoption-carried-target-capability-v1.json"]
@@ -7161,6 +7231,21 @@ impl Payload {
         Ok(Some(WorkspaceFurnishingCatalog::Schema036))
     }
 
+    pub(crate) fn hayes_preopen_terminal(&self) -> bool {
+        r285_hayes_preopen_terminal_host_matches((&self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn hayes_preopen_source_ledger(&self) -> Result<String> {
+        if !self.hayes_preopen_terminal() { return Err(invalid()); }
+        let ledger = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052)?;
+        let (parent, terminal) = ledger.rsplit_once('\n').ok_or_else(invalid)?;
+        if parent.lines().count() != 47 || terminal != format!("054_hayes_preopen_terminal.sql|{}", HAYES_PREOPEN_TERMINAL_SCHEMA.2) {
+            return Err(invalid());
+        }
+        Ok(parent.to_owned())
+    }
+
     pub(crate) fn workspace_furnishing_ledger(&self, catalog: WorkspaceFurnishingCatalog) -> Result<String> {
         let directories = [
             ("migrations", 1..=25),
@@ -7187,6 +7272,7 @@ impl Payload {
                 && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
                 && file.path != CURRENT_IMAGE_THUMBNAIL_SCHEMA.0 && file.path != FURNISHING_THUMBNAIL_SCHEMA.0
                 && !(bench_basecolor && file.path == BENCH_BASECOLOR_PREPARATION_SCHEMA.0)
+                && !(self.hayes_preopen_terminal() && file.path == HAYES_PREOPEN_TERMINAL_SCHEMA.0)
             { return Err(invalid()); }
             if catalog == WorkspaceFurnishingCatalog::CurrentImageThumbnail051
                 && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
@@ -7295,6 +7381,12 @@ impl Payload {
                     return Err(invalid());
                 }
                 53
+            } else if file.path.starts_with("platform/database/native-hayes-preopen-terminal/") {
+                let (path, bytes, hash) = HAYES_PREOPEN_TERMINAL_SCHEMA;
+                if !self.hayes_preopen_terminal() || catalog != WorkspaceFurnishingCatalog::CombinedThumbnails052
+                    || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                { return Err(invalid()); }
+                54
             } else if file.path.starts_with(CURRENT_IMAGE_THUMBNAIL_DIRECTORY) {
                 let (path, bytes, hash) = CURRENT_IMAGE_THUMBNAIL_SCHEMA;
                 if !matches!(catalog, WorkspaceFurnishingCatalog::CurrentImageThumbnail051 | WorkspaceFurnishingCatalog::CombinedThumbnails052 | WorkspaceFurnishingCatalog::CurrentRail053)
@@ -7337,7 +7429,7 @@ impl Payload {
         }
         // These isolated catalogs append one migration to 045.
         let count = match catalog {
-            WorkspaceFurnishingCatalog::CombinedThumbnails052 => if bench_basecolor { 48 } else { 47 },
+            WorkspaceFurnishingCatalog::CombinedThumbnails052 => if bench_basecolor || self.hayes_preopen_terminal() { 48 } else { 47 },
             WorkspaceFurnishingCatalog::CurrentRail053 => 48,
             WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048
                 | WorkspaceFurnishingCatalog::GpuModelPreparation049 | WorkspaceFurnishingCatalog::FurnishingThumbnail050
