@@ -157,6 +157,20 @@ public enum WorkspaceCeilingRail {
         try compose(attachment, furnishing: furnishing, to: draft, supportedExtensionVersion: supportedExtensionVersion, replacing: nil)
     }
 
+    static func applying(_ attachments: [WorkspaceCeilingRailAttachment], furnishing: WorkspaceFurnishing,
+                         to draft: NativeExhibitionDraft, supportedExtensionVersion: Int64) throws -> NativeExhibitionDraft? {
+        guard !attachments.isEmpty, attachments.count <= 128,
+              Set(attachments.map(\.placementId)).count == attachments.count else { throw invalid() }
+        var next = draft
+        for attachment in attachments {
+            if let placed = try applying(attachment, furnishing: furnishing, to: next,
+                                         supportedExtensionVersion: supportedExtensionVersion) {
+                next = placed
+            }
+        }
+        return next == draft ? nil : next
+    }
+
     public static func replacing(_ replacement: WorkspaceCeilingRailReplacement, furnishing: WorkspaceFurnishing,
                                  in draft: NativeExhibitionDraft, supportedExtensionVersion: Int64) throws -> NativeExhibitionDraft? {
         guard furnishing.id == replacement.furnishingId, furnishing.details.model.sha256 == replacement.modelSHA256 else {

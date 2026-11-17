@@ -482,6 +482,7 @@ public actor AuthoringAPI {
             || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256)
             || Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
             || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
+            || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256)
         #else
         false
         #endif
@@ -1142,7 +1143,8 @@ public actor AuthoringAPI {
     var admitsRoomSupplementalCeilingFill: Bool {
         nativeSession && !authenticationBusy
             && (Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
-                || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256))
+                || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             && session?.advertisesRoomSupplementalCeilingFill == true
     }
@@ -1157,9 +1159,20 @@ public actor AuthoringAPI {
         #endif
     }
 
+    static let r285ClosingArticulationRuntime = "414ab1ba84cf3614afc956f15036b0e258755a6ce26ba8d3d1966dc66287035b"
+
+    nonisolated static func supportsR285ClosingArticulationRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == r285ClosingArticulationRuntime
+        #else
+        false
+        #endif
+    }
+
     var admitsInitialProductImagePreparation: Bool {
         nativeSession && !authenticationBusy
-            && Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
+            && (Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeInitialProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
     }
 
@@ -1194,6 +1207,7 @@ public actor AuthoringAPI {
          r285RoomFillExitRuntime,
          r285SupplementalFillRuntime,
          r285InitialProductImageRuntime,
+         r285ClosingArticulationRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -1944,7 +1958,8 @@ public actor AuthoringAPI {
             && (Self.supportsOwnerLocalOriginalRuntime(manifest: nativeRuntimeManifestSHA256)
                 || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256)
                 || Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
-                || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256))
+                || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeOriginalImageCoarseProfile == "viewer-png-box-512-v1"
     }
 
@@ -3187,6 +3202,7 @@ public actor AuthoringAPI {
             || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
             || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
+            || supportsR285ClosingArticulationRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -3757,13 +3773,21 @@ public actor AuthoringAPI {
 
     public func prepareWorkspaceCeilingRail(_ attachment: WorkspaceCeilingRailAttachment, furnishingId: String,
                                             in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        try await prepareWorkspaceCeilingRailInsertion([attachment], furnishingId: furnishingId, expectedModelSHA256: nil, in: document)
+    }
+
+    func prepareWorkspaceCeilingRailInsertion(_ attachments: [WorkspaceCeilingRailAttachment], furnishingId: String,
+                                              expectedModelSHA256: String?, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
         guard admitsWorkspaceCeilingRail, document.pending == nil, document.tenantId == tenant,
               session?.userId == document.principalId, let draft = document.draft else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         let held = generation
         let furnishing = try await workspaceFurnishing(furnishingId, version: 1)
-        let next = try WorkspaceCeilingRail.applying(attachment, furnishing: furnishing, to: draft,
+        if let expectedModelSHA256, furnishing.details.model.sha256 != expectedModelSHA256 {
+            throw AuthoringFailure("MODEL_CONFLICT")
+        }
+        let next = try WorkspaceCeilingRail.applying(attachments, furnishing: furnishing, to: draft,
                                                      supportedExtensionVersion: supportedFurnishingExtensionVersion)
         _ = try await workspaceFurnishingModel(furnishing)
         guard generation == held, admitsWorkspaceCeilingRail else { throw AuthoringFailure("ACCOUNT_CHANGED") }
@@ -4075,6 +4099,7 @@ public actor AuthoringAPI {
         supportsOwnerLocalOriginalRuntime(manifest: manifest) || supportsR285RoomFillExitRuntime(manifest: manifest)
             || supportsR285SupplementalFillRuntime(manifest: manifest)
             || supportsR285InitialProductImageRuntime(manifest: manifest)
+            || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
