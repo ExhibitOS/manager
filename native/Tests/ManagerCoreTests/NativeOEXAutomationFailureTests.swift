@@ -12,8 +12,8 @@ final class NativeOEXAutomationFailureTests: XCTestCase {
         let value = NativeAutomationFailure.value(observation.failure(error, operationId: id))
         XCTAssertEqual(value["code"], .string("AUTOMATION_OEX_EXPORT_FAILED"))
         XCTAssertEqual(value["retryAllowed"], .bool(false))
-        XCTAssertEqual(value["oexFailure"], .object(["phase": .string("receiving"), "errorDomain": .string("url"),
-            "errorCode": .integer(-1005), "operationId": .string(id), "receivedBytes": .integer(262144), "totalBytes": .integer(1000000)]))
+        XCTAssertEqual(value["oexFailure"], .object(["observedPhase": .string("receiving"), "errorDomain": .string("url"),
+            "errorCode": .integer(-1005), "operationId": .string(id), "observedReceivedBytes": .integer(262144), "observedTotalBytes": .integer(1000000)]))
         let encoded = try JSONEncoder().encode(value)
         XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains("private-token-and-url"))
     }
@@ -22,7 +22,7 @@ final class NativeOEXAutomationFailureTests: XCTestCase {
         let failure = NativeOEXAutomationFailure(NSError(domain: "private-domain", code: 123456,
             userInfo: ["cookie": "secret"]), phase: .requesting, operationId: "not-an-id", receivedBytes: -1, totalBytes: Int.max)
         XCTAssertEqual(NativeAutomationFailure.value(failure)["oexFailure"],
-                       .object(["phase": .string("requesting"), "errorDomain": .string("other")]))
+                       .object(["observedPhase": .string("requesting"), "errorDomain": .string("other")]))
         let observation = NativeOEXAutomationObservation()
         observation.update(.checkingPackage)
         XCTAssertEqual(observation.phase, .checkingPackage)
