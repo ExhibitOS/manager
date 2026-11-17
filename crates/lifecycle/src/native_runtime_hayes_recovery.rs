@@ -76,7 +76,9 @@ impl Session {
             crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST
         };
         let greek_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_TARGET.2;
-        let greek_v2 = self.payload.r285_greek_thumbnail_v2_outcome();
+        let traced = self.payload.thumbnail_preview_trace_supported();
+        let greek_v2 = self.payload.r285_greek_thumbnail_v2_outcome() || traced;
+        let greek_v2_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_V2_TARGET.2;
         let bench_manifest = crate::native_payload::R285_BENCH_AFTER_TERMINAL_TARGET.2;
         let sql = format!(
             "SELECT json_build_object('systemId',db.system_id,'databaseOid',db.database_oid,
@@ -102,12 +104,14 @@ impl Session {
                 AND w.metadata->'displayReference'->>'assetSha256'='{display}'
                 AND (r.runtime_manifest_sha256 IN ('{manifest}','{predecessor}')
                     OR ({bench_successor} AND r.runtime_manifest_sha256='{greek_manifest}')
-                    OR ({greek_v2} AND r.runtime_manifest_sha256='{bench_manifest}'))
+                    OR ({greek_v2} AND r.runtime_manifest_sha256='{bench_manifest}')
+                    OR ({traced} AND r.runtime_manifest_sha256='{greek_v2_manifest}'))
                 AND (NOT {require_prior_approval} OR (
                     (r.runtime_manifest_sha256='{predecessor}'
                         OR ({greek_web_successor} AND r.runtime_manifest_sha256='{manifest}')
                         OR ({bench_successor} AND r.runtime_manifest_sha256 IN ('{manifest}','{greek_manifest}'))
-                        OR ({greek_v2} AND r.runtime_manifest_sha256='{bench_manifest}'))
+                        OR ({greek_v2} AND r.runtime_manifest_sha256='{bench_manifest}')
+                        OR ({traced} AND r.runtime_manifest_sha256='{greek_v2_manifest}'))
                     AND EXISTS (
                         SELECT 1 FROM artwork_approvals approved
                          WHERE (approved.tenant_id,approved.artwork_id,approved.revision,approved.asset_id)
@@ -126,6 +130,7 @@ impl Session {
             display=display, manifest=runtime.manifest_sha256,
             predecessor=predecessor, greek_web_successor=greek_web_successor,
             bench_successor=bench_successor, greek_manifest=greek_manifest, greek_v2=greek_v2, bench_manifest=bench_manifest,
+            traced=traced, greek_v2_manifest=greek_v2_manifest,
             require_prior_approval=text_successor || finished_artwork.is_some(),
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );

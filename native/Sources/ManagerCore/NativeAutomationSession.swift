@@ -126,7 +126,7 @@ public actor NativeAutomationSession {
         if let thumbnailPreviewTraceRequestID {
             #if DEBUG && os(macOS)
             guard NativeThumbnailPreviewTrace.validRequestID(thumbnailPreviewTraceRequestID),
-                  existingWorkspaceV5 != nil, workspaceV5ValidationRuntime == nil,
+                  existingWorkspaceV5?.manifestSHA256 == AuthoringAPI.r285GreekThumbnailTraceRuntime, workspaceV5ValidationRuntime == nil,
                   workspaceV6ValidationRuntime == nil, workspaceV7ValidationRuntime == nil,
                   !selectedOEX9, !selectedOEX10, !firstArchitectureEntry, appliedDraftRecoveryPath == nil else {
                 throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
