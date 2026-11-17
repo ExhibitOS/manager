@@ -474,6 +474,7 @@ public actor AuthoringAPI {
     public nonisolated var supportsPlacedExitDoors: Bool {
         #if DEBUG
         nativeRuntimeManifestSHA256 == Self.placedExitDoorRuntimePin
+            || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256)
         #else
         false
         #endif
@@ -1111,6 +1112,16 @@ public actor AuthoringAPI {
         #endif
     }
 
+    static let r285RoomFillExitRuntime = "01f15b2976a65500d857d90221eb1117a5d8d871b14ebee095a3fe4e51e243d3"
+
+    nonisolated static func supportsR285RoomFillExitRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == r285RoomFillExitRuntime
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsCombinedThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
         ["84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
@@ -1134,6 +1145,7 @@ public actor AuthoringAPI {
          "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29",
          "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
          ownerLocalOriginalRuntime,
+         r285RoomFillExitRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -1880,7 +1892,9 @@ public actor AuthoringAPI {
     }
 
     public var admitsOwnerLocalOriginalImageCoarse: Bool {
-        nativeSession && !authenticationBusy && Self.supportsOwnerLocalOriginalRuntime(manifest: nativeRuntimeManifestSHA256)
+        nativeSession && !authenticationBusy
+            && (Self.supportsOwnerLocalOriginalRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeOriginalImageCoarseProfile == "viewer-png-box-512-v1"
     }
 
@@ -4008,7 +4022,8 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsPinnedStartupDrain(manifest: String) -> Bool {
         #if DEBUG
-        supportsOwnerLocalOriginalRuntime(manifest: manifest) || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
+        supportsOwnerLocalOriginalRuntime(manifest: manifest) || supportsR285RoomFillExitRuntime(manifest: manifest)
+            || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
             || supportsPreReadyPreservationReadback(manifest: manifest)

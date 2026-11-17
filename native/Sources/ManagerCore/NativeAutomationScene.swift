@@ -148,7 +148,10 @@ enum NativeAutomationScene {
     /// The existing typed room-base action defines the canonical fixture and
     /// validates the complete candidate. Caller ID is used only if absent.
     static func roomBaseRequest(_ input: DocumentValue, frame: ViewportFrame) throws -> RoomBasePreparation {
-        guard case .object(let fields) = input, Set(fields.keys) == ["type", "roomId", "lightId"],
+        let required: Set<String> = ["type", "roomId", "lightId"]
+        guard case .object(let fields) = input,
+              Set(fields.keys).subtracting(["ceilingFillProfile"]) == required,
+              fields["ceilingFillProfile"] == nil || fields["ceilingFillProfile"] == .string(RoomCeilingFill.profile),
               input["type"] == .string("ensure-room-base-light"),
               let roomId = input["roomId"].string, let lightId = input["lightId"].string,
               UUID(uuidString: roomId) != nil, UUID(uuidString: lightId) != nil,
@@ -157,7 +160,8 @@ enum NativeAutomationScene {
               [frame.epoch, frame.tenantId, frame.principalId].allSatisfy({ UUID(uuidString: $0) != nil }),
               let rows = frame.draft.candidate["lights"].items else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
         let selected = ViewportSelection(kind: "room", id: roomId)
-        let action = RoomBaseLightAction.ensure(roomId: roomId)
+        let ceilingFill = fields["ceilingFillProfile"] != nil
+        let action = RoomBaseLightAction.ensure(roomId: roomId, ceilingFill: ceilingFill)
         _ = try action.encodedValue(in: frame.draft, selected: selected)
         let markers = try NativeLightFixture.bindings(in: frame.draft.candidate).filter { $0["purpose"] == .string("room-base") }
         let matches = rows.filter { light in
@@ -171,7 +175,11 @@ enum NativeAutomationScene {
         guard !rows.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }),
               !frame.draft.rooms.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }),
               let room = frame.draft.rooms.first(where: { $0["id"].string == roomId }) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
-        var expected = try RoomBaseLightAction.appendingLight(to: frame.draft.candidate, room: room, lightId: lightId)
+        var expected = try RoomBaseLightAction.appendingLight(to: frame.draft.candidate, room: room,
+                                                            lightId: lightId, ceilingFill: ceilingFill)
+        if ceilingFill, expected["lights"].items?.last?["type"] != .string("area") {
+            throw AuthoringFailure("ROOM_CEILING_FILL_GEOMETRY")
+        }
         let template = "org.exhibitos.studio/template"
         if expected["extensions"][template] != .null {
             guard case .object = expected["extensions"][template], case .bool = expected["extensions"][template]["modified"] else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }

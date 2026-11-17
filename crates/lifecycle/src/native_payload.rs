@@ -663,6 +663,19 @@ pub(crate) const OWNER_LOCAL_ORIGINAL_TARGET: RuntimeTuple = (
     "d6467586f8a95e74e3af23aedd1514a51d23db10b21902b79709056684411746",
     "8282013c72f052aa7eb02df120c13c2a21464343eccf36fadaac567c763b6d4b",
 );
+// Same-owner R285 room ceiling fill and placed exit-door continuation.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const R285_ROOM_FILL_EXIT_TARGET: RuntimeTuple = (
+    "fe333ffb66a7828e1b046f71d8e8f1b0db58040a",
+    "3cb158860c0fd0ce31c22e3d1451ba150929095d0f758b3e82f82b3f8e0fca1f",
+    "01f15b2976a65500d857d90221eb1117a5d8d871b14ebee095a3fe4e51e243d3",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn r285_room_fill_exit_clean_transition(pair: (&str, &str)) -> bool {
+    pair == (OWNER_LOCAL_ORIGINAL_TARGET.2, R285_ROOM_FILL_EXIT_TARGET.2)
+}
+
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     RECTANGLE_FIXED64_TARGET,
@@ -797,7 +810,7 @@ pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool
 pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET,
-        ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET].contains(&tuple) { return true; }
+        ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET, R285_ROOM_FILL_EXIT_TARGET].contains(&tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
 // Both fresh binding admission and its mandatory inherited channel use this
@@ -1784,6 +1797,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || RECTANGLE_FIXED64_TARGET.2 == manifest
         || FIXED64_PUBLICATION_REPAIR_TARGET.2 == manifest
         || PREPARED_VIEWER_BUDGET_TARGET.2 == manifest
+        || R285_ROOM_FILL_EXIT_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1843,8 +1857,9 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn is_combined_thumbnail_runtime_refresh(self) -> bool {
-        self.is_prepared_viewer_budget_refresh() ||
-        matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }
+        self.is_prepared_viewer_budget_refresh()
+            || r285_room_fill_exit_clean_transition((self.source().2, self.target().2))
+            || matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }
             if (source == COMBINED_THUMBNAIL_TARGET && target == STATIC_DETAIL_PHASE_TARGET)
                 || (source == STATIC_DETAIL_PHASE_TARGET && target == CONTACT_EMITTER_CARD_TARGET)
                 || (source == CONTACT_EMITTER_CARD_TARGET && target == METRIC_FRAME_TARGET)
@@ -1871,6 +1886,10 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if r285_room_fill_exit_clean_transition(pair) {
+            return Some(Self::SameCatalog { source: OWNER_LOCAL_ORIGINAL_TARGET, target: R285_ROOM_FILL_EXIT_TARGET,
+                catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+        }
         if pair == (ROOM_CEILING_FILL_TARGET.2, PREPARED_VIEWER_BUDGET_TARGET.2) {
             return Some(Self::SameCatalog { source: ROOM_CEILING_FILL_TARGET, target: PREPARED_VIEWER_BUDGET_TARGET,
                 catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -3108,6 +3127,34 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(combined_thumbnail_carried_receipt_payload(OWNER_LOCAL_ORIGINAL_TARGET).is_none());
         assert!(FurnishingTransition::from_manifests((FIXED64_PUBLICATION_REPAIR_TARGET.2, OWNER_LOCAL_ORIGINAL_TARGET.2)).is_none());
         assert!(crate::installations::native_static_export::saved_head_runtime_allowed(OWNER_LOCAL_ORIGINAL_TARGET.2));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires exact sealed parent and successor; read-only payload openers"]
+    fn r285_room_fill_exit_is_only_a_clean_forward_catalog52_edge() {
+        let parent = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_OWNER_LOCAL_ORIGINAL_RUNTIME").unwrap());
+        let successor = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_ROOM_FILL_EXIT_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&parent).unwrap();
+        let target = Payload::open_saved_workspace_transition(&successor).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!((target.manifest.source_commit.as_str(), target.producer_sha256(),
+            target.manifest_sha256.as_str()), R285_ROOM_FILL_EXIT_TARGET);
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        let ledger = target.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ledger.lines().count(), 47);
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), ledger);
+        assert!(Payload::open_workspace_v5_validation(&successor, false).is_ok());
+        assert!(Payload::open_fresh_workspace_v7_validation(&successor).is_err());
+        assert!(combined_thumbnail_carried_receipt_payload(R285_ROOM_FILL_EXIT_TARGET).is_none());
+        let pair = (OWNER_LOCAL_ORIGINAL_TARGET.2, R285_ROOM_FILL_EXIT_TARGET.2);
+        let transition = FurnishingTransition::from_manifests(pair).unwrap();
+        assert!(transition.is_combined_thumbnail_runtime_refresh());
+        assert!(saved_workspace_transition_target(pair.1));
+        for denied in [(pair.1, pair.0), (pair.1, pair.1), (FIXED64_PUBLICATION_REPAIR_TARGET.2, pair.1)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
