@@ -4162,7 +4162,8 @@ public actor NativeAutomationSession {
                 } catch {
                     if error is AuthoringFailure || error is BridgeFailure || error is CancellationError { throw error }
                     let operationId = await api.retainedBoundedExportOperationId(exhibitionId: draft.id, etag: etag)
-                    throw await observation.failure(error, operationId: operationId)
+                    let elapsed = await api.retainedBoundedExportCompletionElapsedMilliseconds(exhibitionId: draft.id, etag: etag)
+                    throw await observation.failure(error, operationId: operationId, completionRequestElapsedMilliseconds: elapsed)
                 }
             } else {
                 let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag)

@@ -28,6 +28,7 @@ public enum NativeAutomationFailure {
             if let bytes = failure.receivedBytes { fields["observedReceivedBytes"] = .integer(Int64(bytes)) }
             if let bytes = failure.totalBytes { fields["observedTotalBytes"] = .integer(Int64(bytes)) }
             if let code = failure.errorCode { fields["errorCode"] = .integer(Int64(code)) }
+            if let elapsed = failure.completionRequestElapsedMilliseconds { fields["completionRequestElapsedMilliseconds"] = .integer(Int64(elapsed)) }
             return .object(["code": .string("AUTOMATION_OEX_EXPORT_FAILED"), "retryAllowed": .bool(false), "oexFailure": .object(fields)])
         }
         let code = (error as? BridgeFailure)?.code ?? (error as? AuthoringFailure)?.code ?? (error is CancellationError ? "AUTOMATION_CANCELLED" : "AUTOMATION_FAILED")

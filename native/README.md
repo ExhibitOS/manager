@@ -1,5 +1,17 @@
 # Native macOS application (in progress)
 
+## Detail diagnostics and OEX completion
+
+The exact `849dc7f8…` successor (source `42f1ab53…`, producer `6a378fdb…`)
+changes only two detail-runner scripts from `62d07baa…`. Only that clean directed
+transition is admitted, retaining the catalog, saved head, grants and reader lineage.
+The OEX completion GET uses the remaining original nonrenewable 30-second window
+for its full authority/resource recheck, replacing the separate five-second request
+cutoff. Responses after that window remain uncertain. No server checks, archive
+limits, global timeouts or retry policy change. A scoped CLI failure may report
+`confirming` and the bounded elapsed milliseconds of the last completion GET;
+this observation neither acknowledges authority nor authorizes a replay.
+
 ## Finished Hayes original custody client
 
 The Debug macOS owner-validation runtime `62d07baa…` (source `91bf12d9…`,
@@ -225,6 +237,11 @@ Private detail-output failures retain a bounded diagnostic in
 the protocol phase, finite Rust/child error classes, elapsed time and the child
 exit observed before cleanup. Unknown Node or OS errors remain `UNKNOWN`;
 raw stderr, stacks, URLs, paths and credentials are never persisted. Stderr is
+normalized by the matching detail runner into a closed phase marker and one
+literal error code; an unrecognized runner error becomes `STATIC_NATIVE_FAILED`.
+The optional `childPhase` records only startup, prepare, export, ack, final-check,
+settle or ready, before the first primary error. It is an observation, not a
+server settlement or retry permission. Stderr is
 read nonblockingly with bounded work and memory, independently of stdout's
 existing STAGED/READY protocol. Failure to prepare that pipe prevents startup.
 Preparation and complete asset copying before STAGED have a finite 600-second

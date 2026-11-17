@@ -36,6 +36,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "1dbf08d3b1122015cea14aefc7e50f05f59eccb559632726654a2de2d5d692dd"
             || manifest == "eb32dbb047ae2ca764d83e4d1d6c7fa4921f3f42f4b0af211ddc63f1ac332269"
             || manifest == "62d07baaee48e74c77b2b391484df57024479bf6d2b902ad57b49fcba37f9345"
+            || manifest == "849dc7f88a1a47caaa3c218db69cae295f6dba5d3f3db53615062829c7537a4d"
             || bench_basecolor_saved_head_runtime_allowed(manifest)
             || owner_local_original_saved_head_runtime_allowed(manifest)
             || isolated_saved_head_runtime_allowed(manifest))
@@ -1730,6 +1731,7 @@ impl DetailRun {
                 phase: phase.get(),
                 rust_error: diagnostics::RustError::from_code(&error.code),
                 child_error: diagnostic.error,
+                child_phase: diagnostic.phase,
                 stderr_truncated: diagnostic.truncated,
                 exit_code: observed.and_then(|value| value.code()),
                 exit_signal: observed.and_then(|value| value.signal()),

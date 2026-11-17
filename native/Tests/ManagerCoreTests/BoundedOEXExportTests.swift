@@ -35,6 +35,7 @@ final class BoundedOEXExportTests: XCTestCase {
             op.polls++;if(n===8||n===11||op.polls===1){json(200,{operationId,state:'pending'});return;}
             if(n===5||n===6){json(200,{operationId,state:n===5?'failed':'uncertain'});return;}
             if(n===7){json(404,{code:'NOT_FOUND'});return;}
+            if(n===15){await new Promise(resolve=>setTimeout(resolve,6000));}
             json(200,{operationId,state:'complete',etag,bytes:data.length,sha256:n===4?'0'.repeat(64):sha256});return;
           }
           if(req.method!=='POST'||req.headers['x-csrf-token']!==csrf){req.resume();json(403,{code:'FORBIDDEN'});return;}
@@ -91,6 +92,14 @@ final class BoundedOEXExportTests: XCTestCase {
         XCTAssertEqual(progress, [.packing(completed: 1, total: 2), .receiving(bytes: 0, total: 26),
                                   .receiving(bytes: 26, total: 26), .verifying])
         XCTAssertEqual(archive.count, 26)
+        // The real completion route performs full authority/resource validation.
+        // A valid six-second terminal response exceeds the former per-GET cutoff,
+        // while remaining inside the unchanged nonrenewable completion window.
+        let delayed = try await client()
+        let delayedArchive = try await delayed.exportBoundedOEX(exhibitionId: id(15), etag: etag)
+        XCTAssertEqual(delayedArchive.sha256, archive.sha256)
+        let clearedObservation = await delayed.retainedBoundedExportCompletionElapsedMilliseconds(exhibitionId: id(15), etag: etag)
+        XCTAssertNil(clearedObservation)
         try await archive.write(to: output)
         let original = try Data(contentsOf: output)
         XCTAssertEqual(original.count, 26)
@@ -144,5 +153,8 @@ final class BoundedOEXExportTests: XCTestCase {
         task.cancel()
         do { _ = try await task.value; XCTFail("Cancellation must not expose the staged file") }
         catch is CancellationError { }
+        let elapsed = await cancelling.retainedBoundedExportCompletionElapsedMilliseconds(exhibitionId: id(8), etag: etag)
+        let wrongCompletion = await cancelling.retainedBoundedExportCompletionElapsedMilliseconds(exhibitionId: id(1), etag: etag)
+        XCTAssertNotNil(elapsed); XCTAssertNil(wrongCompletion)
     }
 }

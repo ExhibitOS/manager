@@ -17,6 +17,7 @@ final class NativeModelPreparationTests: XCTestCase {
             "1dbf08d3b1122015cea14aefc7e50f05f59eccb559632726654a2de2d5d692dd",
             "eb32dbb047ae2ca764d83e4d1d6c7fa4921f3f42f4b0af211ddc63f1ac332269",
             "62d07baaee48e74c77b2b391484df57024479bf6d2b902ad57b49fcba37f9345",
+            "849dc7f88a1a47caaa3c218db69cae295f6dba5d3f3db53615062829c7537a4d",
         ] {
             let foreign = "0" + manifest.dropFirst()
             XCTAssertTrue(NativeHayesOriginalIntent.supports(manifest: manifest))
@@ -77,6 +78,10 @@ final class NativeModelPreparationTests: XCTestCase {
         XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: finished, allowRetained: true),
                        [finished, fit, frame, allowance, overlap, abort, traced, successor, parent])
         XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: finished, allowRetained: false), [finished])
+        let diagnostics = AuthoringAPI.r285DetailDiagnosticsRuntime
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: diagnostics, allowRetained: true),
+                       [diagnostics, finished, fit, frame, allowance, overlap, abort, traced, successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: diagnostics, allowRetained: false), [diagnostics])
         XCTAssertTrue(AuthoringAPI.benchPreparationReceiptManifests(runtime:
             "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66", allowRetained: true).isEmpty)
         #endif
