@@ -3353,7 +3353,9 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert_eq!(parent_ledger.lines().count(), 47);
         assert_eq!(target_ledger, format!("{parent_ledger}\n054_hayes_preopen_terminal.sql|{}", HAYES_PREOPEN_TERMINAL_SCHEMA.2));
         let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
-        assert!(FurnishingTransition::from_manifests(pair).unwrap().is_combined_thumbnail_runtime_refresh());
+        let transition = FurnishingTransition::from_manifests(pair).unwrap();
+        assert!(transition.is_combined_thumbnail_runtime_refresh());
+        assert_eq!(crate::native_personal::physical_checkpoint::transition_source_ledger(&target, transition).unwrap(), parent_ledger);
         assert!(!saved_workspace_transition_supported((pair.1, pair.0)));
         assert!(!saved_workspace_transition_supported((pair.1, pair.1)));
         assert!(Payload::open_workspace_v5_validation(&successor, false).is_ok());
@@ -7231,6 +7233,17 @@ impl Payload {
 
     pub(crate) fn hayes_preopen_terminal(&self) -> bool {
         r285_hayes_preopen_terminal_host_matches((&self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn hayes_preopen_source_ledger(&self) -> Result<String> {
+        if !self.hayes_preopen_terminal() { return Err(invalid()); }
+        let ledger = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052)?;
+        let (parent, terminal) = ledger.rsplit_once('\n').ok_or_else(invalid)?;
+        if parent.lines().count() != 47 || terminal != format!("054_hayes_preopen_terminal.sql|{}", HAYES_PREOPEN_TERMINAL_SCHEMA.2) {
+            return Err(invalid());
+        }
+        Ok(parent.to_owned())
     }
 
     pub(crate) fn workspace_furnishing_ledger(&self, catalog: WorkspaceFurnishingCatalog) -> Result<String> {

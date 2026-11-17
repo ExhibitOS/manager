@@ -115,10 +115,8 @@ impl Session {
         if self.query_database_before("exhibitos", DATABASE_IDENTITY_SQL, deadline)? != expected_identity {
             return Err(denied());
         }
-        let ledger = self.payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052)?;
-        let (parent, terminal) = ledger.rsplit_once('\n').ok_or_else(denied)?;
-        if terminal != format!("054_hayes_preopen_terminal.sql|{}", crate::native_payload::HAYES_PREOPEN_TERMINAL_SCHEMA.2)
-            || self.query_database_before("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name", deadline)? != parent
+        let parent = self.payload.hayes_preopen_source_ledger()?;
+        if self.query_database_before("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name", deadline)? != parent
         {
             return Err(denied());
         }
