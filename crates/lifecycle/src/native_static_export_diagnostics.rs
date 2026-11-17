@@ -10,6 +10,7 @@ const DRAIN_LIMIT: usize = 16 * 1024;
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub(super) enum ChildError {
     Unknown,
+    StaticNativeFailed,
     StaticFetch,
     StaticFileTooLarge,
     StaticJsonSize,
@@ -30,14 +31,16 @@ pub(super) enum ChildError {
 fn classify(message: &[u8], publication: &str) -> ChildError {
     use ChildError::*;
     match message {
-        b"STATIC_FETCH: publication.json" => StaticFetch,
-        b"STATIC_FILE_TOO_LARGE: publication.json" |
+        b"STATIC_NATIVE_FAILED" => StaticNativeFailed,
+        b"STATIC_FETCH" | b"STATIC_FETCH: publication.json" => StaticFetch,
+        b"STATIC_FILE_TOO_LARGE" | b"STATIC_FILE_TOO_LARGE: publication.json" |
         b"STATIC_FILE_TOO_LARGE: static-export-manifest.json" => StaticFileTooLarge,
         b"STATIC_JSON_SIZE" => StaticJsonSize,
         b"STATIC_JSON_INVALID" => StaticJsonInvalid,
         b"NATIVE_DETAIL_PLAN" => NativeDetailPlan,
-        b"STATIC_PATH_COLLISION: static-export-manifest.json" => StaticPathCollision,
-        b"STATIC_FILE_COUNT: static-export-manifest.json" => StaticFileCount,
+        b"STATIC_PUBLICATION_CHANGED" => StaticPublicationChanged,
+        b"STATIC_PATH_COLLISION" | b"STATIC_PATH_COLLISION: static-export-manifest.json" => StaticPathCollision,
+        b"STATIC_FILE_COUNT" | b"STATIC_FILE_COUNT: static-export-manifest.json" => StaticFileCount,
         b"NATIVE_DETAIL_STAGE" => NativeDetailStage,
         b"NATIVE_DETAIL_FRAME" => NativeDetailFrame,
         b"NATIVE_DETAIL_UNAVAILABLE" => NativeDetailUnavailable,
@@ -52,20 +55,42 @@ fn classify(message: &[u8], publication: &str) -> ChildError {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum ChildPhase { Startup, Prepare, Export, Ack, FinalCheck, Settle, Ready }
+impl ChildPhase {
+    fn parse(line: &[u8]) -> Option<Self> {
+        match line {
+            b"NATIVE_DETAIL_PHASE: startup" => Some(Self::Startup),
+            b"NATIVE_DETAIL_PHASE: prepare" => Some(Self::Prepare),
+            b"NATIVE_DETAIL_PHASE: export" => Some(Self::Export),
+            b"NATIVE_DETAIL_PHASE: ack" => Some(Self::Ack),
+            b"NATIVE_DETAIL_PHASE: final-check" => Some(Self::FinalCheck),
+            b"NATIVE_DETAIL_PHASE: settle" => Some(Self::Settle),
+            b"NATIVE_DETAIL_PHASE: ready" => Some(Self::Ready),
+            _ => None,
+        }
+    }
+}
+
 pub(super) struct Collector<R> {
     input: Option<R>,
     line: Vec<u8>,
     overflow: bool,
     pub(super) error: ChildError,
+    pub(super) phase: Option<ChildPhase>,
     primary_seen: bool,
     pub(super) truncated: bool,
 }
 impl<R: Read> Collector<R> {
     pub(super) fn new(input: Option<R>) -> Self {
         Self { input, line: Vec::with_capacity(LINE_LIMIT), overflow: false,
-            error: ChildError::Unknown, primary_seen: false, truncated: false }
+            error: ChildError::Unknown, phase: None, primary_seen: false, truncated: false }
     }
     fn end_line(&mut self, publication: &str) {
+        if !self.primary_seen && !self.overflow {
+            if let Some(phase) = ChildPhase::parse(&self.line) { self.phase = Some(phase); }
+        }
         // The first primary Error line wins, including an unknown/overlong one.
         // Never search arbitrary stacks, suffixes, source lines or URL text.
         let primary = [b"Error".as_slice(), b"TypeError", b"RangeError", b"SyntaxError",
@@ -119,6 +144,8 @@ pub(super) struct Failure<'a> {
     pub(super) phase: Phase,
     pub(super) rust_error: RustError,
     pub(super) child_error: ChildError,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) child_phase: Option<ChildPhase>,
     pub(super) stderr_truncated: bool,
     // Observed before the existing cleanup; a later signal is not the cause.
     pub(super) exit_code: Option<i32>,
@@ -175,11 +202,28 @@ mod tests {
         let f = Failure { version: 1, job_id: PUBLICATION, publication_id: PUBLICATION,
             runtime_generation: PUBLICATION, phase: Phase::AwaitStaged,
             rust_error: RustError::from_code("arbitrary secret"), child_error: c.error,
+            child_phase: c.phase,
             stderr_truncated: c.truncated, exit_code: Some(1), exit_signal: None,
             running: Some(false), elapsed_ms: 21, deadline_reached: false };
         let json = serde_json::to_string(&f).unwrap();
         assert!(!json.contains("secret")); assert!(!json.contains("fetch"));
         assert!(json.contains("UNKNOWN")); assert!(json.contains("await-staged"));
+    }
+    #[test]
+    fn detail_diagnostic_normalized_wrapper_phase_and_code_are_closed() {
+        let c = parsed(b"NATIVE_DETAIL_PHASE: prepare\nError: NATIVE_DETAIL_CONTROL\n");
+        assert_eq!(c.phase, Some(ChildPhase::Prepare)); assert_eq!(c.error, ChildError::NativeDetailControl);
+        for (code, expected) in [("STATIC_FETCH", ChildError::StaticFetch), ("STATIC_FILE_TOO_LARGE", ChildError::StaticFileTooLarge), ("STATIC_PUBLICATION_CHANGED", ChildError::StaticPublicationChanged), ("STATIC_PATH_COLLISION", ChildError::StaticPathCollision), ("STATIC_FILE_COUNT", ChildError::StaticFileCount), ("STATIC_NATIVE_FAILED", ChildError::StaticNativeFailed)] {
+            assert_eq!(parsed(format!("NATIVE_DETAIL_PHASE: export\nError: {code}\n").as_bytes()).error, expected);
+        }
+        for phase in ["startup", "prepare", "export", "ack", "final-check", "settle", "ready"] {
+            assert!(parsed(format!("NATIVE_DETAIL_PHASE: {phase}\n").as_bytes()).phase.is_some());
+        }
+        for line in [" NATIVE_DETAIL_PHASE: prepare", "NATIVE_DETAIL_PHASE: prepare https://secret.invalid/token", "NATIVE_DETAIL_PHASE: unknown", "Error: unknown\nNATIVE_DETAIL_PHASE: prepare", "TypeError: private\nNATIVE_DETAIL_PHASE: prepare"] {
+            assert_eq!(parsed(line.as_bytes()).phase, None);
+        }
+        let c = parsed(b"NATIVE_DETAIL_PHASE: startup\nError: unknown\nNATIVE_DETAIL_PHASE: ready\nError: STATIC_FETCH\n");
+        assert_eq!(c.phase, Some(ChildPhase::Startup)); assert_eq!(c.error, ChildError::Unknown);
     }
     #[test]
     fn detail_diagnostic_nonblocking_pipe_flood_keeps_stdout_separate() {

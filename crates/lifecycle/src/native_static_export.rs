@@ -1730,6 +1730,7 @@ impl DetailRun {
                 phase: phase.get(),
                 rust_error: diagnostics::RustError::from_code(&error.code),
                 child_error: diagnostic.error,
+                child_phase: diagnostic.phase,
                 stderr_truncated: diagnostic.truncated,
                 exit_code: observed.and_then(|value| value.code()),
                 exit_signal: observed.and_then(|value| value.signal()),

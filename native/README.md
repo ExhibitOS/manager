@@ -225,6 +225,11 @@ Private detail-output failures retain a bounded diagnostic in
 the protocol phase, finite Rust/child error classes, elapsed time and the child
 exit observed before cleanup. Unknown Node or OS errors remain `UNKNOWN`;
 raw stderr, stacks, URLs, paths and credentials are never persisted. Stderr is
+normalized by the matching detail runner into a closed phase marker and one
+literal error code; an unrecognized runner error becomes `STATIC_NATIVE_FAILED`.
+The optional `childPhase` records only startup, prepare, export, ack, final-check,
+settle or ready, before the first primary error. It is an observation, not a
+server settlement or retry permission. Stderr is
 read nonblockingly with bounded work and memory, independently of stdout's
 existing STAGED/READY protocol. Failure to prepare that pipe prevents startup.
 Preparation and complete asset copying before STAGED have a finite 600-second
