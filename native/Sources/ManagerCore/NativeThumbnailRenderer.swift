@@ -76,6 +76,8 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        // This operation-owned view runs its renderer without joining a window.
+        configuration.preferences.inactiveSchedulingPolicy = .none
         let rules = try ViewportResourcePolicy.encodedRules(origin: credentials.origin, tenantId: frame.tenantId)
         let name = "ExhibitOSThumbnail-" + UUID().uuidString
         let rule = try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: name, encodedContentRuleList: rules)
