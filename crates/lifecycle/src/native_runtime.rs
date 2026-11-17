@@ -701,12 +701,20 @@ fn check_current52_recovery_source(root: &Path, source: &Current) -> Result<()> 
     }
     let predecessor = binding.previous_generation.as_deref().ok_or_else(rejected)?;
     if predecessor != "ef2cb6c9-bce1-4352-b0d3-287cc6d97ace" { return Err(rejected()); }
+    check_current52_consumed_clean_proof(root, binding, &failed, predecessor, "4b74230c-9f16-4c55-9b0c-7190d1dbac83")
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn check_current52_consumed_clean_proof(
+    root: &Path, binding: &Binding, failed: &Context, predecessor: &str, previous_clean: &str,
+) -> Result<()> {
+    let rejected = || err(furnishing_lifecycle::ERROR);
     // Reconstruct the exact retained clean binding, including its physical owner
     // and predecessor, rather than accepting an arbitrary well-formed digest.
     let mut prior_binding = binding.clone();
     prior_binding.phase = Phase::Clean;
     prior_binding.generation = predecessor.into();
-    prior_binding.previous_generation = Some("4b74230c-9f16-4c55-9b0c-7190d1dbac83".into());
+    prior_binding.previous_generation = Some(previous_clean.into());
     prior_binding.check()?;
     let (prior, proof) = read_run(root, predecessor)?;
     let proof = proof.ok_or_else(rejected)?;
@@ -714,10 +722,73 @@ fn check_current52_recovery_source(root: &Path, source: &Current) -> Result<()> 
         || prior.failure_code.is_some() || prior.error_code.is_some() || prior.ports != failed.ports
         || prior.postgres_pid.is_some() || prior.node_pid.is_some() || prior.auxiliary_pid.is_some()
         || ["postgres", "node", "auxiliary"].iter().any(|name| prior.exits.get(*name) != Some(&0))
-        || proof.binding_sha256 != prior_binding.sha256()? || proof.consumed_by.as_deref() != Some(source.id.as_str()) {
+        || proof.binding_sha256 != prior_binding.sha256()? || proof.consumed_by.as_deref() != Some(binding.generation.as_str()) {
         return Err(rejected());
     }
     Ok(())
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn check_r285_cosmic_recovery_source(root: &Path, source: &Current, ports: Ports) -> Result<()> {
+    let rejected = || err(furnishing_lifecycle::ERROR);
+    let binding = source.furnishing.as_ref().ok_or_else(rejected)?;
+    binding.check()?;
+    let failed_generation = furnishing_lifecycle::R285_COSMIC_FAILED_GENERATION;
+    let predecessor = "47d4298c-39cb-46de-9a7a-d03be9d4fb05";
+    if source.id != failed_generation || binding.generation != failed_generation
+        || binding.previous_generation.as_deref() != Some(predecessor)
+        || binding.phase != Phase::Active || binding.admission_kind != Admission::CleanReopen
+        || binding.restore.is_some() || !binding.matches_catalog_tuple(52, crate::native_payload::R285_ROOM_FILL_EXIT_TARGET)
+        || binding.owner.workspace_id != "23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef"
+        || binding.owner.tenant_id != "3edee474-9a9f-48d1-b779-b8f71c4da86e"
+        || binding.owner.principal_id != "0bbe4668-9a2b-4a53-8367-758b03fe5cb9"
+        || binding.owner.owner_uid != 501
+    {
+        return Err(rejected());
+    }
+    check_cold_transition_root(root, Some(failed_generation))?;
+    let (failed, completion) = read_run(root, failed_generation)?;
+    if completion.is_some() || failed.job_id.as_deref() != Some(failed_generation) || failed.ports != ports
+        || !catalog45_failed_reopen_shape(&failed, Some(Catalog45StartupRecovery::Unqualified))
+    {
+        return Err(rejected());
+    }
+    check_current52_consumed_clean_proof(root, binding, &failed, predecessor, "c0f8f742-2faa-4d43-9894-68b68cdcfb09")?;
+
+    // The native saved document lives one level up from the managed runtime
+    // root. Validate the exact bytes that were observed at the normal r33 return.
+    let profile = root.parent().ok_or_else(rejected)?;
+    let name = format!("native-document-{}.json", digest(root.as_os_str().as_encoded_bytes()));
+    let bytes = installation_backup::source_bytes(profile, &name, 1_048_576, true)?;
+    if digest(&bytes) != "da9a1c139d74d12a1ded942b9ea6e5df8e61e9367946845f539f1c57eb030f97" {
+        return Err(rejected());
+    }
+    let document: super::native_document::DocumentState = serde_json::from_slice(&bytes).map_err(|_| rejected())?;
+    super::native_document::validate(&document)?;
+    if document.workspace_id != binding.owner.workspace_id || document.tenant_id != binding.owner.tenant_id
+        || document.principal_id != binding.owner.principal_id || document.revision != 100 || document.pending.is_some()
+        || document.saved_edit_version != Some(88)
+        || document.etag.as_deref() != Some("\"studio-r33-08fef6ca4d87182ba9e1f3e495f451a20f4438916bab35b556619bff5468cfcd\"")
+        || document.draft.as_ref().and_then(super::native_document::draft_id) != Some("a888ef7e-7b7a-4f7d-955f-a69a9cd8f2ce")
+    {
+        return Err(rejected());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[test]
+#[ignore = "read-only check of the exact fenced R285 root before recovery"]
+fn r285_cosmic_recovery_checks_exact_saved_head_and_consumed_history() {
+    let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_COSMIC_RECOVERY_ROOT").unwrap());
+    let source = current_run(&root).unwrap().unwrap();
+    let (failed, _) = read_run(&root, &source.id).unwrap();
+    assert!(check_r285_cosmic_recovery_source(&root, &source, failed.ports).is_ok());
+    let mut wrong = source.clone();
+    wrong.furnishing.as_mut().unwrap().previous_generation = Some(Uuid::new_v4().to_string());
+    assert!(check_r285_cosmic_recovery_source(&root, &wrong, failed.ports).is_err());
+    let wrong_ports = Ports { web: 58421, api: 58422, database: 58423 };
+    assert!(check_r285_cosmic_recovery_source(&root, &source, wrong_ports).is_err());
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3058,7 +3129,7 @@ const { isDeepStrictEqual } = require('node:util');
                     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                     52 if crate::native_payload::current52_interrupted_host_matches((
                         binding.source_commit.as_str(), binding.producer_sha256.as_str(), binding.payload_manifest_sha256.as_str(),
-                    )) => {
+                    )) || binding.is_r285_cosmic_interrupted_reopen() => {
                         // Global idle-only observation; the backend repeats this
                         // exact predicate under its own locks before commit.
                         let unsettled = self.query_database("exhibitos", CURRENT52_UNSETTLED_SQL)?;
@@ -3597,7 +3668,19 @@ const { isDeepStrictEqual } = require('node:util');
                         let transition = self.furnishing_transition_trial.as_ref();
                         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
                         let transition: Option<()> = None;
-                        if source.phase == Phase::Active && transition.is_none()
+                        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                        let r285_cosmic_recovery = source.phase == Phase::Active && transition.is_none()
+                            && furnishing == Some(FurnishingStart::Reopen)
+                            && source.matches_catalog_tuple(52, crate::native_payload::R285_ROOM_FILL_EXIT_TARGET);
+                        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+                        let r285_cosmic_recovery = false;
+                        if r285_cosmic_recovery {
+                            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                            {
+                                check_r285_cosmic_recovery_source(&self.service.root, prior.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?, self.ports)?;
+                                active.consume_interrupted(source, false)?;
+                            }
+                        } else if source.phase == Phase::Active && transition.is_none()
                             && (self.payload.fresh_image_recovery_enabled() || self.payload.large_model_recovery_validation())
                             && furnishing == Some(FurnishingStart::Reopen)
                         {

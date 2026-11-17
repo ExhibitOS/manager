@@ -111,7 +111,21 @@ pub(super) struct Binding {
     pub(super) interrupted_claim_generations: Vec<String>,
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(super) const R285_COSMIC_FAILED_GENERATION: &str = "b79d2e71-8df3-4534-a82d-09423351bbfc";
+
 impl Binding {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn is_r285_cosmic_interrupted_reopen(&self) -> bool {
+        self.admission_kind == Admission::InterruptedReopen && self.restore.is_none()
+            && self.matches_catalog_tuple(52, crate::native_payload::R285_ROOM_FILL_EXIT_TARGET)
+            && self.previous_generation.as_deref() == Some(R285_COSMIC_FAILED_GENERATION)
+            && self.owner.workspace_id == "23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef"
+            && self.owner.tenant_id == "3edee474-9a9f-48d1-b779-b8f71c4da86e"
+            && self.owner.principal_id == "0bbe4668-9a2b-4a53-8367-758b03fe5cb9"
+            && self.owner.owner_uid == 501
+    }
+
     pub(super) fn check(&self) -> Result<()> {
         let interrupted = self.admission_kind == Admission::InterruptedReopen;
         let lineage = &self.interrupted_claim_generations;
@@ -160,8 +174,12 @@ impl Binding {
             && self.restore.as_ref().is_none_or(|restore| restore.provenance.is_none() && restore.carried_provenance.is_some());
         let fresh_contact = self.admission_kind == Admission::FreshEmpty
             && crate::native_payload::combined_thumbnail_fresh_host_matches(tuple);
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let r285_cosmic_recovery = self.is_r285_cosmic_interrupted_reopen();
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let r285_cosmic_recovery = false;
         let ordinary_combined = self.catalog == 52 && self.restore.is_none()
-            && (fresh_contact || self.admission_kind == Admission::CleanReopen)
+            && (fresh_contact || self.admission_kind == Admission::CleanReopen || r285_cosmic_recovery)
             && crate::native_payload::combined_thumbnail_ordinary_host_matches(tuple);
         let current_rail = self.catalog == 53 && self.restore.is_none()
             && self.admission_kind == Admission::CleanReopen
