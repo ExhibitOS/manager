@@ -1,5 +1,16 @@
 # Native macOS application (in progress)
 
+## Procedural frame authoring through Native automation
+
+`procedural-frame-set` stages a typed flat, stepped, or floating artwork frame
+on a clean, ordinary saved workspace. The command takes the current `etag`,
+canonical `placementId`, and complete `frame` settings, alongside the usual
+workspace capability and expected Native revision and edit version. It
+preserves the pedestal and sibling bindings and refuses a competing registered
+model frame. A later ordinary `save` persists the staged draft. A matching
+authored frame is an idempotent no-op. Existing clear commands retain their
+protocol and older SDKs can continue using them.
+
 ## Exact fixed64 publication API repair
 
 The API-only `09eacf46…` runtime (source `edaefab7…`, unchanged producer

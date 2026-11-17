@@ -2116,7 +2116,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
             }
         }
-        if ["artwork-placement-move", "artwork-interpretation-set"].contains(operation) {
+        if ["artwork-placement-move", "artwork-interpretation-set", "procedural-frame-set"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
@@ -2831,6 +2831,32 @@ public actor NativeAutomationSession {
                     result = .object(["changed": .bool(false), "document": try value(refreshed)])
                 }
                 frameImageFitProposals.removeValue(forKey: proposalId)
+            }
+        case "procedural-frame-set":
+            try checkedRevision(request, current)
+            guard existingWorkspaceV5 != nil, selectedOEXFormat == nil, !installedImageCLI,
+                  !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else {
+                throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+            }
+            let command = try NativeProceduralFrameSet.Command(request["command"])
+            guard command.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let policy = try await api.nativeViewportPolicy(draft.id)
+            let saved = try await api.exhibition(draft.id)
+            let (_, _, refreshed) = try await checked(request)
+            guard policy.etag == etag, policy.exhibitionId == draft.id, policy.revision == saved.revision,
+                  saved.draft == draft, saved.etag == etag, try value(refreshed) == value(current) else {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard policy.confirmsOrdinaryDraft else { throw BridgeFailure("NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE") }
+            let staged = try command.applying(to: draft)
+            try Task.checkCancellation()
+            if staged == draft {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            } else {
+                var next = refreshed
+                next.draft = staged
+                let document = try await bridge.saveDocumentState(context, state: next)
+                result = .object(["changed": .bool(true), "document": try value(document)])
             }
         case "procedural-frame-clear-prepare":
             try checkedRevision(request, current)

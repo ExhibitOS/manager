@@ -115,7 +115,7 @@ public struct InstallationSettings: Equatable, Sendable {
         if kind == .box { result.width = try number(d["width"]); result.depth = try number(d["depth"]) } else { result.diameter = try number(d["diameter"]) }
         try result.validate(); return result
     }
-    private static func readFrame(_ value: DocumentValue) throws -> Frame {
+    static func readFrame(_ value: DocumentValue) throws -> Frame {
         let raw = try object(value)
         guard let name = raw["kind"]?.string, let kind = Frame.Kind(rawValue: name) else { throw invalid() }
         if kind == .none { _ = try object(value, keys: ["kind"]); return Frame() }
@@ -160,11 +160,23 @@ public struct InstallationSettings: Equatable, Sendable {
         guard uuid(placementId), try placements(draft.candidate)[placementId.lowercased()] != nil else { throw invalid() }
         return try bindings(draft.candidate)?.first(where: { $0.id.lowercased() == placementId.lowercased() })?.settings
     }
-    fileprivate static func set(_ settings: Self?, on draft: inout NativeExhibitionDraft, placementId: String) throws {
+    static func setAuthoredFrame(_ frame: Frame, on draft: inout NativeExhibitionDraft, placementId: String) throws {
+        var settings = try read(from: draft, placementId: placementId) ?? Self()
+        settings.frame = frame
+        try set(settings, on: &draft, placementId: placementId, frameOnly: true)
+    }
+
+    fileprivate static func set(_ settings: Self?, on draft: inout NativeExhibitionDraft, placementId: String,
+                                 frameOnly: Bool = false) throws {
         guard uuid(placementId), let actual = try placements(draft.candidate)[placementId.lowercased()] else { throw invalid() }
         let old = try bindings(draft.candidate) ?? []
         let index = old.firstIndex(where: { $0.id.lowercased() == placementId.lowercased() })
-        let encoded = try settings?.record(id: actual)
+        var encoded = try settings?.record(id: actual)
+        if frameOnly, let index, let frame = encoded?["frame"] {
+            var row = old[index].raw
+            row["frame"] = frame
+            encoded = row
+        }
         if index.map({ old[$0].settings }) == settings { return }
         var rows = old.map(\.raw)
         if let index { if let encoded { rows[index] = encoded } else { rows.remove(at: index) } }
