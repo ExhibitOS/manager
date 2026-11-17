@@ -219,6 +219,11 @@ pub enum Command {
         current_artwork_revision: Option<u32>,
         finished_artwork: Option<(String, String)>,
     },
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    NativeHayesPreopenClaim {
+        selection_token: String,
+        input: crate::native_runtime::hayes_claim::Input,
+    },
     #[cfg(target_os = "macos")]
     NativeAuthoringSession {
         selection_token: String,
@@ -291,10 +296,16 @@ struct WireRequest {
     hayes_finished_artwork_id: Option<String>,
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes_finished_display_sha256: Option<String>,
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    hayes_preopen_claim: Option<crate::native_runtime::hayes_claim::Input>,
 }
 impl TryFrom<WireRequest> for Request {
     type Error = &'static str;
     fn try_from(wire: WireRequest) -> std::result::Result<Self, Self::Error> {
+        #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+        if wire.hayes_preopen_claim.is_some() && wire.command != "native_hayes_preopen_claim" {
+            return Err("NATIVE_PROTOCOL_INVALID");
+        }
         #[cfg(target_os = "macos")]
         if matches!(wire.command.as_str(), "furnishing_thumbnail_state" | "save_furnishing_thumbnail_state") {
             if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
@@ -338,7 +349,7 @@ impl TryFrom<WireRequest> for Request {
         if wire.adoption.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
 
         #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
-        if matches!(wire.command.as_str(), "native_hayes_execute" | "native_hayes_release") {
+        if matches!(wire.command.as_str(), "native_hayes_execute" | "native_hayes_release" | "native_hayes_preopen_claim") {
             if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
                 || wire.document.is_some() || wire.publication.is_some() || wire.export.is_some() || wire.backup.is_some()
                 || wire.hosting.is_some() || wire.maintenance.is_some() || wire.oex_save.is_some()
@@ -352,10 +363,12 @@ impl TryFrom<WireRequest> for Request {
                     && crate::installations::uuid(&artwork) && crate::hash_valid(&display) => Some((artwork, display)),
                 _ => return Err("NATIVE_PROTOCOL_INVALID"),
             };
-            let command = match (wire.command.as_str(), wire.hayes_execute, wire.hayes_job_id, wire.hayes_current_artwork_revision) {
-                ("native_hayes_execute", Some(input), None, None) if finished_artwork.is_none() =>
+            let command = match (wire.command.as_str(), wire.hayes_execute, wire.hayes_job_id, wire.hayes_current_artwork_revision, wire.hayes_preopen_claim) {
+                ("native_hayes_preopen_claim", None, None, None, Some(input)) if finished_artwork.is_none() =>
+                    Command::NativeHayesPreopenClaim { selection_token, input },
+                ("native_hayes_execute", Some(input), None, None, None) if finished_artwork.is_none() =>
                     Command::NativeHayesExecute { selection_token, input },
-                ("native_hayes_release", None, Some(job_id), current_artwork_revision)
+                ("native_hayes_release", None, Some(job_id), current_artwork_revision, None)
                     if crate::installations::uuid(&job_id)
                         && current_artwork_revision.is_none_or(|revision| (1..=i32::MAX as u32).contains(&revision)) =>
                     Command::NativeHayesRelease { selection_token, job_id, current_artwork_revision, finished_artwork },
@@ -639,6 +652,33 @@ mod finished_hayes_wire_tests {
     use super::*;
 
     #[test]
+    fn hayes_preopen_claim_has_one_closed_authenticated_command() {
+        let wire = serde_json::json!({
+            "version":1, "id":1, "command":"native_hayes_preopen_claim", "selection_token":"scope",
+            "hayes_preopen_claim":{
+                "jobId":"2d26a5d9-12d0-4fa2-a25b-4d322e042dd8",
+                "failedGeneration":"996d69ed-c26b-4dfc-a8ee-1d44b8514cdb",
+                "failedRecordSha256":"a".repeat(64),"savedEtag":"saved","savedRevision":1,
+                "transferSha256":"b".repeat(64),"custodyAuthoritySha256":"c".repeat(64)
+            }
+        });
+        let parse = |value| serde_json::from_value::<Request>(value);
+        assert!(matches!(parse(wire.clone()).unwrap().command, Command::NativeHayesPreopenClaim { .. }));
+        let mut wrong = wire.clone();
+        wrong["hayes_job_id"] = wire["hayes_preopen_claim"]["jobId"].clone();
+        assert!(parse(wrong).is_err());
+        let mut wrong = wire.clone();
+        wrong["hayes_preopen_claim"]["sql"] = serde_json::json!("SELECT 1");
+        assert!(parse(wrong).is_err());
+        let mut wrong = wire.clone();
+        wrong["command"] = serde_json::json!("native_status");
+        assert!(parse(wrong).is_err());
+        let mut wrong = wire;
+        wrong.as_object_mut().unwrap().remove("selection_token");
+        assert!(parse(wrong).is_err());
+    }
+
+    #[test]
     fn finished_hayes_release_requires_complete_explicit_scope() {
         let mut wire = serde_json::json!({
             "version":1, "id":1, "command":"native_hayes_release", "selection_token":"scope",
@@ -732,7 +772,7 @@ impl Request {
             #[cfg(target_os = "macos")]
             Command::SaveOEXImportState { selection_token, transfer } => serde_json::to_value(controller.save_native_oex_import(&selection_token, *transfer)?),
             #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
-            Command::NativeHayesExecute { .. } | Command::NativeHayesRelease { .. } => return Err(err("NATIVE_HOST_REQUIRED")),
+            Command::NativeHayesExecute { .. } | Command::NativeHayesRelease { .. } | Command::NativeHayesPreopenClaim { .. } => return Err(err("NATIVE_HOST_REQUIRED")),
             #[cfg(target_os = "macos")]
             Command::NativeAuthoringSession { .. }
             | Command::NativeGpuPreviewResources { .. }

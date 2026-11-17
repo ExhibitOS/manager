@@ -106,6 +106,13 @@ mod tests {
         let second_lease = acquire_in(&second_scope).unwrap();
         assert_eq!(acquire_in(&first_scope).err().unwrap().code, "HAYES_RESERVATION_BUSY");
         let original_scope_authority = first_scope.read_bytes(AUTHORITY).unwrap();
+        let authority_digest = crate::digest(&original_scope_authority);
+        first_lease.check_preopen_custody(&authority_digest).unwrap();
+        assert!(first_lease.check_preopen_custody(&"a".repeat(64)).is_err());
+        let attempt_dir = first_scope.path.join(ROOT).join(Uuid::new_v4().to_string());
+        fs::DirBuilder::new().mode(0o700).create(&attempt_dir).unwrap();
+        assert!(first_lease.check_preopen_custody(&authority_digest).is_err());
+        fs::remove_dir(attempt_dir).unwrap();
         drop(first_lease);
         let reopened = custody_scope(base(), Some(&first), false).unwrap();
         let lease = Lease::acquire(&reopened.path.join(ROOT), reopened.read(AUTHORITY).unwrap()).unwrap();

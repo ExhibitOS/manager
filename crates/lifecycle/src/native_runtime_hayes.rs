@@ -292,6 +292,23 @@ pub(super) struct Lease {
 
 impl Lease {
     #[cfg(target_os = "macos")]
+    pub(super) fn check_preopen_custody(&self, expected_authority_sha256: &str) -> Result<()> {
+        self.check()?;
+        let parent = self.root.path.parent().ok_or_else(custody_error)?;
+        let scope = PrivateDirectory::open(parent)?;
+        let bytes = scope.read_bytes("authority.json")?;
+        if crate::digest(&bytes) != expected_authority_sha256
+            || serde_json::from_slice::<Authority>(&bytes).map_err(|_| custody_error())? != self.authority {
+            return Err(custody_error());
+        }
+        let mut entries = fs::read_dir(&self.root.path).map_err(|_| custody_error())?;
+        let only_lock = entries.next().transpose().map_err(|_| custody_error())?
+            .is_some_and(|entry| entry.file_name() == LOCK) && entries.next().is_none();
+        if !only_lock { return Err(custody_error()); }
+        self.check()
+    }
+
+    #[cfg(target_os = "macos")]
     pub(super) fn released_journal(&self, attempt: Uuid, file: &str) -> Result<Vec<u8>> {
         self.check()?;
         if attempt.is_nil() || self.root.exists(ACTIVE)? {
