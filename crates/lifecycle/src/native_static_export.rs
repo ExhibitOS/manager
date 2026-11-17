@@ -32,6 +32,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
             || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
+            || manifest == "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2"
             || bench_basecolor_saved_head_runtime_allowed(manifest)
             || owner_local_original_saved_head_runtime_allowed(manifest)
             || isolated_saved_head_runtime_allowed(manifest))
@@ -2584,6 +2585,18 @@ mod detail_tests {
         assert!(!isolated_saved_head_runtime_allowed(target));
         assert!(!saved_head_runtime_allowed(crate::native_payload::METRIC_FRAME_TARGET.2));
         assert!(!saved_head_runtime_allowed(&"f".repeat(64)));
+    }
+
+    #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]
+    #[test]
+    fn r285_thumbnail_allowance_saved_head_export_is_ordinary_only_and_exact() {
+        let current = "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2";
+        assert!(saved_head_runtime_allowed(current));
+        assert!(!isolated_saved_head_runtime_allowed(current));
+        assert!(!saved_head_runtime_allowed(&current.to_uppercase()));
+        assert!(!saved_head_runtime_allowed(&format!("0{}", &current[1..])));
+        assert!(!saved_head_runtime_allowed(&"f".repeat(64)));
+        assert!(!saved_head_runtime_allowed(crate::native_payload::R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET.2));
     }
 
     #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]
