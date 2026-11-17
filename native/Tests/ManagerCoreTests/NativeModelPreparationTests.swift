@@ -13,6 +13,7 @@ final class NativeModelPreparationTests: XCTestCase {
             "c564d2babb40d15a98ac5beacc613923fb5bef535f790fc518eb6173d924eeff",
             "543a53076964d4aac417dad5c56615e04bbe31e222f9c6d0e59d19173b2279da",
             "9654109e975499f1d95457fed58bb80dbc1079c3febed82eaa1117811120080a",
+            "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2",
         ] {
             let foreign = "0" + manifest.dropFirst()
             XCTAssertTrue(NativeHayesOriginalIntent.supports(manifest: manifest))
@@ -57,6 +58,10 @@ final class NativeModelPreparationTests: XCTestCase {
         XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: overlap, allowRetained: true),
                        [overlap, abort, traced, successor, parent])
         XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: overlap, allowRetained: false), [overlap])
+        let allowance = "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2"
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: allowance, allowRetained: true),
+                       [allowance, overlap, abort, traced, successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: allowance, allowRetained: false), [allowance])
         XCTAssertTrue(AuthoringAPI.benchPreparationReceiptManifests(runtime:
             "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66", allowRetained: true).isEmpty)
         #endif

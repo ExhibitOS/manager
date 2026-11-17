@@ -126,7 +126,7 @@ public actor NativeAutomationSession {
         if let thumbnailPreviewTraceRequestID {
             #if DEBUG && os(macOS)
             let traceRuntimes = [AuthoringAPI.r285GreekThumbnailTraceRuntime, AuthoringAPI.r285GreekThumbnailTraceAbortRuntime,
-                                 AuthoringAPI.r285GreekThumbnailPreviewOverlapRuntime]
+                                 AuthoringAPI.r285GreekThumbnailPreviewOverlapRuntime, AuthoringAPI.r285GreekThumbnailAllowanceRuntime]
             guard NativeThumbnailPreviewTrace.validRequestID(thumbnailPreviewTraceRequestID),
                   let traceManifest = existingWorkspaceV5?.manifestSHA256, traceRuntimes.contains(traceManifest),
                   workspaceV5ValidationRuntime == nil,

@@ -753,10 +753,17 @@ pub(crate) const R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET: RuntimeTuple = (
+pub(crate) const R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET: RuntimeTuple = (
     "50cd8f888bbf72b5c15c6b8c75988df5beafdfdc",
     "6bead946974e2e030d547bb6733d0eb96738a03116db63e4e10f689151467aa2",
     "9654109e975499f1d95457fed58bb80dbc1079c3febed82eaa1117811120080a",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET: RuntimeTuple = (
+    "a980f598eea0928a73f0dd7e7dedf00be6eacded",
+    "df2a2fa12c10b044273c77ce050ba4fca06809d0dbbdb2c8322be529d07e5bd0",
+    "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2",
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -768,7 +775,8 @@ pub(crate) fn r285_greek_thumbnail_trace_transition(pair: (&str, &str)) -> bool 
 fn r285_greek_thumbnail_trace_runtime_pair(pair: (&str, &str)) -> Option<(RuntimeTuple, RuntimeTuple)> {
     [(R285_GREEK_THUMBNAIL_V2_TARGET, R285_GREEK_THUMBNAIL_TRACE_TARGET),
         (R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET),
-        (R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET, R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET)]
+        (R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET, R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET),
+        (R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET)]
         .into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -786,7 +794,7 @@ fn r285_bench_after_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return [R285_BENCH_AFTER_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_V2_TARGET,
         R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET,
-        R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET].contains(&tuple);
+        R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -805,7 +813,7 @@ pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     { [R285_HAYES_PREOPEN_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_TARGET, R285_BENCH_AFTER_TERMINAL_TARGET,
         R285_GREEK_THUMBNAIL_V2_TARGET, R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET,
-        R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET].contains(&tuple) }
+        R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET].contains(&tuple) }
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1968,6 +1976,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || R285_GREEK_THUMBNAIL_TRACE_TARGET.2 == manifest
         || R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET.2 == manifest
         || R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET.2 == manifest
+        || R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -3630,6 +3639,35 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(source.hayes_preopen_terminal() && target.hayes_preopen_terminal());
         assert!(source.thumbnail_preview_trace_supported() && target.thumbnail_preview_trace_supported());
         assert!(!source.thumbnail_preview_overlap_runtime() && target.thumbnail_preview_overlap_runtime());
+        assert_eq!(target.thumbnail_preview_trace_predecessor(), source.thumbnail_preview_trace_predecessor());
+        let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
+        let step = FurnishingTransition::from_manifests(pair).unwrap();
+        let expected = crate::native_personal::physical_checkpoint::transition_source_ledger(&target, step).unwrap();
+        assert_eq!(expected.lines().count(), 49);
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), expected);
+        for denied in [(pair.1, pair.0), (pair.1, pair.1), (R285_GREEK_THUMBNAIL_TRACE_TARGET.2, pair.1)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        assert!(Payload::open_workspace_v5_validation(&successor, false).is_ok());
+        assert!(Payload::open_fresh_workspace_v7_validation(&successor).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires exact sealed 055 overlap and allowance payloads"]
+    fn r285_greek_thumbnail_allowance_is_only_a_saved_forward_055_refresh() {
+        let parent = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_RUNTIME").unwrap());
+        let successor = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_GREEK_THUMBNAIL_ALLOWANCE_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&parent).unwrap();
+        let target = Payload::open_saved_workspace_transition(&successor).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(source.bench_after_terminal() && target.bench_after_terminal());
+        assert!(source.hayes_preopen_terminal() && target.hayes_preopen_terminal());
+        assert!(source.thumbnail_preview_trace_supported() && target.thumbnail_preview_trace_supported());
+        assert!(source.thumbnail_preview_overlap_runtime() && target.thumbnail_preview_overlap_runtime());
+        assert!(!source.thumbnail_allowance_runtime() && target.thumbnail_allowance_runtime());
         assert_eq!(target.thumbnail_preview_trace_predecessor(), source.thumbnail_preview_trace_predecessor());
         let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
         let step = FurnishingTransition::from_manifests(pair).unwrap();
@@ -7549,15 +7587,21 @@ impl Payload {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_preview_trace_supported(&self) -> bool {
-        [R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET]
+        [R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
             || self.thumbnail_preview_overlap_runtime()
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_preview_overlap_runtime(&self) -> bool {
+        [R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET]
+            .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn thumbnail_allowance_runtime(&self) -> bool {
         (self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str())
-            == R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET
+            == R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
