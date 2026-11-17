@@ -61,6 +61,8 @@ final class NativeAutomationSceneTests: XCTestCase {
         ])
         XCTAssertEqual(carried.candidate, expected)
 
+        var invalidPose = point; invalidPose["transform"]["rotation"] = .vector([0, 0, 0, 2])
+        XCTAssertThrowsError(try NativeAutomationScene.legacyRoomBaseCarry(light: invalidPose, settings: settings, draft: original))
         var another = point; another["id"] = .string("dddddddd-0000-4000-8000-000000000004")
         XCTAssertThrowsError(try NativeAutomationScene.legacyRoomBaseCarry(light: another, settings: settings, draft: carried))
         var auto = settings; auto["basePlacement"] = .string("auto")

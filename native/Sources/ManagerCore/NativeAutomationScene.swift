@@ -113,7 +113,7 @@ enum NativeAutomationScene {
               case .object(let marker) = settings, Set(marker.keys) == ["fixture", "purpose", "range"],
               settings["fixture"] == .string("none"), settings["purpose"] == .string("room-base"),
               let range = settings["range"].double, (0.1...50).contains(range) else { throw invalid }
-        _ = try FurnishingPose(light["transform"])
+        guard LightObjectRequest.isRigidTransform(light["transform"]) else { throw invalid }
         let bindings = try NativeLightFixture.bindings(in: draft.candidate)
         let roomBaseIds = Set(bindings.filter { $0["purpose"] == .string("room-base") }
             .compactMap { $0["lightId"].string?.lowercased() })
@@ -123,7 +123,8 @@ enum NativeAutomationScene {
                       && $0["id"].string.map { roomBaseIds.contains($0.lowercased()) } == true
               }) else { throw invalid }
         let (lightId, added) = try addition(.object(["light": light]), draft: draft)
-        guard !bindings.contains(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() }) else {
+        guard !draft.rooms.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }),
+              !bindings.contains(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() }) else {
             throw invalid
         }
         let candidate = try NativeLightFixture.applying(settings: settings, to: added, base: draft, lightId: lightId)
