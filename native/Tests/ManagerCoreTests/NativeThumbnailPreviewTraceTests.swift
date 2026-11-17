@@ -33,11 +33,17 @@ final class NativeThumbnailPreviewTraceTests: XCTestCase {
         }
         let headers: [String: Any] = ["kind": "headers", "elapsedMs": 20, "status": 200]
         let raw = sidecar(headers)
-        XCTAssertEqual(NativeThumbnailPreviewTrace.webTrace(raw, requestID: id)?["terminal"]["status"], .integer(200))
+        let valid = NativeThumbnailPreviewTrace.webTrace(raw, requestID: id)
+        XCTAssertEqual(valid.disposition, "valid")
+        XCTAssertEqual(valid.trace, .object([
+            "version": .integer(1), "requestId": .string(id), "anchorUnixMs": .integer(123),
+            "dispatchElapsedMs": .integer(10), "remainingBudgetEstimateMs": .integer(9990),
+            "terminal": .object(["kind": .string("headers"), "elapsedMs": .integer(20), "status": .integer(200)]),
+        ]))
         XCTAssertNotNil(NativeThumbnailPreviewTrace.webTrace(
-            sidecar(["kind": "cancelled", "elapsedMs": 20, "reason": "timeout"]), requestID: id))
-        XCTAssertNotNil(NativeThumbnailPreviewTrace.webTrace(sidecar(["kind": "failed", "elapsedMs": 20]), requestID: id))
-        XCTAssertNil(NativeThumbnailPreviewTrace.webTrace(raw, requestID: UUID().uuidString.lowercased()))
+            sidecar(["kind": "cancelled", "elapsedMs": 20, "reason": "timeout"]), requestID: id).trace)
+        XCTAssertNotNil(NativeThumbnailPreviewTrace.webTrace(sidecar(["kind": "failed", "elapsedMs": 20]), requestID: id).trace)
+        XCTAssertEqual(NativeThumbnailPreviewTrace.webTrace(raw, requestID: UUID().uuidString.lowercased()), .rejected)
         for invalid in [
             ["kind": "headers", "elapsedMs": 20, "status": 600],
             ["kind": "headers", "elapsedMs": 20],
@@ -45,13 +51,21 @@ final class NativeThumbnailPreviewTraceTests: XCTestCase {
             ["kind": "cancelled", "elapsedMs": 20, "reason": "raw error"],
             ["kind": "headers", "elapsedMs": 20, "status": 200, "url": "private"],
         ] as [[String: Any]] {
-            XCTAssertNil(NativeThumbnailPreviewTrace.webTrace(sidecar(invalid), requestID: id))
+            XCTAssertEqual(NativeThumbnailPreviewTrace.webTrace(sidecar(invalid), requestID: id), .rejected)
         }
         var malformed = raw
         malformed["version"] = true
-        XCTAssertNil(NativeThumbnailPreviewTrace.webTrace(malformed, requestID: id))
+        XCTAssertEqual(NativeThumbnailPreviewTrace.webTrace(malformed, requestID: id), .rejected)
         malformed = raw
         malformed["remainingBudgetEstimateMs"] = 10_001
-        XCTAssertNil(NativeThumbnailPreviewTrace.webTrace(malformed, requestID: id))
+        let rejected = NativeThumbnailPreviewTrace.webTrace(malformed, requestID: id)
+        XCTAssertEqual(rejected, .rejected)
+        XCTAssertEqual(rejected.disposition, "rejected")
+        XCTAssertNil(rejected.trace)
+        let rawNull = NativeThumbnailPreviewTrace.webTrace(NSNull(), requestID: id)
+        XCTAssertEqual(rawNull, .rawNull)
+        XCTAssertEqual(rawNull.disposition, "raw-null")
+        XCTAssertNil(rawNull.trace)
+        XCTAssertEqual(NativeThumbnailPreviewTrace.webTrace(nil, requestID: id), .rejected)
     }
 }

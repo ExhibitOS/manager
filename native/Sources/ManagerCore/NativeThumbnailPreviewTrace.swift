@@ -3,13 +3,38 @@ import CoreFoundation
 import Foundation
 
 enum NativeThumbnailPreviewTrace {
+    enum WebReadback: Equatable, Sendable {
+        case rawNull
+        case rejected
+        case valid(DocumentValue)
+
+        var disposition: String {
+            switch self {
+            case .rawNull: "raw-null"
+            case .rejected: "rejected"
+            case .valid: "valid"
+            }
+        }
+
+        var trace: DocumentValue? {
+            guard case .valid(let trace) = self else { return nil }
+            return trace
+        }
+    }
+
     static func validRequestID(_ id: String) -> Bool {
         guard let uuid = UUID(uuidString: id), uuid.uuidString.lowercased() == id else { return false }
         let fields = id.split(separator: "-")
         return fields[2].first == "4" && fields[3].first.map { "89ab".contains($0) } == true
     }
 
-    static func webTrace(_ raw: Any?, requestID: String) -> DocumentValue? {
+    static func webTrace(_ raw: Any?, requestID: String) -> WebReadback {
+        if raw is NSNull { return .rawNull }
+        guard let trace = validatedWebTrace(raw, requestID: requestID) else { return .rejected }
+        return .valid(trace)
+    }
+
+    private static func validatedWebTrace(_ raw: Any?, requestID: String) -> DocumentValue? {
         guard let input = raw as? [String: Any],
               Set(input.keys) == ["version", "requestId", "anchorUnixMs", "dispatchElapsedMs", "remainingBudgetEstimateMs", "terminal"],
               input["requestId"] as? String == requestID, integer(input["version"], in: 1...1) == 1,

@@ -120,7 +120,7 @@ public actor NativeAutomationSession {
     private var thumbnailPreviewTraceRequestID: String?
     private var thumbnailPreviewTraceUsed = false
     private var thumbnailPreviewTraceOutcome: DocumentValue = .null
-    private var thumbnailPreviewWebTrace: DocumentValue?
+    private var thumbnailPreviewWebTrace: NativeThumbnailPreviewTrace.WebReadback?
 
     public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil, firstArchitectureEntry: Bool = false, thumbnailPreviewTraceRequestID: String? = nil) throws {
         if let thumbnailPreviewTraceRequestID {
@@ -4365,7 +4365,8 @@ public actor NativeAutomationSession {
             let drained = runtimeStopped ? true : ((try? await cancelOwnedRuntime()) == true)
             let server = drained ? (try? await bridge.nativeStatus(context))?.thumbnailPreviewTrace : nil
             trace = .object(["version": .integer(1), "requestId": .string(id), "runtimeManifestSHA256": .string(manifest),
-                "web": thumbnailPreviewWebTrace ?? .null,
+                "web": thumbnailPreviewWebTrace?.trace ?? .null,
+                "webDisposition": thumbnailPreviewWebTrace.map { .string($0.disposition) } ?? .null,
                 "server": server?["requestId"].string == id ? (server ?? .null) : .null,
                 "outcome": thumbnailPreviewTraceOutcome])
         }

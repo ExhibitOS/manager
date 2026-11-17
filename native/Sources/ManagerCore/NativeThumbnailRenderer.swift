@@ -53,7 +53,7 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
     private var web: WKWebView?
     private var page: URL?
     private var failed = false
-    private(set) var previewTrace: DocumentValue?
+    private(set) var previewTrace: NativeThumbnailPreviewTrace.WebReadback?
 
     func cancel() {
         failed = true
