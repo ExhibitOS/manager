@@ -5,6 +5,7 @@ import Foundation
 /// rechecks the durable original's length/hash before the server queues work.
 public protocol NativeImportTransport: Sendable {
     var admitsICCJPEG: Bool { get }
+    func admitsICCJPEG(for intent: NativeImportIntent) async -> Bool
     func createImport(_ input: NativeImportIntent) async throws -> NativeImportJob
     func uploadImport(_ id: String, bytes: Data) async throws
     func uploadLargeModelImport(_ id: String, bytes: Data) async throws
@@ -13,11 +14,17 @@ public protocol NativeImportTransport: Sendable {
 }
 extension NativeImportTransport {
     public var admitsICCJPEG: Bool { false }
+    public func admitsICCJPEG(for intent: NativeImportIntent) async -> Bool { admitsICCJPEG }
     public func uploadLargeModelImport(_ id: String, bytes: Data) async throws {
         throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE")
     }
 }
-extension AuthoringAPI: NativeImportTransport {}
+extension AuthoringAPI: NativeImportTransport {
+    public func admitsICCJPEG(for intent: NativeImportIntent) async -> Bool {
+        let ownerLocalCoarse = intent.coarsePreparation.map { $0.approvalId == nil } ?? false
+        return admitsICCJPEG || (ownerLocalCoarse && admitsOwnerLocalOriginalImageCoarse)
+    }
+}
 
 /// The same import API, with observation of the server-owned worker. A cancel
 /// acknowledgement is not its close/drain receipt.
@@ -62,7 +69,9 @@ public final class NativeImportTransfer {
         try Task.checkCancellation()
         // A restored intent must not continue against an older runtime that
         // cannot preserve the colour provenance on the exact same job.
-        guard intent.derived?.recipe.colourConversion == nil || transport.admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
+        if intent.derived?.recipe.colourConversion != nil, !(await transport.admitsICCJPEG(for: intent)) {
+            throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE")
+        }
         if let preparation = intent.modelPreparation {
             guard preparation.matches(intent) else { throw AuthoringFailure("IMPORT_MODEL_BINDING_INVALID") }
         }
