@@ -31,6 +31,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeInitialProductImagePreparationProfile: String? = nil
     public var nativeProductImageThumbnailRepairProfile: String? = nil
     public var nativeRequiredModelOriginalProfile: String? = nil
+    public var nativeFinishedHayesOriginalProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
@@ -2119,6 +2120,72 @@ public actor AuthoringAPI {
         return readback // An eligibility grant never stages or saves a draft.
     }
 
+    public var admitsFinishedHayesOriginalApproval: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeFinishedHayesOriginalProfile == NativeFinishedHayesCustody.profile
+    }
+
+    public func discoverFinishedHayesOriginal(artworkId: String, revision: Int,
+                                              in document: NativeDocumentState) async throws -> NativeFinishedHayesCustody {
+        guard admitsFinishedHayesOriginalApproval, (1...Int(Int32.max)).contains(revision) else {
+            throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_UNAVAILABLE")
+        }
+        let held = generation
+        struct Projection: Decodable, Sendable { let finishedHayesCustody: NativeFinishedHayesCustody? }
+        let path = studioPrefix + "/artworks/" + (try identifier(artworkId)) + "/native-model-candidate?artworkRevision=\(revision)"
+        let projection: Projection = try await request(path)
+        guard let custody = projection.finishedHayesCustody else { throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_UNAVAILABLE") }
+        let snapshot = try await studioArtwork(artworkId)
+        guard generation == held, admitsFinishedHayesOriginalApproval,
+              custody.artworkId == artworkId, custody.artworkRevision == revision else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try custody.validate(in: document, artwork: snapshot.artwork)
+        return custody
+    }
+
+    public func finishedHayesOriginalApproval(_ custody: NativeFinishedHayesCustody,
+        in document: NativeDocumentState, approve: Bool) async throws -> NativeFinishedHayesOriginalApproval {
+        guard admitsFinishedHayesOriginalApproval, !document.dirty, document.pending == nil,
+              let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_UNAVAILABLE")
+        }
+        let held = generation
+        let snapshot = try await studioArtwork(custody.artworkId)
+        try custody.validate(in: document, artwork: snapshot.artwork)
+        let saved = try await exhibition(draft.id)
+        guard generation == held, saved.draft == draft, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        struct Input: Encodable {
+            let kind: String
+            let artworkId: String
+            let artworkRevision: Int
+            let importJobId: String
+            let attemptId: String, receiptId: String, receiptSha256: String, completionFrameSha256: String
+        }
+        let release = custody.release
+        let input = Input(kind: NativeFinishedHayesCustody.profile, artworkId: custody.artworkId,
+            artworkRevision: custody.artworkRevision, importJobId: custody.importJobId,
+            attemptId: release.attemptId, receiptId: release.receiptId,
+            receiptSha256: release.receiptSha256, completionFrameSha256: release.completionFrameSha256)
+        let base = studioPrefix + "/exhibitions/" + (try identifier(draft.id))
+        let query = "?artworkId=" + (try identifier(custody.artworkId)) + "&artworkRevision=\(custody.artworkRevision)&importJobId="
+            + (try identifier(custody.importJobId)) + "&attemptId=" + (try identifier(release.attemptId))
+            + "&receiptId=" + (try identifier(release.receiptId)) + "&receiptSha256=" + release.receiptSha256
+            + "&completionFrameSha256=" + release.completionFrameSha256
+        var approved: NativeFinishedHayesOriginalApproval?
+        if approve {
+            let receipt: NativeFinishedHayesOriginalApproval = try await request(base + "/native-original-static-approval",
+                method: "POST", body: encoded(input), ifMatch: etag, timeout: 120, expectedResponseETag: etag)
+            try receipt.validate(custody: custody, exhibitionId: draft.id, revision: saved.revision, etag: etag)
+            guard receipt.approved else { throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_APPROVAL_INVALID") }
+            approved = receipt
+        }
+        let readback: NativeFinishedHayesOriginalApproval = try await request(base + "/native-finished-hayes-original" + query,
+            expectedResponseETag: etag, requiresNativeReadCSRF: true)
+        try readback.validate(custody: custody, exhibitionId: draft.id, revision: saved.revision, etag: etag)
+        guard generation == held, admitsFinishedHayesOriginalApproval else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        if let approved, approved != readback { throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_READBACK_UNCERTAIN") }
+        return readback
+    }
+
     public func discoverApprovedModelCandidate(_ entry: ArtworkCatalogEntry, placementId: String) async throws
         -> NativeApprovedModelCandidateReplacement {
         guard admitsApprovedModelCandidateReplacement, (1...2_147_483_647).contains(entry.revision) else {
@@ -2364,6 +2431,12 @@ public actor AuthoringAPI {
             // was lost. No error or cancellation is an owner-release assertion.
             throw error
         }
+    }
+
+    func retainedBoundedExportOperationId(exhibitionId: String, etag: String) -> String? {
+        guard let intent = uncertainBoundedExport, session != nil, intent.generation == generation,
+              intent.exhibitionId == exhibitionId, intent.etag == etag else { return nil }
+        return intent.requestId
     }
 
     private func boundedExportCompletion(_ intent: BoundedExportIntent, allowFailed: Bool = false) async throws -> NativeOEXExportCompletion {

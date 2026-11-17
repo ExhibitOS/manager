@@ -22,6 +22,14 @@ public enum NativeAutomationFailure {
                     "principalId": .string(uncertain.principalId), "requestId": .string(uncertain.requestId),
                     "jobId": uncertain.jobId.map(DocumentValue.string) ?? .null])])
         }
+        if let failure = error as? NativeOEXAutomationFailure {
+            var fields: [String: DocumentValue] = ["phase": .string(failure.phase.rawValue), "errorDomain": .string(failure.errorDomain)]
+            if let id = failure.operationId { fields["operationId"] = .string(id) }
+            if let bytes = failure.receivedBytes { fields["receivedBytes"] = .integer(Int64(bytes)) }
+            if let bytes = failure.totalBytes { fields["totalBytes"] = .integer(Int64(bytes)) }
+            if let code = failure.errorCode { fields["errorCode"] = .integer(Int64(code)) }
+            return .object(["code": .string("AUTOMATION_OEX_EXPORT_FAILED"), "retryAllowed": .bool(false), "oexFailure": .object(fields)])
+        }
         let code = (error as? BridgeFailure)?.code ?? (error as? AuthoringFailure)?.code ?? (error is CancellationError ? "AUTOMATION_CANCELLED" : "AUTOMATION_FAILED")
         var result: [String: DocumentValue] = ["code": .string(code)]
         if let failure = error as? AuthoringFailure {

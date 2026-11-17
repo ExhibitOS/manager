@@ -120,8 +120,15 @@ final class BoundedOEXExportTests: XCTestCase {
         let lost = try await client()
         do { _ = try await lost.exportBoundedOEX(exhibitionId: id(10), etag: etag); XCTFail("A dropped socket must not expose output") }
         catch { XCTAssertTrue(error is URLError || error is CancellationError) }
+        let retained = await lost.retainedBoundedExportOperationId(exhibitionId: id(10), etag: etag)
+        XCTAssertNotNil(retained.flatMap(UUID.init(uuidString:)))
+        let wrongExhibition = await lost.retainedBoundedExportOperationId(exhibitionId: id(1), etag: etag)
+        let wrongHead = await lost.retainedBoundedExportOperationId(exhibitionId: id(10), etag: "different")
+        XCTAssertNil(wrongExhibition); XCTAssertNil(wrongHead)
         let afterLoss = try await lost.exportBoundedOEX(exhibitionId: id(1), etag: etag)
         XCTAssertEqual(afterLoss.sha256, archive.sha256)
+        let completedIdentity = await lost.retainedBoundedExportOperationId(exhibitionId: id(1), etag: etag)
+        XCTAssertNil(completedIdentity)
         let streaming = try await client()
         let transfer = Task { try await streaming.exportBoundedOEX(exhibitionId: id(11), etag: etag) }
         try await Task.sleep(for: .milliseconds(150)); transfer.cancel()

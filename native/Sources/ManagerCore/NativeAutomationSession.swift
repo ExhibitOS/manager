@@ -10,7 +10,7 @@ public actor NativeAutomationSession {
         "room-audio-intake", "room-audio-status", "room-audio-approve",
         "workspace-bench-visual-check", "workspace-bench-model-forward-check", "viewer-budget-inspect", "applied-draft-save-resume",
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
-        "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover",
+        "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover", "finished-hayes-original-status", "finished-hayes-original-discover",
         "artwork-status", "artwork-icc-validation-status", "artwork-prepare-reviewed", "artwork-replace-reviewed",
         "hayes-original-release", "hayes-finished-release", "workspace-frame-lineage-status", "workspace-info-stand-check",
         "workspace-frame-lineage-prepare", "export-static-native-original-publication", "export-static-native-original", "export-static-saved-head", "export-static-status",
@@ -2110,7 +2110,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
             }
         }
-        if ["required-model-original-discover", "required-model-original-status", "required-model-original-approve"].contains(operation) {
+        if ["required-model-original-discover", "required-model-original-status", "required-model-original-approve", "finished-hayes-original-discover", "finished-hayes-original-status", "finished-hayes-original-approve"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
@@ -2311,6 +2311,28 @@ public actor NativeAutomationSession {
                     throw BridgeFailure("REQUIRED_MODEL_ORIGINAL_UNAVAILABLE")
                 }
                 result = try value(await api.requiredModelOriginalApproval(custody, in: current, approve: operation == "required-model-original-approve"))
+            }
+            let (_, _, refreshed) = try await checked(request)
+            guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+        case "finished-hayes-original-discover", "finished-hayes-original-status", "finished-hayes-original-approve":
+            try checkedRevision(request, current)
+            let discovery = operation == "finished-hayes-original-discover"
+            let keys: Set<String> = discovery ? ["artworkId", "artworkRevision"] : ["artworkId", "artworkRevision", "importJobId", "attemptId", "receiptId", "receiptSha256", "completionFrameSha256"]
+            let command = try NativeAutomationArtworkRules.command(request, keys: keys)
+            guard let artworkId = command["artworkId"].string, let revision = command["artworkRevision"].integer,
+                  (1...Int64(Int32.max)).contains(revision) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let custody = try await api.discoverFinishedHayesOriginal(artworkId: artworkId, revision: Int(revision), in: current)
+            if discovery {
+                result = try value(custody)
+            } else {
+                let release = custody.release
+                guard command["importJobId"] == .string(custody.importJobId),
+                      command["attemptId"] == .string(release.attemptId), command["receiptId"] == .string(release.receiptId),
+                      command["receiptSha256"] == .string(release.receiptSha256),
+                      command["completionFrameSha256"] == .string(release.completionFrameSha256) else {
+                    throw BridgeFailure("FINISHED_HAYES_ORIGINAL_UNAVAILABLE")
+                }
+                result = try value(await api.finishedHayesOriginalApproval(custody, in: current, approve: operation == "finished-hayes-original-approve"))
             }
             let (_, _, refreshed) = try await checked(request)
             guard try value(refreshed) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
@@ -4130,9 +4152,18 @@ public actor NativeAutomationSession {
             let sha256: String
             let confirmed: Bool
             if authoringSession?.nativeOexExportProfile == "bounded-file-v1" {
-                let archive = try await api.exportBoundedOEX(exhibitionId: draft.id, etag: etag)
-                confirmed = try await archive.write(to: url, expectedParent: installedExportRootIdentity)
-                sha256 = archive.sha256
+                let observation = await MainActor.run { NativeOEXAutomationObservation() }
+                do {
+                    let archive = try await api.exportBoundedOEX(exhibitionId: draft.id, etag: etag,
+                        progress: { value in observation.update(value) })
+                    await observation.writing()
+                    confirmed = try await archive.write(to: url, expectedParent: installedExportRootIdentity)
+                    sha256 = archive.sha256
+                } catch {
+                    if error is AuthoringFailure || error is BridgeFailure || error is CancellationError { throw error }
+                    let operationId = await api.retainedBoundedExportOperationId(exhibitionId: draft.id, etag: etag)
+                    throw await observation.failure(error, operationId: operationId)
+                }
             } else {
                 let archive = try await api.exportOEX(exhibitionId: draft.id, etag: etag)
                 confirmed = try await archive.writeBoundedVerified(to: url)

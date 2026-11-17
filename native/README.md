@@ -1,5 +1,23 @@
 # Native macOS application (in progress)
 
+## Finished Hayes original custody client
+
+A finished native Hayes release uses its own explicit `finished-hayes-custody-v1`
+source lane. The client requires the live `nativeFinishedHayesOriginalProfile`,
+discovers only `finishedHayesCustody` for the current artwork/revision, and binds
+the issued attempt, receipt and completion identity in the existing explicit
+original approval and independent protected readback. It never falls back to a
+required-model or adopted-model grant. Custody alone is not publication approval;
+source rights, current saved head and the existing private closed export remain
+separate checks. The public v4 descriptor and existing candidate limits do not change.
+
+For an untyped CLI OEX failure, the adapter records only existing progress phase,
+bounded byte counts, the matching retained operation UUID and whitelisted system
+error category/code. It does not serialize arbitrary error text or authorize an
+automatic retry, owner release, deadline change or archive completion. This narrow
+diagnostic addresses the retained r123 `AUTOMATION_FAILED` without calling it a
+server or timeout defect before its actual boundary is observed.
+
 ## Exact v11 contact-fit successor
 
 The API-only `eb32dbb0…` runtime (source `34f50014…`, producer `ee47e103…`)
