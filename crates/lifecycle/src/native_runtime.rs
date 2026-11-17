@@ -5488,6 +5488,42 @@ mod furnishing_thumbnail_upgrade_result_tests {
     }
 
     #[test]
+    fn r285_closing_hayes_requires_exact_active_clean_catalog52_binding() {
+        use crate::native_payload::{R285_CLOSING_ARTICULATION_TARGET as target, R285_INITIAL_PRODUCT_IMAGE_TARGET as previous};
+        use hayes_ordinary::closing_hayes_binding_matches;
+        let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
+        let payload = make(target);
+        let mut binding = binding();
+        binding.phase = Phase::Active;
+        binding.admission_kind = Admission::CleanReopen;
+        binding.catalog = 52;
+        binding.source_commit = target.0.into();
+        binding.producer_sha256 = target.1.into();
+        binding.payload_manifest_sha256 = target.2.into();
+
+        assert!(ordinary_inherited_hayes(&payload, Some(FurnishingStart::Reopen)));
+        assert!(!ordinary_inherited_hayes(&payload, Some(FurnishingStart::Initialize)));
+        assert!(closing_hayes_binding_matches(&payload, &binding));
+        assert!(!closing_hayes_binding_matches(&make(previous), &binding));
+        for mixed in [(previous.0, target.1, target.2), (target.0, previous.1, target.2), (target.0, target.1, previous.2)] {
+            assert!(!closing_hayes_binding_matches(&make(mixed), &binding));
+        }
+
+        let mut denied = binding.clone();
+        denied.catalog = 44;
+        assert!(!closing_hayes_binding_matches(&payload, &denied));
+        let mut denied = binding.clone();
+        denied.phase = Phase::Clean;
+        assert!(!closing_hayes_binding_matches(&payload, &denied));
+        let mut denied = binding.clone();
+        denied.admission_kind = Admission::InterruptedReopen;
+        assert!(!closing_hayes_binding_matches(&payload, &denied));
+        let mut denied = binding.clone();
+        denied.payload_manifest_sha256 = previous.2.into();
+        assert!(!closing_hayes_binding_matches(&payload, &denied));
+    }
+
+    #[test]
     fn contact_catalog52_initialize_inherits_required_hayes_channel_only_for_exact_host() {
         use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, FIXED64_PUBLICATION_REPAIR_TARGET, KNOWN_TRACK_AIM_TARGET,
             INSTALLED_CATALOG_ORIGIN_TARGET, VIEWER_BUDGET_TARGET, COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET};

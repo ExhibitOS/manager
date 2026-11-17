@@ -27,11 +27,39 @@ impl Input {
     }
 }
 
+/// Match the exact active clean-reopen 052 host without classifying it as a
+/// retained 044 payload or extending admission to any other Catalog 052 host.
+pub(super) fn closing_hayes_binding_matches(payload: &Payload, binding: &Binding) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    {
+        let host = payload.context();
+        let tuple = (host.source_commit.as_str(), payload.producer_sha256(), host.manifest_sha256.as_str());
+        tuple == crate::native_payload::R285_CLOSING_ARTICULATION_TARGET
+            && binding.matches_catalog_tuple(52, tuple)
+            && binding.phase == Phase::Active
+            && binding.admission_kind == Admission::CleanReopen
+            && binding.restore.is_none()
+    }
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = (payload, binding); false }
+}
+
 impl Session {
+    pub(super) fn closing_hayes_binding_available(&self) -> bool {
+        self.active_furnishing_binding()
+            .is_some_and(|binding| closing_hayes_binding_matches(&self.payload, binding))
+    }
+
+    pub(super) fn ordinary_hayes_release_binding_available(&self) -> bool {
+        (self.payload.ordinary_hayes_release()
+            && self.active_furnishing_binding().is_some_and(|binding| binding.catalog == 44))
+            || (self.closing_hayes_binding_available()
+                && matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_)))
+    }
+
     pub(crate) fn ordinary_hayes_available(&self) -> bool {
-        self.state == "ready" && self.payload.ordinary_hayes_release()
+        self.state == "ready" && self.ordinary_hayes_release_binding_available()
             && matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_))
-            && self.active_furnishing_binding().is_some_and(|binding| binding.catalog == 44)
     }
 
     pub(crate) fn execute_ordinary_hayes(&mut self, input: Input) -> Result<Value> {

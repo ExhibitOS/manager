@@ -4661,6 +4661,7 @@ public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
         return manifest == "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"
             || manifest == "af9c141f071d84ba4e9397798759e1cb13b2cde4d350f2fcf0a4b852ce3a09b5"
             || manifest == "aa7534f2165c5d8a28a3e54dc5da4c8e1f026c16e806f28df52d35598d84bf27"
+            || AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: manifest)
         #else
         return false
         #endif

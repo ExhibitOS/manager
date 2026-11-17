@@ -3,6 +3,17 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeModelPreparationTests: XCTestCase {
+    func testHayesOriginalAdmitsOnlyExactNewClosingRuntime() {
+        #if DEBUG
+        XCTAssertTrue(NativeHayesOriginalIntent.supports(
+            manifest: "414ab1ba84cf3614afc956f15036b0e258755a6ce26ba8d3d1966dc66287035b"))
+        XCTAssertTrue(NativeHayesOriginalIntent.supports(
+            manifest: "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"))
+        XCTAssertFalse(NativeHayesOriginalIntent.supports(
+            manifest: "c03fb747a8c77f0e99f15bdf53cfa1c995ec3a6da51ec94b796da089f102ddf5"))
+        #endif
+    }
+
     func testFreshRequiredIntakeWaitsForNewUnapprovedArtworkRevision() throws {
         let artworkId = UUID().uuidString, artistId = UUID().uuidString
         let asset = NativeArtwork.Asset(id: UUID().uuidString, mime: "model/gltf-binary", state: "approved",

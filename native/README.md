@@ -655,6 +655,12 @@ for the persisted job before `artwork-approve`. The app performs that read
 when it restores an approved file job. If the release is unconfirmed, keep
 the job and its journal for inspection.
 
+The exact Closing runtime `414ab1ba` also admits this dedicated intake on an
+existing clean-reopened Catalog 052 owner. It uses its authenticated inherited
+Hayes channel and the same immutable worker. Release recovery for this scope
+requires a receipt issued by that runtime for the same owner, artwork and job.
+Legacy Catalog 044 qualification remains in place.
+
 For current catalog 040 service EXB, the same saved-workspace commands
 admit a directed refresh from
 `bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338`
