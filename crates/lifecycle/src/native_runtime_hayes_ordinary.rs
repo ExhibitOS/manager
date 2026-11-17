@@ -30,11 +30,15 @@ impl Input {
 /// Match the exact active clean-reopen 052 host without classifying it as a
 /// retained 044 payload or extending admission to any other Catalog 052 host.
 pub(super) fn closing_hayes_binding_matches(payload: &Payload, binding: &Binding) -> bool {
+    !payload.hayes_preopen_terminal() && scoped_hayes_binding_matches(payload, binding)
+}
+
+pub(super) fn scoped_hayes_binding_matches(payload: &Payload, binding: &Binding) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     {
         let host = payload.context();
         let tuple = (host.source_commit.as_str(), payload.producer_sha256(), host.manifest_sha256.as_str());
-        tuple == crate::native_payload::R285_CLOSING_ARTICULATION_TARGET
+        (tuple == crate::native_payload::R285_CLOSING_ARTICULATION_TARGET || payload.hayes_preopen_terminal())
             && binding.matches_catalog_tuple(52, tuple)
             && binding.phase == Phase::Active
             && binding.admission_kind == Admission::CleanReopen
@@ -50,12 +54,17 @@ impl Session {
             .is_some_and(|binding| closing_hayes_binding_matches(&self.payload, binding))
     }
 
+    pub(super) fn scoped_hayes_binding_available(&self) -> bool {
+        self.active_furnishing_binding()
+            .is_some_and(|binding| scoped_hayes_binding_matches(&self.payload, binding))
+    }
+
     // Durable receipt recovery remains available after execution consumes
     // the authenticated one-use Hayes channel. Execution still requires Issued.
     pub(super) fn ordinary_hayes_release_binding_available(&self) -> bool {
         (self.payload.ordinary_hayes_release()
             && self.active_furnishing_binding().is_some_and(|binding| binding.catalog == 44))
-            || self.closing_hayes_binding_available()
+            || self.scoped_hayes_binding_available()
     }
 
     pub(crate) fn ordinary_hayes_available(&self) -> bool {
@@ -78,7 +87,7 @@ impl Session {
         };
         // Fail before the API can claim the import if the immutable worker is absent.
         worker.hayes_read_only_generate()?.check()?;
-        let scope = if self.closing_hayes_binding_available() {
+        let scope = if self.scoped_hayes_binding_available() {
             Some(self.local_authority.as_ref().ok_or_else(unavailable)?)
         } else {
             None

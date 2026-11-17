@@ -711,7 +711,7 @@ pub(crate) const R285_CLOSING_ARTICULATION_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const R285_HAYES_PREOPEN_TERMINAL_TARGET: RuntimeTuple = (
+pub(crate) const R285_HAYES_PREOPEN_TERMINAL_TARGET: RuntimeTuple = (
     "45455c698f220ecb73ea3560847f0811c54b7a30",
     "9c903f0d612f153929d586f6f34e328b236c640a7a097f966b90b3fe70028879",
     "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f",
