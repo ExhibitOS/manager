@@ -9,28 +9,37 @@ public struct NativeProductImagePreparationIntent: Codable, Equatable, Sendable 
     public let version: Int
     public let profile: String
     public let artworkRevision: Int
+    private let purpose: String?
 
-    public init(artworkRevision: Int, fresh: Bool = false) {
+    static let initialApprovalPurpose = "initial-approval"
+
+    public init(artworkRevision: Int, fresh: Bool = false, initialApproval: Bool = false) {
         version = 1
         profile = fresh ? Self.freshProfileID : Self.profileID
         self.artworkRevision = artworkRevision
+        purpose = initialApproval ? Self.initialApprovalPurpose : nil
     }
 
-    private enum CodingKeys: String, CodingKey { case version, profile, artworkRevision }
+    private enum CodingKeys: String, CodingKey { case version, profile, artworkRevision, purpose }
 
     public init(from decoder: Decoder) throws {
-        try requireProductImageKeys(DocumentValue(from: decoder), ["version", "profile", "artworkRevision"])
+        try requireProductImageKeys(DocumentValue(from: decoder), ["version", "profile", "artworkRevision"], optional: ["purpose"])
         let fields = try decoder.container(keyedBy: CodingKeys.self)
         version = try fields.decode(Int.self, forKey: .version)
         profile = try fields.decode(String.self, forKey: .profile)
         artworkRevision = try fields.decode(Int.self, forKey: .artworkRevision)
+        purpose = fields.contains(.purpose) ? try fields.decode(String.self, forKey: .purpose) : nil
         guard valid else { throw AuthoringFailure("IMAGE_PREPARATION_INTENT_INVALID") }
     }
 
     public var isFresh: Bool { profile == Self.freshProfileID }
 
+    var isInitialProductImage: Bool { profile == Self.profileID && purpose == Self.initialApprovalPurpose }
+    var isInitialApproval: Bool { isFresh || isInitialProductImage }
+
     var valid: Bool {
-        version == 1 && (isFresh || profile == Self.profileID) && (1..<2_147_483_647).contains(artworkRevision)
+        version == 1 && (isFresh || profile == Self.profileID)
+            && (purpose == nil || isInitialProductImage) && (1..<2_147_483_647).contains(artworkRevision)
     }
 
     func accepts(mime: String) -> Bool {
@@ -45,7 +54,7 @@ public struct NativeProductImagePreparationIntent: Codable, Equatable, Sendable 
     }
 
     public func checkFreshArtwork(_ artwork: NativeArtwork, rights: ArtworkMetadata.Rights, approvedAssetId: String? = nil) throws {
-        guard isFresh, valid, !artwork.archived, artwork.revision == artworkRevision,
+        guard isInitialApproval, valid, !artwork.archived, artwork.revision == artworkRevision,
               artwork.metadata?.displayReference == nil, artwork.metadata?.rights == rights,
               rights.permissions.display, rights.permissions.export,
               artwork.approvedAssetId == nil && artwork.approvedRevision == nil
@@ -54,7 +63,7 @@ public struct NativeProductImagePreparationIntent: Codable, Equatable, Sendable 
     }
 
     public func checkSource(_ file: ImportFileSnapshot, artwork: NativeArtwork) throws {
-        guard valid, !isFresh, file.mime == "image/jpeg", (4...Self.maximumSourceBytes).contains(file.data.count),
+        guard valid, !isInitialApproval, file.mime == "image/jpeg", (4...Self.maximumSourceBytes).contains(file.data.count),
               !artwork.archived, artwork.revision == artworkRevision, artwork.approvedRevision == artworkRevision,
               let metadata = artwork.metadata, metadata.displayReference == nil,
               metadata.rights.permissions.display, metadata.rights.permissions.export,
@@ -249,6 +258,11 @@ public struct NativeProductImagePreparationStatus: Codable, Equatable, Sendable 
                   receipt.full == full, receipt.coarse == coarse else { return false }
             return true
         }
+    }
+
+    func matchesInitialOutputs(fullSHA256: String?, coarseSHA256: String?) -> Bool {
+        guard let fullSHA256, let coarseSHA256, nativeImportDigest(fullSHA256), nativeImportDigest(coarseSHA256) else { return false }
+        return full?.sha256 == fullSHA256 && coarse?.sha256 == coarseSHA256
     }
 
     public func validatesReady(intent: NativeImportIntent, preparation: NativeProductImagePreparationIntent,

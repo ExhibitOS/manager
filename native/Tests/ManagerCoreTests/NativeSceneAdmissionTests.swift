@@ -5,6 +5,65 @@ import XCTest
 
 @MainActor
 final class NativeSceneAdmissionTests: XCTestCase {
+    func testInitialProductImageApprovalBindsBothTiersAndItsPreview() throws {
+        let fullId = UUID().uuidString.lowercased(), coarseId = UUID().uuidString.lowercased()
+        let previewId = UUID().uuidString.lowercased()
+        let full = NativeProductImagePreparationStatus.Image(assetId: fullId, mime: "image/png",
+            sha256: String(repeating: "a", count: 64), bytes: 1_001, width: 2_048, height: 1_024)
+        let coarse = NativeProductImagePreparationStatus.Image(assetId: coarseId, mime: "image/png",
+            sha256: String(repeating: "b", count: 64), bytes: 100, width: 512, height: 256)
+        func row(_ image: NativeProductImagePreparationStatus.Image) -> DocumentValue {
+            .object(["id": .string(image.assetId), "mime": .string(image.mime), "role": .string("image"),
+                     "bytes": .integer(Int64(image.bytes)), "sha256": .string(image.sha256)])
+        }
+        let preview: DocumentValue = .object(["id": .string(previewId), "path": .string("assets/preview/thumbnail.png"),
+            "mime": .string("image/png"), "role": .string("preview"), "bytes": .integer(40),
+            "sha256": .string(String(repeating: "c", count: 64))])
+        let ns = NativeProductImageThumbnailRepair.thumbnail
+        let thumbnail: DocumentValue = .object(["version": .integer(1), "assetId": .string(previewId)])
+        let lod: DocumentValue = .object(["version": .integer(1), "variants": .array([
+            .object(["assetId": .string(fullId), "detail": .string("full"), "textureSize": .integer(2_048)]),
+            .object(["assetId": .string(coarseId), "detail": .string("coarse"), "textureSize": .integer(512)])
+        ])])
+        let canonical: DocumentValue = .object(["artworkType": .string("image"), "primaryAssetId": .string(fullId),
+            "assets": .array([row(full), row(coarse), preview]),
+            "extensions": .object(["org.exhibitos.viewer/lod": lod, ns: thumbnail])])
+        XCTAssertTrue(AuthoringAPI.matchesInitialImageApproval(canonical, full: full, coarse: coarse))
+        var unrelated = canonical
+        unrelated["extensions"][ns]["assetId"] = .string(fullId)
+        XCTAssertFalse(AuthoringAPI.matchesInitialImageApproval(unrelated, full: full, coarse: coarse))
+        var changed = row(coarse)
+        changed["bytes"] = .integer(101)
+        unrelated = canonical
+        unrelated["assets"] = .array([row(full), changed, preview])
+        XCTAssertFalse(AuthoringAPI.matchesInitialImageApproval(unrelated, full: full, coarse: coarse))
+    }
+
+    func testInitialProductPairPurposeIsClosedAndDistinctFromFreshAndReplacement() throws {
+        let initial = NativeProductImagePreparationIntent(artworkRevision: 1, initialApproval: true)
+        let encoded = try JSONEncoder().encode(initial)
+        let request = try JSONDecoder().decode(DocumentValue.self, from: encoded)
+        XCTAssertEqual(request["purpose"], .string("initial-approval"))
+        XCTAssertEqual(request["profile"], .string("product-image-pair-2048-512-v1"))
+        XCTAssertEqual(try JSONDecoder().decode(NativeProductImagePreparationIntent.self, from: encoded), initial)
+        XCTAssertTrue(initial.isInitialApproval)
+        XCTAssertTrue(initial.accepts(mime: "image/jpeg"))
+        XCTAssertFalse(initial.accepts(mime: "image/png"))
+        let former = NativeProductImagePreparationIntent(artworkRevision: 1)
+        let formerWire = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(former))
+        guard case .object(let fields) = formerWire else { return XCTFail("Expected intent object") }
+        XCTAssertNil(fields["purpose"])
+        XCTAssertFalse(former.isInitialApproval)
+        guard case .object(var altered) = request else { return XCTFail("Expected intent object") }
+        altered["purpose"] = .null
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeProductImagePreparationIntent.self,
+                                                       from: JSONEncoder().encode(DocumentValue.object(altered))))
+        altered["purpose"] = .string("initial-approval")
+        altered["profile"] = .string("ordinary-image-preparation-v1")
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeProductImagePreparationIntent.self,
+                                                       from: JSONEncoder().encode(DocumentValue.object(altered))))
+    }
+
     func testSelectedPNGReadManifestIsExactAndDoesNotAdmitOtherRuntimeFamilies() throws {
         let pin = "1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238"
         XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: pin))

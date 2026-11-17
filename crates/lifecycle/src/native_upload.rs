@@ -40,12 +40,20 @@ pub struct ProductImagePreparation {
     version: u32,
     profile: String,
     artwork_revision: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "ProductImagePreparation::deserialize_purpose")]
+    purpose: Option<String>,
 }
 impl ProductImagePreparation {
     fn deserialize_present<'de, D: serde::Deserializer<'de>>(
         decoder: D,
     ) -> std::result::Result<Option<Self>, D::Error> {
         Self::deserialize(decoder).map(Some)
+    }
+
+    fn deserialize_purpose<'de, D: serde::Deserializer<'de>>(
+        decoder: D,
+    ) -> std::result::Result<Option<String>, D::Error> {
+        String::deserialize(decoder).map(Some)
     }
 
     fn valid(&self, intent: &Intent) -> bool {
@@ -55,6 +63,8 @@ impl ProductImagePreparation {
                 "ordinary-image-preparation-v1" => matches!(intent.mime.as_str(), "image/jpeg" | "image/png"),
                 _ => false,
             }
+            && self.purpose.as_deref().is_none_or(|purpose|
+                self.profile == "product-image-pair-2048-512-v1" && purpose == "initial-approval")
             && (1..i32::MAX as u32).contains(&self.artwork_revision)
             && intent.bytes >= 4
             && intent.scale_meters == 1.0
@@ -383,7 +393,7 @@ impl Transfer {
             && intent.idempotency_key == proof.upload_idempotency_key
             && intent.sha256 == proof.source_sha256
             && intent.bytes == proof.source_bytes
-            && preparation.profile == "product-image-pair-2048-512-v1"
+            && preparation.profile == "product-image-pair-2048-512-v1" && preparation.purpose.is_none()
             && preparation.artwork_revision == proof.artwork_revision
     }
 }
@@ -819,6 +829,19 @@ mod tests {
     #[test]
     fn product_image_intent_and_job_binding_survive_controller_restart() {
         assert_image_intent_survives_restart(product_image_fixture(), "productImagePreparation");
+    }
+
+    #[test]
+    fn initial_product_image_purpose_is_closed_and_survives_controller_restart() {
+        let mut input = product_image_fixture();
+        input["intent"]["productImagePreparation"]["purpose"] = serde_json::json!("initial-approval");
+        assert_image_intent_survives_restart(input.clone(), "productImagePreparation");
+
+        let mut wrong = input.clone();
+        wrong["intent"]["productImagePreparation"]["profile"] = serde_json::json!("ordinary-image-preparation-v1");
+        assert!(validate(&serde_json::from_value(wrong).unwrap()).is_err());
+        input["intent"]["productImagePreparation"]["purpose"] = Value::Null;
+        assert!(serde_json::from_value::<Transfer>(input).is_err());
     }
 
     #[test]

@@ -28,6 +28,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeGpuModelPreparationProfile: String? = nil
     public var nativeModelCandidateReplacementProfile: String? = nil
     public var nativeProductImagePreparationProfile: String? = nil
+    public var nativeInitialProductImagePreparationProfile: String? = nil
     public var nativeProductImageThumbnailRepairProfile: String? = nil
     public var nativeRequiredModelOriginalProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
@@ -480,6 +481,7 @@ public actor AuthoringAPI {
         nativeRuntimeManifestSHA256 == Self.placedExitDoorRuntimePin
             || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256)
             || Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
+            || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
         #else
         false
         #endif
@@ -1139,9 +1141,31 @@ public actor AuthoringAPI {
 
     var admitsRoomSupplementalCeilingFill: Bool {
         nativeSession && !authenticationBusy
-            && Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
+            && (Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             && session?.advertisesRoomSupplementalCeilingFill == true
+    }
+
+    static let r285InitialProductImageRuntime = "c03fb747a8c77f0e99f15bdf53cfa1c995ec3a6da51ec94b796da089f102ddf5"
+
+    nonisolated static func supportsR285InitialProductImageRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == r285InitialProductImageRuntime
+        #else
+        false
+        #endif
+    }
+
+    var admitsInitialProductImagePreparation: Bool {
+        nativeSession && !authenticationBusy
+            && Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
+            && session?.nativeInitialProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
+    }
+
+    func admitsProductImageIntent(_ intent: NativeProductImagePreparationIntent) -> Bool {
+        if intent.isInitialProductImage { return admitsInitialProductImagePreparation }
+        return intent.isFresh ? admitsFreshImagePreparation : admitsProductImagePreparation
     }
 
     nonisolated static func supportsCombinedThumbnailRuntime(manifest: String) -> Bool {
@@ -1169,6 +1193,7 @@ public actor AuthoringAPI {
          ownerLocalOriginalRuntime,
          r285RoomFillExitRuntime,
          r285SupplementalFillRuntime,
+         r285InitialProductImageRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -1745,7 +1770,7 @@ public actor AuthoringAPI {
         guard admitsProductImagePreparation, session?.userId == principalId else {
             throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
         }
-        guard let preparation = intent.productImagePreparation, preparation.valid,
+        guard let preparation = intent.productImagePreparation, preparation.valid, !preparation.isInitialApproval,
               nativeImportDigest(expectedReceiptSHA256) else {
             throw AuthoringFailure("IMPORT_INPUT_INVALID")
         }
@@ -1918,7 +1943,8 @@ public actor AuthoringAPI {
         nativeSession && !authenticationBusy
             && (Self.supportsOwnerLocalOriginalRuntime(manifest: nativeRuntimeManifestSHA256)
                 || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256)
-                || Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256))
+                || Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeOriginalImageCoarseProfile == "viewer-png-box-512-v1"
     }
 
@@ -2964,8 +2990,8 @@ public actor AuthoringAPI {
     }
     private func createProductImageImport(_ input: NativeImportIntent,
                                           preparation: NativeProductImagePreparationIntent) async throws -> NativeImportJob {
-        guard preparation.isFresh ? admitsFreshImagePreparation : admitsProductImagePreparation else {
-            throw AuthoringFailure(preparation.isFresh ? "IMAGE_PREPARATION_UNAVAILABLE" : "ARTWORK_REPLACEMENT_UNAVAILABLE")
+        guard admitsProductImageIntent(preparation) else {
+            throw AuthoringFailure(preparation.isInitialApproval ? "IMAGE_PREPARATION_UNAVAILABLE" : "ARTWORK_REPLACEMENT_UNAVAILABLE")
         }
         guard preparation.matches(input) else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
         struct Input: Encodable {
@@ -2985,7 +3011,7 @@ public actor AuthoringAPI {
                              rights: input.rights, coarsePreparation: preparation.isFresh ? nil : preparation,
                              imagePreparation: preparation.isFresh ? preparation : nil)
         let job: NativeImportJob = try await request("/api/v1/tenants/\(tenant)/imports", method: "POST", body: encoded(wire))
-        guard generation == current, (preparation.isFresh ? admitsFreshImagePreparation : admitsProductImagePreparation),
+        guard generation == current, admitsProductImageIntent(preparation),
               job.productImagePreparation?.matches(preparation, job: job) == true else {
             throw AuthoringFailure("IMPORT_RECEIPT_INVALID")
         }
@@ -4048,6 +4074,7 @@ public actor AuthoringAPI {
         #if DEBUG
         supportsOwnerLocalOriginalRuntime(manifest: manifest) || supportsR285RoomFillExitRuntime(manifest: manifest)
             || supportsR285SupplementalFillRuntime(manifest: manifest)
+            || supportsR285InitialProductImageRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
@@ -4396,14 +4423,28 @@ public actor AuthoringAPI {
         return observed
     }
 
+    nonisolated static func matchesInitialImageApproval(
+        _ artwork: DocumentValue, full: NativeProductImagePreparationStatus.Image,
+        coarse: NativeProductImagePreparationStatus.Image?
+    ) -> Bool {
+        artwork["artworkType"] == .string("image")
+            && artwork["extensions"][NativeProductImageThumbnailRepair.thumbnail] != .null
+            && validatesProductImageReplacementInventory(artwork, full: full, coarse: coarse, admitsThumbnail: true)
+            && NativeProductImagePreparationStatus.matchesCanonicalTiers(artwork, full: full, coarse: coarse)
+            && artwork["assets"].items?.filter({ $0["role"] == .string("image") }).count == (coarse == nil ? 1 : 2)
+    }
+
     public func approveFreshImage(_ job: NativeImportJob, request intent: NativeImportIntent,
-                                  current artwork: NativeArtwork, workspaceID: String) async throws -> NativeArtwork {
+                                  current artwork: NativeArtwork, workspaceID: String,
+                                  expectedFullSHA256: String? = nil, expectedCoarseSHA256: String? = nil) async throws -> NativeArtwork {
         let current = generation
-        guard admitsFreshImagePreparation, let principalID = session?.userId,
-              let preparation = intent.productImagePreparation, preparation.isFresh, artwork.id == intent.artworkId,
+        guard let principalID = session?.userId, let preparation = intent.productImagePreparation,
+              preparation.isInitialApproval, admitsProductImageIntent(preparation), artwork.id == intent.artworkId,
               let status = job.productImagePreparation, let full = status.full,
               status.validatesReady(intent: intent, preparation: preparation, job: job,
-                                    workspaceID: workspaceID, principalID: principalID) else {
+                                    workspaceID: workspaceID, principalID: principalID),
+              !preparation.isInitialProductImage || status.matchesInitialOutputs(fullSHA256: expectedFullSHA256,
+                                                                                 coarseSHA256: expectedCoarseSHA256) else {
             throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
         }
         try preparation.checkFreshArtwork(artwork, rights: intent.rights, approvedAssetId: full.assetId)
@@ -4411,20 +4452,16 @@ public actor AuthoringAPI {
         let approved: NativeArtwork = try await request(prefix + "/artworks/" + identifier(artwork.id) + "/fresh-image-preparations/approve",
             method: "POST", body: encoded(Approval(revision: artwork.revision, jobId: try identifier(job.id))))
         let canonical = try await studioArtwork(artwork.id).artwork
-        let expectedAssets = [full] + (status.coarse.map { [$0] } ?? [])
-        guard generation == current, admitsFreshImagePreparation, approved.id == artwork.id,
+        let verifiedInventory = preparation.isInitialProductImage
+            ? Self.matchesInitialImageApproval(canonical, full: full, coarse: status.coarse)
+            : Self.validatesProductImageReplacementInventory(canonical, full: full, coarse: status.coarse, admitsThumbnail: false)
+                && NativeProductImagePreparationStatus.matchesCanonicalTiers(canonical, full: full, coarse: status.coarse)
+        guard generation == current, admitsProductImageIntent(preparation), approved.id == artwork.id,
               approved.revision == artwork.revision, approved.approvedRevision == artwork.revision,
               approved.approvedAssetId == full.assetId, approved.metadata == artwork.metadata, !approved.archived,
-              canonical["revision"].integer == Int64(artwork.revision),
-              canonical["primaryAssetId"].string == full.assetId,
-              NativeProductImagePreparationStatus.matchesCanonicalTiers(canonical, full: full, coarse: status.coarse),
-              canonical["assets"].items?.count == expectedAssets.count,
-              expectedAssets.allSatisfy({ expected in
-                  canonical["assets"].items?.contains(where: {
-                      $0["id"].string == expected.assetId && $0["mime"].string == expected.mime
-                          && $0["sha256"].string == expected.sha256 && $0["bytes"].integer == Int64(expected.bytes)
-                  }) == true
-              }) else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
+              canonical["id"] == .string(artwork.id), canonical["revision"].integer == Int64(artwork.revision),
+              verifiedInventory
+        else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
         return approved
     }
 
