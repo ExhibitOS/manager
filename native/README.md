@@ -2,6 +2,11 @@
 
 ## Finished Hayes original custody client
 
+The Debug macOS owner-validation runtime `62d07baa…` (source `91bf12d9…`,
+producer `0f083241…`) has only the clean directed refresh from `eb32dbb0…`.
+It retains catalog55/49-row ledger and existing reader/issuer lineage. Source and
+sealed-runtime checks remain distinct from actual source approval, output and GUI use.
+
 A finished native Hayes release uses its own explicit `finished-hayes-custody-v1`
 source lane. The client requires the live `nativeFinishedHayesOriginalProfile`,
 discovers only `finishedHayesCustody` for the current artwork/revision, and binds
