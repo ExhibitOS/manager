@@ -44,7 +44,8 @@ fn bench_basecolor_saved_head_runtime_allowed(manifest: &str) -> bool {
 }
 fn owner_local_original_saved_head_runtime_allowed(manifest: &str) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return manifest == crate::native_payload::OWNER_LOCAL_ORIGINAL_TARGET.2;
+    return [crate::native_payload::OWNER_LOCAL_ORIGINAL_TARGET.2,
+        crate::native_payload::R285_ROOM_FILL_EXIT_TARGET.2].contains(&manifest);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = manifest; false }
 }

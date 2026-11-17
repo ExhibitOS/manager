@@ -2356,7 +2356,9 @@ public actor NativeAutomationSession {
                 }
             } else if operation == "light-prepare", request["command"]["type"] == .string("ensure-room-base-light") {
                 guard authoringSession?.advertisesRoomBaseLightPlacement == true,
-                      authoringSession?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1" else {
+                      authoringSession?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1",
+                      request["command"]["ceilingFillProfile"] != .string(RoomCeilingFill.profile)
+                        || authoringSession?.advertisesRoomCeilingFill == true else {
                     throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
                 }
                 switch try NativeAutomationScene.roomBaseRequest(request["command"], frame: frame) {

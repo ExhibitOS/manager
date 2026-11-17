@@ -79,6 +79,35 @@ final class NativeAutomationSceneTests: XCTestCase {
         XCTAssertEqual(unchanged, applied)
         XCTAssertEqual(unchanged.candidate["lights"].items?.count, 2)
     }
+    func testExplicitCeilingFillUsesTheCanonicalPanelAndRefusesPointFallback() throws {
+        let base = try fixture(), room = try XCTUnwrap(base.rooms.first?["id"].string)
+        let id = UUID().uuidString.lowercased()
+        let input: DocumentValue = .object(["type": .string("ensure-room-base-light"), "roomId": .string(room),
+                                           "lightId": .string(id), "ceilingFillProfile": .string(RoomCeilingFill.profile)])
+        guard case .addition(let request) = try NativeAutomationScene.roomBaseRequest(input, frame: frame(base)) else {
+            return XCTFail("Expected ceiling fill addition")
+        }
+        XCTAssertEqual(request.value["light"]["type"], .string("area"))
+        XCTAssertEqual(request.value["light"]["unit"], .string("lumen"))
+        XCTAssertEqual(request.value["settings"]["basePlacement"], .string("auto"))
+        XCTAssertEqual(request.value["settings"]["ceilingFill"], .object(["version": .integer(1), "brightness": .number(0.5)]))
+        let applied = try request.checkedReply(reply(request)).apply(to: base)
+        XCTAssertEqual(applied.candidate["lights"].items?.count, 2)
+        guard case .existing(let existing) = try NativeAutomationScene.roomBaseRequest(input, frame: frame(applied)) else {
+            return XCTFail("Expected existing ceiling fill")
+        }
+        XCTAssertEqual(try existing.apply(to: applied), applied)
+        var invalid = base, candidate = base.candidate
+        var rooms = try XCTUnwrap(candidate["rooms"].items)
+        rooms[0]["transform"]["scale"] = .vector([2, 1, 1]); candidate["rooms"] = .array(rooms)
+        try invalid.replaceCandidate(candidate)
+        XCTAssertThrowsError(try NativeAutomationScene.roomBaseRequest(input, frame: frame(invalid))) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "ROOM_CEILING_FILL_GEOMETRY")
+        }
+        var unsupported = input; unsupported["ceilingFillProfile"] = .string("different-profile")
+        XCTAssertThrowsError(try NativeAutomationScene.roomBaseRequest(unsupported, frame: frame(base)))
+    }
+
     func testRoomBaseRejectsWrongRoomDuplicateIdAndAlteredReply() throws {
         let base = try fixture(), room = try XCTUnwrap(base.rooms.first?["id"].string)
         let input: DocumentValue = .object(["type": .string("ensure-room-base-light"), "roomId": .string(room), "lightId": .string(light)])
