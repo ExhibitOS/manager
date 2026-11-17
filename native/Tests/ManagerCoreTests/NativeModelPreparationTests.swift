@@ -9,6 +9,7 @@ final class NativeModelPreparationTests: XCTestCase {
             "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f",
             "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66",
             "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132",
+            "d8922986b59f04227936a391c22a72cc689a35042e590b903482385395b73ae0",
         ] {
             let foreign = "0" + manifest.dropFirst()
             XCTAssertTrue(NativeHayesOriginalIntent.supports(manifest: manifest))
@@ -31,6 +32,18 @@ final class NativeModelPreparationTests: XCTestCase {
             manifest: "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f"))
         XCTAssertFalse(AuthoringAPI.supportsBenchBaseColorPreparationRuntime(
             manifest: "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66"))
+        #endif
+    }
+
+    func testGreekV2RetainsOnlyItsExact055BenchReceiptLineage() {
+        #if DEBUG && os(macOS)
+        let successor = "d8922986b59f04227936a391c22a72cc689a35042e590b903482385395b73ae0"
+        let parent = "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132"
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: successor, allowRetained: true), [successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: successor, allowRetained: false), [successor])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: parent, allowRetained: true), [parent])
+        XCTAssertTrue(AuthoringAPI.benchPreparationReceiptManifests(runtime:
+            "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66", allowRetained: true).isEmpty)
         #endif
     }
 

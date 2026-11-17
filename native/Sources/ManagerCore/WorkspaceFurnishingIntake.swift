@@ -402,7 +402,7 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
                supportedExtensionVersion: Int64 = 1,
                admitsRectangularFit: Bool = false,
                admitsPreparation: Bool = false, infoStandPreparationManifest: String? = nil,
-               requireCurrentInfoStandProducer: Bool = false, benchPreparationManifest: String? = nil) throws {
+               requireCurrentInfoStandProducer: Bool = false, benchPreparationManifests: Set<String> = []) throws {
         guard workspaceFurnishingID(intakeId), workspaceFurnishingID(self.requestId),
               id.map({ $0 == intakeId }) ?? true, requestId.map({ $0 == self.requestId }) ?? true,
               declaration.isValid, declaration.kind.minimumExtensionVersion <= supportedExtensionVersion,
@@ -450,12 +450,12 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
                 throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
             }
         case .benchBaseColor512:
-            guard let benchPreparationManifest, nativeImportDigest(benchPreparationManifest),
+            guard !benchPreparationManifests.isEmpty, benchPreparationManifests.allSatisfy(nativeImportDigest),
                   declaration.kind == .bench, (28...WorkspaceFurnishingPreparationPolicy.benchBaseColorSourceByteLimit).contains(declaration.model.bytes),
                   (phase == .registered) == (preparation != nil),
                   preparation.map({ receipt in
-                      receipt.runtimeManifestSHA256 == benchPreparationManifest
-                          && receipt.renderableModel.isValid
+                      guard let manifest = receipt.runtimeManifestSHA256, benchPreparationManifests.contains(manifest) else { return false }
+                      return receipt.renderableModel.isValid
                           && (28..<declaration.model.bytes).contains(receipt.renderableModel.bytes)
                           && receipt.renderableModel.sha256 != declaration.model.sha256
                   }) ?? true else {
@@ -470,6 +470,13 @@ public struct WorkspaceFurnishingIntake: Codable, Sendable, Identifiable {
                 throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
             }
         } else if let furnishing, furnishing.details != declaration {
+            throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+        }
+    }
+
+    func checkRegisteredBenchAction(from previous: Self) throws {
+        guard previous.phase == .registered, previous.preparationPolicy == .benchBaseColor512 else { return }
+        guard phase == .registered, preparation == previous.preparation, furnishing == previous.furnishing else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
     }
