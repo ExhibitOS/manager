@@ -656,10 +656,18 @@ pub(crate) const FIXED64_PUBLICATION_REPAIR_TARGET: RuntimeTuple = (
     "9506cea2a63d36f4ef1dffa4a0c75a7ac141b3445f193f189b1a830710136702",
     "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
 );
+// Exact ordinary fresh owner for independent R285 authoring and original output.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const OWNER_LOCAL_ORIGINAL_TARGET: RuntimeTuple = (
+    "0427606da7c8bbfffdbc402cff3044744b8f7e43",
+    "d6467586f8a95e74e3af23aedd1514a51d23db10b21902b79709056684411746",
+    "8282013c72f052aa7eb02df120c13c2a21464343eccf36fadaac567c763b6d4b",
+);
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     RECTANGLE_FIXED64_TARGET,
     FIXED64_PUBLICATION_REPAIR_TARGET,
+    OWNER_LOCAL_ORIGINAL_TARGET,
     KNOWN_TRACK_AIM_TARGET,
     INSTALLED_CATALOG_ORIGIN_TARGET,
     BENCH_BASECOLOR_PREPARATION_TARGET,
@@ -788,7 +796,8 @@ pub(crate) fn combined_thumbnail_host_matches(tuple: (&str, &str, &str)) -> bool
 // carried restore retain their existing combined-thumbnail host set.
 pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET, ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET].contains(&tuple) { return true; }
+    if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET,
+        ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET].contains(&tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
 // Both fresh binding admission and its mandatory inherited channel use this
@@ -3072,6 +3081,33 @@ pub(crate) mod normal_oex_release_declaration_tests {
         }
         assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(&target.2.to_uppercase()));
         assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(&"f".repeat(64)));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires both exact sealed Catalog52 runtimes; readonly Native opener"]
+    fn owner_local_original_actual_fresh_and_ordinary_openers_use_exact_catalog() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_OWNER_LOCAL_ORIGINAL_RUNTIME").unwrap());
+        let prior = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FIXED64_PUBLICATION_RUNTIME").unwrap());
+        let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let fresh = Payload::open_fresh_workspace_v7_validation(&root).unwrap();
+        let parent = Payload::open_workspace_v5_validation(&prior, false).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!((ordinary.manifest.source_commit.as_str(), ordinary.producer_sha256(),
+            ordinary.manifest_sha256.as_str()), OWNER_LOCAL_ORIGINAL_TARGET);
+        assert_eq!(ordinary.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        let ledger = ordinary.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ledger.lines().count(), 47);
+        assert_eq!(ledger, parent.workspace_furnishing_ledger(catalog).unwrap());
+        assert_eq!(ledger, fresh.workspace_furnishing_ledger(catalog).unwrap());
+        assert!(fresh.fresh_catalog52_constructor());
+        assert!(!ordinary.fresh_catalog52_constructor());
+        assert!(fresh.workspace_import_version().is_none());
+        assert!(Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).is_err());
+        assert!(!combined_thumbnail_host_matches(OWNER_LOCAL_ORIGINAL_TARGET));
+        assert!(combined_thumbnail_carried_receipt_payload(OWNER_LOCAL_ORIGINAL_TARGET).is_none());
+        assert!(FurnishingTransition::from_manifests((FIXED64_PUBLICATION_REPAIR_TARGET.2, OWNER_LOCAL_ORIGINAL_TARGET.2)).is_none());
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(OWNER_LOCAL_ORIGINAL_TARGET.2));
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

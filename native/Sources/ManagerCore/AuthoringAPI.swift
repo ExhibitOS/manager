@@ -1101,6 +1101,16 @@ public actor AuthoringAPI {
 
     /// Populated only from the independently qualified immutable producer handoff.
     /// Older model/product-image session profiles never imply this additive route.
+    static let ownerLocalOriginalRuntime = "8282013c72f052aa7eb02df120c13c2a21464343eccf36fadaac567c763b6d4b"
+
+    nonisolated static func supportsOwnerLocalOriginalRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == ownerLocalOriginalRuntime
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsCombinedThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
         ["84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
@@ -1123,6 +1133,7 @@ public actor AuthoringAPI {
          "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354",
          "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29",
          "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
+         ownerLocalOriginalRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -1869,7 +1880,7 @@ public actor AuthoringAPI {
     }
 
     public var admitsOwnerLocalOriginalImageCoarse: Bool {
-        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+        nativeSession && !authenticationBusy && Self.supportsOwnerLocalOriginalRuntime(manifest: nativeRuntimeManifestSHA256)
             && session?.nativeOriginalImageCoarseProfile == "viewer-png-box-512-v1"
     }
 
@@ -3998,7 +4009,7 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsPinnedStartupDrain(manifest: String) -> Bool {
         #if DEBUG
-        manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
+        supportsOwnerLocalOriginalRuntime(manifest: manifest) || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
             || supportsPreReadyPreservationReadback(manifest: manifest)
