@@ -774,6 +774,13 @@ pub(crate) const R285_FRAME_V11_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const R285_FRAME_FIT_V11_TARGET: RuntimeTuple = (
+    "34f50014a68672b3c0f5b13bfa54961f385fd2c4",
+    "ee47e103f7ea07b6ed68493fde099a44cf3fcf90a2de11aaafd774b629aa9bbe",
+    "eb32dbb047ae2ca764d83e4d1d6c7fa4921f3f42f4b0af211ddc63f1ac332269",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn r285_greek_thumbnail_trace_transition(pair: (&str, &str)) -> bool {
     r285_greek_thumbnail_trace_runtime_pair(pair).is_some()
 }
@@ -784,7 +791,8 @@ fn r285_greek_thumbnail_trace_runtime_pair(pair: (&str, &str)) -> Option<(Runtim
         (R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET),
         (R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET, R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET),
         (R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET),
-        (R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET)]
+        (R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET),
+        (R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET)]
         .into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -802,7 +810,7 @@ fn r285_bench_after_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return [R285_BENCH_AFTER_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_V2_TARGET,
         R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET,
-        R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET].contains(&tuple);
+        R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -821,7 +829,7 @@ pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     { [R285_HAYES_PREOPEN_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_TARGET, R285_BENCH_AFTER_TERMINAL_TARGET,
         R285_GREEK_THUMBNAIL_V2_TARGET, R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET,
-        R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET].contains(&tuple) }
+        R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET].contains(&tuple) }
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1986,6 +1994,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET.2 == manifest
         || R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET.2 == manifest
         || R285_FRAME_V11_TARGET.2 == manifest
+        || R285_FRAME_FIT_V11_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -3723,6 +3732,48 @@ pub(crate) mod normal_oex_release_declaration_tests {
         target.manifest.source_commit = tuple.0.into();
         target.manifest.producer_sha256 = R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET.1.into();
         assert!(!target.frame_v11_runtime());
+        assert!(target.static_detail_export_resources(true).is_err());
+        target.manifest.producer_sha256 = tuple.1.into();
+        target.manifest_sha256 = tuple.2.to_uppercase();
+        assert!(target.static_detail_export_resources(true).is_err());
+        target.manifest_sha256 = tuple.2.into();
+        target.manifest.files.retain(|item| item.path != STATIC_DETAIL_MARKER);
+        assert_eq!(target.static_detail_export_resources(true).unwrap_err().code, "NATIVE_STATIC_DETAIL_UNAVAILABLE");
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires exact sealed v11 frame parent and contact-fit successor; readonly payloads"]
+    fn r285_frame_fit_v11_preserves_saved_contact_and_private_detail_boundaries() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_FRAME_FIT_V11_RUNTIME").unwrap());
+        let parent_root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_FRAME_V11_RUNTIME").unwrap());
+        let parent = Payload::open_workspace_v5_validation(&parent_root, false).unwrap();
+        let mut target = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        target.recheck().unwrap();
+        let tuple = R285_FRAME_FIT_V11_TARGET;
+        let pair = (R285_FRAME_V11_TARGET.2, tuple.2);
+        let step = FurnishingTransition::from_manifests(pair).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!(step.source(), R285_FRAME_V11_TARGET);
+        assert_eq!(step.target(), tuple);
+        assert!(!step.upgrades_catalog());
+        assert_eq!(parent.workspace_furnishing_ledger(catalog).unwrap(), target.workspace_furnishing_ledger(catalog).unwrap());
+        assert_eq!(target.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 49);
+        assert!(target.frame_fit_v11_runtime() && target.frame_v11_runtime() && target.thumbnail_allowance_runtime());
+        assert!(target.bench_after_terminal() && target.hayes_preopen_terminal());
+        assert!(target.static_export_resources(true).is_ok());
+        assert!(target.static_detail_export_resources(true).is_ok());
+        assert!(target.static_detail_export_resources(false).is_err());
+        assert!(Payload::open_fresh_workspace_v7_validation(&root).is_err());
+        for denied in [(pair.1, pair.0), (pair.1, pair.1), (R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET.2, pair.1), (R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET.2, pair.1)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        target.manifest.source_commit = R285_FRAME_V11_TARGET.0.into();
+        assert!(!target.frame_fit_v11_runtime());
+        assert!(target.static_detail_export_resources(true).is_err());
+        target.manifest.source_commit = tuple.0.into();
+        target.manifest.producer_sha256 = R285_FRAME_V11_TARGET.1.into();
+        assert!(!target.frame_fit_v11_runtime());
         assert!(target.static_detail_export_resources(true).is_err());
         target.manifest.producer_sha256 = tuple.1.into();
         target.manifest_sha256 = tuple.2.to_uppercase();
@@ -7638,26 +7689,32 @@ impl Payload {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_preview_trace_supported(&self) -> bool {
-        [R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET]
+        [R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
             || self.thumbnail_preview_overlap_runtime()
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_preview_overlap_runtime(&self) -> bool {
-        [R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET]
+        [R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_allowance_runtime(&self) -> bool {
-        [R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET]
+        [R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn frame_v11_runtime(&self) -> bool {
-        (self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()) == R285_FRAME_V11_TARGET
+        [R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET]
+            .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn frame_fit_v11_runtime(&self) -> bool {
+        (self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()) == R285_FRAME_FIT_V11_TARGET
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -8396,6 +8453,7 @@ impl Payload {
                     || self.native_model_adoption_original_target()
                     || combined_thumbnail_host_matches(provenance)
                     || R285_FRAME_V11_TARGET == provenance
+                    || R285_FRAME_FIT_V11_TARGET == provenance
                     || furnishing_thumbnail_host_matches(provenance)
                     || current_image_thumbnail_host_matches(provenance)
                     || gpu_model_host_matches(provenance)))

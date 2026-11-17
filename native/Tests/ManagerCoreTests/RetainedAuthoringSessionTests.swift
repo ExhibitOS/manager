@@ -64,9 +64,9 @@ final class RetainedAuthoringSessionTests: XCTestCase {
             XCTAssertEqual(admitted, expected)
             XCTAssertEqual(authenticated.nativeFreshImagePreparationProfile != nil, expected)
         }
-        let current = AuthoringAPI.r285FrameV11Runtime
+        let current = AuthoringAPI.r285FrameFitV11Runtime
         for (runtime, token, expected) in [
-            (current, "b", true), (current, "c", false), (current.uppercased(), "b", false),
+            (current, "b", true), (AuthoringAPI.r285FrameV11Runtime, "b", true), (current, "c", false), (current.uppercased(), "b", false),
             (AuthoringAPI.r285GreekThumbnailAllowanceRuntime, "b", false)
         ] {
             let originalAPI = try AuthoringAPI(port: port, tenantId: tenant, nativeRuntimeManifestSHA256: runtime)
