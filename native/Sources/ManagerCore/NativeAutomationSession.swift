@@ -2564,6 +2564,7 @@ public actor NativeAutomationSession {
             let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                      "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == keys, existingWorkspaceV5 != nil, selectedOEXFormat == nil,
+                  AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: runtimeManifest),
                   await api.admitsWorkspaceCeilingRail else { throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "roomId", "furnishingId", "modelSha256", "attachments"])

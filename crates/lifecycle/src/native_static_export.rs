@@ -47,7 +47,8 @@ fn owner_local_original_saved_head_runtime_allowed(manifest: &str) -> bool {
     return [crate::native_payload::OWNER_LOCAL_ORIGINAL_TARGET.2,
         crate::native_payload::R285_ROOM_FILL_EXIT_TARGET.2,
         crate::native_payload::R285_SUPPLEMENTAL_FILL_TARGET.2,
-        crate::native_payload::R285_INITIAL_PRODUCT_IMAGE_TARGET.2].contains(&manifest);
+        crate::native_payload::R285_INITIAL_PRODUCT_IMAGE_TARGET.2,
+        crate::native_payload::R285_CLOSING_ARTICULATION_TARGET.2].contains(&manifest);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = manifest; false }
 }
