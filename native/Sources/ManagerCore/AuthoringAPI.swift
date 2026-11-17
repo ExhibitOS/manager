@@ -4452,11 +4452,15 @@ public actor AuthoringAPI {
         let approved: NativeArtwork = try await request(prefix + "/artworks/" + identifier(artwork.id) + "/fresh-image-preparations/approve",
             method: "POST", body: encoded(Approval(revision: artwork.revision, jobId: try identifier(job.id))))
         let canonical = try await studioArtwork(artwork.id).artwork
+        let verifiedInventory = preparation.isInitialProductImage
+            ? Self.matchesInitialImageApproval(canonical, full: full, coarse: status.coarse)
+            : Self.validatesProductImageReplacementInventory(canonical, full: full, coarse: status.coarse, admitsThumbnail: false)
+                && NativeProductImagePreparationStatus.matchesCanonicalTiers(canonical, full: full, coarse: status.coarse)
         guard generation == current, admitsProductImageIntent(preparation), approved.id == artwork.id,
               approved.revision == artwork.revision, approved.approvedRevision == artwork.revision,
               approved.approvedAssetId == full.assetId, approved.metadata == artwork.metadata, !approved.archived,
               canonical["id"] == .string(artwork.id), canonical["revision"].integer == Int64(artwork.revision),
-              Self.matchesInitialImageApproval(canonical, full: full, coarse: status.coarse)
+              verifiedInventory
         else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
         return approved
     }
