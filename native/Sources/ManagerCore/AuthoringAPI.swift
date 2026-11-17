@@ -2886,8 +2886,7 @@ public actor AuthoringAPI {
             return job
         }
         let ownerLocalCoarse = input.coarsePreparation.map { $0.approvalId == nil } ?? false
-        guard input.derived?.recipe.colourConversion == nil || admitsICCJPEG
-            || (ownerLocalCoarse && admitsOwnerLocalOriginalImageCoarse) else {
+        if input.derived?.recipe.colourConversion != nil, !(await admitsICCJPEG(for: input)) {
             throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE")
         }
         if let preparation = input.modelPreparation {
