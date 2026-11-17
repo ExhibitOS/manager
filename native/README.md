@@ -1,5 +1,16 @@
 # Native macOS application (in progress)
 
+## Native detail producer context
+
+The exact `e2a21950…` successor (source `1d289b5f…`, producer `df1a584a…`)
+has only the directed clean transition from `62d07baa…`. It retains the two
+finite diagnostic scripts and forwards the existing model preparation execution
+into the private detail importer. No producer is created or approval replayed.
+The catalog, current saved head, original grants, frozen publication and reader
+lineage remain protected. The unused `849dc7f8…` runtime is not an activation
+prerequisite. Exact tuple/pair qualification and actual guarded output stay
+separate from this source admission.
+
 ## Detail diagnostics and OEX completion
 
 The exact `849dc7f8…` successor (source `42f1ab53…`, producer `6a378fdb…`)

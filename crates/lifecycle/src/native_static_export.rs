@@ -37,6 +37,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "eb32dbb047ae2ca764d83e4d1d6c7fa4921f3f42f4b0af211ddc63f1ac332269"
             || manifest == "62d07baaee48e74c77b2b391484df57024479bf6d2b902ad57b49fcba37f9345"
             || manifest == "849dc7f88a1a47caaa3c218db69cae295f6dba5d3f3db53615062829c7537a4d"
+            || manifest == "e2a219503b653a1995df732229c1ec9263d1f9f2abe9c0cf26ca727ea3a99f01"
             || bench_basecolor_saved_head_runtime_allowed(manifest)
             || owner_local_original_saved_head_runtime_allowed(manifest)
             || isolated_saved_head_runtime_allowed(manifest))
