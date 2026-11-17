@@ -1,5 +1,15 @@
 # Native macOS application (in progress)
 
+## Exact v11 contact-fit successor
+
+The API-only `eb32dbb0…` runtime (source `34f50014…`, producer `ee47e103…`)
+has only the directed clean refresh from `1dbf08d3…`, retaining its catalog,
+receipt lineage and exact private original-detail admissions. The API contact-fit
+proposal now preserves an existing v11 scene and its ceiling attachments when
+adding the target-issued `contain-contact-v1` image binding. This completes the
+existing server contract; it does not replace original approval, ordinary Save
+or final Viewer qualification with source checks.
+
 ## Exact v11 registered-frame successor
 
 The Debug macOS owner-validation runtime `1dbf08d3…` (source `4594e94c…`,

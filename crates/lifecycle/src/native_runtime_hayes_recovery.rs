@@ -82,6 +82,8 @@ impl Session {
         let trace_abort_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET.2;
         let allowance = self.payload.thumbnail_allowance_runtime();
         let frame_v11 = self.payload.frame_v11_runtime();
+        let frame_fit_v11 = self.payload.frame_fit_v11_runtime();
+        let frame_v11_manifest = crate::native_payload::R285_FRAME_V11_TARGET.2;
         let allowance_manifest = "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2";
         let preview_overlap_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET.2;
         let greek_v2 = self.payload.r285_greek_thumbnail_v2_outcome() || traced;
@@ -116,7 +118,8 @@ impl Session {
                     OR ({has_trace_predecessor} AND r.runtime_manifest_sha256='{trace_predecessor_manifest}')
                     OR ({preview_overlap} AND r.runtime_manifest_sha256='{trace_abort_manifest}')
                     OR ({allowance} AND r.runtime_manifest_sha256='{preview_overlap_manifest}')
-                    OR ({frame_v11} AND r.runtime_manifest_sha256='{allowance_manifest}'))
+                    OR ({frame_v11} AND r.runtime_manifest_sha256='{allowance_manifest}')
+                    OR ({frame_fit_v11} AND r.runtime_manifest_sha256='{frame_v11_manifest}'))
                 AND (NOT {require_prior_approval} OR (
                     (r.runtime_manifest_sha256='{predecessor}'
                         OR ({greek_web_successor} AND r.runtime_manifest_sha256='{manifest}')
@@ -126,7 +129,8 @@ impl Session {
                         OR ({has_trace_predecessor} AND r.runtime_manifest_sha256='{trace_predecessor_manifest}')
                         OR ({preview_overlap} AND r.runtime_manifest_sha256='{trace_abort_manifest}')
                         OR ({allowance} AND r.runtime_manifest_sha256='{preview_overlap_manifest}')
-                    OR ({frame_v11} AND r.runtime_manifest_sha256='{allowance_manifest}'))
+                    OR ({frame_v11} AND r.runtime_manifest_sha256='{allowance_manifest}')
+                    OR ({frame_fit_v11} AND r.runtime_manifest_sha256='{frame_v11_manifest}'))
                     AND EXISTS (
                         SELECT 1 FROM artwork_approvals approved
                          WHERE (approved.tenant_id,approved.artwork_id,approved.revision,approved.asset_id)
@@ -150,6 +154,7 @@ impl Session {
             preview_overlap=preview_overlap, trace_abort_manifest=trace_abort_manifest,
             allowance=allowance, preview_overlap_manifest=preview_overlap_manifest,
             frame_v11=frame_v11, allowance_manifest=allowance_manifest,
+            frame_fit_v11=frame_fit_v11, frame_v11_manifest=frame_v11_manifest,
             require_prior_approval=text_successor || finished_artwork.is_some(),
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );

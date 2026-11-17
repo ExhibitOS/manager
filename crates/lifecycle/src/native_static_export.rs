@@ -34,6 +34,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
             || manifest == "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2"
             || manifest == "1dbf08d3b1122015cea14aefc7e50f05f59eccb559632726654a2de2d5d692dd"
+            || manifest == "eb32dbb047ae2ca764d83e4d1d6c7fa4921f3f42f4b0af211ddc63f1ac332269"
             || bench_basecolor_saved_head_runtime_allowed(manifest)
             || owner_local_original_saved_head_runtime_allowed(manifest)
             || isolated_saved_head_runtime_allowed(manifest))
@@ -2602,8 +2603,8 @@ mod detail_tests {
 
     #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]
     #[test]
-    fn r285_frame_v11_saved_head_export_keeps_protected_exports_separate() {
-        let current = crate::native_payload::R285_FRAME_V11_TARGET.2;
+    fn r285_frame_fit_v11_saved_head_export_keeps_protected_exports_separate() {
+        let current = crate::native_payload::R285_FRAME_FIT_V11_TARGET.2;
         assert!(saved_head_runtime_allowed(current));
         assert!(!isolated_saved_head_runtime_allowed(current));
         assert!(!saved_head_runtime_allowed(&current.to_uppercase()));
