@@ -763,13 +763,14 @@ fn check_r285_cosmic_recovery_source(root: &Path, source: &Current, ports: Ports
     if digest(&bytes) != "da9a1c139d74d12a1ded942b9ea6e5df8e61e9367946845f539f1c57eb030f97" {
         return Err(rejected());
     }
-    let document: super::native_document::DocumentState = serde_json::from_slice(&bytes).map_err(|_| rejected())?;
-    super::native_document::validate(&document)?;
+    let document: crate::installations::native_document::DocumentState = serde_json::from_slice(&bytes).map_err(|_| rejected())?;
+    crate::installations::native_document::validate(&document)?;
     if document.workspace_id != binding.owner.workspace_id || document.tenant_id != binding.owner.tenant_id
         || document.principal_id != binding.owner.principal_id || document.revision != 100 || document.pending.is_some()
         || document.saved_edit_version != Some(88)
         || document.etag.as_deref() != Some("\"studio-r33-08fef6ca4d87182ba9e1f3e495f451a20f4438916bab35b556619bff5468cfcd\"")
-        || document.draft.as_ref().and_then(super::native_document::draft_id) != Some("a888ef7e-7b7a-4f7d-955f-a69a9cd8f2ce")
+        || document.draft.as_ref().and_then(|draft| draft["exhibitionId"].as_str()) != Some("a888ef7e-7b7a-4f7d-955f-a69a9cd8f2ce")
+        || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != document.saved_edit_version
     {
         return Err(rejected());
     }
