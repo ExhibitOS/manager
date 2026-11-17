@@ -3412,7 +3412,7 @@ public actor AuthoringAPI {
         guard supportsBenchBaseColorPreparationRuntime(manifest: runtime) else { return [] }
         #if DEBUG && os(macOS)
         if allowRetained && [r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime].contains(runtime) {
-            return [runtime, r285FrameFitV11Runtime, r285FrameV11Runtime, r285GreekThumbnailAllowanceRuntime,
+            return [runtime, r285FinishedHayesOriginalRuntime, r285FrameFitV11Runtime, r285FrameV11Runtime, r285GreekThumbnailAllowanceRuntime,
                     r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailTraceAbortRuntime,
                     r285GreekThumbnailTraceRuntime, r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
         }

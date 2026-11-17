@@ -78,6 +78,10 @@ final class NativeModelPreparationTests: XCTestCase {
         XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: finished, allowRetained: true),
                        [finished, fit, frame, allowance, overlap, abort, traced, successor, parent])
         XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: finished, allowRetained: false), [finished])
+        let diagnostics = AuthoringAPI.r285DetailDiagnosticsRuntime
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: diagnostics, allowRetained: true),
+                       [diagnostics, finished, fit, frame, allowance, overlap, abort, traced, successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: diagnostics, allowRetained: false), [diagnostics])
         XCTAssertTrue(AuthoringAPI.benchPreparationReceiptManifests(runtime:
             "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66", allowRetained: true).isEmpty)
         #endif
