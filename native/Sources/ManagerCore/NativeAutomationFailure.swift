@@ -5,6 +5,11 @@ public enum NativeAutomationFailure {
     /// Fixed safe diagnostic fields only; never serialize arbitrary Error text,
     /// cookies, tokens, database strings or a transport response body.
     public static func value(_ error: Error) -> DocumentValue {
+        if let failure = error as? NativeThumbnailPageFailure {
+            return .object(["code": .string("CATALOG_THUMBNAIL_PHASE_FAILED"), "thumbnailFailure": .object([
+                "version": .integer(1), "phase": .string(failure.phase.rawValue), "outcome": .string(failure.outcome.rawValue),
+            ])])
+        }
         if let uncertain = error as? NativeBoundedOEXUncertain,
            [uncertain.workspaceId, uncertain.tenantId, uncertain.principalId, uncertain.requestId].allSatisfy({ UUID(uuidString: $0) != nil }),
            uncertain.jobId.map({ UUID(uuidString: $0) != nil }) ?? true {

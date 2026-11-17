@@ -3,6 +3,28 @@ import AppKit
 import Foundation
 import WebKit
 
+struct NativeThumbnailPageFailure: Error, Decodable {
+    enum Phase: String, Decodable {
+        case request, queue, authorization, preview, decode, render, encode, verification
+    }
+    enum Outcome: String, Decodable {
+        case timeout, cancelled, busy, rejected, failed
+    }
+    let version: Int
+    let phase: Phase
+    let outcome: Outcome
+
+    static func checked(in response: [String: Any]) throws -> Self? {
+        guard let value = response["thumbnailFailure"] else { return nil }
+        guard response.count == 1, let fields = value as? [String: Any],
+              Set(fields.keys) == ["version", "phase", "outcome"],
+              JSONSerialization.isValidJSONObject(fields),
+              let decoded = try? JSONDecoder().decode(Self.self, from: JSONSerialization.data(withJSONObject: fields)),
+              decoded.version == 1 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        return decoded
+    }
+}
+
 /// An operation-owned host for the product renderer. It has no editing controls,
 /// persistent browser store, capture flags, or caller-supplied JavaScript.
 @MainActor
@@ -71,10 +93,25 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
         guard acceptance.accepted, acceptance.supportsRenderedArtworkThumbnail else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
         let request = try ViewportThumbnailRequest(frame: frame, artworkId: artworkId, expectedRevision: revision)
         let json = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
-        let response = try await web.callAsyncJavaScript("return await window.exhibitosViewport.thumbnail(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+        let response: Any?
+        if acceptance.supportsArtworkThumbnailOutcome {
+            do {
+                response = try await web.callAsyncJavaScript("return await window.exhibitosViewport.thumbnailOutcomeV1(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+            } catch {
+                try Task.checkCancellation()
+                guard !failed else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
+                throw AuthoringFailure("CATALOG_THUMBNAIL_EVALUATION_FAILED")
+            }
+        } else {
+            response = try await web.callAsyncJavaScript("return await window.exhibitosViewport.thumbnail(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+        }
         try Task.checkCancellation()
         guard !failed else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
-        guard let fields = response as? [String: Any], let png = fields["pngBase64"] as? String,
+        guard let fields = response as? [String: Any] else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        if acceptance.supportsArtworkThumbnailOutcome, let failure = try NativeThumbnailPageFailure.checked(in: fields) {
+            throw failure
+        }
+        guard let png = fields["pngBase64"] as? String,
               png.utf8.count <= 699_052, JSONSerialization.isValidJSONObject(fields) else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
         let data = try JSONSerialization.data(withJSONObject: fields)
         guard data.count <= 710_000 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
