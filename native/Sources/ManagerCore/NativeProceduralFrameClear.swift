@@ -25,11 +25,7 @@ enum NativeProceduralFrameClear {
 
         init(command: Command, draft base: NativeExhibitionDraft) throws {
             let id = command.placementId
-            let matches = base.placements.filter { $0["id"].string?.lowercased() == id }
-            guard !matches.isEmpty else { throw AuthoringFailure("PROCEDURAL_FRAME_TARGET_MISSING") }
-            guard matches.count == 1 else { throw AuthoringFailure("PROCEDURAL_FRAME_TARGET_DUPLICATE") }
-            guard matches[0]["id"].string == id else { throw AuthoringFailure("PROCEDURAL_FRAME_TARGET_INVALID") }
-            try Self.checkAttachments(base, placementId: id)
+            try Self.checkTarget(base, placementId: id)
             guard var settings = try base.installationSettings(for: id), let frame = settings.frame else {
                 throw AuthoringFailure("PROCEDURAL_FRAME_ABSENT")
             }
@@ -63,6 +59,14 @@ enum NativeProceduralFrameClear {
         func apply(to current: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
             guard Self.exact(current.document, base.document) else { throw AuthoringFailure("PROCEDURAL_FRAME_PROPOSAL_STALE") }
             return draft
+        }
+
+        static func checkTarget(_ draft: NativeExhibitionDraft, placementId: String) throws {
+            let matches = draft.placements.filter { $0["id"].string?.lowercased() == placementId }
+            guard !matches.isEmpty else { throw AuthoringFailure("PROCEDURAL_FRAME_TARGET_MISSING") }
+            guard matches.count == 1 else { throw AuthoringFailure("PROCEDURAL_FRAME_TARGET_DUPLICATE") }
+            guard matches[0]["id"].string == placementId else { throw AuthoringFailure("PROCEDURAL_FRAME_TARGET_INVALID") }
+            try checkAttachments(draft, placementId: placementId)
         }
 
         private static func checkAttachments(_ draft: NativeExhibitionDraft, placementId: String) throws {
@@ -104,6 +108,37 @@ enum NativeProceduralFrameClear {
             case (.null, .null): return true
             default: return false
             }
+        }
+    }
+}
+
+
+// Authored procedural geometry uses the normal typed installation setter and Save.
+enum NativeProceduralFrameSet {
+    struct Command: Sendable {
+        let etag: String
+        let placementId: String
+        let frame: InstallationSettings.Frame
+
+        init(_ value: DocumentValue) throws {
+            guard case .object(let fields) = value, Set(fields.keys) == ["etag", "placementId", "frame"],
+                  let etag = fields["etag"]?.string, !etag.isEmpty,
+                  let id = fields["placementId"]?.string, UUID(uuidString: id)?.uuidString.lowercased() == id,
+                  let rawFrame = fields["frame"] else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let frame = try InstallationSettings.readFrame(rawFrame)
+            guard frame.kind != .none else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            self.etag = etag
+            placementId = id
+            self.frame = frame
+        }
+
+        func applying(to base: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
+            try NativeProceduralFrameClear.Proposal.checkTarget(base, placementId: placementId)
+            var draft = base
+            try InstallationSettings.setAuthoredFrame(frame, on: &draft, placementId: placementId)
+            return draft
         }
     }
 }

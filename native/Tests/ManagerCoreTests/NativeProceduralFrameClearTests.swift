@@ -97,6 +97,63 @@ final class NativeProceduralFrameClearTests: XCTestCase {
         assertFailure("PROCEDURAL_FRAME_ATTACHMENTS_INVALID") { _ = try NativeProceduralFrameClear.Proposal(command: command(), draft: malformed) }
     }
 
+    private func authoredFrameCommand(placementId: String? = nil) -> DocumentValue {
+        .object(["etag": .string("\"studio-r3-example\""), "placementId": .string(placementId ?? first),
+                 "frame": .object(["kind": .string("flat"), "borderWidth": .number(0.04), "thickness": .number(0.02),
+                                  "depth": .integer(0), "gap": .integer(0), "matWidth": .integer(0),
+                                  "matColor": .string("#FFFFFF"), "material": .object(["preset": .string("paint"),
+                                       "color": .string("#F2F2F2"), "roughness": .number(0.7), "metalness": .integer(0)])])])
+    }
+
+    func testAuthoredFrameStagesOnlySelectedFrameAndIsIdempotent() throws {
+        var base = try makeDraft()
+        let namespace = InstallationSettings.namespace
+        var expected = base.candidate
+        var rows = try XCTUnwrap(expected["extensions"][namespace]["placements"].items)
+        rows[0]["placementId"] = .string(first.uppercased())
+        expected["extensions"][namespace]["placements"] = .array(rows)
+        try base.replaceCandidate(expected)
+
+        let input = authoredFrameCommand()
+        let command = try NativeProceduralFrameSet.Command(input)
+        let staged = try command.applying(to: base)
+        rows[0]["frame"] = input["frame"]
+        expected["extensions"][namespace]["placements"] = .array(rows)
+        XCTAssertEqual(staged.candidate, expected)
+        XCTAssertEqual(staged.document["editVersion"].integer, try XCTUnwrap(base.document["editVersion"].integer) + 1)
+        XCTAssertEqual(try command.applying(to: staged), staged)
+    }
+
+    func testAuthoredFrameCreatesAnInstallationBindingOnUnframedPlacement() throws {
+        var base = try makeDraft()
+        try base.setInstallation(nil, for: first)
+        let input = authoredFrameCommand()
+        let staged = try NativeProceduralFrameSet.Command(input).applying(to: base)
+        let rows = try XCTUnwrap(staged.candidate["extensions"][InstallationSettings.namespace]["placements"].items)
+        XCTAssertEqual(rows.last, .object(["placementId": .string(first), "frame": input["frame"]]))
+    }
+
+    func testAuthoredFrameRefusesInvalidFieldsAndCompetingModelFrame() throws {
+        var invalid = authoredFrameCommand()
+        invalid["frame"]["depth"] = .number(-0.01)
+        XCTAssertThrowsError(try NativeProceduralFrameSet.Command(invalid))
+        invalid = authoredFrameCommand()
+        invalid["frame"] = .object(["kind": .string("none")])
+        XCTAssertThrowsError(try NativeProceduralFrameSet.Command(invalid))
+        invalid = authoredFrameCommand()
+        invalid["candidate"] = .object([:])
+        XCTAssertThrowsError(try NativeProceduralFrameSet.Command(invalid))
+
+        var base = try makeDraft()
+        var candidate = base.candidate
+        candidate["extensions"][WorkspaceFurnishingPlacement.namespace] = .object([
+            "version": .integer(4), "frameAttachments": .array([.object(["placementId": .string(first)])])
+        ])
+        try base.replaceCandidate(candidate)
+        let command = try NativeProceduralFrameSet.Command(authoredFrameCommand())
+        assertFailure("PROCEDURAL_FRAME_MODEL_CONFLICT") { _ = try command.applying(to: base) }
+    }
+
     func testApplyRejectsAnyChangedBaseIncludingNumericRepresentation() throws {
         let base = try makeDraft(), proposal = try NativeProceduralFrameClear.Proposal(command: command(), draft: base)
         var altered = base, candidate = base.candidate
