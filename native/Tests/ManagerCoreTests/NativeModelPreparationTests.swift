@@ -3,6 +3,46 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeModelPreparationTests: XCTestCase {
+    func testSettledHayesRuntimeAdmitsTheExistingOrdinaryCohort() {
+        #if DEBUG && os(macOS)
+        let manifest = "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f"
+        let foreign = "0" + manifest.dropFirst()
+        XCTAssertTrue(NativeHayesOriginalIntent.supports(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        XCTAssertFalse(NativeHayesOriginalIntent.supports(manifest: foreign))
+        XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: foreign))
+        #endif
+    }
+
+    func testHayesOriginalAdmitsOnlyExactNewClosingRuntime() {
+        #if DEBUG
+        XCTAssertTrue(NativeHayesOriginalIntent.supports(
+            manifest: "414ab1ba84cf3614afc956f15036b0e258755a6ce26ba8d3d1966dc66287035b"))
+        XCTAssertTrue(NativeHayesOriginalIntent.supports(
+            manifest: "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"))
+        XCTAssertFalse(NativeHayesOriginalIntent.supports(
+            manifest: "c03fb747a8c77f0e99f15bdf53cfa1c995ec3a6da51ec94b796da089f102ddf5"))
+        #endif
+    }
+
+    func testDedicatedHayesQueuePreservesExactTypedOriginalThroughUploadAdmission() {
+        let artwork = UUID().uuidString.lowercased(), request = UUID().uuidString.lowercased()
+        let display = "694a9cf81dfbf12fd0841ae45240c5ae0f1d7cb129d0ee122be7cff86c4625bc"
+        let hayes = NativeHayesOriginalIntent(artworkRevision: 1, displayReferenceSha256: display)
+        func intent(_ sha256: String, _ scale: Double, hayes: NativeHayesOriginalIntent?) -> NativeImportIntent {
+            .init(artworkId: artwork, idempotencyKey: request, mime: "model/gltf-binary",
+                  sha256: sha256, bytes: NativeHayesOriginalIntent.sourceBytes,
+                  scaleMeters: scale, rights: .init(), hayesOriginal: hayes)
+        }
+        let original = NativeHayesOriginalIntent.sourceSHA256
+        XCTAssertTrue(NativeAutomationArtworkTransfer.acceptsHayesIntent(intent(original, 1, hayes: hayes)))
+        XCTAssertFalse(NativeAutomationArtworkTransfer.acceptsHayesIntent(intent(display, 1, hayes: hayes)))
+        XCTAssertFalse(NativeAutomationArtworkTransfer.acceptsHayesIntent(intent(original, 2, hayes: hayes)))
+        XCTAssertTrue(NativeAutomationArtworkTransfer.acceptsHayesIntent(intent(display, 1, hayes: nil)))
+    }
+
     func testFreshRequiredIntakeWaitsForNewUnapprovedArtworkRevision() throws {
         let artworkId = UUID().uuidString, artistId = UUID().uuidString
         let asset = NativeArtwork.Asset(id: UUID().uuidString, mime: "model/gltf-binary", state: "approved",

@@ -67,6 +67,15 @@ pub(crate) mod hayes_ordinary;
 #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
 #[path = "native_runtime_hayes_recovery.rs"]
 mod hayes_recovery;
+#[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_hayes_claim.rs"]
+pub(crate) mod hayes_claim;
+#[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_hayes_terminal_wire.rs"]
+mod hayes_terminal_wire;
+#[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+#[path = "native_runtime_hayes_terminal.rs"]
+mod hayes_terminal;
 #[path = "native_runtime_furnishing_lifetime.rs"] mod furnishing_lifetime;
 pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 #[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;
@@ -1259,6 +1268,8 @@ pub struct Session {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     retained_original_model: Option<retained_original_model::Trial>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    retained_hayes_trial: Option<hayes_claim::Trial>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     startup_cancellation_045: Option<crate::installations::native_maintenance::StartupCancellation045>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     clean_exit_hayes_before: Option<Vec<retained_product_image::CleanExitHayes>>,
@@ -1736,6 +1747,8 @@ impl Session {
             retained_product_image: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             retained_original_model: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            retained_hayes_trial: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             startup_cancellation_045: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2583,6 +2596,7 @@ const { isDeepStrictEqual } = require('node:util');
             if matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_) | HayesBootstrap::Spent) {
                 self.hayes_bootstrap = if self.payload.ordinary_hayes_release()
                     || self.payload.ordinary_fresh_furnishing()
+                    || self.payload.hayes_preopen_terminal()
                     || crate::native_payload::catalog45_carried_restore_payload(&self.payload)
                 {
                     HayesBootstrap::Disabled
@@ -3076,7 +3090,16 @@ const { isDeepStrictEqual } = require('node:util');
             self.check_oex_catalog_ledger(version.into())?;
         }
         if furnishing == Some(FurnishingStart::Reopen) {
-            self.verify_workspace_furnishing_ledger()?;
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            let retained_hayes_trial = self.retained_hayes_trial.is_some();
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+            let retained_hayes_trial = false;
+            if retained_hayes_trial {
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                self.check_hayes_preopen_parent()?;
+            } else {
+                self.verify_workspace_furnishing_ledger()?;
+            }
             if let Some(mut binding) = self.active_furnishing_binding()
                 .filter(|binding| binding.admission_kind == Admission::InterruptedReopen).cloned()
             {
@@ -3260,6 +3283,8 @@ const { isDeepStrictEqual } = require('node:util');
             None
         };
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        self.hold_hayes_preopen_trial_custody()?;
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if matches!(furnishing, Some(FurnishingStart::Upgrade045To050 | FurnishingStart::Upgrade051To050051)) {
             self.run_furnishing_thumbnail_upgrade(&environment)?;
             self.verify_workspace_furnishing_ledger()?;
@@ -3323,7 +3348,8 @@ const { isDeepStrictEqual } = require('node:util');
         {
             self.payload.recheck()?;
             let generation_id = Uuid::parse_str(generation).map_err(|_| err("HAYES_OPERATION_UNAVAILABLE"))?;
-            let pin = HayesSessionPin::new(generation_id, &self.payload.context().manifest_sha256)?;
+            let pin = HayesSessionPin::new(generation_id, &self.payload.context().manifest_sha256)?
+                .with_hayes_preopen_selection(self.payload.hayes_preopen_terminal());
             owner_setup = Some(owner_setup.take().ok_or_else(|| err("HAYES_OPERATION_UNAVAILABLE"))?.with_hayes(pin)?);
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -5485,6 +5511,66 @@ mod furnishing_thumbnail_upgrade_result_tests {
             assert!(!ordinary_inherited_hayes(&make(mixed), Some(FurnishingStart::Reopen)));
         }
         HayesSessionPin::new(Uuid::parse_str("10000000-0000-4000-8000-000000000004").unwrap(), target.2).unwrap();
+    }
+
+    #[test]
+    fn r285_closing_hayes_requires_exact_active_clean_catalog52_binding() {
+        use crate::native_payload::{R285_CLOSING_ARTICULATION_TARGET as target, R285_INITIAL_PRODUCT_IMAGE_TARGET as previous};
+        use hayes_ordinary::closing_hayes_binding_matches;
+        let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
+        let payload = make(target);
+        let mut binding = binding();
+        binding.phase = Phase::Active;
+        binding.admission_kind = Admission::CleanReopen;
+        binding.catalog = 52;
+        binding.source_commit = target.0.into();
+        binding.producer_sha256 = target.1.into();
+        binding.payload_manifest_sha256 = target.2.into();
+
+        assert!(ordinary_inherited_hayes(&payload, Some(FurnishingStart::Reopen)));
+        assert!(!ordinary_inherited_hayes(&payload, Some(FurnishingStart::Initialize)));
+        assert!(closing_hayes_binding_matches(&payload, &binding));
+        assert!(!closing_hayes_binding_matches(&make(previous), &binding));
+        for mixed in [(previous.0, target.1, target.2), (target.0, previous.1, target.2), (target.0, target.1, previous.2)] {
+            assert!(!closing_hayes_binding_matches(&make(mixed), &binding));
+        }
+
+        let mut denied = binding.clone();
+        denied.catalog = 44;
+        assert!(!closing_hayes_binding_matches(&payload, &denied));
+        let mut denied = binding.clone();
+        denied.phase = Phase::Clean;
+        assert!(!closing_hayes_binding_matches(&payload, &denied));
+        let mut denied = binding.clone();
+        denied.admission_kind = Admission::InterruptedReopen;
+        assert!(!closing_hayes_binding_matches(&payload, &denied));
+        let mut denied = binding.clone();
+        denied.payload_manifest_sha256 = previous.2.into();
+        assert!(!closing_hayes_binding_matches(&payload, &denied));
+    }
+
+    #[test]
+    fn r285_settled_hayes_admits_fresh_scoped_operation_only_on_exact_clean_reopen() {
+        use crate::native_payload::{R285_CLOSING_ARTICULATION_TARGET as parent, R285_HAYES_PREOPEN_TERMINAL_TARGET as target};
+        use hayes_ordinary::{closing_hayes_binding_matches, scoped_hayes_binding_matches};
+        let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
+        let payload = make(target);
+        let mut binding = binding();
+        binding.phase = Phase::Active;
+        binding.admission_kind = Admission::CleanReopen;
+        binding.catalog = 52;
+        binding.source_commit = target.0.into();
+        binding.producer_sha256 = target.1.into();
+        binding.payload_manifest_sha256 = target.2.into();
+        assert!(ordinary_inherited_hayes(&payload, Some(FurnishingStart::Reopen)));
+        assert!(!ordinary_inherited_hayes(&payload, Some(FurnishingStart::Initialize)));
+        assert!(scoped_hayes_binding_matches(&payload, &binding));
+        assert!(!closing_hayes_binding_matches(&payload, &binding));
+        for mixed in [(parent.0, target.1, target.2), (target.0, parent.1, target.2), (target.0, target.1, parent.2)] {
+            assert!(!scoped_hayes_binding_matches(&make(mixed), &binding));
+        }
+        binding.admission_kind = Admission::InterruptedReopen;
+        assert!(!scoped_hayes_binding_matches(&payload, &binding));
     }
 
     #[test]

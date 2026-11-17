@@ -1169,10 +1169,21 @@ public actor AuthoringAPI {
         #endif
     }
 
+    static let r285SettledHayesRuntime = "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f"
+
+    nonisolated static func supportsR285SettledHayesRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == r285SettledHayesRuntime
+        #else
+        false
+        #endif
+    }
+
     var admitsInitialProductImagePreparation: Bool {
         nativeSession && !authenticationBusy
             && (Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
-                || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256))
+                || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285SettledHayesRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeInitialProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
     }
 
@@ -1208,6 +1219,7 @@ public actor AuthoringAPI {
          r285SupplementalFillRuntime,
          r285InitialProductImageRuntime,
          r285ClosingArticulationRuntime,
+         r285SettledHayesRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -3203,6 +3215,7 @@ public actor AuthoringAPI {
             || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
+            || supportsR285SettledHayesRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -4100,6 +4113,7 @@ public actor AuthoringAPI {
             || supportsR285SupplementalFillRuntime(manifest: manifest)
             || supportsR285InitialProductImageRuntime(manifest: manifest)
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
+            || supportsR285SettledHayesRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
@@ -4661,6 +4675,8 @@ public struct NativeHayesOriginalIntent: Codable, Equatable, Sendable {
         return manifest == "c0565112569fc1b1b95f8ada72b2b7cacabc8ea3e24b58a61dc9aa138c8bb406"
             || manifest == "af9c141f071d84ba4e9397798759e1cb13b2cde4d350f2fcf0a4b852ce3a09b5"
             || manifest == "aa7534f2165c5d8a28a3e54dc5da4c8e1f026c16e806f28df52d35598d84bf27"
+            || AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: manifest)
+            || AuthoringAPI.supportsR285SettledHayesRuntime(manifest: manifest)
         #else
         return false
         #endif

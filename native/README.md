@@ -655,6 +655,31 @@ for the persisted job before `artwork-approve`. The app performs that read
 when it restores an approved file job. If the release is unconfirmed, keep
 the job and its journal for inspection.
 
+The exact Closing runtime `414ab1ba` also admits this dedicated intake on an
+existing clean-reopened Catalog 052 owner. It uses its authenticated inherited
+Hayes channel and the same immutable worker. Catalog 052 stores its custody
+under the authenticated workspace, tenant and principal scope. Release recovery
+requires the same scoped journal and a receipt issued by the current runtime for
+the same owner, artwork and job. Catalog 044 retains its existing custody location
+and qualification.
+
+The private macOS validation helper can preserve an observed pre-OPEN Hayes
+claim across the exact `414ab1ba` to `d24e9f21` saved-workspace transition.
+Supply the authenticated `observation` and its canonical `proofSha256` in
+`retainedHayesPreopen` for `stage_saved`, `activate`, and checkpoint `recover`.
+The trial compares the saved document, physical database, 052 ledger, expired
+claim, original GLB and scoped custody. It checks the successor's 054 ledger
+and the same claim before the normal stop. The bound upload journal stays in
+place throughout activation.
+
+On the ordinary successor reopen, `native_hayes_preopen_terminal` accepts
+the same proof under `hayes_preopen_terminal`. The scoped inherited channel
+records the terminal outcome. The helper compares the recorded response with
+an independent authenticated receipt GET, then updates only the matching upload
+journal generation. If the response is lost, keep the exact proof and journal
+and repeat the command for the durable receipt. The cancelled claim, original
+blob, saved Studio draft and CMS approval history remain part of the workspace.
+
 For current catalog 040 service EXB, the same saved-workspace commands
 admit a directed refresh from
 `bdfc8202d851f9f8983440b9475da3fc3ddc6ee1f0bf4cf2c0d4bf1995dde338`

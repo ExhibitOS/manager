@@ -508,6 +508,12 @@ impl InstallationController {
                     &installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?) {
                     return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
                 }
+            } else if let Some(proof) = retained.hayes() {
+                #[cfg(feature = "workspace-v5-owner-validation")]
+                proof.check_saved(&document, &transfer,
+                    &installation_backup::source_bytes(&profile.root, &file, native_upload::LIMIT, true)?)?;
+                #[cfg(not(feature = "workspace-v5-owner-validation"))]
+                { let _ = proof; return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")); }
             } else if !retained_current52_png && (transfer.intent.is_some() || transfer.job_id.is_some() || transfer.file_name.is_some()
                 || transfer.compact_variant.is_some() || transfer.gpu_variant.is_some()) {
                 return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
@@ -519,6 +525,11 @@ impl InstallationController {
 
     /// Checkpoint-only read under the caller's existing personal-transition
     /// profile lock. Keep publication_unlocked inside its installations owner.
+    #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
+    pub(crate) fn retained_hayes_transition_upload(&self, service: &LifecycleService) -> Result<native_upload::Transfer> {
+        self.upload_unlocked(service).map(|(_, transfer)| transfer)
+    }
+
     #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
     pub(crate) fn personal_transition_publication(
         &self, service: &LifecycleService, profile: &Path,

@@ -57,6 +57,8 @@ pub enum LocalPersonalTransition {
         #[serde(default)]
         retained_original_model: Option<RetainedOriginalModel>,
         #[serde(default)]
+        retained_hayes_preopen: Option<RetainedHayesPreopen>,
+        #[serde(default)]
         startup_cancellation_045: Option<StartupCancellation045>,
     },
     Activate {
@@ -67,6 +69,8 @@ pub enum LocalPersonalTransition {
         retained_gpu_variant: Option<RetainedGpuVariant>,
         #[serde(default)]
         retained_original_model: Option<RetainedOriginalModel>,
+        #[serde(default)]
+        retained_hayes_preopen: Option<RetainedHayesPreopen>,
         #[serde(default)]
         startup_cancellation_045: Option<StartupCancellation045>,
     },
@@ -80,6 +84,8 @@ pub enum LocalPersonalTransition {
         retained_gpu_variant: Option<RetainedGpuVariant>,
         #[serde(default)]
         retained_original_model: Option<RetainedOriginalModel>,
+        #[serde(default)]
+        retained_hayes_preopen: Option<RetainedHayesPreopen>,
     },
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
     InspectPreReadyGuard {
@@ -98,6 +104,16 @@ pub enum LocalPersonalTransition {
 pub struct RetainedGpuVariant {
     pub(crate) job_id: String,
     pub(crate) transfer_sha256: String,
+}
+
+/// The exact authenticated observation plus the canonical digest consumed by
+/// Platform. This proves retention only. It cannot authorize terminalization.
+#[cfg(debug_assertions)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RetainedHayesPreopen {
+    pub(crate) observation: serde_json::Value,
+    pub(crate) proof_sha256: String,
 }
 
 /// Exact journal/source receipt binding for an already terminal required model import.
@@ -149,10 +165,19 @@ pub(crate) enum TransitionRetention<'a> {
     ProductImage(&'a RetainedProductImage),
     GpuVariant(&'a RetainedGpuVariant),
     OriginalModel(&'a RetainedOriginalModel),
+    HayesPreopen(&'a RetainedHayesPreopen),
 }
 
 #[cfg(debug_assertions)]
 impl<'a> TransitionRetention<'a> {
+    pub(crate) fn from_all_proofs(image: Option<&'a RetainedProductImage>, gpu: Option<&'a RetainedGpuVariant>, original: Option<&'a RetainedOriginalModel>, hayes: Option<&'a RetainedHayesPreopen>) -> Result<Self> {
+        let prior = Self::from_proofs(image, gpu, original)?;
+        match (prior, hayes) {
+            (Self::None, Some(proof)) => Ok(Self::HayesPreopen(proof)),
+            (_, None) => Ok(prior),
+            _ => Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")),
+        }
+    }
     pub(crate) fn from_proofs(image: Option<&'a RetainedProductImage>, gpu: Option<&'a RetainedGpuVariant>, original: Option<&'a RetainedOriginalModel>) -> Result<Self> {
         match (image, gpu, original) {
             (None, None, None) => Ok(Self::None),
@@ -170,6 +195,9 @@ impl<'a> TransitionRetention<'a> {
     }
     pub(crate) fn gpu(self) -> Option<&'a RetainedGpuVariant> {
         if let Self::GpuVariant(proof) = self { Some(proof) } else { None }
+    }
+    pub(crate) fn hayes(self) -> Option<&'a RetainedHayesPreopen> {
+        if let Self::HayesPreopen(proof) = self { Some(proof) } else { None }
     }
 }
 

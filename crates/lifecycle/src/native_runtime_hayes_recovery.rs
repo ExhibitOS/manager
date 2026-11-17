@@ -31,9 +31,7 @@ impl Session {
         finished_artwork: Option<(&str, &str)>,
     ) -> Result<Value> {
         let unavailable = || err("HAYES_RELEASE_UNCONFIRMED");
-        if !self.status()?.readiness.ready || !self.payload.ordinary_hayes_release()
-            || self.active_furnishing_binding().is_none_or(|binding| binding.catalog != 44)
-        {
+        if !self.status()?.readiness.ready || !self.ordinary_hayes_release_binding_available() {
             return Err(unavailable());
         }
         let (artwork, display, historical_revision) = if let Some((artwork, display)) = finished_artwork {
@@ -67,6 +65,12 @@ impl Session {
             return Err(unavailable());
         }
 
+        let runtime = self.payload.context();
+        let predecessor = if self.scoped_hayes_binding_available() {
+            runtime.manifest_sha256.as_str()
+        } else {
+            crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST
+        };
         let sql = format!(
             "SELECT json_build_object('systemId',db.system_id,'databaseOid',db.database_oid,
                       'attemptId',r.attempt_id,'receiptId',r.disposition_id,'receiptSha256',r.receipt_sha256,
@@ -107,8 +111,8 @@ impl Session {
                 AND encode(sha256(d.receipt_canonical),'hex')=r.receipt_sha256",
             tenant=auth.tenant_id, workspace=auth.workspace_id, principal=auth.principal_id,
             job=binding.job_id, artwork=binding.artwork_id, historical_revision=binding.artwork_revision,
-            display=display, manifest=self.payload.context().manifest_sha256,
-            predecessor=crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST,
+            display=display, manifest=runtime.manifest_sha256,
+            predecessor=predecessor,
             require_prior_approval=text_successor || finished_artwork.is_some(),
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );
@@ -117,7 +121,12 @@ impl Session {
         let result = self.query_database_before("exhibitos", &sql, deadline)?;
         let row: Row = serde_json::from_str(&result).map_err(|_| unavailable())?;
         owner.check_database_identity_result(&format!("{}|{}", row.system_id, row.database_oid))?;
-        let lease = provision::open_user_lease()?;
+        let scope = if self.scoped_hayes_binding_available() {
+            Some(self.local_authority.as_ref().ok_or_else(unavailable)?)
+        } else {
+            None
+        };
+        let lease = provision::open_user_lease(scope)?;
         let intent = lease.released_journal(row.attempt_id, "operation-release-intent.json")?;
         let completion = lease.released_journal(row.attempt_id, "operation-release-completed.json")?;
         let ack = lease.released_journal(row.attempt_id, "operation-release-recorded.json")?;
