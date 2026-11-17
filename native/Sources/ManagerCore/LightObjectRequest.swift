@@ -367,7 +367,11 @@ public struct LightObjectRequest: Sendable {
         guard case .object(let fields) = value, fields["fixture"] != nil,
               Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "ceilingFill", "trackAim"]),
               let fixture = value["fixture"].string, NativeLightFixture(rawValue: fixture) != nil,
-              fields["purpose"].map({ $0 == .string("room-base") }) ?? true else { throw invalid }
+              fields["purpose"].map({ $0 == .string("room-base") || $0 == RoomCeilingFill.supplementalPurpose }) ?? true else { throw invalid }
+        if value["purpose"] == RoomCeilingFill.supplementalPurpose {
+            try RoomBaseLightIntent.checkMarker(value)
+            return
+        }
         if let trackAim = fields["trackAim"] {
             guard fixture == "none", fields["aim"] == nil, fields["purpose"] == nil,
                   fields["basePlacement"] == nil else { throw invalid }

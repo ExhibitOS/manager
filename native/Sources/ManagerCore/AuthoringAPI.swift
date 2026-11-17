@@ -62,6 +62,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var roomBaseLightProfile: String? = nil
     public var roomBaseLightPlacementProfile: String? = nil
     public var roomCeilingFillProfile: String? = nil
+    public var roomSupplementalCeilingFillProfile: String? = nil
 
     public var advertisesFurnishingWalkingCollision: Bool {
         nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile
@@ -73,6 +74,9 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     }
     public var advertisesRoomCeilingFill: Bool {
         advertisesRoomBaseLightPlacement && roomCeilingFillProfile == RoomCeilingFill.profile
+    }
+    public var advertisesRoomSupplementalCeilingFill: Bool {
+        advertisesRoomCeilingFill && roomSupplementalCeilingFillProfile == RoomCeilingFill.supplementalProfile
     }
     public var advertisesRenderedArtworkThumbnail: Bool {
         nativeRenderedArtworkThumbnailProfile == ViewportRenderedThumbnail.profile
@@ -475,6 +479,7 @@ public actor AuthoringAPI {
         #if DEBUG
         nativeRuntimeManifestSHA256 == Self.placedExitDoorRuntimePin
             || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256)
+            || Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
         #else
         false
         #endif
@@ -1122,6 +1127,23 @@ public actor AuthoringAPI {
         #endif
     }
 
+    static let r285SupplementalFillRuntime = "d9f6050ec49d084386f5902dad27faaeabce3c51f2c2f4de3b8b15f5ea4641bd"
+
+    nonisolated static func supportsR285SupplementalFillRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == r285SupplementalFillRuntime
+        #else
+        false
+        #endif
+    }
+
+    var admitsRoomSupplementalCeilingFill: Bool {
+        nativeSession && !authenticationBusy
+            && Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
+            && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && session?.advertisesRoomSupplementalCeilingFill == true
+    }
+
     nonisolated static func supportsCombinedThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
         ["84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
@@ -1146,6 +1168,7 @@ public actor AuthoringAPI {
          "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
          ownerLocalOriginalRuntime,
          r285RoomFillExitRuntime,
+         r285SupplementalFillRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -1894,7 +1917,8 @@ public actor AuthoringAPI {
     public var admitsOwnerLocalOriginalImageCoarse: Bool {
         nativeSession && !authenticationBusy
             && (Self.supportsOwnerLocalOriginalRuntime(manifest: nativeRuntimeManifestSHA256)
-                || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256))
+                || Self.supportsR285RoomFillExitRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeOriginalImageCoarseProfile == "viewer-png-box-512-v1"
     }
 
@@ -4023,6 +4047,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsPinnedStartupDrain(manifest: String) -> Bool {
         #if DEBUG
         supportsOwnerLocalOriginalRuntime(manifest: manifest) || supportsR285RoomFillExitRuntime(manifest: manifest)
+            || supportsR285SupplementalFillRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
@@ -4243,7 +4268,8 @@ public actor AuthoringAPI {
         let operation = proposal["type"].string ?? ""
         let lightObject = LightObjectAuthoring.commands.contains(operation)
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
-        let scene = ["set-pedestal", "add-light", "set-light-details"].contains(operation)
+        let supplementalFill = operation == NativeAutomationScene.supplementalCeilingFillCommand
+        let scene = supplementalFill || ["set-pedestal", "add-light", "set-light-details"].contains(operation)
         let frameImageFit = operation == "reconcile-frame-image-fit"
         let budgetPolicy = operation == "set-viewer-budget-policy"
         let admitted = budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
@@ -4254,12 +4280,13 @@ public actor AuthoringAPI {
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session,
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
-              operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill else {
+              operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
+              !supplementalFill || admitsRoomSupplementalCeilingFill else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (budgetPolicy || frameImageFit || lightObject || ["add-plaque", "set-plaque", "set-wall-finish", "set-pedestal", "add-light", "set-light-details", "set-furnishing-visual", "set-light-attachment"].contains(operation)) else {
+              (budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }

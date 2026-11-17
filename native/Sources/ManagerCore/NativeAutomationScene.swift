@@ -237,4 +237,47 @@ enum NativeAutomationScene {
         return .addition(try Proposal(frame: frame, command: command, targetKey: "lightId", targetId: lightId, expected: expected))
     }
 
+    static let supplementalCeilingFillCommand = "add-room-supplemental-ceiling-fill"
+
+    static func supplementalCeilingFillRequest(_ input: DocumentValue, frame: ViewportFrame) throws -> Proposal {
+        let invalid = BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        guard case .object(let fields) = input, Set(fields.keys) == ["type", "roomId", "baseLightId", "lightId"],
+              input["type"] == .string(supplementalCeilingFillCommand),
+              let roomId = input["roomId"].string, let baseId = input["baseLightId"].string, let lightId = input["lightId"].string,
+              [roomId, baseId, lightId].allSatisfy({ UUID(uuidString: $0) != nil }) else { throw invalid }
+        let draft = frame.draft
+        let rooms = draft.rooms.filter { $0["id"].string?.lowercased() == roomId.lowercased() }
+        guard rooms.count == 1, let room = rooms.first, let lights = draft.candidate["lights"].items,
+              !String(decoding: try JSONEncoder().encode(draft.candidate), as: UTF8.self)
+                  .lowercased().contains(lightId.lowercased()) else { throw invalid }
+        let roomLights = lights.filter { $0["roomId"].string?.lowercased() == roomId.lowercased() }
+        let roomLightIds = Set(roomLights.compactMap { $0["id"].string?.lowercased() })
+        let bindings = try NativeLightFixture.bindings(in: draft.candidate).filter {
+            $0["lightId"].string.map { roomLightIds.contains($0.lowercased()) } == true
+        }
+        let baseBindings = bindings.filter { $0["purpose"] == .string("room-base") }
+        let baseLights = roomLights.filter { $0["id"].string?.lowercased() == baseId.lowercased() }
+        guard baseLights.count == 1, let baseLight = baseLights.first,
+              baseLight["type"] == .string("point"), baseLight["unit"] == .string("candela"),
+              baseBindings.count == 1, let base = baseBindings.first, case .object(let marker) = base,
+              base["lightId"].string?.lowercased() == baseId.lowercased(),
+              marker["basePlacement"] == nil, marker["ceilingFill"] == nil,
+              !bindings.contains(where: { $0["purpose"] == RoomCeilingFill.supplementalPurpose }) else { throw invalid }
+        let brightness = RoomCeilingFill.initialBrightness
+        let emitter = try RoomCeilingFill.emitter(dimensions: RoomCeilingFill.dimensions(in: draft.candidate, room: room),
+                                                  brightness: brightness)
+        var light = emitter
+        light["id"] = .string(lightId)
+        light["roomId"] = room["id"]
+        light["type"] = .string("area")
+        light["unit"] = .string("lumen")
+        light["color"] = .vector([1, 1, 1])
+        light["castsShadow"] = .bool(false)
+        let (_, added) = try addition(.object(["light": light]), draft: draft)
+        let settings: DocumentValue = .object(["fixture": .string("none"), "purpose": RoomCeilingFill.supplementalPurpose,
+            "basePlacement": .string("auto"), "ceilingFill": .object(["version": .integer(1), "brightness": .number(brightness)])])
+        let expected = try NativeLightFixture.applying(settings: settings, to: added, base: draft, lightId: lightId)
+        return try Proposal(frame: frame, command: input, targetKey: "lightId", targetId: lightId, expected: expected)
+    }
+
 }
