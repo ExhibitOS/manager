@@ -3,6 +3,41 @@ import XCTest
 import Darwin
 @testable import ManagerCore
 
+final class NativeThumbnailPageOutcomeTests: XCTestCase {
+    func testLegacyAndOptInAcceptance() throws {
+        func acceptance(_ capabilities: [String], bounded: Bool = false) throws -> ViewportAcceptance {
+            let encoded = try JSONSerialization.data(withJSONObject: [
+                "accepted": true, "boundedReadOnly": bounded, "capabilities": capabilities,
+            ])
+            return try JSONDecoder().decode(ViewportAcceptance.self, from: encoded)
+        }
+        let legacy = ["artwork-thumbnail-v1", "rendered-display-preview-v1"]
+        let capability = "artwork-thumbnail-outcome-v1"
+        XCTAssertTrue(try acceptance(legacy).supportsRenderedArtworkThumbnail)
+        XCTAssertFalse(try acceptance(legacy).supportsArtworkThumbnailOutcome)
+        XCTAssertTrue(try acceptance(legacy + [capability]).supportsArtworkThumbnailOutcome)
+        XCTAssertFalse(try acceptance(legacy + [capability], bounded: true).supportsArtworkThumbnailOutcome)
+        XCTAssertFalse(try acceptance([capability]).supportsArtworkThumbnailOutcome)
+    }
+
+    func testOnlyClosedFailureIsReportedAndOldSuccessStaysUnwrapped() throws {
+        let data: [String: Any] = ["version": 1, "phase": "decode", "outcome": "timeout"]
+        let failure = try XCTUnwrap(NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": data]))
+        XCTAssertEqual(NativeAutomationFailure.value(failure), .object([
+            "code": .string("CATALOG_THUMBNAIL_PHASE_FAILED"),
+            "thumbnailFailure": .object(["version": .integer(1), "phase": .string("decode"), "outcome": .string("timeout")]),
+        ]))
+        XCTAssertNil(try NativeThumbnailPageFailure.checked(in: ["pngBase64": "fixture"]))
+        XCTAssertThrowsError(try NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": data, "pngBase64": "fixture"]))
+        let wrong: [(String, Any)] = [("phase", "unknown"), ("outcome", "raw error"), ("version", 2), ("message", "private")]
+        for (field, value) in wrong {
+            var mutated = data
+            mutated[field] = value
+            XCTAssertThrowsError(try NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": mutated]))
+        }
+    }
+}
+
 final class NativeAutomationFailureTests: XCTestCase {
     func testFirstArchitectureDraftHasOneTypedBottomAlignedOpeningAndRejectsNonemptyJournal() throws {
         let id = "10000000-0000-4000-8000-000000000001"
