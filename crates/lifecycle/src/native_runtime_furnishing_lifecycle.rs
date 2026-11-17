@@ -120,9 +120,24 @@ impl Binding {
         self.admission_kind == Admission::InterruptedReopen && self.restore.is_none()
             && self.matches_catalog_tuple(52, crate::native_payload::R285_ROOM_FILL_EXIT_TARGET)
             && self.previous_generation.as_deref() == Some(R285_COSMIC_FAILED_GENERATION)
+            && self.interrupted_claim_generations == [R285_COSMIC_FAILED_GENERATION]
             && self.owner.workspace_id == "23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef"
             && self.owner.tenant_id == "3edee474-9a9f-48d1-b779-b8f71c4da86e"
             && self.owner.principal_id == "0bbe4668-9a2b-4a53-8367-758b03fe5cb9"
+            && self.owner.owner_uid == 501
+    }
+
+    fn supports_catalog52_interrupted_reopen(&self, tuple: (&str, &str, &str)) -> bool {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if self.is_r285_cosmic_interrupted_reopen() {
+            return true;
+        }
+        self.restore.is_none() && crate::native_payload::current52_interrupted_host_matches(tuple)
+            && self.previous_generation.as_deref() == Some("3a97db46-4b4f-4e75-97e0-54b0e79d98e7")
+            && self.interrupted_claim_generations == ["3a97db46-4b4f-4e75-97e0-54b0e79d98e7"]
+            && self.owner.workspace_id == "da7f6880-ce0e-472e-8a06-6e43c72f9134"
+            && self.owner.tenant_id == "81290384-3800-4939-93b1-bd2be4484e14"
+            && self.owner.principal_id == "79003f0f-ceb5-4634-9b50-1ca59fecc408"
             && self.owner.owner_uid == 501
     }
 
@@ -135,13 +150,7 @@ impl Binding {
                 45 => crate::native_payload::catalog45_recovery_host_matches(tuple),
                 46 => crate::native_payload::large_model_recovery_host_matches(tuple),
                 47 => crate::native_payload::fresh_image_host_matches(tuple),
-                52 => self.restore.is_none() && crate::native_payload::current52_interrupted_host_matches(tuple)
-                    && self.previous_generation.as_deref() == Some("3a97db46-4b4f-4e75-97e0-54b0e79d98e7")
-                    && lineage.len() == 1 && lineage[0] == "3a97db46-4b4f-4e75-97e0-54b0e79d98e7"
-                    && self.owner.workspace_id == "da7f6880-ce0e-472e-8a06-6e43c72f9134"
-                    && self.owner.tenant_id == "81290384-3800-4939-93b1-bd2be4484e14"
-                    && self.owner.principal_id == "79003f0f-ceb5-4634-9b50-1ca59fecc408"
-                    && self.owner.owner_uid == 501,
+                52 => self.supports_catalog52_interrupted_reopen(tuple),
                 _ => false,
             };
             if !supported || lineage.is_empty() || lineage.len() > 8
