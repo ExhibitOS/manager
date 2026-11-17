@@ -156,4 +156,56 @@ final class NativeAutomationSceneTests: XCTestCase {
         XCTAssertThrowsError(try request.checkedReply(changed))
     }
 
+    func testSupplementalFillPreservesLegacyPointAndChecksTheExactReply() throws {
+        var draft = try fixture(), candidate = draft.candidate
+        let point = try XCTUnwrap(candidate["lights"].items?.first)
+        let legacy: DocumentValue = .object(["lightId": .string(light), "fixture": .string("none"),
+                                               "purpose": .string("room-base"), "range": .integer(9)])
+        let ns = NativeLightFixture.namespace
+        candidate["extensions"] = .object([ns: .object(["version": .integer(1), "lights": .array([legacy])])])
+        try draft.replaceCandidate(candidate)
+        let nextId = "cccccccc-0000-4000-8000-000000000003"
+        let input: DocumentValue = .object(["type": .string(NativeAutomationScene.supplementalCeilingFillCommand),
+            "roomId": draft.rooms[0]["id"], "baseLightId": .string(light), "lightId": .string(nextId)])
+        let request = try NativeAutomationScene.supplementalCeilingFillRequest(input, frame: frame(draft))
+        XCTAssertEqual(request.value["baseLightId"], .string(light))
+        let preview = try request.checkedReply(reply(request))
+        let applied = try preview.apply(to: draft)
+        let lights = try XCTUnwrap(applied.candidate["lights"].items)
+        XCTAssertEqual(lights.count, 2)
+        XCTAssertEqual(lights[0], point)
+        XCTAssertEqual(lights[1]["type"], .string("area"))
+        XCTAssertEqual(lights[1]["unit"], .string("lumen"))
+        XCTAssertEqual(lights[1]["castsShadow"], .bool(false))
+        let bindings = try NativeLightFixture.bindings(in: applied.candidate)
+        XCTAssertEqual(bindings, [legacy, .object(["lightId": .string(nextId), "fixture": .string("none"),
+            "purpose": RoomCeilingFill.supplementalPurpose, "basePlacement": .string("auto"),
+            "ceilingFill": .object(["version": .integer(1), "brightness": .number(0.5)])])])
+
+        var wrong = reply(request), changedLights = lights
+        changedLights[0]["intensity"] = .number(101)
+        wrong["candidate"]["lights"] = .array(changedLights)
+        XCTAssertThrowsError(try request.checkedReply(wrong))
+        XCTAssertThrowsError(try preview.apply(to: applied))
+        var duplicate = input; duplicate["lightId"] = .string(UUID().uuidString.lowercased())
+        XCTAssertThrowsError(try NativeAutomationScene.supplementalCeilingFillRequest(duplicate, frame: frame(applied)))
+        var collision = input; collision["lightId"] = .string(placement)
+        XCTAssertThrowsError(try NativeAutomationScene.supplementalCeilingFillRequest(collision, frame: frame(draft)))
+        var marked = legacy; marked["basePlacement"] = .string("manual")
+        var markedDraft = draft
+        candidate["extensions"][ns]["lights"] = .array([marked])
+        try markedDraft.replaceCandidate(candidate)
+        XCTAssertThrowsError(try NativeAutomationScene.supplementalCeilingFillRequest(input, frame: frame(markedDraft)))
+
+        let resized = try RoomBaseLightIntent.reflow(applied.candidate, roomId: try XCTUnwrap(draft.rooms[0]["id"].string))
+        XCTAssertEqual(resized, applied.candidate)
+        var larger = applied.candidate, rooms = try XCTUnwrap(larger["rooms"].items)
+        rooms[0]["dimensions"]["width"] = .number(16)
+        larger["rooms"] = .array(rooms)
+        let refit = try RoomBaseLightIntent.reflow(larger, roomId: try XCTUnwrap(rooms[0]["id"].string))
+        XCTAssertEqual(refit["lights"].items?.first, point)
+        XCTAssertNotEqual(refit["lights"].items?.last, lights[1])
+        XCTAssertEqual(refit["extensions"][ns]["lights"].items, bindings)
+    }
+
 }

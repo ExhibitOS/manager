@@ -96,12 +96,13 @@ public actor NativeAutomationSession {
     private var wallFinishProposals: [String: (WallFinishPreview, String)] = [:]
     private enum SceneProposal: Sendable {
         case scene(NativeAutomationScene.ScenePreview)
+        case supplementalCeilingFill(NativeAutomationScene.ScenePreview, lightId: String)
         case light(LightPreview)
         case fixture(NativeAutomationFixture.FixturePreview)
         case lightObject(LightObjectPreview)
         func apply(to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
             switch self {
-            case .scene(let preview): return try preview.apply(to: draft)
+            case .scene(let preview), .supplementalCeilingFill(let preview, _): return try preview.apply(to: draft)
             case .light(let preview): return try preview.apply(to: draft, selectedLightId: preview.command.lightId, command: preview.command)
             case .fixture(let preview): return try preview.apply(to: draft)
             case .lightObject(let preview): return try preview.apply(to: draft)
@@ -895,11 +896,12 @@ public actor NativeAutomationSession {
         return .object(["status": .string("saved"), "document": try value(await bridge.saveDocumentState(context, state: next))])
     }
 
-    private func checkSavedEditPolicy(_ state: NativeDocumentState, api: AuthoringAPI, unsupportedCode: String = "NATIVE_BENCH_CAPABILITY_UNAVAILABLE") async throws {
+    private func checkSavedEditPolicy(_ state: NativeDocumentState, api: AuthoringAPI, unsupportedCode: String = "NATIVE_BENCH_CAPABILITY_UNAVAILABLE", ordinaryOnly: Bool = false) async throws {
         guard let draft = state.draft, let etag = state.etag else { return }
         let policy = try await api.nativeViewportPolicy(draft.id)
         guard policy.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
-        guard !policy.boundedReadOnly, policy.boundedEditRequired != true else { throw BridgeFailure(unsupportedCode) }
+        guard !policy.boundedReadOnly, policy.boundedEditRequired != true,
+              !ordinaryOnly || policy.confirmsOrdinaryDraft else { throw BridgeFailure(unsupportedCode) }
     }
     /// Ordinary GUI staging is allowed only on a positive ordinary policy;
     /// bounded provenance retains the server's dedicated viewport check.
@@ -2320,7 +2322,10 @@ public actor NativeAutomationSession {
         case "pedestal-prepare", "light-prepare", "fixture-prepare", "light-attachment-prepare", "light-object-prepare":
             try checkedRevision(request, current)
             guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
-            try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE")
+            let supplementalFill = operation == "light-prepare"
+                && request["command"]["type"] == .string(NativeAutomationScene.supplementalCeilingFillCommand)
+            try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE",
+                                           ordinaryOnly: supplementalFill)
             let saved = try await api.exhibition(draft.id)
             guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1, tenantId: current.tenantId,
@@ -2354,6 +2359,12 @@ public actor NativeAutomationSession {
                     let checked = try proposal.checkedReply(reply)
                     preview = .scene(checked); candidate = checked.candidate
                 }
+            } else if supplementalFill {
+                let proposal = try NativeAutomationScene.supplementalCeilingFillRequest(request["command"], frame: frame)
+                let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
+                                                                  etag: etag, proposal: proposal.value)
+                let checked = try proposal.checkedReply(reply)
+                preview = .supplementalCeilingFill(checked, lightId: proposal.targetId); candidate = checked.candidate
             } else if operation == "light-prepare", request["command"]["type"] == .string("ensure-room-base-light") {
                 guard authoringSession?.advertisesRoomBaseLightPlacement == true,
                       authoringSession?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1",
@@ -2393,6 +2404,7 @@ public actor NativeAutomationSession {
             sceneProposals[id] = (preview, etag, operation)
             var response: [String: DocumentValue] = ["proposalId": .string(id), "candidate": candidate]
             if case .lightObject(let object) = preview { response["lightId"] = .string(object.lightId) }
+            if case .supplementalCeilingFill(_, let lightId) = preview { response["lightId"] = .string(lightId) }
             result = .object(response)
         case "pedestal-apply", "light-apply", "pedestal-cancel", "light-cancel", "fixture-apply", "fixture-cancel", "light-attachment-apply", "light-attachment-cancel", "light-object-apply", "light-object-cancel":
             try checkedRevision(request, current)
@@ -2411,7 +2423,15 @@ public actor NativeAutomationSession {
                     }
                 }
                 guard !current.dirty, current.pending == nil, let draft = current.draft, current.etag == etag else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
-                try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE")
+                let ordinaryOnly: Bool
+                if case .supplementalCeilingFill = preview {
+                    guard await api.admitsRoomSupplementalCeilingFill else {
+                        throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+                    }
+                    ordinaryOnly = true
+                } else { ordinaryOnly = false }
+                try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE",
+                                               ordinaryOnly: ordinaryOnly)
                 let saved = try await api.exhibition(draft.id)
                 let (_, _, refreshed) = try await checked(request)
                 guard saved.draft == draft, saved.etag == etag, try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }

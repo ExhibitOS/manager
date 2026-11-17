@@ -427,6 +427,7 @@ impl Binding {
         }
         if transition.is_prepared_viewer_budget_refresh()
             || crate::native_payload::r285_room_fill_exit_clean_transition((transition.source().2, transition.target().2))
+            || crate::native_payload::r285_supplemental_fill_clean_transition((transition.source().2, transition.target().2))
         {
             return if self.phase == Phase::Clean && self.admission_kind == Admission::CleanReopen && self.restore.is_none() {
                 Ok(None)

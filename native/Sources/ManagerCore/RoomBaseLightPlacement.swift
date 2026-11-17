@@ -9,6 +9,8 @@ public enum RoomBaseLightPlacement: String, Codable, Sendable {
 
 public enum RoomCeilingFill {
     public static let profile = "room-ceiling-fill-v1"
+    public static let supplementalProfile = "room-supplemental-ceiling-fill-v1"
+    static let supplementalPurpose: DocumentValue = .string("room-supplemental-fill")
     public static let initialBrightness = 0.5
 
     static func dimensions(in candidate: DocumentValue, room: DocumentValue) throws -> DocumentValue {
@@ -139,6 +141,13 @@ public enum RoomBaseLightIntent {
     }
     static func checkMarker(_ settings: DocumentValue) throws {
         guard case .object(let fields) = settings else { throw invalid }
+        if settings["purpose"] == RoomCeilingFill.supplementalPurpose {
+            let required: Set<String> = ["fixture", "purpose", "basePlacement", "ceilingFill"]
+            guard Set(fields.keys).subtracting(["lightId"]) == required,
+                  settings["fixture"] == .string("none"), settings["basePlacement"] == .string("auto"),
+                  try RoomCeilingFill.brightness(in: settings["ceilingFill"]) == RoomCeilingFill.initialBrightness else { throw invalid }
+            return
+        }
         if let value = fields["basePlacement"] {
             guard settings["purpose"] == .string("room-base"), let raw = value.string,
                   RoomBaseLightPlacement(rawValue: raw) != nil else { throw invalid }
@@ -171,18 +180,20 @@ public enum RoomBaseLightIntent {
         }
         return min(50, max(0.1, sum.squareRoot() * maximum))
     }
-    private static func baseLight(in candidate: DocumentValue, roomId: String) throws -> (Int, DocumentValue, Int)? {
+    private static func roomLight(in candidate: DocumentValue, roomId: String,
+                                  purpose: DocumentValue = .string("room-base")) throws -> (Int, DocumentValue, Int)? {
         let bindings = try NativeLightFixture.bindings(in: candidate)
         guard let lights = candidate["lights"].items else { throw invalid }
         let matches = lights.enumerated().compactMap { index, light -> (Int, DocumentValue, Int)? in
             guard same(light["roomId"].string, roomId), let id = light["id"].string,
-                  let binding = bindings.firstIndex(where: { same($0["lightId"].string, id) && $0["purpose"] == .string("room-base") }) else { return nil }
+                  let binding = bindings.firstIndex(where: { same($0["lightId"].string, id) && $0["purpose"] == purpose }) else { return nil }
             return (index, light, binding)
         }
         guard matches.count <= 1 else { throw invalid }; return matches.first
     }
     static func reflow(_ candidate: DocumentValue, roomId: String) throws -> DocumentValue {
-        guard let (lightIndex, light, bindingIndex) = try baseLight(in: candidate, roomId: roomId) else { return candidate }
+        guard let (lightIndex, light, bindingIndex) = try roomLight(in: candidate, roomId: roomId, purpose: RoomCeilingFill.supplementalPurpose)
+            ?? roomLight(in: candidate, roomId: roomId) else { return candidate }
         var bindings = try NativeLightFixture.bindings(in: candidate)
         guard bindings[bindingIndex]["basePlacement"] == .string("auto") else { return candidate }
         guard let room = candidate["rooms"].items?.first(where: { same($0["id"].string, roomId) }),
@@ -245,12 +256,13 @@ public enum RoomBaseLightIntent {
         var bindings = try NativeLightFixture.bindings(in: candidate)
         guard let index = bindings.firstIndex(where: { same($0["lightId"].string, lightId) }),
               bindings[index]["basePlacement"] == .string("auto") else { return candidate }
+        guard bindings[index]["purpose"] != RoomCeilingFill.supplementalPurpose else { throw invalid }
         bindings[index]["basePlacement"] = .string("manual")
         var next = candidate; next["extensions"][details] = .object(["version": .integer(1), "lights": .array(bindings)])
         return next
     }
     static func preserveCeilingFillAfterCeilingEdit(_ candidate: DocumentValue, roomId: String) throws -> DocumentValue {
-        guard let (_, light, index) = try baseLight(in: candidate, roomId: roomId),
+        guard let (_, light, index) = try roomLight(in: candidate, roomId: roomId),
               let id = light["id"].string,
               let room = candidate["rooms"].items?.first(where: { same($0["id"].string, roomId) }) else { return candidate }
         let binding = try NativeLightFixture.bindings(in: candidate)[index]
@@ -283,6 +295,12 @@ public enum RoomBaseLightIntent {
                                 base: DocumentValue, mounted: Bool = false) throws -> DocumentValue {
         guard case .object(var fields) = settings, let id = original["id"].string else { throw invalid }
         let prior = try NativeLightFixture.bindings(in: base).first { same($0["lightId"].string, id) }
+        if prior?["purpose"] == RoomCeilingFill.supplementalPurpose {
+            guard !mounted, light == original, case .object(var originalFields)? = prior else { throw invalid }
+            originalFields.removeValue(forKey: "lightId")
+            guard fields == originalFields else { throw invalid }
+            return settings
+        }
         var marker = settings
         if fields["purpose"] == nil, let purpose = prior?["purpose"], purpose != .null { marker["purpose"] = purpose }
         try checkMarker(marker)
