@@ -37,7 +37,8 @@ pub(super) struct Trial {
     database_identity: String,
     claim: Claim,
     query: String,
-    custody_sha256: String,
+    input: Input,
+    custody: Option<super::hayes::Lease>,
 }
 
 fn denied() -> crate::LifecycleError {
@@ -101,12 +102,13 @@ impl Session {
         let input = proof.input()?;
         let query = claim_query(&input, intent, (&saved.workspace_id, &saved.tenant_id, &saved.principal_id))?;
         self.retained_hayes_trial = Some(Trial { database_identity: proof.database_identity()?, claim: proof.claim()?,
-            query, custody_sha256: input.custody_authority_sha256 });
+            query, input, custody: None });
         Ok(())
     }
 
     pub(super) fn check_hayes_preopen_parent(&mut self) -> Result<()> {
         let trial = self.retained_hayes_trial.as_ref().ok_or_else(denied)?;
+        check_failed_run(&self.service.root, &trial.input)?;
         let expected_identity = trial.database_identity.clone();
         let query = trial.query.clone();
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -134,12 +136,15 @@ impl Session {
     }
 
     pub(crate) fn verify_retained_hayes_preopen(&mut self, proof: &RetainedHayesPreopen, saved: &Transfer, draft: &DocumentState) -> Result<()> {
-        self.verify_retained_hayes_preopen_with_lease(proof, saved, draft, None)
+        let custody = self.retained_hayes_trial.as_mut().and_then(|trial| trial.custody.take()).ok_or_else(denied)?;
+        let result = self.verify_retained_hayes_preopen_with_lease(proof, saved, draft, &custody);
+        self.retained_hayes_trial.as_mut().ok_or_else(denied)?.custody = Some(custody);
+        result
     }
 
-    pub(super) fn verify_retained_hayes_preopen_with_lease(&mut self, proof: &RetainedHayesPreopen, saved: &Transfer, draft: &DocumentState, lease: Option<&super::hayes::Lease>) -> Result<()> {
+    pub(super) fn verify_retained_hayes_preopen_with_lease(&mut self, proof: &RetainedHayesPreopen, saved: &Transfer, draft: &DocumentState, lease: &super::hayes::Lease) -> Result<()> {
         self.verify_workspace_furnishing_ledger()?;
-        let observed = self.observe_hayes_preopen_claim(&proof.input()?, saved, draft, lease)?;
+        let observed = self.observe_hayes_preopen_claim(&proof.input()?, saved, draft, Some(lease))?;
         if observed != proof.observation { return Err(denied()); }
         Ok(())
     }
@@ -151,9 +156,11 @@ impl Session {
         Ok(lease)
     }
 
-    pub(super) fn check_hayes_preopen_trial_custody(&self) -> Result<()> {
+    pub(super) fn hold_hayes_preopen_trial_custody(&mut self) -> Result<()> {
         if let Some(trial) = &self.retained_hayes_trial {
-            self.pin_hayes_preopen_custody(&trial.custody_sha256)?;
+            check_failed_run(&self.service.root, &trial.input)?;
+            let custody = self.pin_hayes_preopen_custody(&trial.input.custody_authority_sha256)?;
+            self.retained_hayes_trial.as_mut().ok_or_else(denied)?.custody = Some(custody);
         }
         Ok(())
     }
@@ -180,21 +187,7 @@ impl Session {
             || hayes.artwork_revision != 1 {
             return Err(denied());
         }
-        let relative = format!("native-runs/{}/state.json", input.failed_generation);
-        let check_failed = |root: &Path| -> Result<()> {
-            let record = installation_backup::source_bytes(root, &relative, 8192, true)?;
-            if digest(&record) != input.failed_record_sha256 { return Err(denied()); }
-            let (context, completion) = read_run(root, &input.failed_generation.to_string())?;
-            if context.state != "stopped" || context.readiness.ready
-                || context.postgres_pid.is_some() || context.node_pid.is_some() || context.auxiliary_pid.is_some()
-                || !["auxiliary","node","postgres"].iter().all(|k| context.exits.get(*k) == Some(&0))
-                || !completion.is_some_and(|entry| hash_valid(&entry.binding_sha256)
-                    && entry.consumed_by.as_ref().is_some_and(|id| installations::uuid(id))) {
-                return Err(denied());
-            }
-            Ok(())
-        };
-        check_failed(&self.service.root)?;
+        check_failed_run(&self.service.root, input)?;
         let acquired;
         let lease = if let Some(lease) = lease { lease } else {
             acquired = self.pin_hayes_preopen_custody(&input.custody_authority_sha256)?;
@@ -211,7 +204,7 @@ impl Session {
             return Err(denied());
         }
         lease.check_preopen_custody(&input.custody_authority_sha256)?;
-        check_failed(&self.service.root)?;
+        check_failed_run(&self.service.root, input)?;
         physical.check(self)?;
         Ok(serde_json::json!({
             "kind":"hayes-preopen-claim-observation", "version":1, "jobId":input.job_id,
@@ -223,6 +216,21 @@ impl Session {
             "transferSha256":input.transfer_sha256,"savedEtag":input.saved_etag,"savedRevision":input.saved_revision,
         }))
     }
+}
+
+fn check_failed_run(root: &Path, input: &Input) -> Result<()> {
+    let relative = format!("native-runs/{}/state.json", input.failed_generation);
+    let record = installation_backup::source_bytes(root, &relative, 8192, true)?;
+    if digest(&record) != input.failed_record_sha256 { return Err(denied()); }
+    let (context, completion) = read_run(root, &input.failed_generation.to_string())?;
+    if context.state != "stopped" || context.readiness.ready
+        || context.postgres_pid.is_some() || context.node_pid.is_some() || context.auxiliary_pid.is_some()
+        || !["auxiliary", "node", "postgres"].iter().all(|key| context.exits.get(*key) == Some(&0))
+        || !completion.is_some_and(|entry| hash_valid(&entry.binding_sha256)
+            && entry.consumed_by.as_ref().is_some_and(|id| installations::uuid(id))) {
+        return Err(denied());
+    }
+    Ok(())
 }
 
 impl RetainedHayesPreopen {
@@ -265,8 +273,10 @@ fn claim_query(input: &Input, intent: &installations::native_upload::Intent, own
          WHERE (a.tenant_id,a.workspace_id,a.principal_id)=('{tenant}','{workspace}','{principal}')
            AND (j.id,a.artwork_id,a.runtime_generation)=('{job}','{artwork}','{generation}')
            AND a.artwork_revision=1 AND w.revision=a.artwork_revision AND w.deleted_at IS NULL
+           AND w.approved_revision IS NULL AND w.approved_asset_id IS NULL
            AND (a.source_sha256,a.source_bytes)=(j.expected_hash,j.expected_bytes)
            AND a.source_sha256='e66715a51c9cad0b904d2715d5b27fb80b97d43fe8c2a3cd10276c1b336a2cf6' AND a.source_bytes=8383096
+           AND j.object_key='{tenant}/quarantine/import-{job}/'||a.source_sha256
            AND j.mime='model/gltf-binary' AND j.derived IS NULL AND j.model_derivation IS NULL
            AND j.rights=w.metadata->'rights' AND j.rights=convert_from(decode('{rights}','hex'),'UTF8')::jsonb
            AND w.metadata->'displayReference'->>'status'='provisional-uncalibrated'

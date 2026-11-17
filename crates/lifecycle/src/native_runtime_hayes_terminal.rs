@@ -33,7 +33,7 @@ impl Session {
             None => {
                 // The signed digest is not admission by itself. Confirm the
                 // full processing observation before sending the one-use proof.
-                self.verify_retained_hayes_preopen_with_lease(retained, saved, draft, Some(&custody))?;
+                self.verify_retained_hayes_preopen_with_lease(retained, saved, draft, &custody)?;
                 let ack = self.record_preopen_terminal(&proof, &owner)?;
                 let receipt = self.read_preopen_terminal(&proof, &owner)?.ok_or_else(unconfirmed)?;
                 if ack != receipt { return Err(unconfirmed()); }

@@ -3283,7 +3283,7 @@ const { isDeepStrictEqual } = require('node:util');
             None
         };
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        self.check_hayes_preopen_trial_custody()?;
+        self.hold_hayes_preopen_trial_custody()?;
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         if matches!(furnishing, Some(FurnishingStart::Upgrade045To050 | FurnishingStart::Upgrade051To050051)) {
             self.run_furnishing_thumbnail_upgrade(&environment)?;
