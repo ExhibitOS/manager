@@ -163,7 +163,7 @@ enum NativeAutomationArtworkRules {
         }
         var wire = jobValue(job)
         wire["coarsePreparation"] = .object([
-            "profile": .string(status.profile), "approvalId": .string(status.approvalId),
+            "profile": .string(status.profile), "approvalId": status.approvalId.map(DocumentValue.string) ?? .null,
             "artworkRevision": .integer(Int64(status.artworkRevision)), "status": .string(status.status),
             "workerDrained": .bool(status.workerDrained), "assetId": status.assetId.map(DocumentValue.string) ?? .null,
             "sha256": status.sha256.map(DocumentValue.string) ?? .null,

@@ -524,3 +524,23 @@ After the first workspace drains, register and initialize the second workspace
 in the same helper. The exact debug validation payload enables that second
 fresh initialization. Both members use ordinary startup with fresh or clean
 local provenance.
+
+### Owner-local original image preparation
+
+On an admitted ordinary runtime that advertises
+`nativeOriginalImageCoarseProfile: "viewer-png-box-512-v1"`, use
+`artwork-prepare-original-image` with a pinned JPEG `inputPath` and
+`command: {artworkId, artworkRevision, displaySha256}`. The Native ICC
+renderer checks the expected Full PNG. The server supplies the Coarse tier
+through the same owner-local import job. The request omits legacy
+`approvalId`; the returned job ID identifies the issued receipt.
+Poll `artwork-status`; review the final tier hashes and wait for worker
+drain before `artwork-approve`. Register the approved snapshot and save
+through the ordinary selected-draft commands.
+
+Use `artwork-original-image-static-approve` on that saved head with
+`command: {artworkId, artworkRevision, importJobId}`. To require that original
+in the next `export-static-native-original` publication, include the same
+three fields under `command.originalImage`, alongside the current `etag`.
+The original image intent is part of the request binding. A runtime without
+this capability does not gain original intake or approval through the CLI.

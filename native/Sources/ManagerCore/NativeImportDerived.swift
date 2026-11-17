@@ -43,10 +43,10 @@ public enum NativeJPEGImportRuntime {
 public struct NativeCoarsePreparationIntent: Codable, Equatable, Sendable {
     public let version: Int
     public let profile: String
-    public let approvalId: String
+    public let approvalId: String?
     public let artworkRevision: Int
 
-    public init(approvalId: String, artworkRevision: Int) {
+    public init(approvalId: String? = nil, artworkRevision: Int) {
         version = 1
         profile = "viewer-png-box-512-v1"
         self.approvalId = approvalId
@@ -55,11 +55,12 @@ public struct NativeCoarsePreparationIntent: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey, CaseIterable { case version, profile, approvalId, artworkRevision }
 
     public init(from decoder: Decoder) throws {
-        try checkCoarseKeys(decoder, required: Set(CodingKeys.allCases.map(\.stringValue)))
+        try checkCoarseKeys(decoder, required: ["version", "profile", "artworkRevision"],
+                            complete: Set(CodingKeys.allCases.map(\.stringValue)))
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
         profile = try values.decode(String.self, forKey: .profile)
-        approvalId = try values.decode(String.self, forKey: .approvalId)
+        approvalId = values.contains(.approvalId) ? try values.decode(String.self, forKey: .approvalId) : nil
         artworkRevision = try values.decode(Int.self, forKey: .artworkRevision)
         guard valid else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
     }
@@ -67,10 +68,12 @@ public struct NativeCoarsePreparationIntent: Codable, Equatable, Sendable {
     var valid: Bool {
         version == 1 && profile == "viewer-png-box-512-v1"
             && (1...2_147_483_647).contains(artworkRevision)
-            && approvalId.range(
-                of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#,
-                options: [.regularExpression, .caseInsensitive]
-            ) != nil
+            && (approvalId.map {
+                $0.range(
+                    of: #"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#,
+                    options: [.regularExpression, .caseInsensitive]
+                ) != nil
+            } ?? true)
     }
 }
 
@@ -91,7 +94,7 @@ private func checkCoarseKeys(_ decoder: Decoder, required: Set<String>, complete
 
 public struct NativeCoarsePreparationStatus: Decodable, Sendable {
     public let profile: String
-    public let approvalId: String
+    public let approvalId: String?
     public let artworkRevision: Int
     public let status: String
     public let workerDrained: Bool
@@ -103,11 +106,12 @@ public struct NativeCoarsePreparationStatus: Decodable, Sendable {
     }
 
     public init(from decoder: Decoder) throws {
-        try checkCoarseKeys(decoder, required: ["profile", "approvalId", "artworkRevision", "status", "workerDrained"],
-                            complete: Set(CodingKeys.allCases.map(\.stringValue)))
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        var required: Set<String> = ["profile", "artworkRevision", "status", "workerDrained"]
+        if values.contains(.approvalId) { required.insert("approvalId") }
+        try checkCoarseKeys(decoder, required: required, complete: required.union(["assetId", "sha256", "bytes"]))
         profile = try values.decode(String.self, forKey: .profile)
-        approvalId = try values.decode(String.self, forKey: .approvalId)
+        approvalId = values.contains(.approvalId) ? try values.decode(String.self, forKey: .approvalId) : nil
         artworkRevision = try values.decode(Int.self, forKey: .artworkRevision)
         status = try values.decode(String.self, forKey: .status)
         workerDrained = try values.decode(Bool.self, forKey: .workerDrained)
@@ -117,7 +121,7 @@ public struct NativeCoarsePreparationStatus: Decodable, Sendable {
     }
 
     func matches(_ intent: NativeCoarsePreparationIntent, job: NativeImportJob) -> Bool {
-        guard intent.valid, profile == intent.profile, approvalId.lowercased() == intent.approvalId.lowercased(),
+        guard intent.valid, profile == intent.profile, approvalId?.lowercased() == intent.approvalId?.lowercased(),
               artworkRevision == intent.artworkRevision else { return false }
         switch job.state {
         case "approved":
