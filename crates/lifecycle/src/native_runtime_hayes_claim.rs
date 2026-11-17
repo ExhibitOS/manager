@@ -6,7 +6,7 @@ use super::{
     oex_owner::{DATABASE_IDENTITY_SQL, Owner},
     *,
 };
-use crate::installations::{native_document::DocumentState, native_upload::Transfer};
+use crate::installations::{native_document::DocumentState, native_maintenance::RetainedHayesPreopen, native_upload::Transfer};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -20,7 +20,7 @@ pub(crate) struct Input {
     custody_authority_sha256: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Claim {
     system_id: String,
@@ -33,6 +33,13 @@ struct Claim {
     lease_expired: bool,
 }
 
+pub(super) struct Trial {
+    database_identity: String,
+    claim: Claim,
+    query: String,
+    custody_sha256: String,
+}
+
 fn denied() -> crate::LifecycleError {
     err("HAYES_PREOPEN_CLAIM_UNCONFIRMED")
 }
@@ -41,9 +48,118 @@ pub(crate) fn transfer_digest(transfer: &Transfer) -> Result<String> {
     Ok(digest(&serde_json::to_vec(transfer).map_err(|_| denied())?))
 }
 
+impl RetainedHayesPreopen {
+    fn input(&self) -> Result<Input> {
+        super::hayes_terminal_wire::Proof::checked(&self.observation, &self.proof_sha256)?;
+        let proof = &self.observation;
+        serde_json::from_value(serde_json::json!({
+            "jobId":proof["jobId"], "failedGeneration":proof["claim"]["generation"],
+            "failedRecordSha256":proof["failedRecordSha256"], "savedEtag":proof["savedEtag"],
+            "savedRevision":proof["savedRevision"], "transferSha256":proof["transferSha256"],
+            "custodyAuthoritySha256":proof["custodyAuthoritySha256"],
+        })).map_err(|_| denied())
+    }
+
+    pub(crate) fn check_saved(&self, draft: &DocumentState, saved: &Transfer, raw: &[u8]) -> Result<()> {
+        let input = self.input()?;
+        let proof = &self.observation;
+        let intent = saved.intent.as_ref().ok_or_else(denied)?;
+        let hayes = intent.hayes_original.as_ref().ok_or_else(denied)?;
+        if ![&saved.workspace_id, &saved.tenant_id, &saved.principal_id, &intent.artwork_id].into_iter().all(|id| installations::uuid(id))
+            || ![&input.failed_record_sha256, &input.custody_authority_sha256, &hayes.display_reference_sha256].into_iter().all(|value| hash_valid(value))
+            || draft.pending.is_some() || draft.revision != input.saved_revision
+            || draft.etag.as_deref() != Some(input.saved_etag.as_str())
+            || draft.saved_edit_version.is_none()
+            || draft.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != draft.saved_edit_version
+            || (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str())
+                != (draft.workspace_id.as_str(), draft.tenant_id.as_str(), draft.principal_id.as_str())
+            || proof["workspaceId"] != saved.workspace_id || proof["tenantId"] != saved.tenant_id
+            || proof["principalId"] != saved.principal_id || proof["artworkId"] != intent.artwork_id
+            || proof["artworkRevision"] != hayes.artwork_revision || hayes.artwork_revision != 1
+            || intent.mime != "model/gltf-binary" || intent.bytes != 8383096
+            || intent.sha256 != "e66715a51c9cad0b904d2715d5b27fb80b97d43fe8c2a3cd10276c1b336a2cf6"
+            || saved.job_id.as_deref() != Some(input.job_id.to_string().as_str())
+            || saved.compact_variant.is_some() || saved.gpu_variant.is_some()
+            || digest(raw) != input.transfer_sha256 || transfer_digest(saved)? != input.transfer_sha256
+        {
+            return Err(denied());
+        }
+        Ok(())
+    }
+}
+
 impl Session {
+    pub(crate) fn arm_retained_hayes_preopen(&mut self, proof: &RetainedHayesPreopen, saved: &Transfer) -> Result<()> {
+        let (_, transition) = self.furnishing_transition_trial.as_ref().ok_or_else(denied)?;
+        if self.job_id.is_some() || self.transition_fence.is_none()
+            || self.retained_hayes_trial.is_some()
+            || !crate::native_payload::r285_hayes_preopen_terminal_transition((transition.source().2, transition.target().2))
+        {
+            return Err(denied());
+        }
+        let intent = saved.intent.as_ref().ok_or_else(denied)?;
+        let input = proof.input()?;
+        let query = claim_query(&input, intent, (&saved.workspace_id, &saved.tenant_id, &saved.principal_id))?;
+        self.retained_hayes_trial = Some(Trial { database_identity: proof.database_identity()?, claim: proof.claim()?,
+            query, custody_sha256: input.custody_authority_sha256 });
+        Ok(())
+    }
+
+    pub(super) fn check_hayes_preopen_parent(&mut self) -> Result<()> {
+        let trial = self.retained_hayes_trial.as_ref().ok_or_else(denied)?;
+        let expected_identity = trial.database_identity.clone();
+        let query = trial.query.clone();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        if self.query_database_before("exhibitos", DATABASE_IDENTITY_SQL, deadline)? != expected_identity {
+            return Err(denied());
+        }
+        let ledger = self.payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052)?;
+        let (parent, terminal) = ledger.rsplit_once('\n').ok_or_else(denied)?;
+        if terminal != format!("054_hayes_preopen_terminal.sql|{}", crate::native_payload::HAYES_PREOPEN_TERMINAL_SCHEMA.2)
+            || self.query_database_before("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name", deadline)? != parent
+        {
+            return Err(denied());
+        }
+        let row = self.query_database_before("exhibitos", &query, deadline)?;
+        let observed: Claim = serde_json::from_str(&row).map_err(|_| denied())?;
+        if observed != self.retained_hayes_trial.as_ref().ok_or_else(denied)?.claim {
+            return Err(denied());
+        }
+        Ok(())
+    }
+
     pub(crate) fn observe_hayes_preopen(&mut self, input: &Input, saved: &Transfer, draft: &DocumentState) -> Result<Value> {
-        if !self.status()?.readiness.ready || !self.closing_hayes_binding_available() || self.retained_hayes.is_some()
+        if !self.closing_hayes_binding_available() { return Err(denied()); }
+        self.observe_hayes_preopen_claim(input, saved, draft, None)
+    }
+
+    pub(crate) fn verify_retained_hayes_preopen(&mut self, proof: &RetainedHayesPreopen, saved: &Transfer, draft: &DocumentState) -> Result<()> {
+        self.verify_retained_hayes_preopen_with_lease(proof, saved, draft, None)
+    }
+
+    pub(super) fn verify_retained_hayes_preopen_with_lease(&mut self, proof: &RetainedHayesPreopen, saved: &Transfer, draft: &DocumentState, lease: Option<&super::hayes::Lease>) -> Result<()> {
+        self.verify_workspace_furnishing_ledger()?;
+        let observed = self.observe_hayes_preopen_claim(&proof.input()?, saved, draft, lease)?;
+        if observed != proof.observation { return Err(denied()); }
+        Ok(())
+    }
+
+    pub(super) fn pin_hayes_preopen_custody(&self, expected: &str) -> Result<super::hayes::Lease> {
+        let auth = self.local_authority.as_ref().ok_or_else(denied)?;
+        let lease = provision::open_user_lease(Some(auth))?;
+        lease.check_preopen_custody(expected)?;
+        Ok(lease)
+    }
+
+    pub(super) fn check_hayes_preopen_trial_custody(&self) -> Result<()> {
+        if let Some(trial) = &self.retained_hayes_trial {
+            self.pin_hayes_preopen_custody(&trial.custody_sha256)?;
+        }
+        Ok(())
+    }
+
+    fn observe_hayes_preopen_claim(&mut self, input: &Input, saved: &Transfer, draft: &DocumentState, lease: Option<&super::hayes::Lease>) -> Result<Value> {
+        if !self.status()?.readiness.ready || self.retained_hayes.is_some()
             || input.job_id.is_nil() || input.failed_generation.is_nil()
             || self.job_id.as_deref() == Some(input.failed_generation.to_string().as_str())
             || ![&input.failed_record_sha256, &input.transfer_sha256, &input.custody_authority_sha256].iter().all(|s| hash_valid(s))
@@ -79,9 +195,13 @@ impl Session {
             Ok(())
         };
         check_failed(&self.service.root)?;
-        let lease = provision::open_user_lease(Some(auth))?;
+        let acquired;
+        let lease = if let Some(lease) = lease { lease } else {
+            acquired = self.pin_hayes_preopen_custody(&input.custody_authority_sha256)?;
+            &acquired
+        };
         lease.check_preopen_custody(&input.custody_authority_sha256)?;
-        let sql = claim_query(input, intent, auth)?;
+        let sql = claim_query(input, intent, (&auth.workspace_id, &auth.tenant_id, &auth.principal_id))?;
         let physical = Owner::capture(self)?;
         let snapshot = self.query_database_before("exhibitos", &sql, Instant::now() + Duration::from_secs(12))?;
         let claim: Claim = serde_json::from_str(&snapshot).map_err(|_| denied())?;
@@ -105,8 +225,32 @@ impl Session {
     }
 }
 
-fn claim_query(input: &Input, intent: &installations::native_upload::Intent, auth: &LocalAuthority) -> Result<String> {
+impl RetainedHayesPreopen {
+    fn claim(&self) -> Result<Claim> {
+        serde_json::from_value(self.observation["claim"].clone()).map_err(|_| denied())
+    }
+
+    pub(super) fn database_identity(&self) -> Result<String> {
+        let claim = self.claim()?;
+        let canonical_positive = |raw: &str, value: u64| value != 0 && value.to_string() == raw;
+        let system = claim.system_id.parse::<u64>().map_err(|_| denied())?;
+        let oid = claim.database_oid.parse::<u32>().map_err(|_| denied())?;
+        if !claim.lease_expired || !canonical_positive(&claim.system_id, system)
+            || !canonical_positive(&claim.database_oid, u64::from(oid))
+        {
+            return Err(denied());
+        }
+        Ok(format!("{}|{}", claim.system_id, claim.database_oid))
+    }
+}
+
+fn claim_query(input: &Input, intent: &installations::native_upload::Intent, owner: (&str, &str, &str)) -> Result<String> {
     let hayes = intent.hayes_original.as_ref().ok_or_else(denied)?;
+    let (workspace, tenant, principal) = owner;
+    if ![workspace, tenant, principal, &intent.artwork_id].into_iter().all(installations::uuid)
+        || !hash_valid(&hayes.display_reference_sha256) {
+        return Err(denied());
+    }
     let rights = serde_json::to_vec(&intent.rights).map_err(|_| denied())?
         .iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     Ok(format!(
@@ -134,7 +278,7 @@ fn claim_query(input: &Input, intent: &installations::native_upload::Intent, aut
            AND NOT EXISTS (SELECT 1 FROM public.hayes_output_stages s WHERE s.tenant_id=j.tenant_id AND (s.job_id=j.id OR s.attempt_id=a.id))
            AND NOT EXISTS (SELECT 1 FROM public.hayes_original_dispositions d WHERE d.tenant_id=j.tenant_id AND (d.job_id=j.id OR d.attempt_id=a.id))
            AND NOT EXISTS (SELECT 1 FROM public.hayes_native_releases r WHERE r.tenant_id=j.tenant_id AND (r.job_id=j.id OR r.attempt_id=a.id))",
-        tenant=auth.tenant_id, workspace=auth.workspace_id, principal=auth.principal_id,
+        tenant=tenant, workspace=workspace, principal=principal,
         job=input.job_id, artwork=intent.artwork_id, generation=input.failed_generation, display=hayes.display_reference_sha256,
     ))
 }

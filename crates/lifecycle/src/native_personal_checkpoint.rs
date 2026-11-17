@@ -3,7 +3,7 @@
 //! Staged data remains plaintext in a private directory; only the inventory is sealed.
 //! Pending binding changes block normal startup until authenticated recovery.
 use super::*;
-use crate::installations::{InstallationController, native_maintenance::{RetainedProductImage, RetainedGpuVariant, RetainedOriginalModel, StartupCancellation045, TransitionRetention}};
+use crate::installations::{InstallationController, native_maintenance::{RetainedProductImage, RetainedGpuVariant, RetainedOriginalModel, RetainedHayesPreopen, StartupCancellation045, TransitionRetention}};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, KeyInit, OsRng, Payload as CipherPayload, rand_core::RngCore},
@@ -143,6 +143,8 @@ struct Checkpoint {
     retained_gpu_variant: Option<RetainedGpuVariant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retained_original_model: Option<RetainedOriginalModel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_hayes_preopen: Option<RetainedHayesPreopen>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     startup_cancellation_045: Option<StartupCancellation045>,
     #[cfg(feature = "workspace-v5-owner-validation")]
@@ -345,14 +347,38 @@ impl Checkpoint {
         {
             return Err(invalid());
         }
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        if crate::native_payload::r285_hayes_preopen_terminal_transition(pair) != self.retained_hayes_preopen.is_some() {
+            return Err(invalid());
+        }
+        if self.retained_hayes_preopen.is_some() && (!saved_workspace_host || self.saved_document_sha256.is_none()
+            || self.retained_product_image.is_some() || self.retained_gpu_variant.is_some()
+            || self.retained_original_model.is_some() || self.startup_cancellation_045.is_some())
+        {
+            return Err(invalid());
+        }
+        if let Some(proof) = &self.retained_hayes_preopen {
+            self.check_retained_hayes_blob(proof)?;
+        }
         check_transition_host(pair, self.saved_document_sha256.as_deref(), saved_workspace_host)
     }
 
     fn check_retained(&self, retained: TransitionRetention<'_>) -> Result<()> {
         if self.retained_product_image.as_ref() != retained.image()
             || self.retained_gpu_variant.as_ref() != retained.gpu()
-            || self.retained_original_model.as_ref() != retained.original() {
+            || self.retained_original_model.as_ref() != retained.original()
+            || self.retained_hayes_preopen.as_ref() != retained.hayes() {
             return Err(invalid());
+        }
+        Ok(())
+    }
+
+    fn check_retained_hayes_blob(&self, proof: &RetainedHayesPreopen) -> Result<()> {
+        let job = proof.observation["jobId"].as_str().filter(|id| installations::uuid(id)).ok_or_else(invalid)?;
+        let sha = "e66715a51c9cad0b904d2715d5b27fb80b97d43fe8c2a3cd10276c1b336a2cf6";
+        let path = Path::new("blobs").join(&self.tenant_id).join("quarantine").join(format!("import-{job}")).join(sha);
+        if self.files.get(&path).is_none_or(|entry| entry.bytes != 8383096 || entry.sha256.as_deref() != Some(sha)) {
+            return Err(err("HAYES_PREOPEN_CLAIM_UNCONFIRMED"));
         }
         Ok(())
     }
@@ -376,7 +402,7 @@ impl Checkpoint {
     }
 
     fn check_retained_gpu_document(&self, document: Option<&crate::installations::native_document::DocumentState>) -> Result<()> {
-        if (self.retained_gpu_variant.is_some() || self.retained_original_model.is_some())
+        if (self.retained_gpu_variant.is_some() || self.retained_original_model.is_some() || self.retained_hayes_preopen.is_some())
             && saved_document_digest(document.ok_or_else(invalid)?)?.as_str()
                 != self.saved_document_sha256.as_deref().ok_or_else(invalid)? {
             return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
@@ -1478,6 +1504,8 @@ impl LifecycleService {
         document: &super::installations::native_document::DocumentState,
         retained: TransitionRetention<'_>,
         #[cfg(feature = "workspace-v5-owner-validation")]
+        retained_hayes_transfer: Option<crate::installations::native_upload::Transfer>,
+        #[cfg(feature = "workspace-v5-owner-validation")]
         selected: Option<(crate::native_runtime::oex_retained_cleanup::Selected045, PathBuf)>,
     ) -> Result<()> {
         let (mut session, mut checkpoint, binding, envelope) =
@@ -1498,6 +1526,10 @@ impl LifecycleService {
         #[cfg(feature = "workspace-v5-owner-validation")]
         if let Some(proof) = &checkpoint.startup_cancellation_045 {
             session.arm_startup_cancellation_045(proof.clone())?;
+        }
+        #[cfg(feature = "workspace-v5-owner-validation")]
+        if let Some(proof) = retained.hayes() {
+            session.arm_retained_hayes_preopen(proof, retained_hayes_transfer.as_ref().ok_or_else(invalid)?)?;
         }
         let qualified = (|| {
             if session.start()?.state != "ready" {
@@ -1538,6 +1570,10 @@ impl LifecycleService {
             }
             #[cfg(feature = "workspace-v5-owner-validation")]
             session.verify_startup_cancellation_045()?;
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            if let Some(proof) = retained.hayes() {
+                session.verify_retained_hayes_preopen(proof, retained_hayes_transfer.as_ref().ok_or_else(invalid)?, document)?;
+            }
             #[cfg(feature = "workspace-v5-owner-validation")]
             session.verify_clean_exit_hayes_after_start()?;
             Ok(())
@@ -1705,6 +1741,7 @@ impl LifecycleService {
             retained_product_image: retained.image().cloned(),
             retained_gpu_variant: retained.gpu().cloned(),
             retained_original_model: retained.original().cloned(),
+            retained_hayes_preopen: retained.hayes().cloned(),
             startup_cancellation_045: startup_cancellation_045.cloned(),
             #[cfg(feature = "workspace-v5-owner-validation")]
             furnishing,
@@ -1982,6 +2019,8 @@ impl InstallationController {
             || !startup_cancellation_proof_matches(pair, retained.image(), startup_cancellation_045)
             || ((retained.gpu().is_some() || retained.original().is_some()) && startup_cancellation_045.is_some())
             || (retained.original().is_some() && !crate::native_payload::current_image_thumbnail_transition(pair))
+            || crate::native_payload::r285_hayes_preopen_terminal_transition(pair) != retained.hayes().is_some()
+            || (retained.hayes().is_some() && (retained_saved_head.is_some() || startup_cancellation_045.is_some()))
         {
             return Err(invalid());
         }
@@ -2120,8 +2159,12 @@ impl InstallationController {
             } else if startup_cancellation_045.is_some() {
                 return Err(invalid());
             }
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            let retained_hayes_transfer = retained.hayes().map(|_| self.retained_hayes_transition_upload(service)).transpose()?;
             service.activate_local_personal_runtime_transition(
                 target, staging, key, saved_workspace_host, document, retained,
+                #[cfg(feature = "workspace-v5-owner-validation")]
+                retained_hayes_transfer,
                 #[cfg(feature = "workspace-v5-owner-validation")]
                 None,
             )
@@ -2196,7 +2239,7 @@ impl InstallationController {
             let selected = oex_retained_cleanup::Selected045::new(
                 oex, &selection.hayes_job_id, &selection.hayes_completion_frame_sha256, retired, absent_chunks, settled_only,
             )?;
-            service.activate_local_personal_runtime_transition(target, staging, key, true, document, TransitionRetention::None, Some((selected, prefix)))
+            service.activate_local_personal_runtime_transition(target, staging, key, true, document, TransitionRetention::None, None, Some((selected, prefix)))
         })
     }
 

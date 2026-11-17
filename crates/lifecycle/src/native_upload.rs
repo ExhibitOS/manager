@@ -517,6 +517,40 @@ impl InstallationController {
             Ok(self.upload_unlocked(service)?.1)
         })
     }
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    pub(crate) fn settle_retained_hayes_upload(
+        &self,
+        token: &str,
+        proof: &super::native_maintenance::RetainedHayesPreopen,
+        terminalize: impl FnOnce(&Transfer, &super::native_document::DocumentState) -> Result<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        self.with_current(token, |service| {
+            let deny = || err("HAYES_PREOPEN_TERMINAL_UNCONFIRMED");
+            let profile = self.profile.as_ref().ok_or_else(deny)?;
+            let _lock = profile_lock(profile)?;
+            let (file, mut transfer) = self.upload_unlocked(service)?;
+            let (_, saved) = self.document_unlocked(service)?;
+            let raw = installation_backup::source_bytes(&profile.root, &file, LIMIT, true)?;
+            proof.check_saved(&saved, &transfer, &raw)?;
+            let next_revision = transfer.revision.checked_add(1).ok_or_else(deny)?;
+            let receipt = terminalize(&transfer, &saved)?;
+            if self.document_unlocked(service)?.1 != saved
+                || installation_backup::source_bytes(&profile.root, &file, LIMIT, true)? != raw
+            {
+                return Err(deny());
+            }
+            transfer.revision = next_revision;
+            transfer.intent = None;
+            transfer.job_id = None;
+            transfer.file_name = None;
+            validate(&transfer)?;
+            write_json(&profile.root, &file, &transfer)?;
+            File::open(&profile.root).and_then(|directory| directory.sync_all()).map_err(|_| deny())?;
+            if serde_json::to_value(self.upload_unlocked(service)?.1).map_err(|_| deny())?
+                != serde_json::to_value(&transfer).map_err(|_| deny())? { return Err(deny()); }
+            Ok(serde_json::json!({ "receipt": receipt, "transferRevision": transfer.revision }))
+        })
+    }
     pub fn save_native_upload(&self, token: &str, mut state: Transfer) -> Result<Transfer> {
         self.with_current(token, |service| {
             let profile = self

@@ -19,6 +19,7 @@ pub(in super::super) struct DedicatedOwnerPin {
     runtime_generation: Uuid,
     host_manifest_sha256: String,
     native_owner_id: Uuid,
+    hayes_preopen_selected: bool,
 }
 
 impl DedicatedOwnerPin {
@@ -36,7 +37,13 @@ impl DedicatedOwnerPin {
             runtime_generation,
             host_manifest_sha256: host_manifest_sha256.into(),
             native_owner_id: Uuid::new_v4(),
+            hayes_preopen_selected: false,
         })
+    }
+
+    pub(in super::super) fn with_hayes_preopen_selection(mut self, selected: bool) -> Self {
+        self.hayes_preopen_selected = selected;
+        self
     }
 
     pub(in super::super) fn runtime_generation(&self) -> Uuid {
@@ -81,6 +88,8 @@ pub(super) struct Pin<'a> {
     secret: &'a str,
     native_owner_id: uuid::Uuid,
     runtime_manifest_sha256: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -140,6 +149,9 @@ impl HayesSetup {
         if !matches!(start, FurnishingStart::Initialize | FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045) {
             return Err(unavailable());
         }
+        if self.pin.hayes_preopen_selected && start != FurnishingStart::Reopen {
+            return Err(unavailable());
+        }
         let mut bytes = serde_json::to_vec(&Bootstrap {
             workspace: auth,
             owner_channel: FreshOwnerBinding {
@@ -168,6 +180,7 @@ impl HayesSetup {
             secret: &self.socket.secret,
             native_owner_id: self.pin.native_owner_id(),
             runtime_manifest_sha256: self.pin.host_manifest_sha256(),
+            selection: self.pin.hayes_preopen_selected.then_some("hayes-preopen-retained-reopen-v1"),
         })
     }
 
