@@ -71,6 +71,10 @@ final class NativeJPEGImportRuntimeTests: XCTestCase {
         XCTAssertFalse(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(
             AuthoringFailure("RESPONSE_INVALID"), beganHere: true, hasJob: false))
         let intent = NativeCoarsePreparationIntent(artworkRevision: 1)
+        XCTAssertTrue(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(
+            AuthoringFailure("RIGHTS_DENIED", status: 403), beganHere: true, hasJob: false))
+        XCTAssertFalse(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(
+            AuthoringFailure("RIGHTS_DENIED", status: 403), beganHere: false, hasJob: false))
         let wire = try JSONEncoder().encode(intent)
         let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: wire) as? [String: Any])
         XCTAssertNil(fields["approvalId"])

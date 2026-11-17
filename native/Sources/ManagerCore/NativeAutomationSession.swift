@@ -114,6 +114,7 @@ public actor NativeAutomationSession {
     private var staticIntents: [String: NativePublicationPending] = [:]
     private var selectedOEXFormat: String?
     private var architectureSaveRecovery: NativeArchitectureSaveRecovery?
+    private var firstArchitectureRecoveryOnly = false
     private var runtimeStopped = false
 
     public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil, firstArchitectureEntry: Bool = false) throws {
@@ -362,13 +363,16 @@ public actor NativeAutomationSession {
             saved = try await bridge.documentState(context)
         }
         if firstArchitectureEntry {
+            let retained = AuthoringAPI.supportsOwnerLocalOriginalRuntime(manifest: expected.manifestSHA256)
+                ? NativeArchitectureSaveRecovery.retainedFirstSave(in: saved) : nil
+            let empty = !saved.dirty && saved.draft == nil && saved.etag == nil
+                && saved.savedEditVersion == nil && saved.pending == nil
             guard !status.needsShutdown, !status.accountRequired, status.selectedOex != true, status.errorCode == nil,
                   let config = status.configuration, config.kind == "personal", config.manifestSha256 == expected.manifestSHA256,
                   config.tenantId == expected.tenantId, config.ports.web == ports["web"],
                   config.ports.api == ports["api"], config.ports.database == ports["database"],
                   saved.workspaceId == expected.workspaceId, saved.tenantId == expected.tenantId,
-                  saved.principalId == expected.principalId, !saved.dirty, saved.draft == nil,
-                  saved.etag == nil, saved.savedEditVersion == nil, saved.pending == nil else {
+                  saved.principalId == expected.principalId, empty || retained != nil else {
                 throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
             }
             _ = try await bridge.start(context)
@@ -387,6 +391,8 @@ public actor NativeAutomationSession {
                   try value(await bridge.documentState(context)) == value(saved) else {
                 throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
             }
+            firstArchitectureStaged = retained
+            firstArchitectureRecoveryOnly = retained != nil
             self.api = api; authoringSession = session; runtimeManifest = config.manifestSha256; identity = saved
             return try await statusValue()
         }
@@ -2138,7 +2144,10 @@ public actor NativeAutomationSession {
             let allowed = independentFirstArchitecture
                 ? ["read", "exhibition-new", "architecture-apply", "save"]
                 : ["read", "first-architecture-create", "save"]
-            guard allowed.contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+            guard allowed.contains(operation),
+                  !firstArchitectureRecoveryOnly || ["read", "save"].contains(operation) else {
+                throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
         }
         if current.pending?.origin == NativeAppliedDraftSave.origin && !["read", "applied-draft-save-resume"].contains(operation) {
             throw BridgeFailure("APPLIED_DRAFT_RECOVERY_ONLY")
@@ -3834,7 +3843,7 @@ public actor NativeAutomationSession {
                 // A restarted ordinary operator must retain the original
                 // request/draft/ETag and supply its refreshed current envelope.
                 try Self.checkPendingSaveRequest(request, current, knownRevision: pendingRevisions[id],
-                                                 ordinary: installedImageCLI || installedAuthoringCLI)
+                                                 ordinary: installedImageCLI || installedAuthoringCLI || independentFirstArchitecture)
             } else {
                 try checkedRevision(request, current)
                 next.pending = .init(requestId: id, etag: next.etag, draft: draft)

@@ -168,6 +168,14 @@ struct NativeArchitectureSaveRecovery {
     let before: NativeExhibitionDraft
     let staged: NativeExhibitionDraft
 
+    static func retainedFirstSave(in document: NativeDocumentState) -> NativeExhibitionDraft? {
+        guard document.etag == nil, document.savedEditVersion == nil, let draft = document.draft,
+              let pending = document.pending, pending.etag == nil, pending.origin == nil,
+              pending.modelCandidate == nil, pending.productImage == nil, pending.draft == draft,
+              UUID(uuidString: pending.requestId) != nil else { return nil }
+        return draft
+    }
+
     func correction(after error: AuthoringFailure, initial: NativeDocumentState,
                     pending: NativeDocumentState) -> NativeDocumentState? {
         guard error.status == 422, error.code == "DRAFT_INVALID",

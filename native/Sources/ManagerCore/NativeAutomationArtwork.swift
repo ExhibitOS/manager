@@ -159,7 +159,7 @@ enum NativeAutomationArtworkRules {
                                                      beganHere: Bool, hasJob: Bool) -> Bool {
         guard beganHere, !hasJob else { return false }
         return switch (error.status, error.code) {
-        case (409, "PROVISIONAL_ASSET_MISMATCH"), (409, "REVISION_CONFLICT"):
+        case (403, "RIGHTS_DENIED"), (409, "PROVISIONAL_ASSET_MISMATCH"), (409, "REVISION_CONFLICT"):
             true
         default:
             NativeProductImagePreparationIntent.definitivelyRejectedCreate(error)

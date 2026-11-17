@@ -40,6 +40,22 @@ final class NativePrivateHostArchitectureTests: XCTestCase {
         }
     }
 
+    func testRetainedFirstSaveOnlyReplaysTheOriginalRequest() throws {
+        let staged = try NativePrivateHostArchitecture.applying(room(uuid()), to: NativeExhibitionDraft.new())
+        let pending = NativeDocumentState.Pending(etag: nil, draft: staged)
+        let document = NativeDocumentState(format: 1, revision: 3, workspaceId: uuid(), tenantId: uuid(),
+            principalId: uuid(), draft: staged, etag: nil, savedEditVersion: nil, pending: pending)
+        XCTAssertEqual(NativeArchitectureSaveRecovery.retainedFirstSave(in: document), staged)
+        var request: DocumentValue = .object(["requestId": .string(pending.requestId),
+            "expectedRevision": .integer(3), "expectedEditVersion": staged.document["editVersion"]])
+        XCTAssertNoThrow(try NativeAutomationSession.checkPendingSaveRequest(request, document, knownRevision: nil, ordinary: true))
+        request["requestId"] = .string(uuid())
+        XCTAssertThrowsError(try NativeAutomationSession.checkPendingSaveRequest(request, document, knownRevision: nil, ordinary: true))
+        var altered = document
+        altered.draft = try NativePrivateHostArchitecture.applying(room(uuid()), to: staged)
+        XCTAssertNil(NativeArchitectureSaveRecovery.retainedFirstSave(in: altered))
+    }
+
     func testRoomCubeDoorsAndRoundTripPreserveUnrelatedData() throws {
         var base = try NativeExhibitionDraft.new(), seed = base.candidate
         seed["extensions"] = .object(["example/preserved": .object(["value": .string("keep")])])
