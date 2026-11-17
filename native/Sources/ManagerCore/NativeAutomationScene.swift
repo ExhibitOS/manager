@@ -98,6 +98,48 @@ enum NativeAutomationScene {
         return (id, expected)
     }
 
+    /// Carry an existing legacy base point into an empty room without
+    /// passing through the new-light proposal that supplies an automatic marker.
+    static func legacyRoomBaseCarry(light: DocumentValue, settings: DocumentValue,
+                                    draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
+        let invalid = AuthoringFailure("LIGHT_FIELDS_INVALID")
+        guard case .object(let lightFields) = light,
+              Set(lightFields.keys) == ["id", "roomId", "type", "unit", "color", "intensity", "transform", "castsShadow"],
+              light["type"] == .string("point"), light["unit"] == .string(NativeLightType.point.unit),
+              light["castsShadow"] == .bool(false), let roomId = light["roomId"].string,
+              let color = light["color"].items, color.count == 3,
+              color.allSatisfy({ $0.double.map { (0...1).contains($0) } == true }),
+              let intensity = light["intensity"].double, (0...1_000_000).contains(intensity),
+              case .object(let marker) = settings, Set(marker.keys) == ["fixture", "purpose", "range"],
+              settings["fixture"] == .string("none"), settings["purpose"] == .string("room-base"),
+              let range = settings["range"].double, (0.1...50).contains(range) else { throw invalid }
+        let transform = light["transform"]
+        guard LightObjectRequest.isRigidTransform(transform),
+              let position = transform["position"].items?.compactMap(\.double), position.count == 3,
+              let dimensions = draft.rooms.first(where: { $0["id"].string == roomId })?["dimensions"],
+              let width = dimensions["width"].double, let height = dimensions["height"].double,
+              let depth = dimensions["depth"].double, [width, height, depth].allSatisfy({ $0.isFinite && $0 > 0 }),
+              abs(position[0]) <= width / 2, (0...height).contains(position[1]), abs(position[2]) <= depth / 2
+        else { throw invalid }
+        let bindings = try NativeLightFixture.bindings(in: draft.candidate)
+        let roomBaseIds = Set(bindings.filter { $0["purpose"] == .string("room-base") }
+            .compactMap { $0["lightId"].string?.lowercased() })
+        guard let lights = draft.candidate["lights"].items,
+              !lights.contains(where: {
+                  $0["roomId"].string?.lowercased() == roomId.lowercased()
+                      && $0["id"].string.map { roomBaseIds.contains($0.lowercased()) } == true
+              }) else { throw invalid }
+        let (lightId, added) = try addition(.object(["light": light]), draft: draft)
+        guard !draft.rooms.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }),
+              !bindings.contains(where: { $0["lightId"].string?.lowercased() == lightId.lowercased() }) else {
+            throw invalid
+        }
+        let candidate = try NativeLightFixture.applying(settings: settings, to: added, base: draft, lightId: lightId)
+        var next = draft
+        try next.replaceCandidate(candidate)
+        return next
+    }
+
     struct Proposal: Sendable {
         let frame: ViewportFrame
         let value: DocumentValue

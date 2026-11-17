@@ -285,14 +285,15 @@ public struct LightObjectRequest: Sendable {
     /// rigid transform can come from its reply; every other field is compared.
     private func copySolvedTransform(from candidate: DocumentValue, into light: inout DocumentValue) throws {
         let solved = candidate["lights"].items?.filter { $0["id"] == light["id"] } ?? []
-        guard solved.count == 1, case .object(let pose) = solved[0]["transform"],
-              Set(pose.keys) == ["position", "rotation", "scale"],
-              Self.vector(solved[0]["transform"]["position"], count: 3),
-              Self.vector(solved[0]["transform"]["rotation"], count: 4),
-              solved[0]["transform"]["scale"] == .vector([1, 1, 1]),
-              let q = solved[0]["transform"]["rotation"].items,
-              abs(q.reduce(0) { $0 + pow($1.double ?? 0, 2) } - 1) <= 1e-6 else { throw Self.changed }
+        guard solved.count == 1, Self.isRigidTransform(solved[0]["transform"]) else { throw Self.changed }
         light["transform"] = solved[0]["transform"]
+    }
+
+    static func isRigidTransform(_ transform: DocumentValue) -> Bool {
+        guard case .object(let pose) = transform, Set(pose.keys) == ["position", "rotation", "scale"],
+              vector(transform["position"], count: 3), vector(transform["rotation"], count: 4),
+              transform["scale"] == .vector([1, 1, 1]), let q = transform["rotation"].items else { return false }
+        return abs(q.reduce(0) { $0 + pow($1.double ?? 0, 2) } - 1) <= 1e-6
     }
 
     private static func rows(_ candidate: DocumentValue, namespace: String) throws -> [DocumentValue] {

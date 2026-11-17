@@ -41,6 +41,42 @@ final class NativeAutomationSceneTests: XCTestCase {
         XCTAssertEqual(try preview.apply(to: base, selectedLightId: light, command: request.command).candidate["lights"].items?[0]["intensity"], .number(300))
         var bad = input; bad["unexpected"] = .bool(true); XCTAssertThrowsError(try NativeAutomationScene.lightRequest(bad, frame: f))
     }
+    func testLegacyRoomBaseCarryPreservesThePointAndAbsentPlacementMarker() throws {
+        let original = try fixture()
+        let id = "cccccccc-0000-4000-8000-000000000003"
+        let point: DocumentValue = .object([
+            "id": .string(id), "roomId": original.rooms[0]["id"], "type": .string("point"),
+            "unit": .string("candela"), "color": .vector([1, 1, 1]), "intensity": .integer(16),
+            "transform": .object(["position": .vector([0, 3.6, 0]), "rotation": .vector([0, 0, 0, 1]),
+                                  "scale": .vector([1, 1, 1])]), "castsShadow": .bool(false)
+        ])
+        let settings: DocumentValue = .object(["fixture": .string("none"), "purpose": .string("room-base"), "range": .integer(10)])
+        let carried = try NativeAutomationScene.legacyRoomBaseCarry(light: point, settings: settings, draft: original)
+        var expected = original.candidate
+        expected["lights"] = .array(try XCTUnwrap(original.candidate["lights"].items) + [point])
+        expected["extensions"] = .object([NativeLightFixture.namespace:
+            .object(["version": .integer(1), "lights": .array([
+                .object(["lightId": .string(id), "fixture": .string("none"), "purpose": .string("room-base"), "range": .integer(10)])
+            ])])
+        ])
+        XCTAssertEqual(carried.candidate, expected)
+
+        var invalidPose = point; invalidPose["transform"]["rotation"] = .vector([0, 0, 0, 2])
+        XCTAssertThrowsError(try NativeAutomationScene.legacyRoomBaseCarry(light: invalidPose, settings: settings, draft: original))
+        var outsideRoom = point; outsideRoom["transform"]["position"] = .vector([0, 4.1, 0])
+        XCTAssertThrowsError(try NativeAutomationScene.legacyRoomBaseCarry(light: outsideRoom, settings: settings, draft: original))
+        var another = point; another["id"] = .string("dddddddd-0000-4000-8000-000000000004")
+        XCTAssertThrowsError(try NativeAutomationScene.legacyRoomBaseCarry(light: another, settings: settings, draft: carried))
+        var auto = settings; auto["basePlacement"] = .string("auto")
+        XCTAssertThrowsError(try NativeAutomationScene.legacyRoomBaseCarry(light: point, settings: auto, draft: original))
+        var nullPlacement = settings
+        if case .object(var fields) = settings {
+            fields["basePlacement"] = .null
+            nullPlacement = .object(fields)
+        }
+        XCTAssertThrowsError(try NativeAutomationScene.legacyRoomBaseCarry(light: point, settings: nullPlacement, draft: original))
+    }
+
     func testNewLightBindsExactCandidateAndRejectsDuplicate() throws {
         let base = try fixture(), f = frame(base), id = UUID().uuidString.lowercased()
         let row: DocumentValue = .object(["id": .string(id), "roomId": base.rooms[0]["id"], "type": .string("point"), "unit": .string("candela"), "transform": NativeExhibitionDraft.identity, "color": .vector([1,1,1]), "intensity": .integer(2), "castsShadow": .bool(false)])
