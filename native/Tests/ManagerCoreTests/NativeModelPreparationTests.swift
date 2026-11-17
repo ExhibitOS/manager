@@ -3,6 +3,19 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeModelPreparationTests: XCTestCase {
+    func testSettledHayesRuntimeAdmitsTheExistingOrdinaryCohort() {
+        #if DEBUG && os(macOS)
+        let manifest = "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f"
+        let foreign = "0" + manifest.dropFirst()
+        XCTAssertTrue(NativeHayesOriginalIntent.supports(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        XCTAssertFalse(NativeHayesOriginalIntent.supports(manifest: foreign))
+        XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: foreign))
+        #endif
+    }
+
     func testHayesOriginalAdmitsOnlyExactNewClosingRuntime() {
         #if DEBUG
         XCTAssertTrue(NativeHayesOriginalIntent.supports(

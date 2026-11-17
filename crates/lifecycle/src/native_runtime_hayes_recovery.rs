@@ -66,7 +66,7 @@ impl Session {
         }
 
         let runtime = self.payload.context();
-        let predecessor = if self.closing_hayes_binding_available() {
+        let predecessor = if self.scoped_hayes_binding_available() {
             runtime.manifest_sha256.as_str()
         } else {
             crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST
@@ -121,7 +121,7 @@ impl Session {
         let result = self.query_database_before("exhibitos", &sql, deadline)?;
         let row: Row = serde_json::from_str(&result).map_err(|_| unavailable())?;
         owner.check_database_identity_result(&format!("{}|{}", row.system_id, row.database_oid))?;
-        let scope = if self.closing_hayes_binding_available() {
+        let scope = if self.scoped_hayes_binding_available() {
             Some(self.local_authority.as_ref().ok_or_else(unavailable)?)
         } else {
             None

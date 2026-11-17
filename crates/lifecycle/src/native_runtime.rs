@@ -5550,6 +5550,30 @@ mod furnishing_thumbnail_upgrade_result_tests {
     }
 
     #[test]
+    fn r285_settled_hayes_admits_fresh_scoped_operation_only_on_exact_clean_reopen() {
+        use crate::native_payload::{R285_CLOSING_ARTICULATION_TARGET as parent, R285_HAYES_PREOPEN_TERMINAL_TARGET as target};
+        use hayes_ordinary::{closing_hayes_binding_matches, scoped_hayes_binding_matches};
+        let make = crate::native_payload::normal_oex_release_declaration_tests::combined_thumbnail_payload;
+        let payload = make(target);
+        let mut binding = binding();
+        binding.phase = Phase::Active;
+        binding.admission_kind = Admission::CleanReopen;
+        binding.catalog = 52;
+        binding.source_commit = target.0.into();
+        binding.producer_sha256 = target.1.into();
+        binding.payload_manifest_sha256 = target.2.into();
+        assert!(ordinary_inherited_hayes(&payload, Some(FurnishingStart::Reopen)));
+        assert!(!ordinary_inherited_hayes(&payload, Some(FurnishingStart::Initialize)));
+        assert!(scoped_hayes_binding_matches(&payload, &binding));
+        assert!(!closing_hayes_binding_matches(&payload, &binding));
+        for mixed in [(parent.0, target.1, target.2), (target.0, parent.1, target.2), (target.0, target.1, parent.2)] {
+            assert!(!scoped_hayes_binding_matches(&make(mixed), &binding));
+        }
+        binding.admission_kind = Admission::InterruptedReopen;
+        assert!(!scoped_hayes_binding_matches(&payload, &binding));
+    }
+
+    #[test]
     fn contact_catalog52_initialize_inherits_required_hayes_channel_only_for_exact_host() {
         use crate::native_payload::{CONTACT_EMITTER_CARD_TARGET, METRIC_FRAME_TARGET, RECTANGLE_FIXED64_TARGET, FIXED64_PUBLICATION_REPAIR_TARGET, KNOWN_TRACK_AIM_TARGET,
             INSTALLED_CATALOG_ORIGIN_TARGET, VIEWER_BUDGET_TARGET, COMBINED_THUMBNAIL_TARGET, STATIC_DETAIL_PHASE_TARGET};
