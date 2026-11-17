@@ -113,7 +113,14 @@ enum NativeAutomationScene {
               case .object(let marker) = settings, Set(marker.keys) == ["fixture", "purpose", "range"],
               settings["fixture"] == .string("none"), settings["purpose"] == .string("room-base"),
               let range = settings["range"].double, (0.1...50).contains(range) else { throw invalid }
-        guard LightObjectRequest.isRigidTransform(light["transform"]) else { throw invalid }
+        let transform = light["transform"]
+        guard LightObjectRequest.isRigidTransform(transform),
+              let position = transform["position"].items?.compactMap(\.double), position.count == 3,
+              let dimensions = draft.rooms.first(where: { $0["id"].string == roomId })?["dimensions"],
+              let width = dimensions["width"].double, let height = dimensions["height"].double,
+              let depth = dimensions["depth"].double, [width, height, depth].allSatisfy({ $0.isFinite && $0 > 0 }),
+              abs(position[0]) <= width / 2, (0...height).contains(position[1]), abs(position[2]) <= depth / 2
+        else { throw invalid }
         let bindings = try NativeLightFixture.bindings(in: draft.candidate)
         let roomBaseIds = Set(bindings.filter { $0["purpose"] == .string("room-base") }
             .compactMap { $0["lightId"].string?.lowercased() })
