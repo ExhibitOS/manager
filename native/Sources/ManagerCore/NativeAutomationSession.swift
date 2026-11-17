@@ -3676,8 +3676,7 @@ public actor NativeAutomationSession {
                         allowImageRegistration = job.id == jobId && status.coarse != nil
                             && status.validatesReady(intent: intent, preparation: preparation, job: job,
                                                      workspaceID: current.workspaceId, principalID: current.principalId)
-                            && approved.artwork["primaryAssetId"] == .string(full.assetId)
-                            && NativeProductImagePreparationStatus.matchesCanonicalTiers(approved.artwork, full: full, coarse: status.coarse)
+                            && AuthoringAPI.matchesInitialImageApproval(approved.artwork, full: full, coarse: status.coarse)
                     }
                 }
             }

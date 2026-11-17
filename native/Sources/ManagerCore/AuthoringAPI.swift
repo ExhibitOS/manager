@@ -1141,7 +1141,8 @@ public actor AuthoringAPI {
 
     var admitsRoomSupplementalCeilingFill: Bool {
         nativeSession && !authenticationBusy
-            && Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
+            && (Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             && session?.advertisesRoomSupplementalCeilingFill == true
     }
@@ -4422,6 +4423,17 @@ public actor AuthoringAPI {
         return observed
     }
 
+    nonisolated static func matchesInitialImageApproval(
+        _ artwork: DocumentValue, full: NativeProductImagePreparationStatus.Image,
+        coarse: NativeProductImagePreparationStatus.Image?
+    ) -> Bool {
+        artwork["artworkType"] == .string("image")
+            && artwork["extensions"][NativeProductImageThumbnailRepair.thumbnail] != .null
+            && validatesProductImageReplacementInventory(artwork, full: full, coarse: coarse, admitsThumbnail: true)
+            && NativeProductImagePreparationStatus.matchesCanonicalTiers(artwork, full: full, coarse: coarse)
+            && artwork["assets"].items?.filter({ $0["role"] == .string("image") }).count == (coarse == nil ? 1 : 2)
+    }
+
     public func approveFreshImage(_ job: NativeImportJob, request intent: NativeImportIntent,
                                   current artwork: NativeArtwork, workspaceID: String,
                                   expectedFullSHA256: String? = nil, expectedCoarseSHA256: String? = nil) async throws -> NativeArtwork {
@@ -4440,20 +4452,12 @@ public actor AuthoringAPI {
         let approved: NativeArtwork = try await request(prefix + "/artworks/" + identifier(artwork.id) + "/fresh-image-preparations/approve",
             method: "POST", body: encoded(Approval(revision: artwork.revision, jobId: try identifier(job.id))))
         let canonical = try await studioArtwork(artwork.id).artwork
-        let expectedAssets = [full] + (status.coarse.map { [$0] } ?? [])
         guard generation == current, admitsProductImageIntent(preparation), approved.id == artwork.id,
               approved.revision == artwork.revision, approved.approvedRevision == artwork.revision,
               approved.approvedAssetId == full.assetId, approved.metadata == artwork.metadata, !approved.archived,
-              canonical["revision"].integer == Int64(artwork.revision),
-              canonical["primaryAssetId"].string == full.assetId,
-              NativeProductImagePreparationStatus.matchesCanonicalTiers(canonical, full: full, coarse: status.coarse),
-              canonical["assets"].items?.count == expectedAssets.count,
-              expectedAssets.allSatisfy({ expected in
-                  canonical["assets"].items?.contains(where: {
-                      $0["id"].string == expected.assetId && $0["mime"].string == expected.mime
-                          && $0["sha256"].string == expected.sha256 && $0["bytes"].integer == Int64(expected.bytes)
-                  }) == true
-              }) else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
+              canonical["id"] == .string(artwork.id), canonical["revision"].integer == Int64(artwork.revision),
+              Self.matchesInitialImageApproval(canonical, full: full, coarse: status.coarse)
+        else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
         return approved
     }
 
