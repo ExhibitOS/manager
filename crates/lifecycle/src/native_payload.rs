@@ -718,11 +718,30 @@ pub(crate) const R285_HAYES_PREOPEN_TERMINAL_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const R285_GREEK_THUMBNAIL_TARGET: RuntimeTuple = (
+pub(crate) const R285_GREEK_THUMBNAIL_TARGET: RuntimeTuple = (
     "2fd64ad77f99754054ee87c4a656a317520ba232",
     "b8c7c5d8cce0e13b32a64152083256acd5b2d631b65c1303239bb06dff3e9eee",
     "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66",
 );
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const R285_BENCH_AFTER_TERMINAL_TARGET: RuntimeTuple = (
+    "95a6620e587736ee59f239f564a0367c07c52a97",
+    "49fcc58fffc235a8e8d9cd515fe6a6912f18492efb73ce4b812b896811101568",
+    "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn r285_bench_after_terminal_transition(pair: (&str, &str)) -> bool {
+    pair == (R285_GREEK_THUMBNAIL_TARGET.2, R285_BENCH_AFTER_TERMINAL_TARGET.2)
+}
+
+fn r285_bench_after_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == R285_BENCH_AFTER_TERMINAL_TARGET;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 fn r285_greek_thumbnail_transition(pair: (&str, &str)) -> bool {
@@ -736,7 +755,7 @@ pub(crate) fn r285_hayes_preopen_terminal_transition(pair: (&str, &str)) -> bool
 
 pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    { [R285_HAYES_PREOPEN_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_TARGET].contains(&tuple) }
+    { [R285_HAYES_PREOPEN_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_TARGET, R285_BENCH_AFTER_TERMINAL_TARGET].contains(&tuple) }
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -744,6 +763,15 @@ pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)
 pub(crate) const HAYES_PREOPEN_TERMINAL_SCHEMA: (&str, u64, &str) = (
     "platform/database/native-hayes-preopen-terminal/054_hayes_preopen_terminal.sql",
     5118, "1adf273344e8382fa69cfa3eb76c1ba0555d91564351854a85fc1a2bc3520664",
+);
+const BENCH_AFTER_TERMINAL_DIRECTORY: &str = "platform/database/native-workspace-bench-after-terminal/";
+const BENCH_AFTER_TERMINAL_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-workspace-bench-after-terminal/055_workspace_bench_after_terminal.sql",
+    1940, "edcea85028a3411e519d8ea45d160ecdc7bd76afbe42a088484d18d41b23a5a4",
+);
+const BENCH_AFTER_TERMINAL_MARKER: (&str, u64, &str) = (
+    "platform/scripts/native-workspace-bench-after-terminal-capability-v1.json",
+    261, "6d09fb1833bf4cd45adcd59bf638d26d730b5a0250278125f636a4024fd4ecb4",
 );
 const HAYES_PREOPEN_TERMINAL_MARKER: (&str, u64, &str) = (
     "platform/scripts/native-hayes-preopen-terminal-capability-v1.json",
@@ -1885,6 +1913,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || R285_CLOSING_ARTICULATION_TARGET.2 == manifest
         || R285_HAYES_PREOPEN_TERMINAL_TARGET.2 == manifest
         || R285_GREEK_THUMBNAIL_TARGET.2 == manifest
+        || R285_BENCH_AFTER_TERMINAL_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -1951,6 +1980,7 @@ impl FurnishingTransition {
             || r285_closing_articulation_clean_transition((self.source().2, self.target().2))
             || r285_hayes_preopen_terminal_transition((self.source().2, self.target().2))
             || r285_greek_thumbnail_transition((self.source().2, self.target().2))
+            || r285_bench_after_terminal_transition((self.source().2, self.target().2))
             || matches!(self, Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }
             if (source == COMBINED_THUMBNAIL_TARGET && target == STATIC_DETAIL_PHASE_TARGET)
                 || (source == STATIC_DETAIL_PHASE_TARGET && target == CONTACT_EMITTER_CARD_TARGET)
@@ -1978,6 +2008,10 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if r285_bench_after_terminal_transition(pair) {
+            return Some(Self::SameCatalog { source: R285_GREEK_THUMBNAIL_TARGET, target: R285_BENCH_AFTER_TERMINAL_TARGET,
+                catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+        }
         if r285_greek_thumbnail_transition(pair) {
             return Some(Self::SameCatalog { source: R285_HAYES_PREOPEN_TERMINAL_TARGET, target: R285_GREEK_THUMBNAIL_TARGET,
                 catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -3401,6 +3435,35 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), expected);
         assert!(!r285_hayes_preopen_terminal_transition(pair));
         for denied in [(pair.1, pair.0), (pair.1, pair.1), (R285_CLOSING_ARTICULATION_TARGET.2, pair.1)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        assert!(Payload::open_workspace_v5_validation(&successor, false).is_ok());
+        assert!(Payload::open_fresh_workspace_v7_validation(&successor).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the sealed 7ddbfcc8 and 927367b6 payloads"]
+    fn r285_bench_after_terminal_is_only_a_saved_forward_055_refresh() {
+        let parent = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_GREEK_THUMBNAIL_RUNTIME").unwrap());
+        let successor = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_BENCH_AFTER_TERMINAL_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&parent).unwrap();
+        let target = Payload::open_saved_workspace_transition(&successor).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(source.hayes_preopen_terminal() && target.hayes_preopen_terminal());
+        assert!(!source.bench_after_terminal() && target.bench_after_terminal());
+        let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
+        let step = FurnishingTransition::from_manifests(pair).unwrap();
+        assert!(step.is_combined_thumbnail_runtime_refresh());
+        let parent_ledger = source.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(parent_ledger.lines().count(), 48);
+        assert_eq!(target.workspace_furnishing_ledger(catalog).unwrap(),
+            format!("{parent_ledger}\n055_workspace_bench_after_terminal.sql|{}", BENCH_AFTER_TERMINAL_SCHEMA.2));
+        assert_eq!(crate::native_personal::physical_checkpoint::transition_source_ledger(&target, step).unwrap(), parent_ledger);
+        for denied in [(pair.1, pair.0), (pair.1, pair.1), (R285_HAYES_PREOPEN_TERMINAL_TARGET.2, pair.1),
+            (BENCH_BASECOLOR_PREPARATION_TARGET.2, pair.1)] {
             assert!(!saved_workspace_transition_supported(denied));
         }
         assert!(Payload::open_workspace_v5_validation(&successor, false).is_ok());
@@ -7059,9 +7122,12 @@ impl Payload {
         let pre_ready_preservation = self.catalog45_pre_ready_preservation_validation();
         let pre_ready_hayes_preservation = self.catalog45_pre_ready_hayes_preservation_validation();
         let bench_basecolor_pinned = bench_basecolor_preparation_host_matches(tuple);
+        let bench_after_terminal = r285_bench_after_terminal_host_matches(tuple);
         for ((path, bytes, sha), expected) in [
             (BENCH_BASECOLOR_PREPARATION_MARKER, bench_basecolor_pinned),
             (BENCH_BASECOLOR_PREPARATION_SCHEMA, bench_basecolor_pinned),
+            (BENCH_AFTER_TERMINAL_MARKER, bench_after_terminal),
+            (BENCH_AFTER_TERMINAL_SCHEMA, bench_after_terminal),
             (CATALOG45_RECOVERY_CAPABILITY, self.catalog45_recovery_validation() && !selected_recovery && !retained_recovery && !pre_ready_preservation && !pre_ready_hayes_preservation),
             (CATALOG45_SELECTED_RECOVERY_CAPABILITY, selected_recovery),
             (CATALOG45_RETAINED_IMAGE_RECOVERY_CAPABILITY, retained_recovery),
@@ -7281,6 +7347,23 @@ impl Payload {
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn bench_after_terminal_source_ledger(&self) -> Result<String> {
+        if !self.bench_after_terminal() { return Err(invalid()); }
+        let ledger = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052)?;
+        let (parent, successor) = ledger.rsplit_once('\n').ok_or_else(invalid)?;
+        if parent.lines().count() != 48
+            || successor != format!("055_workspace_bench_after_terminal.sql|{}", BENCH_AFTER_TERMINAL_SCHEMA.2)
+        {
+            return Err(invalid());
+        }
+        Ok(parent.to_owned())
+    }
+
+    pub(crate) fn bench_after_terminal(&self) -> bool {
+        r285_bench_after_terminal_host_matches((&self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn hayes_preopen_source_ledger(&self) -> Result<String> {
         if !self.hayes_preopen_terminal() { return Err(invalid()); }
         let ledger = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052)?;
@@ -7308,6 +7391,7 @@ impl Payload {
             && bench_basecolor_preparation_host_matches((
                 &self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256,
             ));
+        let bench_after_terminal = catalog == WorkspaceFurnishingCatalog::CombinedThumbnails052 && self.bench_after_terminal();
         let mut rows = std::collections::BTreeMap::new();
         for file in &self.manifest.files {
             let Some((directory, name)) = file.path.strip_prefix("platform/database/").and_then(|path| path.split_once('/')) else {
@@ -7323,6 +7407,7 @@ impl Payload {
                 && file.path != CURRENT_IMAGE_THUMBNAIL_SCHEMA.0 && file.path != FURNISHING_THUMBNAIL_SCHEMA.0
                 && !(bench_basecolor && file.path == BENCH_BASECOLOR_PREPARATION_SCHEMA.0)
                 && !(self.hayes_preopen_terminal() && file.path == HAYES_PREOPEN_TERMINAL_SCHEMA.0)
+                && !(bench_after_terminal && file.path == BENCH_AFTER_TERMINAL_SCHEMA.0)
             { return Err(invalid()); }
             if catalog == WorkspaceFurnishingCatalog::CurrentImageThumbnail051
                 && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
@@ -7437,6 +7522,12 @@ impl Payload {
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 54
+            } else if file.path.starts_with(BENCH_AFTER_TERMINAL_DIRECTORY) {
+                let (path, bytes, hash) = BENCH_AFTER_TERMINAL_SCHEMA;
+                if !bench_after_terminal || file.path != path || file.bytes != Some(bytes)
+                    || file.sha256.as_deref() != Some(hash)
+                { return Err(invalid()); }
+                55
             } else if file.path.starts_with(CURRENT_IMAGE_THUMBNAIL_DIRECTORY) {
                 let (path, bytes, hash) = CURRENT_IMAGE_THUMBNAIL_SCHEMA;
                 if !matches!(catalog, WorkspaceFurnishingCatalog::CurrentImageThumbnail051 | WorkspaceFurnishingCatalog::CombinedThumbnails052 | WorkspaceFurnishingCatalog::CurrentRail053)
@@ -7479,7 +7570,9 @@ impl Payload {
         }
         // These isolated catalogs append one migration to 045.
         let count = match catalog {
-            WorkspaceFurnishingCatalog::CombinedThumbnails052 => if bench_basecolor || self.hayes_preopen_terminal() { 48 } else { 47 },
+            WorkspaceFurnishingCatalog::CombinedThumbnails052 if bench_after_terminal => 49,
+            WorkspaceFurnishingCatalog::CombinedThumbnails052 if bench_basecolor || self.hayes_preopen_terminal() => 48,
+            WorkspaceFurnishingCatalog::CombinedThumbnails052 => 47,
             WorkspaceFurnishingCatalog::CurrentRail053 => 48,
             WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048
                 | WorkspaceFurnishingCatalog::GpuModelPreparation049 | WorkspaceFurnishingCatalog::FurnishingThumbnail050

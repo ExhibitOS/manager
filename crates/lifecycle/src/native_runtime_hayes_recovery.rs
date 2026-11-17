@@ -67,13 +67,15 @@ impl Session {
 
         let runtime = self.payload.context();
         let greek_web_successor = self.payload.r285_greek_thumbnail_outcome();
-        let predecessor = if greek_web_successor {
+        let bench_successor = self.payload.bench_after_terminal();
+        let predecessor = if greek_web_successor || bench_successor {
             crate::native_payload::R285_HAYES_PREOPEN_TERMINAL_TARGET.2
         } else if self.scoped_hayes_binding_available() {
             runtime.manifest_sha256.as_str()
         } else {
             crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST
         };
+        let greek_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_TARGET.2;
         let sql = format!(
             "SELECT json_build_object('systemId',db.system_id,'databaseOid',db.database_oid,
                       'attemptId',r.attempt_id,'receiptId',r.disposition_id,'receiptSha256',r.receipt_sha256,
@@ -96,9 +98,12 @@ impl Session {
                 AND v.state='approved' AND v.deleted_at IS NULL AND v.sha256='{display}' AND v.rights_id=o.rights_id
                 AND rights.deleted_at IS NULL AND rights.metadata=j.rights AND j.rights=w.metadata->'rights'
                 AND w.metadata->'displayReference'->>'assetSha256'='{display}'
-                AND r.runtime_manifest_sha256 IN ('{manifest}','{predecessor}')
+                AND (r.runtime_manifest_sha256 IN ('{manifest}','{predecessor}')
+                    OR ({bench_successor} AND r.runtime_manifest_sha256='{greek_manifest}'))
                 AND (NOT {require_prior_approval} OR (
-                    (r.runtime_manifest_sha256='{predecessor}' OR ({greek_web_successor} AND r.runtime_manifest_sha256='{manifest}'))
+                    (r.runtime_manifest_sha256='{predecessor}'
+                        OR ({greek_web_successor} AND r.runtime_manifest_sha256='{manifest}')
+                        OR ({bench_successor} AND r.runtime_manifest_sha256 IN ('{manifest}','{greek_manifest}')))
                     AND EXISTS (
                         SELECT 1 FROM artwork_approvals approved
                          WHERE (approved.tenant_id,approved.artwork_id,approved.revision,approved.asset_id)
@@ -116,6 +121,7 @@ impl Session {
             job=binding.job_id, artwork=binding.artwork_id, historical_revision=binding.artwork_revision,
             display=display, manifest=runtime.manifest_sha256,
             predecessor=predecessor, greek_web_successor=greek_web_successor,
+            bench_successor=bench_successor, greek_manifest=greek_manifest,
             require_prior_approval=text_successor || finished_artwork.is_some(),
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );

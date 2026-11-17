@@ -2165,6 +2165,34 @@ impl Session {
         self.verify_furnishing_ledger_before(Instant::now() + Duration::from_secs(60))
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn check_bench_after_terminal_parent(&mut self) -> Result<()> {
+        let refused = || err("FURNISHING_RECOVERY_UNAVAILABLE");
+        let binding = self.active_furnishing_binding().ok_or_else(refused)?;
+        if self.transition_fence.is_none() || binding.admission_kind != Admission::CleanReopen || binding.restore.is_some() {
+            return Err(refused());
+        }
+        let owner = &binding.owner;
+        let mut sql = include_str!("native_runtime_bench_after_terminal.sql").to_owned();
+        for (placeholder, id) in [
+            ("@TENANT@", &owner.tenant_id),
+            ("@WORKSPACE@", &owner.workspace_id),
+            ("@PRINCIPAL@", &owner.principal_id),
+        ] {
+            if !oex_preflight_frames::uuid(id) { return Err(refused()); }
+            sql = sql.replace(placeholder, &format!("'{id}'::uuid"));
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let parent = self.payload.bench_after_terminal_source_ledger()?;
+        if self.query_database_before("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name", deadline)? != parent
+            || self.query_database_before("exhibitos", &sql, deadline)? != "f"
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
     fn verify_furnishing_ledger_before(&mut self, deadline: Instant) -> Result<()> {
         let catalog = self.payload.workspace_furnishing_catalog()?.ok_or_else(|| err("NATIVE_RUNTIME_UNQUALIFIED"))?;
         let expected = self.payload.workspace_furnishing_ledger(catalog)?;
@@ -3089,6 +3117,11 @@ const { isDeepStrictEqual } = require('node:util');
             // Ordinary reopen has no selected owner channel or claim.
             self.check_oex_catalog_ledger(version.into())?;
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let bench_after_terminal_trial = self.furnishing_transition_trial.as_ref().is_some_and(|(_, transition)|
+            crate::native_payload::r285_bench_after_terminal_transition((transition.source().2, transition.target().2)));
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let bench_after_terminal_trial = false;
         if furnishing == Some(FurnishingStart::Reopen) {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             let retained_hayes_trial = self.retained_hayes_trial.is_some();
@@ -3097,6 +3130,9 @@ const { isDeepStrictEqual } = require('node:util');
             if retained_hayes_trial {
                 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                 self.check_hayes_preopen_parent()?;
+            } else if bench_after_terminal_trial {
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                self.check_bench_after_terminal_parent()?;
             } else {
                 self.verify_workspace_furnishing_ledger()?;
             }
@@ -3495,7 +3531,9 @@ const { isDeepStrictEqual } = require('node:util');
                 );
                 if ready.ready {
                     if let Some(start) = furnishing {
-                        if start != FurnishingStart::Reopen { self.verify_workspace_furnishing_ledger()?; }
+                        if start != FurnishingStart::Reopen || bench_after_terminal_trial {
+                            self.verify_workspace_furnishing_ledger()?;
+                        }
                         if !start.is_selected_import() { self.check_workspace_furnishing_channel()?; }
                         if !start.opens_existing() {
                             fs::remove_file(self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))
