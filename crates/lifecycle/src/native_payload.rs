@@ -746,8 +746,16 @@ const R285_GREEK_THUMBNAIL_TRACE_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET: RuntimeTuple = (
+    "99aeab19236572c77385d061aad927f860fdf3cd",
+    "3c7f31e8befe39f8c6bfcba1e491008dae23ad942148373310d637f05ea3efe4",
+    "543a53076964d4aac417dad5c56615e04bbe31e222f9c6d0e59d19173b2279da",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn r285_greek_thumbnail_trace_transition(pair: (&str, &str)) -> bool {
     pair == (R285_GREEK_THUMBNAIL_V2_TARGET.2, R285_GREEK_THUMBNAIL_TRACE_TARGET.2)
+        || pair == (R285_GREEK_THUMBNAIL_TRACE_TARGET.2, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET.2)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -762,7 +770,8 @@ pub(crate) fn r285_bench_after_terminal_transition(pair: (&str, &str)) -> bool {
 
 fn r285_bench_after_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return [R285_BENCH_AFTER_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_V2_TARGET, R285_GREEK_THUMBNAIL_TRACE_TARGET].contains(&tuple);
+    return [R285_BENCH_AFTER_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_V2_TARGET,
+        R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -779,7 +788,8 @@ pub(crate) fn r285_hayes_preopen_terminal_transition(pair: (&str, &str)) -> bool
 
 pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    { [R285_HAYES_PREOPEN_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_TARGET, R285_BENCH_AFTER_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_V2_TARGET, R285_GREEK_THUMBNAIL_TRACE_TARGET].contains(&tuple) }
+    { [R285_HAYES_PREOPEN_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_TARGET, R285_BENCH_AFTER_TERMINAL_TARGET,
+        R285_GREEK_THUMBNAIL_V2_TARGET, R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET].contains(&tuple) }
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -1940,6 +1950,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || R285_BENCH_AFTER_TERMINAL_TARGET.2 == manifest
         || R285_GREEK_THUMBNAIL_V2_TARGET.2 == manifest
         || R285_GREEK_THUMBNAIL_TRACE_TARGET.2 == manifest
+        || R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -2037,8 +2048,12 @@ impl FurnishingTransition {
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
         if r285_greek_thumbnail_trace_transition(pair) {
-            return Some(Self::SameCatalog { source: R285_GREEK_THUMBNAIL_V2_TARGET, target: R285_GREEK_THUMBNAIL_TRACE_TARGET,
-                catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
+            let (source, target) = if pair.0 == R285_GREEK_THUMBNAIL_V2_TARGET.2 {
+                (R285_GREEK_THUMBNAIL_V2_TARGET, R285_GREEK_THUMBNAIL_TRACE_TARGET)
+            } else {
+                (R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET)
+            };
+            return Some(Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
         }
         if r285_greek_thumbnail_v2_transition(pair) {
             return Some(Self::SameCatalog { source: R285_BENCH_AFTER_TERMINAL_TARGET, target: R285_GREEK_THUMBNAIL_V2_TARGET,
@@ -3554,6 +3569,34 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), expected);
         assert!(!r285_greek_thumbnail_v2_transition(pair));
         for denied in [(pair.1, pair.0), (pair.1, pair.1), (R285_GREEK_THUMBNAIL_TARGET.2, pair.1)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        assert!(Payload::open_workspace_v5_validation(&successor, false).is_ok());
+        assert!(Payload::open_fresh_workspace_v7_validation(&successor).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires exact sealed 055 trace and abort-observation payloads"]
+    fn r285_greek_thumbnail_trace_abort_is_only_a_saved_forward_055_refresh() {
+        let parent = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_GREEK_THUMBNAIL_TRACE_RUNTIME").unwrap());
+        let successor = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R285_GREEK_THUMBNAIL_TRACE_ABORT_RUNTIME").unwrap());
+        let source = Payload::open_saved_workspace_transition(&parent).unwrap();
+        let target = Payload::open_saved_workspace_transition(&successor).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!(source.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(target.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(source.bench_after_terminal() && target.bench_after_terminal());
+        assert!(source.hayes_preopen_terminal() && target.hayes_preopen_terminal());
+        assert!(source.thumbnail_preview_trace_supported() && target.thumbnail_preview_trace_supported());
+        assert_eq!(source.thumbnail_preview_trace_predecessor(), None);
+        assert_eq!(target.thumbnail_preview_trace_predecessor(), Some(source.manifest_sha256.as_str()));
+        let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
+        let step = FurnishingTransition::from_manifests(pair).unwrap();
+        let expected = crate::native_personal::physical_checkpoint::transition_source_ledger(&target, step).unwrap();
+        assert_eq!(expected.lines().count(), 49);
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(), expected);
+        for denied in [(pair.1, pair.0), (pair.1, pair.1), (R285_GREEK_THUMBNAIL_V2_TARGET.2, pair.1)] {
             assert!(!saved_workspace_transition_supported(denied));
         }
         assert!(Payload::open_workspace_v5_validation(&successor, false).is_ok());
@@ -7466,8 +7509,14 @@ impl Payload {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_preview_trace_supported(&self) -> bool {
-        (self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str())
-            == R285_GREEK_THUMBNAIL_TRACE_TARGET
+        [R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET]
+            .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn thumbnail_preview_trace_predecessor(&self) -> Option<&'static str> {
+        ((self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str())
+            == R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET).then_some(R285_GREEK_THUMBNAIL_TRACE_TARGET.2)
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
