@@ -50,11 +50,12 @@ impl Session {
             .is_some_and(|binding| closing_hayes_binding_matches(&self.payload, binding))
     }
 
+    // Durable receipt recovery remains available after execution consumes
+    // the authenticated one-use Hayes channel. Execution still requires Issued.
     pub(super) fn ordinary_hayes_release_binding_available(&self) -> bool {
         (self.payload.ordinary_hayes_release()
             && self.active_furnishing_binding().is_some_and(|binding| binding.catalog == 44))
-            || (self.closing_hayes_binding_available()
-                && matches!(self.hayes_bootstrap, HayesBootstrap::Issued(_)))
+            || self.closing_hayes_binding_available()
     }
 
     pub(crate) fn ordinary_hayes_available(&self) -> bool {
