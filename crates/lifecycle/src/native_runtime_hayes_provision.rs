@@ -2,6 +2,7 @@
 //! Persistent local custody chosen from the effective user's OS account.
 
 use super::*;
+use crate::native_runtime::LocalAuthority;
 use std::{
     os::unix::fs::DirBuilderExt,
 };
