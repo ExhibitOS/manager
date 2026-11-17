@@ -78,6 +78,9 @@ struct Bootstrap<'a> {
     workspace: &'a LocalAuthority,
     owner_channel: FreshOwnerBinding<'a>,
     hayes_owner_channel: Pin<'a>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnail_preview_trace: Option<super::super::thumbnail_preview_trace::Bootstrap>,
 }
 
 #[derive(Serialize)]
@@ -146,6 +149,20 @@ impl HayesSetup {
         start: FurnishingStart,
         ordinary_secret: &str,
     ) -> Result<Vec<u8>> {
+        self.bootstrap_with_thumbnail_trace(auth, generation, start, ordinary_secret,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            None)
+    }
+
+    pub(super) fn bootstrap_with_thumbnail_trace(
+        &self, auth: &LocalAuthority, generation: &str, start: FurnishingStart, ordinary_secret: &str,
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        thumbnail_preview_trace: Option<super::super::thumbnail_preview_trace::Bootstrap>,
+    ) -> Result<Vec<u8>> {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if thumbnail_preview_trace.is_some() && (!self.pin.hayes_preopen_selected || start != FurnishingStart::Reopen) {
+            return Err(unavailable());
+        }
         if !matches!(start, FurnishingStart::Initialize | FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045) {
             return Err(unavailable());
         }
@@ -161,6 +178,8 @@ impl HayesSetup {
                 mode: start.owner_mode(),
             },
             hayes_owner_channel: self.bootstrap_pin(generation, ordinary_secret)?,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            thumbnail_preview_trace,
         })
         .map_err(|_| unavailable())?;
         if bytes.len() > 4096 {

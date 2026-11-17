@@ -42,6 +42,8 @@ pub fn selected_oex_format_v7_validation(resources: &Path, input_fd: i32, cancel
 #[path = "native_runtime_oex_materializer_protocol.rs"] mod oex_materializer_protocol;
 #[path = "native_runtime_oex_materializer.rs"] mod oex_materializer;
 #[path = "native_runtime_owner_channel.rs"] mod owner_channel;
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[path = "native_runtime_thumbnail_preview_trace.rs"] pub(crate) mod thumbnail_preview_trace;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
 #[path = "native_runtime_owner_inspection_sql.rs"] mod owner_inspection_sql;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
@@ -1288,6 +1290,12 @@ pub struct Session {
     hayes_owner_connection: Option<owner_channel::Connection>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     hayes_bootstrap: HayesBootstrap,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    thumbnail_preview_trace_id: Option<Uuid>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    thumbnail_preview_trace_reader: Option<thumbnail_preview_trace::Reader>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    thumbnail_preview_trace_report: Option<thumbnail_preview_trace::Report>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     retained_hayes: Option<RetainedHayes>,
     #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -1768,6 +1776,12 @@ impl Session {
             hayes_owner_connection: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             hayes_bootstrap: HayesBootstrap::Disabled,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            thumbnail_preview_trace_id: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            thumbnail_preview_trace_reader: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            thumbnail_preview_trace_report: None,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             retained_hayes: None,
             #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2163,6 +2177,34 @@ impl Session {
 
     fn verify_workspace_furnishing_ledger(&mut self) -> Result<()> {
         self.verify_furnishing_ledger_before(Instant::now() + Duration::from_secs(60))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn check_bench_after_terminal_parent(&mut self) -> Result<()> {
+        let refused = || err("FURNISHING_RECOVERY_UNAVAILABLE");
+        let binding = self.active_furnishing_binding().ok_or_else(refused)?;
+        if self.transition_fence.is_none() || binding.admission_kind != Admission::CleanReopen || binding.restore.is_some() {
+            return Err(refused());
+        }
+        let owner = &binding.owner;
+        let mut sql = include_str!("native_runtime_bench_after_terminal.sql").to_owned();
+        for (placeholder, id) in [
+            ("@TENANT@", &owner.tenant_id),
+            ("@WORKSPACE@", &owner.workspace_id),
+            ("@PRINCIPAL@", &owner.principal_id),
+        ] {
+            if !oex_preflight_frames::uuid(id) { return Err(refused()); }
+            sql = sql.replace(placeholder, &format!("'{id}'::uuid"));
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let parent = self.payload.bench_after_terminal_source_ledger()?;
+        if self.query_database_before("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name", deadline)? != parent
+            || self.query_database_before("exhibitos", &sql, deadline)? != "f"
+        {
+            return Err(refused());
+        }
+        Ok(())
     }
 
     fn verify_furnishing_ledger_before(&mut self, deadline: Instant) -> Result<()> {
@@ -3089,6 +3131,11 @@ const { isDeepStrictEqual } = require('node:util');
             // Ordinary reopen has no selected owner channel or claim.
             self.check_oex_catalog_ledger(version.into())?;
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let bench_after_terminal_trial = self.furnishing_transition_trial.as_ref().is_some_and(|(_, transition)|
+            crate::native_payload::r285_bench_after_terminal_transition((transition.source().2, transition.target().2)));
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let bench_after_terminal_trial = false;
         if furnishing == Some(FurnishingStart::Reopen) {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             let retained_hayes_trial = self.retained_hayes_trial.is_some();
@@ -3097,6 +3144,9 @@ const { isDeepStrictEqual } = require('node:util');
             if retained_hayes_trial {
                 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                 self.check_hayes_preopen_parent()?;
+            } else if bench_after_terminal_trial {
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                self.check_bench_after_terminal_parent()?;
             } else {
                 self.verify_workspace_furnishing_ledger()?;
             }
@@ -3375,6 +3425,19 @@ const { isDeepStrictEqual } = require('node:util');
             owner_setup = Some(owner_setup.take().ok_or_else(|| err("NATIVE_MODEL_ADOPTION_UNAVAILABLE"))?
                 .with_model_adoption(generation, &self.payload.context().manifest_sha256, &self.service.root, payload_root)?);
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if let Some(id) = self.thumbnail_preview_trace_id.take() {
+            if !personal || furnishing != Some(FurnishingStart::Reopen)
+                || !self.active_furnishing_binding().is_some_and(|binding|
+                    binding.admission_kind == Admission::CleanReopen && binding.restore.is_none())
+            {
+                return Err(err(thumbnail_preview_trace::ERROR));
+            }
+            let (reader, writer) = thumbnail_preview_trace::pipe(id)?;
+            owner_setup = Some(owner_setup.take().ok_or_else(|| err(thumbnail_preview_trace::ERROR))?
+                .with_thumbnail_preview_trace(writer)?);
+            self.thumbnail_preview_trace_reader = Some(reader);
+        }
         let script = self.payload.script();
         #[cfg(all(test, feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
         let script = match (self.payload.hayes_session_probe_script()?, self.hayes_probe_source.take()) {
@@ -3495,7 +3558,9 @@ const { isDeepStrictEqual } = require('node:util');
                 );
                 if ready.ready {
                     if let Some(start) = furnishing {
-                        if start != FurnishingStart::Reopen { self.verify_workspace_furnishing_ledger()?; }
+                        if start != FurnishingStart::Reopen || bench_after_terminal_trial {
+                            self.verify_workspace_furnishing_ledger()?;
+                        }
                         if !start.is_selected_import() { self.check_workspace_furnishing_channel()?; }
                         if !start.opens_existing() {
                             fs::remove_file(self.service.root.join(WORKSPACE_FURNISHING_INITIALIZATION))
@@ -4422,11 +4487,34 @@ const { isDeepStrictEqual } = require('node:util');
                 self.furnishing_writer_lifetime = None;
                 if self.transition_fence.is_none() { self.guard = None; }
             }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if let Some(reader) = self.thumbnail_preview_trace_reader.take() {
+                if self.state == "stopped" && self.furnishing_clean_checked && self.exits.get("node") == Some(&0) {
+                    self.thumbnail_preview_trace_report = reader.collect();
+                }
+            }
             self.local_authority = None;
             return Ok(true);
         }
         if changed { let _ = self.record(); }
         Ok(false)
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn arm_thumbnail_preview_trace(&mut self, request_id: &str) -> Result<()> {
+        if self.job_id.is_some() || self.thumbnail_preview_trace_id.is_some()
+            || !self.payload.thumbnail_preview_trace_supported()
+        {
+            return Err(err(thumbnail_preview_trace::ERROR));
+        }
+        self.thumbnail_preview_trace_id = Some(thumbnail_preview_trace::request_id(request_id)
+            .ok_or_else(|| err(thumbnail_preview_trace::ERROR))?);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn thumbnail_preview_trace_report(&self) -> Option<thumbnail_preview_trace::Report> {
+        self.thumbnail_preview_trace_report.clone()
     }
 
     pub fn stop(&mut self) -> Result<Context> {

@@ -4,23 +4,44 @@ import Foundation
 import WebKit
 
 struct NativeThumbnailPageFailure: Error, Decodable {
+    enum Version: Int, Decodable {
+        case phase = 1, previewStep = 2
+
+        var invocation: String {
+            switch self {
+            case .phase: "return await window.exhibitosViewport.thumbnailOutcomeV1(JSON.parse(requestJSON));"
+            case .previewStep: "return await window.exhibitosViewport.thumbnailOutcomeV2(JSON.parse(requestJSON));"
+            }
+        }
+    }
+
     enum Phase: String, Decodable {
         case request, queue, authorization, preview, decode, render, encode, verification
     }
     enum Outcome: String, Decodable {
         case timeout, cancelled, busy, rejected, failed
     }
-    let version: Int
+    enum PreviewStep: String, Decodable {
+        case metadata, headers, body, digest
+    }
+
+    let version: Version
     let phase: Phase
     let outcome: Outcome
+    let previewStep: PreviewStep?
 
-    static func checked(in response: [String: Any]) throws -> Self? {
+    static func checked(in response: [String: Any], version: Version) throws -> Self? {
         guard let value = response["thumbnailFailure"] else { return nil }
         guard response.count == 1, let fields = value as? [String: Any],
-              Set(fields.keys) == ["version", "phase", "outcome"],
               JSONSerialization.isValidJSONObject(fields),
               let decoded = try? JSONDecoder().decode(Self.self, from: JSONSerialization.data(withJSONObject: fields)),
-              decoded.version == 1 else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+              decoded.version == version else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        var allowed: Set<String> = ["version", "phase", "outcome"]
+        if version == .previewStep && decoded.phase == .preview {
+            allowed.insert("previewStep")
+            guard decoded.previewStep != nil else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        }
+        guard Set(fields.keys) == allowed else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
         return decoded
     }
 }
@@ -32,6 +53,7 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
     private var web: WKWebView?
     private var page: URL?
     private var failed = false
+    private(set) var previewTrace: NativeThumbnailPreviewTrace.WebReadback?
 
     func cancel() {
         failed = true
@@ -42,7 +64,7 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
     }
 
     func render(credentials: LocalAuthoringSession, frame: ViewportFrame,
-                artworkId: String, revision: Int) async throws -> (ViewportThumbnailRequest, ViewportThumbnailReply) {
+                artworkId: String, revision: Int, previewTraceRequestID: String? = nil) async throws -> (ViewportThumbnailRequest, ViewportThumbnailReply) {
         guard web == nil, let page = URL(string: credentials.origin + "/native-viewport.html"),
               page.scheme == "http", page.host == "127.0.0.1", page.user == nil, page.password == nil,
               let port = page.port, port >= 1024,
@@ -54,6 +76,8 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        // This operation-owned view runs its renderer without joining a window.
+        configuration.preferences.inactiveSchedulingPolicy = .none
         let rules = try ViewportResourcePolicy.encodedRules(origin: credentials.origin, tenantId: frame.tenantId)
         let name = "ExhibitOSThumbnail-" + UUID().uuidString
         let rule = try await WKContentRuleListStore.default().compileContentRuleList(forIdentifier: name, encodedContentRuleList: rules)
@@ -91,12 +115,19 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
         guard let fields = accepted as? [String: Any], JSONSerialization.isValidJSONObject(fields) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
         let acceptance = try JSONDecoder().decode(ViewportAcceptance.self, from: JSONSerialization.data(withJSONObject: fields))
         guard acceptance.accepted, acceptance.supportsRenderedArtworkThumbnail else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
-        let request = try ViewportThumbnailRequest(frame: frame, artworkId: artworkId, expectedRevision: revision)
+        if previewTraceRequestID != nil, !acceptance.supportsArtworkThumbnailPreviewTrace {
+            throw AuthoringFailure("CATALOG_THUMBNAIL_TRACE_UNAVAILABLE")
+        }
+        let request = try ViewportThumbnailRequest(frame: frame, artworkId: artworkId, expectedRevision: revision,
+            requestID: previewTraceRequestID ?? UUID().uuidString.lowercased())
         let json = String(decoding: try JSONEncoder().encode(request), as: UTF8.self)
         let response: Any?
-        if acceptance.supportsArtworkThumbnailOutcome {
+        let outcomeVersion = acceptance.artworkThumbnailOutcomeVersion
+        if let outcomeVersion {
             do {
-                response = try await web.callAsyncJavaScript("return await window.exhibitosViewport.thumbnailOutcomeV1(JSON.parse(requestJSON));", arguments: ["requestJSON": json], in: nil, contentWorld: .page)
+                let invocation = previewTraceRequestID == nil ? outcomeVersion.invocation
+                    : "return await window.exhibitosViewport.thumbnailPreviewTraceV1(JSON.parse(requestJSON));"
+                response = try await web.callAsyncJavaScript(invocation, arguments: ["requestJSON": json], in: nil, contentWorld: .page)
             } catch {
                 try Task.checkCancellation()
                 guard !failed else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
@@ -107,8 +138,15 @@ final class NativeThumbnailRenderer: NSObject, WKNavigationDelegate {
         }
         try Task.checkCancellation()
         guard !failed else { throw AuthoringFailure("CATALOG_PREVIEW_UNAVAILABLE") }
-        guard let fields = response as? [String: Any] else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
-        if acceptance.supportsArtworkThumbnailOutcome, let failure = try NativeThumbnailPageFailure.checked(in: fields) {
+        guard var fields = response as? [String: Any] else { throw AuthoringFailure("CATALOG_PREVIEW_INVALID") }
+        if let previewTraceRequestID {
+            guard Set(fields.keys) == ["result", "trace"], let result = fields["result"] as? [String: Any] else {
+                throw AuthoringFailure("CATALOG_PREVIEW_INVALID")
+            }
+            previewTrace = NativeThumbnailPreviewTrace.webTrace(fields["trace"], requestID: previewTraceRequestID)
+            fields = result
+        }
+        if let outcomeVersion, let failure = try NativeThumbnailPageFailure.checked(in: fields, version: outcomeVersion) {
             throw failure
         }
         guard let png = fields["pngBase64"] as? String,

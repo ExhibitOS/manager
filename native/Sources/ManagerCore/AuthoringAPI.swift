@@ -1171,9 +1171,19 @@ public actor AuthoringAPI {
 
     static let r285SettledHayesRuntime = "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f"
 
+    static let r285GreekThumbnailTraceRuntime = "c564d2babb40d15a98ac5beacc613923fb5bef535f790fc518eb6173d924eeff"
+    static let r285GreekThumbnailTraceAbortRuntime = "543a53076964d4aac417dad5c56615e04bbe31e222f9c6d0e59d19173b2279da"
+    static let r285GreekThumbnailPreviewOverlapRuntime = "9654109e975499f1d95457fed58bb80dbc1079c3febed82eaa1117811120080a"
+    static let r285GreekThumbnailAllowanceRuntime = "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2"
+    static let r285GreekThumbnailV2Runtime = "d8922986b59f04227936a391c22a72cc689a35042e590b903482385395b73ae0"
+    static let r285BenchAfterTerminalRuntime = "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132"
+    static let r285GreekThumbnailOutcomeRuntime = "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66"
+
     nonisolated static func supportsR285SettledHayesRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        manifest == r285SettledHayesRuntime
+        [r285SettledHayesRuntime, r285GreekThumbnailOutcomeRuntime, r285BenchAfterTerminalRuntime,
+         r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime,
+         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime].contains(manifest)
         #else
         false
         #endif
@@ -1220,6 +1230,8 @@ public actor AuthoringAPI {
          r285InitialProductImageRuntime,
          r285ClosingArticulationRuntime,
          r285SettledHayesRuntime,
+         r285GreekThumbnailOutcomeRuntime, r285BenchAfterTerminalRuntime, r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime,
+         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -3265,19 +3277,45 @@ public actor AuthoringAPI {
     }
 
     nonisolated static func supportsBenchBaseColorPreparationRuntime(manifest: String) -> Bool {
-        #if DEBUG
+        #if DEBUG && os(macOS)
+        [r285BenchAfterTerminalRuntime, r285GreekThumbnailV2Runtime,
+         r285GreekThumbnailTraceRuntime, r285GreekThumbnailTraceAbortRuntime,
+         r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime].contains(manifest)
+            || manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
+        #elseif DEBUG
         manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
         #else
         false
         #endif
     }
 
-    private var benchPreparationManifest: String? {
+    private func benchPreparationManifests(allowRetained: Bool) -> Set<String> {
         guard admitsWorkspaceFurnishings, let manifest = nativeRuntimeManifestSHA256,
-              Self.supportsBenchBaseColorPreparationRuntime(manifest: manifest),
               session?.workspaceBenchBaseColorPreparationProfile == WorkspaceFurnishingPreparationPolicy.benchBaseColor512.rawValue
-        else { return nil }
-        return manifest
+        else { return [] }
+        return Self.benchPreparationReceiptManifests(runtime: manifest, allowRetained: allowRetained)
+    }
+
+    nonisolated static func benchPreparationReceiptManifests(runtime: String, allowRetained: Bool) -> Set<String> {
+        guard supportsBenchBaseColorPreparationRuntime(manifest: runtime) else { return [] }
+        #if DEBUG && os(macOS)
+        if allowRetained && runtime == r285GreekThumbnailAllowanceRuntime {
+            return [runtime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailTraceRuntime,
+                    r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
+        }
+        if allowRetained && runtime == r285GreekThumbnailPreviewOverlapRuntime {
+            return [runtime, r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailTraceRuntime,
+                    r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
+        }
+        if allowRetained && runtime == r285GreekThumbnailTraceAbortRuntime {
+            return [runtime, r285GreekThumbnailTraceRuntime, r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
+        }
+        if allowRetained && runtime == r285GreekThumbnailTraceRuntime {
+            return [runtime, r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
+        }
+        if allowRetained && runtime == r285GreekThumbnailV2Runtime { return [runtime, r285BenchAfterTerminalRuntime] }
+        #endif
+        return [runtime]
     }
 
     public var admitsWorkspacePortalFinish: Bool {
@@ -3356,7 +3394,7 @@ public actor AuthoringAPI {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
         case .benchBaseColor512:
-            guard benchPreparationManifest != nil, details.kind == .bench,
+            guard !benchPreparationManifests(allowRetained: false).isEmpty, details.kind == .bench,
                   (28...WorkspaceFurnishingPreparationPolicy.benchBaseColorSourceByteLimit).contains(details.model.bytes) else {
                 throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
@@ -3369,7 +3407,7 @@ public actor AuthoringAPI {
         try intake.check(requestId: requestId, details: details, expectedPolicy: policy, expectedFit: fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
                          admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation,
-                         infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
+                         infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifests: benchPreparationManifests(allowRetained: false))
         return intake
     }
 
@@ -3377,7 +3415,7 @@ public actor AuthoringAPI {
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(id))
         try intake.check(id: id, supportedExtensionVersion: supportedFurnishingExtensionVersion,
                          admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
-                         requireCurrentInfoStandProducer: requireCurrentInfoStandProducer, benchPreparationManifest: benchPreparationManifest)
+                         requireCurrentInfoStandProducer: requireCurrentInfoStandProducer, benchPreparationManifests: benchPreparationManifests(allowRetained: true))
         if requireCurrentInfoStandProducer && intake.preparationPolicy != .normalizeLegacySignTexture {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
@@ -3420,7 +3458,7 @@ public actor AuthoringAPI {
     public func uploadWorkspaceFurnishing(_ previous: WorkspaceFurnishingIntake,
                                           snapshot: ImportFileSnapshot) async throws -> WorkspaceFurnishingIntake {
         try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
+                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifests: benchPreparationManifests(allowRetained: false))
         let model = try WorkspaceFurnishingModel(snapshot: snapshot)
         guard model == previous.declaration.model else { throw AuthoringFailure("MODEL_CONFLICT") }
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/model",
@@ -3428,7 +3466,7 @@ public actor AuthoringAPI {
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
                          expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                         admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
+                         admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifests: benchPreparationManifests(allowRetained: false))
         guard intake.received != nil else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return intake
     }
@@ -3436,14 +3474,15 @@ public actor AuthoringAPI {
     public func workspaceFurnishingAction(_ previous: WorkspaceFurnishingIntake,
                                           _ action: WorkspaceFurnishingIntakeAction) async throws -> WorkspaceFurnishingIntake {
         try previous.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
+                           admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifests: benchPreparationManifests(allowRetained: previous.phase == .registered))
         let intake: WorkspaceFurnishingIntake = try await request(furnishingIntakePath(previous.intakeId) + "/" + action.rawValue,
             method: "POST", body: Data("{}".utf8))
         try intake.check(id: previous.intakeId, requestId: previous.requestId, details: previous.declaration,
                          expectedPolicy: previous.preparationPolicy, expectedFit: previous.fitProfile,
                          supportedExtensionVersion: supportedFurnishingExtensionVersion,
                          admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest,
-                         requireCurrentInfoStandProducer: previous.phase != .registered, benchPreparationManifest: benchPreparationManifest)
+                         requireCurrentInfoStandProducer: previous.phase != .registered, benchPreparationManifests: benchPreparationManifests(allowRetained: previous.phase == .registered))
+        try intake.checkRegisteredBenchAction(from: previous)
         return intake
     }
 
@@ -3464,7 +3503,7 @@ public actor AuthoringAPI {
         let page: AuthoringPage<WorkspaceFurnishingIntake> = try await furnishingPage("furnishing-intakes", cursor: cursor)
         for intake in page.items {
             try intake.check(supportedExtensionVersion: supportedFurnishingExtensionVersion,
-                             admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifest: benchPreparationManifest)
+                             admitsRectangularFit: admitsWorkspaceRectangularPortalFit, admitsPreparation: admitsWorkspaceArtworkFramePreparation, infoStandPreparationManifest: infoStandPreparationManifest, benchPreparationManifests: benchPreparationManifests(allowRetained: true))
         }
         guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return page

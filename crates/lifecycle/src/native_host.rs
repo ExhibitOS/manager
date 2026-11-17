@@ -65,6 +65,9 @@ pub struct Status {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_ready_guard_diagnostic: Option<Value>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) thumbnail_preview_trace: Option<crate::native_runtime::thumbnail_preview_trace::Report>,
 }
 struct State {
     root: Option<PathBuf>,
@@ -172,7 +175,7 @@ pub struct Host {
 }
 enum Work {
     Prepare(Option<InitialAccountInput>),
-    Start,
+    Start(Option<String>),
     RunSelectedOex,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
     RunHayes(crate::native_runtime::hayes_ordinary::Input),
@@ -481,6 +484,9 @@ impl Host {
             hayes_receipt: state.hayes_receipt.clone(),
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             pre_ready_guard_diagnostic: state.pre_ready_guard_diagnostic.clone(),
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            thumbnail_preview_trace: (!state.busy && state.error.is_none())
+                .then(|| state.session.as_ref().and_then(Session::thumbnail_preview_trace_report)).flatten(),
         })
     }
     fn launch(&mut self, token: String, work: Work) -> Result<Status> {
@@ -521,7 +527,7 @@ impl Host {
         }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         let retained_cleanup = match &mut self.retained_oex_cleanup {
-            Some((selection, used)) if matches!(&work, Work::Start) => {
+            Some((selection, used)) if matches!(&work, Work::Start(_)) => {
                 if *used { return Err(err("NATIVE_PROTOCOL_INVALID")); }
                 *used = true;
                 Some(selection.clone())
@@ -542,7 +548,7 @@ impl Host {
             { state.pre_ready_guard_diagnostic = None; }
             state.operation = match &work {
                 Work::Prepare(_) => "preparing",
-                Work::Start => "starting",
+                Work::Start(_) => "starting",
                 Work::RunSelectedOex => "importing_oex",
                 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
                 Work::RunHayes(_) => {
@@ -814,7 +820,7 @@ impl Host {
                             state.account_required = false;
                             state.payload = Some(payload);
                         }
-                        Work::Start => {
+                        Work::Start(trace_id) => {
                             let cached = shared.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.payload.clone();
                             let payload = match cached {
                                 Some(p) => p,
@@ -850,6 +856,12 @@ impl Host {
                             let session = lease.session.as_mut().ok_or_else(|| err("NATIVE_HOST_UNAVAILABLE"))?;
                             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
                             if let Some(selection) = retained_cleanup { session.arm_oex_retained_cleanup(selection)?; }
+                            if let Some(id) = trace_id {
+                                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                                session.arm_thumbnail_preview_trace(&id)?;
+                                #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+                                { let _ = id; return Err(err("NATIVE_PROTOCOL_INVALID")); }
+                            }
                             let cancel = session.cancellation();
                             {
                                 let mut state =
@@ -1161,7 +1173,7 @@ impl Host {
         }
         let detail_fenced = match &request.command {
             UiCommand::NativePrepare { selection_token, .. }
-            | UiCommand::NativeStart { selection_token }
+            | UiCommand::NativeStart { selection_token, .. }
             | UiCommand::NativeBackup { selection_token, .. }
             | UiCommand::NativeMaintenance { selection_token, .. }
             | UiCommand::NativeOexSelect { selection_token }
@@ -1632,10 +1644,19 @@ impl Host {
                 selection_token,
                 account,
             } => self.launch(selection_token, Work::Prepare(account))?,
-            UiCommand::NativeStart { selection_token } => {
+            UiCommand::NativeStart {
+                selection_token,
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                thumbnail_preview_trace_id,
+            } => {
+                #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+                let thumbnail_preview_trace_id = None;
                 let selected = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?.selected_oex;
+                if selected && thumbnail_preview_trace_id.is_some() {
+                    return Err(err("NATIVE_PROTOCOL_INVALID"));
+                }
                 if !selected { self.controller.ensure_no_bounded_import_transition(&selection_token)?; }
-                self.launch(selection_token, Work::Start)?
+                self.launch(selection_token, Work::Start(thumbnail_preview_trace_id))?
             }
             UiCommand::NativeOexRun { selection_token } => self.launch(selection_token, Work::RunSelectedOex)?,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]

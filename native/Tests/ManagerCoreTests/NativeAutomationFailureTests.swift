@@ -12,29 +12,67 @@ final class NativeThumbnailPageOutcomeTests: XCTestCase {
             return try JSONDecoder().decode(ViewportAcceptance.self, from: encoded)
         }
         let legacy = ["artwork-thumbnail-v1", "rendered-display-preview-v1"]
-        let capability = "artwork-thumbnail-outcome-v1"
+        let v1 = "artwork-thumbnail-outcome-v1"
+        let v2 = "artwork-thumbnail-outcome-v2"
         XCTAssertTrue(try acceptance(legacy).supportsRenderedArtworkThumbnail)
-        XCTAssertFalse(try acceptance(legacy).supportsArtworkThumbnailOutcome)
-        XCTAssertTrue(try acceptance(legacy + [capability]).supportsArtworkThumbnailOutcome)
-        XCTAssertFalse(try acceptance(legacy + [capability], bounded: true).supportsArtworkThumbnailOutcome)
-        XCTAssertFalse(try acceptance([capability]).supportsArtworkThumbnailOutcome)
+        XCTAssertNil(try acceptance(legacy).artworkThumbnailOutcomeVersion)
+        XCTAssertEqual(try acceptance(legacy + [v1]).artworkThumbnailOutcomeVersion, .phase)
+        XCTAssertEqual(try acceptance(legacy + [v2]).artworkThumbnailOutcomeVersion, .previewStep)
+        XCTAssertEqual(try acceptance(legacy + [v1, v2]).artworkThumbnailOutcomeVersion, .previewStep)
+        XCTAssertNil(try acceptance(legacy + [v1, v2], bounded: true).artworkThumbnailOutcomeVersion)
+        XCTAssertNil(try acceptance([v1, v2]).artworkThumbnailOutcomeVersion)
+        XCTAssertTrue(NativeThumbnailPageFailure.Version.phase.invocation.contains("thumbnailOutcomeV1"))
+        XCTAssertTrue(NativeThumbnailPageFailure.Version.previewStep.invocation.contains("thumbnailOutcomeV2"))
     }
 
     func testOnlyClosedFailureIsReportedAndOldSuccessStaysUnwrapped() throws {
         let data: [String: Any] = ["version": 1, "phase": "decode", "outcome": "timeout"]
-        let failure = try XCTUnwrap(NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": data]))
+        let failure = try XCTUnwrap(NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": data], version: .phase))
         XCTAssertEqual(NativeAutomationFailure.value(failure), .object([
             "code": .string("CATALOG_THUMBNAIL_PHASE_FAILED"),
             "thumbnailFailure": .object(["version": .integer(1), "phase": .string("decode"), "outcome": .string("timeout")]),
         ]))
-        XCTAssertNil(try NativeThumbnailPageFailure.checked(in: ["pngBase64": "fixture"]))
-        XCTAssertThrowsError(try NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": data, "pngBase64": "fixture"]))
+        XCTAssertNil(try NativeThumbnailPageFailure.checked(in: ["pngBase64": "fixture"], version: .phase))
+        XCTAssertThrowsError(try NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": data, "pngBase64": "fixture"], version: .phase))
         let wrong: [(String, Any)] = [("phase", "unknown"), ("outcome", "raw error"), ("version", 2), ("message", "private")]
         for (field, value) in wrong {
             var mutated = data
             mutated[field] = value
-            XCTAssertThrowsError(try NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": mutated]))
+            XCTAssertThrowsError(try NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": mutated], version: .phase))
         }
+    }
+
+    func testV2AllowsOnlyItsClosedPreviewStepAndKeepsSuccessUnwrapped() throws {
+        func check(_ fields: [String: Any], version: NativeThumbnailPageFailure.Version = .previewStep) throws -> NativeThumbnailPageFailure? {
+            try NativeThumbnailPageFailure.checked(in: ["thumbnailFailure": fields], version: version)
+        }
+        let preview: [String: Any] = ["version": 2, "phase": "preview", "outcome": "timeout"]
+        for step in ["metadata", "headers", "body", "digest"] {
+            var fields = preview
+            fields["previewStep"] = step
+            let failure = try XCTUnwrap(check(fields))
+            XCTAssertEqual(failure.previewStep?.rawValue, step)
+            XCTAssertEqual(NativeAutomationFailure.value(failure), .object([
+                "code": .string("CATALOG_THUMBNAIL_PHASE_FAILED"),
+                "thumbnailFailure": .object([
+                    "version": .integer(2), "phase": .string("preview"),
+                    "outcome": .string("timeout"), "previewStep": .string(step),
+                ]),
+            ]))
+            XCTAssertThrowsError(try check(fields, version: .phase))
+        }
+        XCTAssertThrowsError(try check(preview))
+        for invalid in [NSNull(), "url", 1] as [Any] {
+            var fields = preview
+            fields["previewStep"] = invalid
+            XCTAssertThrowsError(try check(fields))
+        }
+        var decode: [String: Any] = ["version": 2, "phase": "decode", "outcome": "cancelled"]
+        XCTAssertNil(try check(decode)?.previewStep)
+        decode["previewStep"] = NSNull()
+        XCTAssertThrowsError(try check(decode))
+        XCTAssertThrowsError(try check(["version": 1, "phase": "preview", "outcome": "timeout"]))
+        XCTAssertNil(try NativeThumbnailPageFailure.checked(in: ["pngBase64": "fixture"], version: .previewStep))
     }
 }
 

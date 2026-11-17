@@ -529,16 +529,31 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
             "runtimeManifestSHA256": .string(manifest),
         ])
         let prepared = try intake(wire)
-        try prepared.check(supportedExtensionVersion: 3, benchPreparationManifest: manifest)
+        try prepared.check(supportedExtensionVersion: 3, benchPreparationManifests: [manifest])
+        try prepared.check(supportedExtensionVersion: 3, benchPreparationManifests: [modelSHA256, manifest])
         XCTAssertTrue(prepared.approvesBenchReplacement(try XCTUnwrap(prepared.furnishing)))
         XCTAssertThrowsError(try prepared.check(supportedExtensionVersion: 3))
-        XCTAssertThrowsError(try prepared.check(supportedExtensionVersion: 3, benchPreparationManifest: modelSHA256))
+        XCTAssertThrowsError(try prepared.check(supportedExtensionVersion: 3, benchPreparationManifests: [modelSHA256]))
+        try prepared.checkRegisteredBenchAction(from: prepared)
+
+        var changedIssuer = wire
+        changedIssuer["preparation"]["runtimeManifestSHA256"] = .string(modelSHA256)
+        let otherProducer = try intake(changedIssuer)
+        try otherProducer.check(supportedExtensionVersion: 3, benchPreparationManifests: [modelSHA256, manifest])
+        XCTAssertThrowsError(try otherProducer.checkRegisteredBenchAction(from: prepared))
+
+        var changedModel = wire
+        changedModel["preparation"]["renderableModel"]["sha256"] = .string(String(repeating: "e", count: 64))
+        changedModel["furnishing"]["model"] = changedModel["preparation"]["renderableModel"]
+        let otherModel = try intake(changedModel)
+        try otherModel.check(supportedExtensionVersion: 3, benchPreparationManifests: [modelSHA256, manifest])
+        XCTAssertThrowsError(try otherModel.checkRegisteredBenchAction(from: prepared))
 
         wire["preparation"]["sourceModel"] = renderable
-        XCTAssertThrowsError(try intake(wire).check(supportedExtensionVersion: 3, benchPreparationManifest: manifest))
+        XCTAssertThrowsError(try intake(wire).check(supportedExtensionVersion: 3, benchPreparationManifests: [manifest]))
         if case .object(var fields) = wire {
             fields.removeValue(forKey: "preparation")
-            XCTAssertThrowsError(try intake(.object(fields)).check(supportedExtensionVersion: 3, benchPreparationManifest: manifest))
+            XCTAssertThrowsError(try intake(.object(fields)).check(supportedExtensionVersion: 3, benchPreparationManifests: [manifest]))
         } else {
             XCTFail("Expected a registered intake fixture")
         }

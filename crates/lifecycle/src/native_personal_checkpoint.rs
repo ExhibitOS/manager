@@ -479,7 +479,11 @@ fn startup_cancellation_proof_matches(
 
 #[cfg(feature = "workspace-v5-owner-validation")]
 pub(crate) fn transition_source_ledger(payload: &crate::native_payload::Payload, transition: FurnishingTransition) -> Result<String> {
-    if crate::native_payload::r285_hayes_preopen_terminal_transition((transition.source().2, transition.target().2)) {
+    let pair = (transition.source().2, transition.target().2);
+    if crate::native_payload::r285_bench_after_terminal_transition(pair) {
+        return payload.bench_after_terminal_source_ledger();
+    }
+    if crate::native_payload::r285_hayes_preopen_terminal_transition(pair) {
         return payload.hayes_preopen_source_ledger();
     }
     match transition {

@@ -5,14 +5,65 @@ import XCTest
 final class NativeModelPreparationTests: XCTestCase {
     func testSettledHayesRuntimeAdmitsTheExistingOrdinaryCohort() {
         #if DEBUG && os(macOS)
-        let manifest = "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f"
-        let foreign = "0" + manifest.dropFirst()
-        XCTAssertTrue(NativeHayesOriginalIntent.supports(manifest: manifest))
-        XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
-        XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
-        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
-        XCTAssertFalse(NativeHayesOriginalIntent.supports(manifest: foreign))
-        XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: foreign))
+        for manifest in [
+            "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f",
+            "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66",
+            "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132",
+            "d8922986b59f04227936a391c22a72cc689a35042e590b903482385395b73ae0",
+            "c564d2babb40d15a98ac5beacc613923fb5bef535f790fc518eb6173d924eeff",
+            "543a53076964d4aac417dad5c56615e04bbe31e222f9c6d0e59d19173b2279da",
+            "9654109e975499f1d95457fed58bb80dbc1079c3febed82eaa1117811120080a",
+            "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2",
+        ] {
+            let foreign = "0" + manifest.dropFirst()
+            XCTAssertTrue(NativeHayesOriginalIntent.supports(manifest: manifest))
+            XCTAssertTrue(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: manifest))
+            XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
+            XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+            XCTAssertFalse(NativeHayesOriginalIntent.supports(manifest: foreign))
+            XCTAssertFalse(AuthoringAPI.supportsCombinedThumbnailRuntime(manifest: foreign))
+        }
+        #endif
+    }
+
+    func testBenchPreparationAdmits055AndRetainsTheOldSidecar() {
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(AuthoringAPI.supportsBenchBaseColorPreparationRuntime(
+            manifest: "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132"))
+        XCTAssertTrue(AuthoringAPI.supportsBenchBaseColorPreparationRuntime(
+            manifest: "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"))
+        XCTAssertFalse(AuthoringAPI.supportsBenchBaseColorPreparationRuntime(
+            manifest: "d24e9f2116ef621f3520cfd1b181b1fcce819d1d67ac85df210360c75c42083f"))
+        XCTAssertFalse(AuthoringAPI.supportsBenchBaseColorPreparationRuntime(
+            manifest: "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66"))
+        #endif
+    }
+
+    func testGreekV2RetainsOnlyItsExact055BenchReceiptLineage() {
+        #if DEBUG && os(macOS)
+        let successor = "d8922986b59f04227936a391c22a72cc689a35042e590b903482385395b73ae0"
+        let parent = "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132"
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: successor, allowRetained: true), [successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: successor, allowRetained: false), [successor])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: parent, allowRetained: true), [parent])
+        let traced = "c564d2babb40d15a98ac5beacc613923fb5bef535f790fc518eb6173d924eeff"
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: traced, allowRetained: true),
+                       [traced, successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: traced, allowRetained: false), [traced])
+        let abort = "543a53076964d4aac417dad5c56615e04bbe31e222f9c6d0e59d19173b2279da"
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: abort, allowRetained: true),
+                       [abort, traced, successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: abort, allowRetained: false), [abort])
+        let overlap = "9654109e975499f1d95457fed58bb80dbc1079c3febed82eaa1117811120080a"
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: overlap, allowRetained: true),
+                       [overlap, abort, traced, successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: overlap, allowRetained: false), [overlap])
+        let allowance = "cf3a687a7495ad8a08a4c37fcbf56c5b7f9a54977876d14a777e1b583c5b69c2"
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: allowance, allowRetained: true),
+                       [allowance, overlap, abort, traced, successor, parent])
+        XCTAssertEqual(AuthoringAPI.benchPreparationReceiptManifests(runtime: allowance, allowRetained: false), [allowance])
+        XCTAssertTrue(AuthoringAPI.benchPreparationReceiptManifests(runtime:
+            "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66", allowRetained: true).isEmpty)
         #endif
     }
 

@@ -426,6 +426,9 @@ impl Binding {
             } else { Err(err(ERROR)) };
         }
         if transition.is_prepared_viewer_budget_refresh()
+            || crate::native_payload::r285_bench_after_terminal_transition((transition.source().2, transition.target().2))
+            || crate::native_payload::r285_greek_thumbnail_v2_transition((transition.source().2, transition.target().2))
+            || crate::native_payload::r285_greek_thumbnail_trace_transition((transition.source().2, transition.target().2))
             || crate::native_payload::r285_room_fill_exit_clean_transition((transition.source().2, transition.target().2))
             || crate::native_payload::r285_supplemental_fill_clean_transition((transition.source().2, transition.target().2))
             || crate::native_payload::r285_initial_product_image_clean_transition((transition.source().2, transition.target().2))

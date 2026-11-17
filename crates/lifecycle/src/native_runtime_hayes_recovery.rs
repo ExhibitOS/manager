@@ -66,11 +66,25 @@ impl Session {
         }
 
         let runtime = self.payload.context();
-        let predecessor = if self.scoped_hayes_binding_available() {
+        let greek_web_successor = self.payload.r285_greek_thumbnail_outcome();
+        let bench_successor = self.payload.bench_after_terminal();
+        let predecessor = if greek_web_successor || bench_successor {
+            crate::native_payload::R285_HAYES_PREOPEN_TERMINAL_TARGET.2
+        } else if self.scoped_hayes_binding_available() {
             runtime.manifest_sha256.as_str()
         } else {
             crate::native_payload::HAYES_ORIGINAL_RELEASE_MANIFEST
         };
+        let greek_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_TARGET.2;
+        let traced = self.payload.thumbnail_preview_trace_supported();
+        let trace_predecessor = self.payload.thumbnail_preview_trace_predecessor();
+        let preview_overlap = self.payload.thumbnail_preview_overlap_runtime();
+        let trace_abort_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET.2;
+        let allowance = self.payload.thumbnail_allowance_runtime();
+        let preview_overlap_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET.2;
+        let greek_v2 = self.payload.r285_greek_thumbnail_v2_outcome() || traced;
+        let greek_v2_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_V2_TARGET.2;
+        let bench_manifest = crate::native_payload::R285_BENCH_AFTER_TERMINAL_TARGET.2;
         let sql = format!(
             "SELECT json_build_object('systemId',db.system_id,'databaseOid',db.database_oid,
                       'attemptId',r.attempt_id,'receiptId',r.disposition_id,'receiptSha256',r.receipt_sha256,
@@ -93,9 +107,22 @@ impl Session {
                 AND v.state='approved' AND v.deleted_at IS NULL AND v.sha256='{display}' AND v.rights_id=o.rights_id
                 AND rights.deleted_at IS NULL AND rights.metadata=j.rights AND j.rights=w.metadata->'rights'
                 AND w.metadata->'displayReference'->>'assetSha256'='{display}'
-                AND r.runtime_manifest_sha256 IN ('{manifest}','{predecessor}')
+                AND (r.runtime_manifest_sha256 IN ('{manifest}','{predecessor}')
+                    OR ({bench_successor} AND r.runtime_manifest_sha256='{greek_manifest}')
+                    OR ({greek_v2} AND r.runtime_manifest_sha256='{bench_manifest}')
+                    OR ({traced} AND r.runtime_manifest_sha256='{greek_v2_manifest}')
+                    OR ({has_trace_predecessor} AND r.runtime_manifest_sha256='{trace_predecessor_manifest}')
+                    OR ({preview_overlap} AND r.runtime_manifest_sha256='{trace_abort_manifest}')
+                    OR ({allowance} AND r.runtime_manifest_sha256='{preview_overlap_manifest}'))
                 AND (NOT {require_prior_approval} OR (
-                    r.runtime_manifest_sha256='{predecessor}'
+                    (r.runtime_manifest_sha256='{predecessor}'
+                        OR ({greek_web_successor} AND r.runtime_manifest_sha256='{manifest}')
+                        OR ({bench_successor} AND r.runtime_manifest_sha256 IN ('{manifest}','{greek_manifest}'))
+                        OR ({greek_v2} AND r.runtime_manifest_sha256='{bench_manifest}')
+                        OR ({traced} AND r.runtime_manifest_sha256='{greek_v2_manifest}')
+                        OR ({has_trace_predecessor} AND r.runtime_manifest_sha256='{trace_predecessor_manifest}')
+                        OR ({preview_overlap} AND r.runtime_manifest_sha256='{trace_abort_manifest}')
+                        OR ({allowance} AND r.runtime_manifest_sha256='{preview_overlap_manifest}'))
                     AND EXISTS (
                         SELECT 1 FROM artwork_approvals approved
                          WHERE (approved.tenant_id,approved.artwork_id,approved.revision,approved.asset_id)
@@ -112,7 +139,12 @@ impl Session {
             tenant=auth.tenant_id, workspace=auth.workspace_id, principal=auth.principal_id,
             job=binding.job_id, artwork=binding.artwork_id, historical_revision=binding.artwork_revision,
             display=display, manifest=runtime.manifest_sha256,
-            predecessor=predecessor,
+            predecessor=predecessor, greek_web_successor=greek_web_successor,
+            bench_successor=bench_successor, greek_manifest=greek_manifest, greek_v2=greek_v2, bench_manifest=bench_manifest,
+            traced=traced, greek_v2_manifest=greek_v2_manifest,
+            has_trace_predecessor=trace_predecessor.is_some(), trace_predecessor_manifest=trace_predecessor.unwrap_or_default(),
+            preview_overlap=preview_overlap, trace_abort_manifest=trace_abort_manifest,
+            allowance=allowance, preview_overlap_manifest=preview_overlap_manifest,
             require_prior_approval=text_successor || finished_artwork.is_some(),
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );
