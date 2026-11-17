@@ -6,9 +6,13 @@ public enum NativeAutomationFailure {
     /// cookies, tokens, database strings or a transport response body.
     public static func value(_ error: Error) -> DocumentValue {
         if let failure = error as? NativeThumbnailPageFailure {
-            return .object(["code": .string("CATALOG_THUMBNAIL_PHASE_FAILED"), "thumbnailFailure": .object([
-                "version": .integer(1), "phase": .string(failure.phase.rawValue), "outcome": .string(failure.outcome.rawValue),
-            ])])
+            var fields: [String: DocumentValue] = [
+                "version": .integer(Int64(failure.version.rawValue)),
+                "phase": .string(failure.phase.rawValue),
+                "outcome": .string(failure.outcome.rawValue),
+            ]
+            if let step = failure.previewStep { fields["previewStep"] = .string(step.rawValue) }
+            return .object(["code": .string("CATALOG_THUMBNAIL_PHASE_FAILED"), "thumbnailFailure": .object(fields)])
         }
         if let uncertain = error as? NativeBoundedOEXUncertain,
            [uncertain.workspaceId, uncertain.tenantId, uncertain.principalId, uncertain.requestId].allSatisfy({ UUID(uuidString: $0) != nil }),

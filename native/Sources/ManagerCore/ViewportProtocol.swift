@@ -202,8 +202,11 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsRenderedArtworkThumbnail: Bool {
         supportsArtworkThumbnail && boundedReadOnly == false && capabilities?.contains("rendered-display-preview-v1") == true
     }
-    var supportsArtworkThumbnailOutcome: Bool {
-        supportsRenderedArtworkThumbnail && capabilities?.contains("artwork-thumbnail-outcome-v1") == true
+    var artworkThumbnailOutcomeVersion: NativeThumbnailPageFailure.Version? {
+        guard supportsRenderedArtworkThumbnail else { return nil }
+        if capabilities?.contains("artwork-thumbnail-outcome-v2") == true { return .previewStep }
+        if capabilities?.contains("artwork-thumbnail-outcome-v1") == true { return .phase }
+        return nil
     }
     public var supportsSceneSnapshot: Bool { accepted && capabilities?.contains("scene-snapshot-v1") == true }
     public var supportsSceneSnapshotInspection: Bool { accepted && capabilities?.contains("scene-snapshot-inspection-v1") == true }
