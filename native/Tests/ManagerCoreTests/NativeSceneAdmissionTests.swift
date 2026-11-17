@@ -5,6 +5,31 @@ import XCTest
 
 @MainActor
 final class NativeSceneAdmissionTests: XCTestCase {
+    func testInitialProductPairPurposeIsClosedAndDistinctFromFreshAndReplacement() throws {
+        let initial = NativeProductImagePreparationIntent(artworkRevision: 1, initialApproval: true)
+        let encoded = try JSONEncoder().encode(initial)
+        let request = try JSONDecoder().decode(DocumentValue.self, from: encoded)
+        XCTAssertEqual(request["purpose"], .string("initial-approval"))
+        XCTAssertEqual(request["profile"], .string("product-image-pair-2048-512-v1"))
+        XCTAssertEqual(try JSONDecoder().decode(NativeProductImagePreparationIntent.self, from: encoded), initial)
+        XCTAssertTrue(initial.isInitialApproval)
+        XCTAssertTrue(initial.accepts(mime: "image/jpeg"))
+        XCTAssertFalse(initial.accepts(mime: "image/png"))
+        let former = NativeProductImagePreparationIntent(artworkRevision: 1)
+        let formerWire = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(former))
+        guard case .object(let fields) = formerWire else { return XCTFail("Expected intent object") }
+        XCTAssertNil(fields["purpose"])
+        XCTAssertFalse(former.isInitialApproval)
+        guard case .object(var altered) = request else { return XCTFail("Expected intent object") }
+        altered["purpose"] = .null
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeProductImagePreparationIntent.self,
+                                                       from: JSONEncoder().encode(DocumentValue.object(altered))))
+        altered["purpose"] = .string("initial-approval")
+        altered["profile"] = .string("ordinary-image-preparation-v1")
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeProductImagePreparationIntent.self,
+                                                       from: JSONEncoder().encode(DocumentValue.object(altered))))
+    }
+
     func testSelectedPNGReadManifestIsExactAndDoesNotAdmitOtherRuntimeFamilies() throws {
         let pin = "1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238"
         XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: pin))
