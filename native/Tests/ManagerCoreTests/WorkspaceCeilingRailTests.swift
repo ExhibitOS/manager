@@ -81,6 +81,31 @@ final class WorkspaceCeilingRailTests: XCTestCase {
         let reopened = try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(result))
         try WorkspaceCeilingRail.validate(candidate: reopened.candidate)
     }
+    func testFirstInsertionStagesBothRailsUnderOneDescriptor() throws {
+        var base = try draft(), candidate = base.candidate
+        let ns = WorkspaceFurnishingPlacement.namespace
+        candidate["extensions"][ns] = .object(["version": .integer(3), "furnishings": .array([]), "placements": .array([])])
+        try base.replaceCandidate(candidate)
+        let item = try furnishing()
+        let secondId = "10000000-0000-4000-8000-000000000004"
+        let other = WorkspaceCeilingRailAttachment(placementId: secondId, surfaceId: ceiling, anchor: [0,1], yaw: 0, gap: 0.01)
+        let both = [attachment, other]
+        let result = try XCTUnwrap(WorkspaceCeilingRail.applying(both, furnishing: item, to: base, supportedExtensionVersion: 11))
+        let graph = result.candidate["extensions"][ns]
+        XCTAssertEqual(graph["version"], .integer(11))
+        XCTAssertEqual(graph["furnishings"].items, [descriptor()])
+        XCTAssertEqual(graph["placements"].items?.compactMap { $0["id"].string }, [placement, secondId])
+        XCTAssertEqual(graph["ceilingAttachments"].items?.compactMap { $0["placementId"].string }, [placement, secondId])
+        XCTAssertEqual(result.candidate["extensions"]["example"], candidate["extensions"]["example"])
+        XCTAssertNil(try WorkspaceCeilingRail.applying(both, furnishing: item, to: result, supportedExtensionVersion: 11))
+        XCTAssertThrowsError(try WorkspaceCeilingRail.applying([attachment, attachment], furnishing: item,
+                                                                to: base, supportedExtensionVersion: 11))
+        let outside = WorkspaceCeilingRailAttachment(placementId: secondId, surfaceId: ceiling, anchor: [2,0], yaw: 0, gap: 0.01)
+        XCTAssertThrowsError(try WorkspaceCeilingRail.applying([attachment, outside], furnishing: item,
+                                                                to: base, supportedExtensionVersion: 11))
+        XCTAssertEqual(base.candidate, candidate)
+    }
+
     func testInvalidGeometryPoseBoundsBijectionAndShapeAreRefused() throws {
         let good = try added().candidate, ns = WorkspaceFurnishingPlacement.namespace
         for variant in 0..<7 {

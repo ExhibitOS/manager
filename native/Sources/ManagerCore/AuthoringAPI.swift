@@ -3757,13 +3757,21 @@ public actor AuthoringAPI {
 
     public func prepareWorkspaceCeilingRail(_ attachment: WorkspaceCeilingRailAttachment, furnishingId: String,
                                             in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        try await prepareWorkspaceCeilingRailInsertion([attachment], furnishingId: furnishingId, expectedModelSHA256: nil, in: document)
+    }
+
+    func prepareWorkspaceCeilingRailInsertion(_ attachments: [WorkspaceCeilingRailAttachment], furnishingId: String,
+                                              expectedModelSHA256: String?, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
         guard admitsWorkspaceCeilingRail, document.pending == nil, document.tenantId == tenant,
               session?.userId == document.principalId, let draft = document.draft else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
         let held = generation
         let furnishing = try await workspaceFurnishing(furnishingId, version: 1)
-        let next = try WorkspaceCeilingRail.applying(attachment, furnishing: furnishing, to: draft,
+        if let expectedModelSHA256, furnishing.details.model.sha256 != expectedModelSHA256 {
+            throw AuthoringFailure("MODEL_CONFLICT")
+        }
+        let next = try WorkspaceCeilingRail.applying(attachments, furnishing: furnishing, to: draft,
                                                      supportedExtensionVersion: supportedFurnishingExtensionVersion)
         _ = try await workspaceFurnishingModel(furnishing)
         guard generation == held, admitsWorkspaceCeilingRail else { throw AuthoringFailure("ACCOUNT_CHANGED") }

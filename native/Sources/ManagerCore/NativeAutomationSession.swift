@@ -2560,6 +2560,50 @@ public actor NativeAutomationSession {
             result = try await executeFurnishingThumbnail(operation, request: request, api: api, current: current)
         case "workspace-furnishing-thumbnail-render":
             result = try await furnishingThumbnail(request, context: context, api: api, current: current)
+        case "workspace-ceiling-rail-insert":
+            let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
+                                     "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == keys, existingWorkspaceV5 != nil, selectedOEXFormat == nil,
+                  await api.admitsWorkspaceCeilingRail else { throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "roomId", "furnishingId", "modelSha256", "attachments"])
+            guard !current.dirty, current.pending == nil, let etag = current.etag,
+                  command["etag"] == .string(etag), let draft = current.draft,
+                  let furnishingId = command["furnishingId"].string, workspaceFurnishingID(furnishingId),
+                  let modelSHA256 = command["modelSha256"].string, nativeImportDigest(modelSHA256),
+                  let roomId = command["roomId"].string, workspaceFurnishingID(roomId),
+                  let rows = command["attachments"].items, !rows.isEmpty, rows.count <= 128 else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let attachments = try JSONDecoder().decode([WorkspaceCeilingRailAttachment].self, from: JSONEncoder().encode(command["attachments"]))
+            let surfaces = draft.candidate["surfaces"].items ?? []
+            guard try value(attachments) == command["attachments"], attachments.allSatisfy({ attachment in
+                surfaces.contains { $0["id"] == .string(attachment.surfaceId) && $0["roomId"] == .string(roomId) && $0["type"] == .string("ceiling") }
+            }) else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            let policy = try await api.nativeViewportPolicy(draft.id)
+            guard policy.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            guard policy.confirmsOrdinaryDraft else { throw BridgeFailure("NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE") }
+            let saved = try await api.exhibition(draft.id)
+            guard saved.etag == etag, policy.revision == saved.revision, saved.draft == draft else {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let next = try await api.prepareWorkspaceCeilingRailInsertion(attachments, furnishingId: furnishingId,
+                expectedModelSHA256: modelSHA256, in: current)
+            let latest = try await api.exhibition(draft.id)
+            let latestPolicy = try await api.nativeViewportPolicy(draft.id)
+            let (_, _, refreshed) = try await checked(request)
+            try Task.checkCancellation()
+            guard latest.etag == etag, latest.draft == draft, latest.revision == saved.revision,
+                  latestPolicy.etag == etag, latestPolicy.revision == saved.revision,
+                  try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            guard latestPolicy.confirmsOrdinaryDraft else { throw BridgeFailure("NATIVE_VIEWPORT_CAPABILITY_UNAVAILABLE") }
+            if let next {
+                var updated = current
+                updated.draft = next
+                result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: updated))])
+            } else {
+                result = .object(["changed": .bool(false), "document": try value(current)])
+            }
         case "workspace-ceiling-rail-check", "workspace-ceiling-rail-replace":
             let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == keys, selectedOEXFormat == nil, await api.admitsWorkspaceCeilingRail else {
