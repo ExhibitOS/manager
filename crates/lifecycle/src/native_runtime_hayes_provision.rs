@@ -11,7 +11,7 @@ const ROOT: &str = "custody";
 const AUTHORITY: &str = "authority.json";
 const PROVISION_LOCK: &str = "provision.lock";
 
-pub(in crate::native_runtime) fn acquire_user_lease() -> Result<Lease> {
+pub(in crate::native_runtime) fn acquire_user_lease(owner: Option<&LocalAuthority>) -> Result<Lease> {
     let support = crate::native_account_home::effective_home().ok_or_else(custody_error)?.join("Library/Application Support");
     let pin = DirectoryPin::open(&support).map_err(|_| custody_error())?;
     let base = support.join(CONTAINER);
@@ -21,13 +21,30 @@ pub(in crate::native_runtime) fn acquire_user_lease() -> Result<Lease> {
         Err(_) => return Err(custody_error()),
     }
     pin.check().map_err(|_| custody_error())?;
-    acquire_in(&PrivateDirectory::open(&base)?)
+    let base = custody_scope(PrivateDirectory::open(&base)?, owner, true)?;
+    acquire_in(&base)
 }
 
-pub(in crate::native_runtime) fn open_user_lease() -> Result<Lease> {
+pub(in crate::native_runtime) fn open_user_lease(owner: Option<&LocalAuthority>) -> Result<Lease> {
     let base = PrivateDirectory::open(&crate::native_account_home::effective_home().ok_or_else(custody_error)?.join("Library/Application Support").join(CONTAINER))?;
+    let base = custody_scope(base, owner, false)?;
     let authority = base.read(AUTHORITY)?;
     Lease::acquire(&base.path.join(ROOT), authority)
+}
+
+fn custody_scope(base: PrivateDirectory, owner: Option<&LocalAuthority>, create: bool) -> Result<PrivateDirectory> {
+    let Some(owner) = owner else { return Ok(base); };
+    let ids = [&owner.workspace_id, &owner.tenant_id, &owner.principal_id];
+    if owner.owner_uid != effective_uid() || ids.iter().any(|id| {
+        !Uuid::parse_str(id).is_ok_and(|uuid| !uuid.is_nil() && uuid.to_string() == **id)
+    }) {
+        return Err(custody_error());
+    }
+    let name = format!("owner-052-{}", crate::digest(ids.map(String::as_str).join("/").as_bytes()));
+    if create && !base.exists(&name)? {
+        return base.mkdir(&name);
+    }
+    PrivateDirectory::open(&base.path.join(name))
 }
 
 fn acquire_in(base: &PrivateDirectory) -> Result<Lease> {
@@ -65,6 +82,37 @@ fn acquire_in(base: &PrivateDirectory) -> Result<Lease> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog52_owner_custody_is_independent_and_reopens_the_same_authority() {
+        let path = fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("hayes-scoped-{}", Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        let base = || PrivateDirectory::open(&path).unwrap();
+        let owner = |workspace: Uuid| LocalAuthority {
+            format: 1, workspace_id: workspace.to_string(), tenant_id: Uuid::from_u128(3).to_string(),
+            principal_id: Uuid::from_u128(4).to_string(), owner_uid: effective_uid(),
+            session_token: String::new(), csrf_token: String::new(),
+        };
+        let first = owner(Uuid::from_u128(1));
+        let second = owner(Uuid::from_u128(2));
+        let legacy = acquire_in(&base()).unwrap();
+        let old = base().read_bytes(AUTHORITY).unwrap();
+        assert!(custody_scope(base(), Some(&first), false).is_err());
+        let first_scope = custody_scope(base(), Some(&first), true).unwrap();
+        let second_scope = custody_scope(base(), Some(&second), true).unwrap();
+        assert_ne!(first_scope.path, second_scope.path);
+        let first_lease = acquire_in(&first_scope).unwrap();
+        let second_lease = acquire_in(&second_scope).unwrap();
+        assert_eq!(acquire_in(&first_scope).err().unwrap().code, "HAYES_RESERVATION_BUSY");
+        let original_scope_authority = first_scope.read_bytes(AUTHORITY).unwrap();
+        drop(first_lease);
+        let reopened = custody_scope(base(), Some(&first), false).unwrap();
+        let lease = Lease::acquire(&reopened.path.join(ROOT), reopened.read(AUTHORITY).unwrap()).unwrap();
+        assert_eq!(reopened.read_bytes(AUTHORITY).unwrap(), original_scope_authority);
+        assert_eq!(base().read_bytes(AUTHORITY).unwrap(), old);
+        drop((lease, legacy, second_lease));
+        fs::remove_dir_all(path).unwrap();
+    }
 
     #[test]
     fn ordinary_hayes_provision_reopens_only_the_original_locked_custody() {

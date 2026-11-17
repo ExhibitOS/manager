@@ -657,9 +657,11 @@ the job and its journal for inspection.
 
 The exact Closing runtime `414ab1ba` also admits this dedicated intake on an
 existing clean-reopened Catalog 052 owner. It uses its authenticated inherited
-Hayes channel and the same immutable worker. Release recovery for this scope
-requires a receipt issued by that runtime for the same owner, artwork and job.
-Legacy Catalog 044 qualification remains in place.
+Hayes channel and the same immutable worker. Catalog 052 stores its custody
+under the authenticated workspace, tenant and principal scope. Release recovery
+requires the same scoped journal and a receipt issued by the current runtime for
+the same owner, artwork and job. Catalog 044 retains its existing custody location
+and qualification.
 
 For current catalog 040 service EXB, the same saved-workspace commands
 admit a directed refresh from

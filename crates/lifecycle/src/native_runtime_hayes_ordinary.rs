@@ -78,7 +78,12 @@ impl Session {
         };
         // Fail before the API can claim the import if the immutable worker is absent.
         worker.hayes_read_only_generate()?.check()?;
-        let lease = provision::acquire_user_lease()?;
+        let scope = if self.closing_hayes_binding_available() {
+            Some(self.local_authority.as_ref().ok_or_else(unavailable)?)
+        } else {
+            None
+        };
+        let lease = provision::acquire_user_lease(scope)?;
         let deadline = Instant::now() + Duration::from_secs(175);
         let cancellation = self.cancellation.clone();
         let mut request = ExecuteRequest::start(self, input.binding)?;

@@ -121,7 +121,8 @@ impl Session {
         let result = self.query_database_before("exhibitos", &sql, deadline)?;
         let row: Row = serde_json::from_str(&result).map_err(|_| unavailable())?;
         owner.check_database_identity_result(&format!("{}|{}", row.system_id, row.database_oid))?;
-        let lease = provision::open_user_lease()?;
+        let scope = self.closing_hayes_binding_available().then_some(auth);
+        let lease = provision::open_user_lease(scope)?;
         let intent = lease.released_journal(row.attempt_id, "operation-release-intent.json")?;
         let completion = lease.released_journal(row.attempt_id, "operation-release-completed.json")?;
         let ack = lease.released_journal(row.attempt_id, "operation-release-recorded.json")?;
