@@ -125,7 +125,8 @@ public actor NativeAutomationSession {
     public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil, firstArchitectureEntry: Bool = false, thumbnailPreviewTraceRequestID: String? = nil) throws {
         if let thumbnailPreviewTraceRequestID {
             #if DEBUG && os(macOS)
-            let traceRuntimes = [AuthoringAPI.r285GreekThumbnailTraceRuntime, AuthoringAPI.r285GreekThumbnailTraceAbortRuntime]
+            let traceRuntimes = [AuthoringAPI.r285GreekThumbnailTraceRuntime, AuthoringAPI.r285GreekThumbnailTraceAbortRuntime,
+                                 AuthoringAPI.r285GreekThumbnailPreviewOverlapRuntime]
             guard NativeThumbnailPreviewTrace.validRequestID(thumbnailPreviewTraceRequestID),
                   let traceManifest = existingWorkspaceV5?.manifestSHA256, traceRuntimes.contains(traceManifest),
                   workspaceV5ValidationRuntime == nil,

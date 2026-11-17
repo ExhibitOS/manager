@@ -78,6 +78,8 @@ impl Session {
         let greek_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_TARGET.2;
         let traced = self.payload.thumbnail_preview_trace_supported();
         let trace_predecessor = self.payload.thumbnail_preview_trace_predecessor();
+        let preview_overlap = self.payload.thumbnail_preview_overlap_runtime();
+        let trace_abort_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET.2;
         let greek_v2 = self.payload.r285_greek_thumbnail_v2_outcome() || traced;
         let greek_v2_manifest = crate::native_payload::R285_GREEK_THUMBNAIL_V2_TARGET.2;
         let bench_manifest = crate::native_payload::R285_BENCH_AFTER_TERMINAL_TARGET.2;
@@ -107,14 +109,16 @@ impl Session {
                     OR ({bench_successor} AND r.runtime_manifest_sha256='{greek_manifest}')
                     OR ({greek_v2} AND r.runtime_manifest_sha256='{bench_manifest}')
                     OR ({traced} AND r.runtime_manifest_sha256='{greek_v2_manifest}')
-                    OR ({has_trace_predecessor} AND r.runtime_manifest_sha256='{trace_predecessor_manifest}'))
+                    OR ({has_trace_predecessor} AND r.runtime_manifest_sha256='{trace_predecessor_manifest}')
+                    OR ({preview_overlap} AND r.runtime_manifest_sha256='{trace_abort_manifest}'))
                 AND (NOT {require_prior_approval} OR (
                     (r.runtime_manifest_sha256='{predecessor}'
                         OR ({greek_web_successor} AND r.runtime_manifest_sha256='{manifest}')
                         OR ({bench_successor} AND r.runtime_manifest_sha256 IN ('{manifest}','{greek_manifest}'))
                         OR ({greek_v2} AND r.runtime_manifest_sha256='{bench_manifest}')
                         OR ({traced} AND r.runtime_manifest_sha256='{greek_v2_manifest}')
-                        OR ({has_trace_predecessor} AND r.runtime_manifest_sha256='{trace_predecessor_manifest}'))
+                        OR ({has_trace_predecessor} AND r.runtime_manifest_sha256='{trace_predecessor_manifest}')
+                        OR ({preview_overlap} AND r.runtime_manifest_sha256='{trace_abort_manifest}'))
                     AND EXISTS (
                         SELECT 1 FROM artwork_approvals approved
                          WHERE (approved.tenant_id,approved.artwork_id,approved.revision,approved.asset_id)
@@ -135,6 +139,7 @@ impl Session {
             bench_successor=bench_successor, greek_manifest=greek_manifest, greek_v2=greek_v2, bench_manifest=bench_manifest,
             traced=traced, greek_v2_manifest=greek_v2_manifest,
             has_trace_predecessor=trace_predecessor.is_some(), trace_predecessor_manifest=trace_predecessor.unwrap_or_default(),
+            preview_overlap=preview_overlap, trace_abort_manifest=trace_abort_manifest,
             require_prior_approval=text_successor || finished_artwork.is_some(),
             worker=crate::native_payload::hayes::WORKER_MANIFEST_SHA256,
         );

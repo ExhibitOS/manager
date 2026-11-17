@@ -1173,6 +1173,7 @@ public actor AuthoringAPI {
 
     static let r285GreekThumbnailTraceRuntime = "c564d2babb40d15a98ac5beacc613923fb5bef535f790fc518eb6173d924eeff"
     static let r285GreekThumbnailTraceAbortRuntime = "543a53076964d4aac417dad5c56615e04bbe31e222f9c6d0e59d19173b2279da"
+    static let r285GreekThumbnailPreviewOverlapRuntime = "9654109e975499f1d95457fed58bb80dbc1079c3febed82eaa1117811120080a"
     static let r285GreekThumbnailV2Runtime = "d8922986b59f04227936a391c22a72cc689a35042e590b903482385395b73ae0"
     static let r285BenchAfterTerminalRuntime = "927367b6d36432b9c82eeb1f45b058b00d61a34f3ede8244f16f2a8d007ec132"
     static let r285GreekThumbnailOutcomeRuntime = "7ddbfcc82c277e4d4edf35fa1e6d18397a004c036cdf856dceba702d66807a66"
@@ -1180,7 +1181,8 @@ public actor AuthoringAPI {
     nonisolated static func supportsR285SettledHayesRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         [r285SettledHayesRuntime, r285GreekThumbnailOutcomeRuntime, r285BenchAfterTerminalRuntime,
-         r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime, r285GreekThumbnailTraceAbortRuntime].contains(manifest)
+         r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime,
+         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime].contains(manifest)
         #else
         false
         #endif
@@ -1228,7 +1230,7 @@ public actor AuthoringAPI {
          r285ClosingArticulationRuntime,
          r285SettledHayesRuntime,
          r285GreekThumbnailOutcomeRuntime, r285BenchAfterTerminalRuntime, r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime,
-         r285GreekThumbnailTraceAbortRuntime,
+         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -3276,7 +3278,8 @@ public actor AuthoringAPI {
     nonisolated static func supportsBenchBaseColorPreparationRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         [r285BenchAfterTerminalRuntime, r285GreekThumbnailV2Runtime,
-         r285GreekThumbnailTraceRuntime, r285GreekThumbnailTraceAbortRuntime].contains(manifest)
+         r285GreekThumbnailTraceRuntime, r285GreekThumbnailTraceAbortRuntime,
+         r285GreekThumbnailPreviewOverlapRuntime].contains(manifest)
             || manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
         #elseif DEBUG
         manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
@@ -3295,6 +3298,10 @@ public actor AuthoringAPI {
     nonisolated static func benchPreparationReceiptManifests(runtime: String, allowRetained: Bool) -> Set<String> {
         guard supportsBenchBaseColorPreparationRuntime(manifest: runtime) else { return [] }
         #if DEBUG && os(macOS)
+        if allowRetained && runtime == r285GreekThumbnailPreviewOverlapRuntime {
+            return [runtime, r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailTraceRuntime,
+                    r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
+        }
         if allowRetained && runtime == r285GreekThumbnailTraceAbortRuntime {
             return [runtime, r285GreekThumbnailTraceRuntime, r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
         }
