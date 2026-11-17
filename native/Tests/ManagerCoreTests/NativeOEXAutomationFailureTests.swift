@@ -31,4 +31,23 @@ final class NativeOEXAutomationFailureTests: XCTestCase {
         observation.writing()
         XCTAssertEqual(observation.phase, .writing)
     }
+
+    func testCompletionRequestObservationIsFiniteAndSeparateFromReceiveProgress() {
+        let observation = NativeOEXAutomationObservation()
+        observation.update(.verifying)
+        let error = URLError(.timedOut)
+        let id = "10000000-0000-4000-8000-000000000001"
+        for elapsed in [0, 5000, 60_000] {
+            let value = NativeAutomationFailure.value(observation.failure(error, operationId: id,
+                completionRequestElapsedMilliseconds: elapsed))["oexFailure"]
+            XCTAssertEqual(value["observedPhase"], .string("confirming"))
+            XCTAssertEqual(value["completionRequestElapsedMilliseconds"], .integer(Int64(elapsed)))
+        }
+        for elapsed in [-1, 60_001, Int.max] {
+            let value = NativeAutomationFailure.value(observation.failure(error, operationId: id,
+                completionRequestElapsedMilliseconds: elapsed))["oexFailure"]
+            XCTAssertEqual(value["observedPhase"], .string("verifying"))
+            XCTAssertEqual(value["completionRequestElapsedMilliseconds"], .null)
+        }
+    }
 }

@@ -3,16 +3,18 @@ import Foundation
 
 /// Safe observations for a failed CLI export, never a retry or owner-release proof.
 struct NativeOEXAutomationFailure: Error, Sendable {
-    enum Phase: String, Sendable { case requesting, packing, checkingPackage, receiving, verifying, writing }
+    enum Phase: String, Sendable { case requesting, packing, checkingPackage, receiving, verifying, confirming, writing }
     let phase: Phase
     let operationId: String?
     let receivedBytes: Int?
     let totalBytes: Int?
     let errorDomain: String
     let errorCode: Int?
+    let completionRequestElapsedMilliseconds: Int?
 
-    init(_ error: Error, phase: Phase, operationId: String?, receivedBytes: Int?, totalBytes: Int?) {
-        self.phase = phase
+    init(_ error: Error, phase: Phase, operationId: String?, receivedBytes: Int?, totalBytes: Int?, completionRequestElapsedMilliseconds: Int? = nil) {
+        self.completionRequestElapsedMilliseconds = completionRequestElapsedMilliseconds.flatMap { (0...60_000).contains($0) ? $0 : nil }
+        self.phase = self.completionRequestElapsedMilliseconds == nil ? phase : .confirming
         self.operationId = operationId.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() == $0 ? $0 : nil }
         let limit = NativeOEXImportFile.boundedMaximumBytes
         self.receivedBytes = receivedBytes.flatMap { (0...limit).contains($0) ? $0 : nil }
@@ -48,7 +50,8 @@ final class NativeOEXAutomationObservation {
         }
     }
     func writing() { phase = .writing }
-    func failure(_ error: Error, operationId: String?) -> NativeOEXAutomationFailure {
-        .init(error, phase: phase, operationId: operationId, receivedBytes: receivedBytes, totalBytes: totalBytes)
+    func failure(_ error: Error, operationId: String?, completionRequestElapsedMilliseconds: Int? = nil) -> NativeOEXAutomationFailure {
+        .init(error, phase: phase, operationId: operationId, receivedBytes: receivedBytes, totalBytes: totalBytes,
+              completionRequestElapsedMilliseconds: completionRequestElapsedMilliseconds)
     }
 }

@@ -17,6 +17,7 @@ final class NativeModelPreparationTests: XCTestCase {
             "1dbf08d3b1122015cea14aefc7e50f05f59eccb559632726654a2de2d5d692dd",
             "eb32dbb047ae2ca764d83e4d1d6c7fa4921f3f42f4b0af211ddc63f1ac332269",
             "62d07baaee48e74c77b2b391484df57024479bf6d2b902ad57b49fcba37f9345",
+            "849dc7f88a1a47caaa3c218db69cae295f6dba5d3f3db53615062829c7537a4d",
         ] {
             let foreign = "0" + manifest.dropFirst()
             XCTAssertTrue(NativeHayesOriginalIntent.supports(manifest: manifest))
