@@ -3,6 +3,34 @@ import XCTest
 @testable import ManagerCore
 
 final class ExhibitionDocumentTests: XCTestCase {
+    func testInitialImageRegistrationPreservesOnlyTheAuthoredWidthScale() throws {
+        let base = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(base.rooms.first?["id"].string), placement = UUID().uuidString.lowercased()
+        let art: DocumentValue = .object(["kind": .string("artwork"), "artworkType": .string("image"),
+            "revisionId": .string(UUID().uuidString.lowercased()), "primaryAssetId": .string(UUID().uuidString.lowercased())])
+        var pose = NativeExhibitionDraft.identity
+        pose["scale"] = .vector([1.000709099666411, 1, 1])
+        var legacy = base
+        XCTAssertThrowsError(try legacy.addApprovedArtwork(art, roomId: room, placementId: placement, transform: pose))
+        XCTAssertEqual(legacy, base)
+        var authored = base
+        try authored.addApprovedArtwork(art, roomId: room, placementId: placement, transform: pose, preserveImageWidthScale: true)
+        XCTAssertEqual(authored.placements.first?["transform"], pose)
+        XCTAssertEqual(authored.artworks, [art])
+
+        for invalid: [Double] in [[0, 1, 1], [-1, 1, 1], [1, 2, 1], [1, 1, 2]] {
+            var refused = base, changed = pose
+            changed["scale"] = .vector(invalid)
+            XCTAssertThrowsError(try refused.addApprovedArtwork(art, roomId: room, placementId: placement,
+                                                                transform: changed, preserveImageWidthScale: true))
+            XCTAssertEqual(refused, base)
+        }
+        var refused = base, sculpture = art
+        sculpture["artworkType"] = .string("sculpture")
+        XCTAssertThrowsError(try refused.addApprovedArtwork(sculpture, roomId: room, placementId: placement,
+                                                            transform: pose, preserveImageWidthScale: true))
+    }
+
     func testComparedSnapshotMustStillMatchBeforeAdoption() throws {
         let draft = try NativeExhibitionDraft.new()
         let reviewed = NativeStudioResponse(revision: 3, etag: "etag-3", draft: draft)

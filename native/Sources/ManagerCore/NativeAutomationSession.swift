@@ -3665,6 +3665,7 @@ public actor NativeAutomationSession {
                 }
             }
             var allowImageRegistration = await api.admitsFreshImagePreparation
+            var preserveImageWidthScale = false
             if !allowImageRegistration, approved.artwork["artworkType"] == .string("image"),
                await api.admitsInitialProductImagePreparation {
                 let transfer = try await bridge.uploadState(context)
@@ -3677,6 +3678,11 @@ public actor NativeAutomationSession {
                             && status.validatesReady(intent: intent, preparation: preparation, job: job,
                                                      workspaceID: current.workspaceId, principalID: current.principalId)
                             && AuthoringAPI.matchesInitialImageApproval(approved.artwork, full: full, coarse: status.coarse)
+                        if allowImageRegistration {
+                            try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_ARTWORK_CAPABILITY_UNAVAILABLE",
+                                                           ordinaryOnly: true)
+                            preserveImageWidthScale = true
+                        }
                     }
                 }
             }
@@ -3693,7 +3699,8 @@ public actor NativeAutomationSession {
             }
             try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision,
                 tenantId: current.tenantId, allowsImage: allowImageRegistration)
-            try draft.addApprovedArtwork(approved.artwork, roomId: room, placementId: placement, transform: command["transform"])
+            try draft.addApprovedArtwork(approved.artwork, roomId: room, placementId: placement,
+                                        transform: command["transform"], preserveImageWidthScale: preserveImageWidthScale)
             var next = current; next.draft = draft
             result = try value(await bridge.saveDocumentState(context, state: next))
         case "hayes-refresh-placed-artwork":

@@ -138,6 +138,17 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
     /// The same approved-add mutation serves numeric and explicit visual placement.
     /// A visual proposal supplies only the pinned placement identity and unit pose.
     public mutating func addApprovedArtwork(_ artwork: DocumentValue, roomId: String, placementId: String, transform: DocumentValue) throws {
+        try addApprovedArtwork(artwork, roomId: roomId, placementId: placementId, transform: transform,
+                               preserveImageWidthScale: false)
+    }
+
+    mutating func addApprovedArtwork(_ artwork: DocumentValue, roomId: String, placementId: String,
+                                     transform: DocumentValue, preserveImageWidthScale: Bool) throws {
+        let scale = transform["scale"]
+        let values = scale.items
+        let imageWidthScale = preserveImageWidthScale && artwork["artworkType"] == .string("image")
+            && values?.count == 3 && values?.first?.double.map { $0.isFinite && $0 > 0 } == true
+            && values?.suffix(2).allSatisfy { $0 == .integer(1) } == true
         guard let revision = artwork["revisionId"].string, UUID(uuidString: revision) != nil,
               let asset = artwork["primaryAssetId"].string, UUID(uuidString: asset) != nil,
               artwork["kind"].string == "artwork", rooms.contains(where: { $0["id"].string == roomId }),
@@ -148,7 +159,7 @@ public struct NativeExhibitionDraft: Codable, Equatable, Sendable {
               let rotation = transform["rotation"].items, rotation.count == 4,
               rotation.allSatisfy({ $0.double.map { $0.isFinite && abs($0) <= 1 } == true }),
               abs(rotation.reduce(0) { $0 + pow($1.double!, 2) } - 1) <= 1e-6,
-              transform["scale"] == .vector([1, 1, 1]) else { throw AuthoringFailure("PLACEMENT_INVALID") }
+              scale == .vector([1, 1, 1]) || imageWidthScale else { throw AuthoringFailure("PLACEMENT_INVALID") }
         let needsQualifiedSchema = artwork["schemaVersion"] == Self.qualifiedSchema
         guard needsQualifiedSchema == (artwork["units"] == .string("unknown")) else {
             throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID")
