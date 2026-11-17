@@ -3057,6 +3057,32 @@ public actor NativeAutomationSession {
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
+        case "room-base-light-legacy-carry":
+            try checkedRevision(request, current)
+            let envelope: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId",
+                "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == envelope, existingWorkspaceV5 != nil, selectedOEXFormat == nil,
+                  AuthoringAPI.supportsR285RoomFillExitRuntime(manifest: runtimeManifest),
+                  authoringSession?.advertisesRoomBaseLightPlacement == true,
+                  !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else {
+                throw BridgeFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+            }
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "light", "settings"])
+            let policy = try await api.nativeViewportPolicy(draft.id)
+            guard command["etag"] == .string(etag), policy.etag == etag else {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            guard policy.confirmsOrdinaryDraft else { throw BridgeFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+            let carried = try NativeAutomationScene.legacyRoomBaseCarry(light: command["light"],
+                settings: command["settings"], draft: draft)
+            let saved = try await api.exhibition(draft.id)
+            let (_, _, refreshed) = try await checked(request)
+            try Task.checkCancellation()
+            guard saved.draft == draft, saved.etag == etag, saved.revision == policy.revision,
+                  try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            var next = current
+            next.draft = carried
+            result = try value(await bridge.saveDocumentState(context, state: next))
         case "floor-appearance-apply":
             try checkedRevision(request, current)
             let policy = try await checkSavedSurfacePolicy(current, api: api)
