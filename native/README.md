@@ -1,5 +1,22 @@
 # Native macOS application (in progress)
 
+## Exact v11 registered-frame successor
+
+The Debug macOS owner-validation runtime `1dbf08d3…` (source `4594e94c…`,
+producer `89b9644a…`) has only the clean directed transition from `cf3a687a…`.
+It retains the existing catalog55/49-row ledger, thumbnail, bench and Hayes
+receipt lineage. The API-only change permits one registered-frame delta in an
+existing v11 scene while preserving ceiling attachments and all unrelated data.
+Fresh, reverse, skipped and interrupted admission remain separate.
+
+This exact successor also admits the existing original-image wrapper only with
+the authenticated Native session and `viewer-png-box-512-v1` capability, and the
+existing private detail exporter only with the full sealed runtime tuple and
+complete detail inventory. Source-bound approvals, publication/owner/ETag and
+private pipe checks, original-detail roster and size limits remain required.
+Source/build checks alone do not establish frame Save, original approval,
+final v4 output, Viewer/device qualification or public release.
+
 ## Procedural frame authoring through Native automation
 
 `procedural-frame-set` stages a typed flat, stepped, or floating artwork frame

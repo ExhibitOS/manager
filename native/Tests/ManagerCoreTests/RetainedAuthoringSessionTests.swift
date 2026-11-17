@@ -17,7 +17,7 @@ final class RetainedAuthoringSessionTests: XCTestCase {
           if(req.url!=='/api/v1/auth/session'||!token||(token==='a'&&++count>=4)){
             res.writeHead(401);res.end('{"code":"AUTH_REQUIRED"}');return;
           }
-          const capability=token==='c'?{}:{nativeFreshImagePreparationProfile:'ordinary-image-preparation-v1'};
+          const capability=token==='c'?{}:{nativeFreshImagePreparationProfile:'ordinary-image-preparation-v1',nativeOriginalImageCoarseProfile:'viewer-png-box-512-v1'};
           res.writeHead(200,{'content-type':'application/json'});
           res.end(JSON.stringify({tenantId:tenant,userId:user,role:token==='a'&&count===3?'viewer':'admin',
             csrfToken:'fixture-csrf',expiresAt:'2099-01-01T00:00:00.000Z',...capability}));
@@ -63,6 +63,23 @@ final class RetainedAuthoringSessionTests: XCTestCase {
             let admitted = await imageAPI.admitsFreshImagePreparation
             XCTAssertEqual(admitted, expected)
             XCTAssertEqual(authenticated.nativeFreshImagePreparationProfile != nil, expected)
+        }
+        let current = AuthoringAPI.r285FrameV11Runtime
+        for (runtime, token, expected) in [
+            (current, "b", true), (current, "c", false), (current.uppercased(), "b", false),
+            (AuthoringAPI.r285GreekThumbnailAllowanceRuntime, "b", false)
+        ] {
+            let originalAPI = try AuthoringAPI(port: port, tenantId: tenant, nativeRuntimeManifestSHA256: runtime)
+            let beforeSession = await originalAPI.admitsOwnerLocalOriginalImageCoarse
+            XCTAssertFalse(beforeSession)
+            _ = try await originalAPI.connect(LocalAuthoringSession(tenantId: tenant, principalId: user,
+                origin: "http://127.0.0.1:\(port)", token: String(repeating: token, count: 43)))
+            let admitted = await originalAPI.admitsOwnerLocalOriginalImageCoarse
+            #if DEBUG && os(macOS)
+            XCTAssertEqual(admitted, expected)
+            #else
+            XCTAssertFalse(admitted)
+            #endif
         }
     }
 }
