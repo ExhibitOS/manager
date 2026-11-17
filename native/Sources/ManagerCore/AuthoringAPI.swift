@@ -31,6 +31,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeInitialProductImagePreparationProfile: String? = nil
     public var nativeProductImageThumbnailRepairProfile: String? = nil
     public var nativeRequiredModelOriginalProfile: String? = nil
+    public var nativeFinishedHayesOriginalProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
@@ -1174,12 +1175,13 @@ public actor AuthoringAPI {
     static let r285GreekThumbnailTraceRuntime = "c564d2babb40d15a98ac5beacc613923fb5bef535f790fc518eb6173d924eeff"
     static let r285GreekThumbnailTraceAbortRuntime = "543a53076964d4aac417dad5c56615e04bbe31e222f9c6d0e59d19173b2279da"
     static let r285GreekThumbnailPreviewOverlapRuntime = "9654109e975499f1d95457fed58bb80dbc1079c3febed82eaa1117811120080a"
+    static let r285FinishedHayesOriginalRuntime = "62d07baaee48e74c77b2b391484df57024479bf6d2b902ad57b49fcba37f9345"
     static let r285FrameFitV11Runtime = "eb32dbb047ae2ca764d83e4d1d6c7fa4921f3f42f4b0af211ddc63f1ac332269"
     static let r285FrameV11Runtime = "1dbf08d3b1122015cea14aefc7e50f05f59eccb559632726654a2de2d5d692dd"
 
     nonisolated static func supportsR285FrameV11Runtime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        [r285FrameV11Runtime, r285FrameFitV11Runtime].contains(manifest)
+        [r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime].contains(manifest)
         #else
         false
         #endif
@@ -1194,7 +1196,7 @@ public actor AuthoringAPI {
         #if DEBUG && os(macOS)
         [r285SettledHayesRuntime, r285GreekThumbnailOutcomeRuntime, r285BenchAfterTerminalRuntime,
          r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime,
-         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime].contains(manifest)
+         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime].contains(manifest)
         #else
         false
         #endif
@@ -1242,7 +1244,7 @@ public actor AuthoringAPI {
          r285ClosingArticulationRuntime,
          r285SettledHayesRuntime,
          r285GreekThumbnailOutcomeRuntime, r285BenchAfterTerminalRuntime, r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime,
-         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime,
+         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -2119,6 +2121,72 @@ public actor AuthoringAPI {
         return readback // An eligibility grant never stages or saves a draft.
     }
 
+    public var admitsFinishedHayesOriginalApproval: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeFinishedHayesOriginalProfile == NativeFinishedHayesCustody.profile
+    }
+
+    public func discoverFinishedHayesOriginal(artworkId: String, revision: Int,
+                                              in document: NativeDocumentState) async throws -> NativeFinishedHayesCustody {
+        guard admitsFinishedHayesOriginalApproval, (1...Int(Int32.max)).contains(revision) else {
+            throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_UNAVAILABLE")
+        }
+        let held = generation
+        struct Projection: Decodable, Sendable { let finishedHayesCustody: NativeFinishedHayesCustody? }
+        let path = studioPrefix + "/artworks/" + (try identifier(artworkId)) + "/native-model-candidate?artworkRevision=\(revision)"
+        let projection: Projection = try await request(path)
+        guard let custody = projection.finishedHayesCustody else { throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_UNAVAILABLE") }
+        let snapshot = try await studioArtwork(artworkId)
+        guard generation == held, admitsFinishedHayesOriginalApproval,
+              custody.artworkId == artworkId, custody.artworkRevision == revision else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try custody.validate(in: document, artwork: snapshot.artwork)
+        return custody
+    }
+
+    public func finishedHayesOriginalApproval(_ custody: NativeFinishedHayesCustody,
+        in document: NativeDocumentState, approve: Bool) async throws -> NativeFinishedHayesOriginalApproval {
+        guard admitsFinishedHayesOriginalApproval, !document.dirty, document.pending == nil,
+              let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_UNAVAILABLE")
+        }
+        let held = generation
+        let snapshot = try await studioArtwork(custody.artworkId)
+        try custody.validate(in: document, artwork: snapshot.artwork)
+        let saved = try await exhibition(draft.id)
+        guard generation == held, saved.draft == draft, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        struct Input: Encodable {
+            let kind: String
+            let artworkId: String
+            let artworkRevision: Int
+            let importJobId: String
+            let attemptId: String, receiptId: String, receiptSha256: String, completionFrameSha256: String
+        }
+        let release = custody.release
+        let input = Input(kind: NativeFinishedHayesCustody.profile, artworkId: custody.artworkId,
+            artworkRevision: custody.artworkRevision, importJobId: custody.importJobId,
+            attemptId: release.attemptId, receiptId: release.receiptId,
+            receiptSha256: release.receiptSha256, completionFrameSha256: release.completionFrameSha256)
+        let base = studioPrefix + "/exhibitions/" + (try identifier(draft.id))
+        let query = "?artworkId=" + (try identifier(custody.artworkId)) + "&artworkRevision=\(custody.artworkRevision)&importJobId="
+            + (try identifier(custody.importJobId)) + "&attemptId=" + (try identifier(release.attemptId))
+            + "&receiptId=" + (try identifier(release.receiptId)) + "&receiptSha256=" + release.receiptSha256
+            + "&completionFrameSha256=" + release.completionFrameSha256
+        var approved: NativeFinishedHayesOriginalApproval?
+        if approve {
+            let receipt: NativeFinishedHayesOriginalApproval = try await request(base + "/native-original-static-approval",
+                method: "POST", body: encoded(input), ifMatch: etag, timeout: 120, expectedResponseETag: etag)
+            try receipt.validate(custody: custody, exhibitionId: draft.id, revision: saved.revision, etag: etag)
+            guard receipt.approved else { throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_APPROVAL_INVALID") }
+            approved = receipt
+        }
+        let readback: NativeFinishedHayesOriginalApproval = try await request(base + "/native-finished-hayes-original" + query,
+            expectedResponseETag: etag, requiresNativeReadCSRF: true)
+        try readback.validate(custody: custody, exhibitionId: draft.id, revision: saved.revision, etag: etag)
+        guard generation == held, admitsFinishedHayesOriginalApproval else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        if let approved, approved != readback { throw AuthoringFailure("FINISHED_HAYES_ORIGINAL_READBACK_UNCERTAIN") }
+        return readback
+    }
+
     public func discoverApprovedModelCandidate(_ entry: ArtworkCatalogEntry, placementId: String) async throws
         -> NativeApprovedModelCandidateReplacement {
         guard admitsApprovedModelCandidateReplacement, (1...2_147_483_647).contains(entry.revision) else {
@@ -2364,6 +2432,12 @@ public actor AuthoringAPI {
             // was lost. No error or cancellation is an owner-release assertion.
             throw error
         }
+    }
+
+    func retainedBoundedExportOperationId(exhibitionId: String, etag: String) -> String? {
+        guard let intent = uncertainBoundedExport, session != nil, intent.generation == generation,
+              intent.exhibitionId == exhibitionId, intent.etag == etag else { return nil }
+        return intent.requestId
     }
 
     private func boundedExportCompletion(_ intent: BoundedExportIntent, allowFailed: Bool = false) async throws -> NativeOEXExportCompletion {
@@ -3292,7 +3366,7 @@ public actor AuthoringAPI {
         #if DEBUG && os(macOS)
         [r285BenchAfterTerminalRuntime, r285GreekThumbnailV2Runtime,
          r285GreekThumbnailTraceRuntime, r285GreekThumbnailTraceAbortRuntime,
-         r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime].contains(manifest)
+         r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime].contains(manifest)
             || manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
         #elseif DEBUG
         manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
@@ -3311,6 +3385,11 @@ public actor AuthoringAPI {
     nonisolated static func benchPreparationReceiptManifests(runtime: String, allowRetained: Bool) -> Set<String> {
         guard supportsBenchBaseColorPreparationRuntime(manifest: runtime) else { return [] }
         #if DEBUG && os(macOS)
+        if allowRetained && runtime == r285FinishedHayesOriginalRuntime {
+            return [runtime, r285FrameFitV11Runtime, r285FrameV11Runtime, r285GreekThumbnailAllowanceRuntime,
+                    r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailTraceAbortRuntime,
+                    r285GreekThumbnailTraceRuntime, r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
+        }
         if allowRetained && runtime == r285FrameFitV11Runtime {
             return [runtime, r285FrameV11Runtime, r285GreekThumbnailAllowanceRuntime,
                     r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailTraceAbortRuntime,
