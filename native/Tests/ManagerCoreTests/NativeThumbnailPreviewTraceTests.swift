@@ -56,8 +56,15 @@ final class NativeThumbnailPreviewTraceTests: XCTestCase {
         var malformed = raw
         malformed["version"] = true
         XCTAssertEqual(NativeThumbnailPreviewTrace.webTrace(malformed, requestID: id), .rejected)
+        for remaining in [10_000, 30_000] {
+            var accepted = raw
+            accepted["remainingBudgetEstimateMs"] = remaining
+            let readback = NativeThumbnailPreviewTrace.webTrace(accepted, requestID: id)
+            XCTAssertEqual(readback.disposition, "valid")
+            XCTAssertEqual(readback.trace?["remainingBudgetEstimateMs"], .integer(Int64(remaining)))
+        }
         malformed = raw
-        malformed["remainingBudgetEstimateMs"] = 10_001
+        malformed["remainingBudgetEstimateMs"] = 30_001
         let rejected = NativeThumbnailPreviewTrace.webTrace(malformed, requestID: id)
         XCTAssertEqual(rejected, .rejected)
         XCTAssertEqual(rejected.disposition, "rejected")

@@ -40,7 +40,7 @@ enum NativeThumbnailPreviewTrace {
               input["requestId"] as? String == requestID, integer(input["version"], in: 1...1) == 1,
               let anchor = integer(input["anchorUnixMs"], in: 1...9_007_199_254_740_991),
               let dispatch = integer(input["dispatchElapsedMs"], in: 0...60_000),
-              let remaining = integer(input["remainingBudgetEstimateMs"], in: 0...10_000),
+              let remaining = integer(input["remainingBudgetEstimateMs"], in: 0...30_000),
               let terminal = input["terminal"] as? [String: Any],
               let kind = terminal["kind"] as? String,
               let elapsed = integer(terminal["elapsedMs"], in: dispatch...60_000) else { return nil }
