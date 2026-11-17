@@ -63,6 +63,24 @@ final class NativeJPEGImportRuntimeTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(NativeCoarsePreparationIntent.self, from: extra))
     }
 
+    func testOwnerLocalCreateClearsOnlyItsOwnDefinitiveRefusalBeforeAdmission() throws {
+        let refusal = AuthoringFailure("PROVISIONAL_ASSET_MISMATCH", status: 409)
+        XCTAssertTrue(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(refusal, beganHere: true, hasJob: false))
+        XCTAssertFalse(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(refusal, beganHere: false, hasJob: false))
+        XCTAssertFalse(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(refusal, beganHere: true, hasJob: true))
+        XCTAssertFalse(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(
+            AuthoringFailure("RESPONSE_INVALID"), beganHere: true, hasJob: false))
+        let intent = NativeCoarsePreparationIntent(artworkRevision: 1)
+        XCTAssertTrue(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(
+            AuthoringFailure("RIGHTS_DENIED", status: 403), beganHere: true, hasJob: false))
+        XCTAssertFalse(NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(
+            AuthoringFailure("RIGHTS_DENIED", status: 403), beganHere: false, hasJob: false))
+        let wire = try JSONEncoder().encode(intent)
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: wire) as? [String: Any])
+        XCTAssertNil(fields["approvalId"])
+        XCTAssertEqual(try JSONDecoder().decode(NativeCoarsePreparationIntent.self, from: wire), intent)
+    }
+
     func testCurrentPacketRequiresReadinessAndUnknownPacketsStayClosed() {
         let current = NativeJPEGImportRuntime.currentManifestSHA256
         XCTAssertTrue(NativeJPEGImportRuntime.supports(manifestSHA256: current, ready: true))

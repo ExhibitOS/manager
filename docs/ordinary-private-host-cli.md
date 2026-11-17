@@ -104,3 +104,13 @@ existing workspace. Official document/publication journals, retained detail
 records, original assets and previous output directories remain protected.
 A successful local output is neither an Internet deployment nor Viewer visual
 or physical-clearance acceptance.
+
+The installed ordinary authoring CLI also supports `architecture-apply` on the
+selected native document. Use `exhibition-new` for a fresh document, read its
+issued default room ID, and send `command: {"edits": [...]}` with one to 64
+of the typed architecture commands above. Reuse the actual first room ID in
+`room-update` and its dependent commands. The open document must be unsaved
+or match a clean ordinary saved head. The operation applies the edits to a
+copy and stages the resulting selected draft once. Use the existing `save`
+with the returned revision to commit and compare the authoritative server
+response. No other exhibition is opened or selected by this command.

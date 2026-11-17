@@ -18,6 +18,44 @@ final class NativePrivateHostArchitectureTests: XCTestCase {
     private func connect(_ first: String, _ second: String) -> DocumentValue {
         .object(["type": .string("connect-openings"), "firstId": .string(first), "secondId": .string(second)])
     }
+    func testDefiniteFirstSaveRefusalRestoresArchitectureForCorrection() throws {
+        let baseline = try NativeExhibitionDraft.new()
+        let staged = try NativePrivateHostArchitecture.applying(room(uuid()), to: baseline)
+        let recovery = NativeArchitectureSaveRecovery(before: baseline, staged: staged)
+        for etag in [nil, "studio-r1-test"] as [String?] {
+            let initial = NativeDocumentState(format: 1, revision: 2, workspaceId: uuid(), tenantId: uuid(),
+                principalId: uuid(), draft: staged, etag: etag,
+                savedEditVersion: etag == nil ? nil : baseline.document["editVersion"].integer, pending: nil)
+            var pending = initial
+            pending.revision += 1
+            pending.pending = .init(etag: etag, draft: staged)
+            let refusal = AuthoringFailure("DRAFT_INVALID", status: 422)
+            let correction = try XCTUnwrap(recovery.correction(after: refusal, initial: initial, pending: pending))
+            XCTAssertEqual(correction.draft, baseline)
+            XCTAssertEqual(correction.etag, initial.etag)
+            XCTAssertNil(correction.pending)
+            XCTAssertNoThrow(try NativePrivateHostArchitecture.applying(room(uuid()), to: XCTUnwrap(correction.draft)))
+            XCTAssertNil(recovery.correction(after: AuthoringFailure("RESPONSE_INVALID"), initial: initial, pending: pending))
+            XCTAssertNil(recovery.correction(after: refusal, initial: pending, pending: pending))
+        }
+    }
+
+    func testRetainedFirstSaveOnlyReplaysTheOriginalRequest() throws {
+        let staged = try NativePrivateHostArchitecture.applying(room(uuid()), to: NativeExhibitionDraft.new())
+        let pending = NativeDocumentState.Pending(etag: nil, draft: staged)
+        let document = NativeDocumentState(format: 1, revision: 3, workspaceId: uuid(), tenantId: uuid(),
+            principalId: uuid(), draft: staged, etag: nil, savedEditVersion: nil, pending: pending)
+        XCTAssertEqual(NativeArchitectureSaveRecovery.retainedFirstSave(in: document), staged)
+        var request: DocumentValue = .object(["requestId": .string(pending.requestId),
+            "expectedRevision": .integer(3), "expectedEditVersion": staged.document["editVersion"]])
+        XCTAssertNoThrow(try NativeAutomationSession.checkPendingSaveRequest(request, document, knownRevision: nil, ordinary: true))
+        request["requestId"] = .string(uuid())
+        XCTAssertThrowsError(try NativeAutomationSession.checkPendingSaveRequest(request, document, knownRevision: nil, ordinary: true))
+        var altered = document
+        altered.draft = try NativePrivateHostArchitecture.applying(room(uuid()), to: staged)
+        XCTAssertNil(NativeArchitectureSaveRecovery.retainedFirstSave(in: altered))
+    }
+
     func testRoomCubeDoorsAndRoundTripPreserveUnrelatedData() throws {
         var base = try NativeExhibitionDraft.new(), seed = base.candidate
         seed["extensions"] = .object(["example/preserved": .object(["value": .string("keep")])])

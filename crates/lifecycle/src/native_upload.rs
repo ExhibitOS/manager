@@ -89,10 +89,17 @@ impl HayesOriginal {
 pub struct CoarsePreparation {
     pub version: u32,
     pub profile: String,
-    pub approval_id: String,
+    #[serde(default, deserialize_with = "CoarsePreparation::deserialize_approval", skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
     pub artwork_revision: u32,
 }
 impl CoarsePreparation {
+    fn deserialize_approval<'de, D: serde::Deserializer<'de>>(
+        decoder: D,
+    ) -> std::result::Result<Option<String>, D::Error> {
+        String::deserialize(decoder).map(Some)
+    }
+
     fn deserialize_present<'de, D: serde::Deserializer<'de>>(
         decoder: D,
     ) -> std::result::Result<Option<Self>, D::Error> {
@@ -100,10 +107,12 @@ impl CoarsePreparation {
     }
 
     fn valid(&self, intent: &Intent) -> bool {
-        let approval = Uuid::parse_str(&self.approval_id).is_ok_and(|id| {
-            id.to_string().eq_ignore_ascii_case(&self.approval_id)
-                && (1..=8).contains(&id.get_version_num())
-                && id.get_variant() == uuid::Variant::RFC4122
+        let approval = self.approval_id.as_ref().is_none_or(|value| {
+            Uuid::parse_str(value).is_ok_and(|id| {
+                id.to_string().eq_ignore_ascii_case(value)
+                    && (1..=8).contains(&id.get_version_num())
+                    && id.get_variant() == uuid::Variant::RFC4122
+            })
         });
         self.version == 1
             && self.profile == "viewer-png-box-512-v1"
@@ -797,6 +806,14 @@ mod tests {
     #[test]
     fn coarse_intent_and_job_binding_survive_controller_restart() {
         assert_image_intent_survives_restart(coarse_fixture(), "coarsePreparation");
+        let mut owner_local = coarse_fixture();
+        owner_local["intent"]["coarsePreparation"].as_object_mut().unwrap().remove("approvalId");
+        let state: Transfer = serde_json::from_value(owner_local.clone()).unwrap();
+        validate(&state).unwrap();
+        assert_eq!(serde_json::to_value(state).unwrap(), owner_local);
+        assert_image_intent_survives_restart(owner_local.clone(), "coarsePreparation");
+        owner_local["intent"]["coarsePreparation"]["approvalId"] = Value::Null;
+        assert!(serde_json::from_value::<Transfer>(owner_local).is_err());
     }
 
     #[test]

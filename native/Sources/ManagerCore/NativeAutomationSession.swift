@@ -113,6 +113,8 @@ public actor NativeAutomationSession {
     private var pendingRevisions: [String: UInt64] = [:]
     private var staticIntents: [String: NativePublicationPending] = [:]
     private var selectedOEXFormat: String?
+    private var architectureSaveRecovery: NativeArchitectureSaveRecovery?
+    private var firstArchitectureRecoveryOnly = false
     private var runtimeStopped = false
 
     public init(helper: URL, profile: URL, ports: [String: UInt16], outputRoot: URL, temporaryRoot: URL, inputs: [String: String], selectedOEX9: Bool = false, selectedOEX10: Bool = false, workspaceV5ValidationRuntime: URL? = nil, existingWorkspaceV5: ExistingWorkspaceV5? = nil, workspaceV6ValidationRuntime: URL? = nil, workspaceV7ValidationRuntime: URL? = nil, appliedDraftRecoveryPath: String? = nil, firstArchitectureEntry: Bool = false) throws {
@@ -133,7 +135,12 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: $0.manifestSHA256)
             } == true
-        guard !firstArchitectureEntry || (existingWorkspaceV5?.manifestSHA256 == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02" && !selectedOEX9 && !selectedOEX10 && workspaceV6ValidationRuntime == nil && workspaceV7ValidationRuntime == nil && appliedDraftRecoveryPath == nil),
+        let firstArchitectureManifest = existingWorkspaceV5?.manifestSHA256
+        let firstArchitectureSupported = firstArchitectureManifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
+            || AuthoringAPI.supportsOwnerLocalOriginalRuntime(manifest: firstArchitectureManifest)
+        guard !firstArchitectureEntry || (firstArchitectureSupported && !selectedOEX9 && !selectedOEX10
+               && workspaceV5ValidationRuntime == nil && workspaceV6ValidationRuntime == nil
+               && workspaceV7ValidationRuntime == nil && appliedDraftRecoveryPath == nil),
               !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
               !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
@@ -356,13 +363,16 @@ public actor NativeAutomationSession {
             saved = try await bridge.documentState(context)
         }
         if firstArchitectureEntry {
+            let retained = AuthoringAPI.supportsOwnerLocalOriginalRuntime(manifest: expected.manifestSHA256)
+                ? NativeArchitectureSaveRecovery.retainedFirstSave(in: saved) : nil
+            let empty = !saved.dirty && saved.draft == nil && saved.etag == nil
+                && saved.savedEditVersion == nil && saved.pending == nil
             guard !status.needsShutdown, !status.accountRequired, status.selectedOex != true, status.errorCode == nil,
                   let config = status.configuration, config.kind == "personal", config.manifestSha256 == expected.manifestSHA256,
                   config.tenantId == expected.tenantId, config.ports.web == ports["web"],
                   config.ports.api == ports["api"], config.ports.database == ports["database"],
                   saved.workspaceId == expected.workspaceId, saved.tenantId == expected.tenantId,
-                  saved.principalId == expected.principalId, !saved.dirty, saved.draft == nil,
-                  saved.etag == nil, saved.savedEditVersion == nil, saved.pending == nil else {
+                  saved.principalId == expected.principalId, empty || retained != nil else {
                 throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
             }
             _ = try await bridge.start(context)
@@ -381,6 +391,8 @@ public actor NativeAutomationSession {
                   try value(await bridge.documentState(context)) == value(saved) else {
                 throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
             }
+            firstArchitectureStaged = retained
+            firstArchitectureRecoveryOnly = retained != nil
             self.api = api; authoringSession = session; runtimeManifest = config.manifestSha256; identity = saved
             return try await statusValue()
         }
@@ -2031,7 +2043,7 @@ public actor NativeAutomationSession {
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
-            guard allowed.contains(operation) || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+            guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
         }
@@ -2127,8 +2139,15 @@ public actor NativeAutomationSession {
         let bytes = try encoder.encode(request)
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
-        if firstArchitectureEntry && !["read", "first-architecture-create", "save"].contains(operation) {
-            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        let independentFirstArchitecture = firstArchitectureEntry && AuthoringAPI.supportsOwnerLocalOriginalRuntime(manifest: runtimeManifest)
+        if firstArchitectureEntry {
+            let allowed = independentFirstArchitecture
+                ? ["read", "exhibition-new", "architecture-apply", "save"]
+                : ["read", "first-architecture-create", "save"]
+            guard allowed.contains(operation),
+                  !firstArchitectureRecoveryOnly || ["read", "save"].contains(operation) else {
+                throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
         }
         if current.pending?.origin == NativeAppliedDraftSave.origin && !["read", "applied-draft-save-resume"].contains(operation) {
             throw BridgeFailure("APPLIED_DRAFT_RECOVERY_ONLY")
@@ -2188,10 +2207,44 @@ public actor NativeAutomationSession {
             result = try await executePrivateHost(name, request: request, id: id, context: context, api: api, current: current)
         case "exhibition-new":
             try checkedRevision(request, current)
-            guard installedAuthoringCLI, await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
+            guard installedAuthoringCLI || independentFirstArchitecture,
+                  await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
             var next = current; next.draft = try Self.emptyExhibitionDraft(request, in: current, roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
             try Task.checkCancellation()
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "architecture-apply":
+            let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard installedAuthoringCLI || independentFirstArchitecture, Set(fields.keys) == common, current.pending == nil,
+                  await api.admitsPersonalExhibitionCreation, var draft = current.draft else {
+                throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["edits"])
+            guard let edits = command["edits"].items, (1...64).contains(edits.count) else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            if let etag = current.etag {
+                let saved = try await api.exhibition(draft.id)
+                let policy = try await api.nativeViewportPolicy(draft.id)
+                guard !current.dirty, saved.draft == draft, saved.etag == etag,
+                      policy.etag == etag, policy.revision == saved.revision, policy.confirmsOrdinaryDraft else {
+                    throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+                }
+            } else if current.savedEditVersion != nil {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let before = draft
+            for edit in edits { draft = try NativePrivateHostArchitecture.applying(edit, to: draft) }
+            try Task.checkCancellation()
+            guard try value(await bridge.documentState(context)) == value(current) else {
+                throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED")
+            }
+            var next = current
+            next.draft = draft
+            let staged = try await bridge.saveDocumentState(context, state: next)
+            architectureSaveRecovery = NativeArchitectureSaveRecovery(before: before, staged: draft)
+            if independentFirstArchitecture { firstArchitectureStaged = staged.draft }
+            result = try value(staged)
         case "required-model-original-discover", "required-model-original-status", "required-model-original-approve":
             try checkedRevision(request, current)
             let discovery = operation == "required-model-original-discover"
@@ -2382,12 +2435,13 @@ public actor NativeAutomationSession {
             let requiredPreparationAvailable = await api.admitsRequiredModelPreparation
             let productPreparationAvailable = await api.admitsProductImagePreparation
             let freshPreparationAvailable = await api.admitsFreshImagePreparation
+            let localOriginalAvailable = await api.admitsOwnerLocalOriginalImageCoarse
             guard selectedOEXFormat == nil, !current.dirty,
                   let draft = current.draft, let etag = current.etag,
                   let artworkId = command["artworkId"].string, let jobId = command["jobId"].string,
                   let revision = command["artworkRevision"].integer,
                   let intent = transfer.intent, intent.artworkId == artworkId, transfer.jobId == jobId,
-                  (intent.coarsePreparation != nil && api.admitsSameOwnerArtworkReplacement)
+                  (intent.coarsePreparation.map { $0.approvalId == nil ? localOriginalAvailable : api.admitsSameOwnerArtworkReplacement } == true)
                     || (intent.modelPreparation != nil && requiredPreparationAvailable)
                     || (intent.productImagePreparation.map { $0.isFresh ? freshPreparationAvailable : productPreparationAvailable } == true) else {
                 throw BridgeFailure("IMPORT_INTENT_CHANGED")
@@ -3298,6 +3352,48 @@ public actor NativeAutomationSession {
             let job = try await NativeAutomationArtworkTransfer.run(bridge: bridge, context: context, state: state,
                 intent: intent, file: file, transport: api)
             result = .object(["job": NativeAutomationArtworkRules.jobValue(job), "transfer": try value(await bridge.uploadState(context))])
+        case "artwork-original-image-static-approve":
+            try checkedRevision(request, current)
+            guard selectedOEXFormat == nil, !installedImageCLI, let command = fields["command"] else {
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
+            let input = try NativePublicationOriginalImage(command)
+            result = try await api.approveOriginalImageForStatic(input, in: current)
+        case "artwork-prepare-original-image":
+            try checkedRevision(request, current)
+            let command = try NativeAutomationArtworkRules.command(request,
+                keys: ["artworkId", "artworkRevision", "displaySha256"])
+            guard selectedOEXFormat == nil, !installedImageCLI, !current.dirty, current.pending == nil,
+                  await api.admitsOwnerLocalOriginalImageCoarse,
+                  let path = request["inputPath"].string, let expected = inputs[path],
+                  let artworkId = command["artworkId"].string, let revision = command["artworkRevision"].integer,
+                  (1...2_147_483_647).contains(revision),
+                  let displaySHA256 = command["displaySha256"].string, nativeImportDigest(displaySHA256) else {
+                throw BridgeFailure("IMPORT_ICC_UNAVAILABLE")
+            }
+            let url = URL(fileURLWithPath: path)
+            guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+            let original = try await ImportFileSnapshot.load(url, allowJPEG: true)
+            guard original.mime == "image/jpeg", original.sha256 == expected else {
+                throw BridgeFailure("AUTOMATION_INPUT_CHANGED")
+            }
+            let artwork = try await api.artwork(artworkId)
+            guard artwork.id == artworkId, !artwork.archived, Int64(artwork.revision) == revision,
+                  let metadata = artwork.metadata else { throw BridgeFailure("ARTWORK_SCOPE_CHANGED") }
+            let derived = try await NativePreparedJPEG.prepare(original: original, operationID: id, generation: id,
+                isCurrent: { !Task.isCancelled }, allowICC: true)
+            guard derived.derived.sha256 == displaySHA256, derived.derived.recipe.colourConversion != nil else {
+                throw BridgeFailure("IMPORT_RECEIPT_INVALID")
+            }
+            let state = try await bridge.uploadState(context)
+            try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            let intent = NativeImportIntent(artworkId: artwork.id, idempotencyKey: id, mime: original.mime,
+                sha256: original.sha256, bytes: original.data.count, scaleMeters: 1, rights: metadata.rights,
+                derived: derived.derived, coarsePreparation: .init(artworkRevision: Int(revision)))
+            let job = try await NativeAutomationArtworkTransfer.run(bridge: bridge, context: context, state: state,
+                intent: intent, file: original, derived: derived, transport: api)
+            result = .object(["job": try NativeAutomationArtworkRules.reviewedJobValue(job, intent: intent),
+                              "transfer": try value(await bridge.uploadState(context))])
         case "artwork-status":
             let command = try NativeAutomationArtworkRules.command(request, keys: ["artworkId"])
             guard let artworkId = command["artworkId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
@@ -3309,6 +3405,12 @@ public actor NativeAutomationSession {
                 guard observed.id == job else { throw BridgeFailure("IMPORT_RECEIPT_INVALID") }
                 if intent.productImagePreparation != nil {
                     fields["job"] = try productImageJobValue(observed, intent: intent, current: current)
+                    result = .object(fields)
+                    break
+                }
+                if let coarse = intent.coarsePreparation, coarse.approvalId == nil {
+                    guard await api.admitsOwnerLocalOriginalImageCoarse else { throw BridgeFailure("IMPORT_ICC_UNAVAILABLE") }
+                    fields["job"] = try NativeAutomationArtworkRules.reviewedJobValue(observed, intent: intent)
                     result = .object(fields)
                     break
                 }
@@ -3419,6 +3521,18 @@ public actor NativeAutomationSession {
                   let revision = command["revision"].integer, let assetId = command["assetId"].string else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
             let state = try await bridge.uploadState(context)
             try NativeAutomationArtworkRules.checkUploadScope(state, document: current)
+            if let intent = state.intent, let coarse = intent.coarsePreparation, coarse.approvalId == nil {
+                guard await api.admitsOwnerLocalOriginalImageCoarse, intent.artworkId == artworkId,
+                      Int64(coarse.artworkRevision) == revision, let jobId = state.jobId else {
+                    throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
+                }
+                let job = try await api.importJob(jobId)
+                guard job.id == jobId, job.state == "approved", job.assetId == assetId,
+                      job.confirmsIntakeDrain(for: intent) else { throw BridgeFailure("APPROVAL_REVIEW_REQUIRED") }
+                result = try value(await api.approveOwnerLocalOriginalImage(artworkId: artworkId, revision: Int(revision),
+                    jobId: jobId, intent: intent, assetId: assetId))
+                break
+            }
             guard let intent = state.intent, intent.artworkId == artworkId,
                   intent.mime == "model/gltf-binary" || intent.productImagePreparation?.isFresh == true,
                   !installedImageCLI || intent.productImagePreparation?.isFresh == true,
@@ -3477,8 +3591,20 @@ public actor NativeAutomationSession {
                     throw BridgeFailure("APPROVAL_REVIEW_REQUIRED")
                 }
             }
+            var allowImageRegistration = await api.admitsFreshImagePreparation
+            if !allowImageRegistration, approved.artwork["artworkType"] == .string("image"),
+               await api.admitsOwnerLocalOriginalImageCoarse {
+                let transfer = try await bridge.uploadState(context)
+                try NativeAutomationArtworkRules.checkUploadScope(transfer, document: current)
+                if let intent = transfer.intent, let coarse = intent.coarsePreparation, coarse.approvalId == nil,
+                   intent.artworkId == artworkId, coarse.artworkRevision == revision, let jobId = transfer.jobId {
+                    let job = try await api.importJob(jobId)
+                    allowImageRegistration = job.id == jobId && job.state == "approved"
+                        && job.confirmsIntakeDrain(for: intent) && job.assetId == approved.artwork["primaryAssetId"].string
+                }
+            }
             try NativeAutomationArtworkRules.checkRegistration(approved.artwork, artworkId: artworkId, revision: revision,
-                tenantId: current.tenantId, allowsImage: await api.admitsFreshImagePreparation)
+                tenantId: current.tenantId, allowsImage: allowImageRegistration)
             try draft.addApprovedArtwork(approved.artwork, roomId: room, placementId: placement, transform: command["transform"])
             var next = current; next.draft = draft
             result = try value(await bridge.saveDocumentState(context, state: next))
@@ -3717,14 +3843,27 @@ public actor NativeAutomationSession {
                 // A restarted ordinary operator must retain the original
                 // request/draft/ETag and supply its refreshed current envelope.
                 try Self.checkPendingSaveRequest(request, current, knownRevision: pendingRevisions[id],
-                                                 ordinary: installedImageCLI || installedAuthoringCLI)
+                                                 ordinary: installedImageCLI || installedAuthoringCLI || independentFirstArchitecture)
             } else {
                 try checkedRevision(request, current)
                 next.pending = .init(requestId: id, etag: next.etag, draft: draft)
                 next = try await bridge.saveDocumentState(context, state: next)
                 pendingRevisions[id] = next.revision
             }
-            let saved = try await api.saveExhibition(draft, requestId: id, etag: next.etag)
+            let saved: NativeStudioResponse
+            do {
+                saved = try await api.saveExhibition(draft, requestId: id, etag: next.etag)
+            } catch let error as AuthoringFailure {
+                if !Task.isCancelled,
+                   let correction = architectureSaveRecovery?.correction(after: error, initial: current, pending: next) {
+                    let observed = try await bridge.documentState(context)
+                    guard try value(observed) == value(next) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+                    _ = try await bridge.saveDocumentState(context, state: correction)
+                    pendingRevisions.removeValue(forKey: id)
+                    architectureSaveRecovery = nil
+                }
+                throw error
+            }
             try saved.requireSameComparison(await api.exhibition(draft.id))
             if firstArchitectureEntry {
                 guard next.etag == nil, saved.revision == 1, saved.draft == draft else {
@@ -3733,6 +3872,7 @@ public actor NativeAutomationSession {
             }
             next.draft = saved.draft; next.etag = saved.etag; next.savedEditVersion = saved.draft.document["editVersion"].integer; next.pending = nil
             result = try value(await bridge.saveDocumentState(context, state: next))
+            architectureSaveRecovery = nil
         case "reopen-saved":
             try checkedRevision(request, current)
             result = try await reopenSaved(current, context: context, api: api)
@@ -3848,13 +3988,21 @@ public actor NativeAutomationSession {
             }
             guard !current.dirty, let draft = current.draft, let etag = current.etag, let path = request["outputPath"].string else { throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
             let nativeOriginal = operation == "export-static-native-original"
+            let originalImage: NativePublicationOriginalImage?
             if nativeOriginal {
-                let command = try NativeAutomationArtworkRules.command(request, keys: ["etag"])
+                let hasImage = request["command"]["originalImage"] != .null
+                if hasImage, !(await api.admitsOwnerLocalOriginalImageCoarse) {
+                    throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+                }
+                let command = try NativeAutomationArtworkRules.command(request, keys: hasImage ? ["etag", "originalImage"] : ["etag"])
+                originalImage = try hasImage ? NativePublicationOriginalImage(command["originalImage"]) : nil
                 guard existingWorkspaceV5 != nil, selectedOEXFormat == nil, current.pending == nil,
                       fields["inputPath"] == nil, command["etag"] == .string(etag),
                       authoringSession?.nativePublicationProfile == "bounded-local-v1" else {
                     throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
                 }
+            } else {
+                originalImage = nil
             }
             let destination = URL(fileURLWithPath: path)
             guard destination.path.hasPrefix(root.path + "/"), destination.deletingLastPathComponent().resolvingSymlinksInPath() == root else { throw BridgeFailure("AUTOMATION_OUTPUT_INVALID") }
@@ -3920,7 +4068,8 @@ public actor NativeAutomationSession {
                 guard let snapshotETag = pending.snapshotEtag else { throw BridgeFailure("PUBLICATION_PENDING") }
                 try Task.checkCancellation()
                 try pending.requirePlanBinding(planBinding)
-                frozen = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotETag, requestId: pending.publishRequestId, publicationProfile: publicationProfile)
+                frozen = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotETag,
+                    requestId: pending.publishRequestId, publicationProfile: publicationProfile, originalImage: originalImage)
                 publication.completed = NativePublicationCompleted(pending: pending, publication: frozen); publication.pending = nil
                 publication = try await bridge.savePublicationState(context, state: publication)
             }

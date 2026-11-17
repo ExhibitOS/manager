@@ -161,3 +161,30 @@ enum NativePrivateHostArchitecture {
         return result
     }
 }
+
+/// Allow a correction only when the first ordinary request was rejected before
+/// its transaction could write. An already pending request may have committed.
+struct NativeArchitectureSaveRecovery {
+    let before: NativeExhibitionDraft
+    let staged: NativeExhibitionDraft
+
+    static func retainedFirstSave(in document: NativeDocumentState) -> NativeExhibitionDraft? {
+        guard document.etag == nil, document.savedEditVersion == nil, let draft = document.draft,
+              let pending = document.pending, pending.etag == nil, pending.origin == nil,
+              pending.modelCandidate == nil, pending.productImage == nil, pending.draft == draft,
+              UUID(uuidString: pending.requestId) != nil else { return nil }
+        return draft
+    }
+
+    func correction(after error: AuthoringFailure, initial: NativeDocumentState,
+                    pending: NativeDocumentState) -> NativeDocumentState? {
+        guard error.status == 422, error.code == "DRAFT_INVALID",
+              initial.pending == nil, initial.draft == staged,
+              pending.draft == staged, pending.etag == initial.etag,
+              pending.pending?.origin == nil, pending.pending?.draft == staged else { return nil }
+        var corrected = pending
+        corrected.draft = before
+        corrected.pending = nil
+        return corrected
+    }
+}

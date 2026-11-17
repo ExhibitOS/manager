@@ -43,6 +43,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var workspacePortalRectangularFitProfile: String? = nil
     public var workspaceFurnishingReusableFitProfile: String? = nil
     public var nativeFreshImagePreparationProfile: String? = nil
+    public var nativeOriginalImageCoarseProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
@@ -1100,6 +1101,16 @@ public actor AuthoringAPI {
 
     /// Populated only from the independently qualified immutable producer handoff.
     /// Older model/product-image session profiles never imply this additive route.
+    static let ownerLocalOriginalRuntime = "8282013c72f052aa7eb02df120c13c2a21464343eccf36fadaac567c763b6d4b"
+
+    nonisolated static func supportsOwnerLocalOriginalRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == ownerLocalOriginalRuntime
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsCombinedThumbnailRuntime(manifest: String) -> Bool {
         #if DEBUG
         ["84a7e2f4a59f97b8e71c13b2c0cd6938121437be2113522f4bda306d5d753975",
@@ -1122,6 +1133,7 @@ public actor AuthoringAPI {
          "290fdd125f157e6a7c4578490f33aa205b355772256f1e535e574ffbcb589354",
          "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29",
          "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
+         ownerLocalOriginalRuntime,
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -1671,7 +1683,7 @@ public actor AuthoringAPI {
         guard admitsSameOwnerArtworkReplacement, nativeSession else {
             throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
         }
-        guard let coarse = intent.coarsePreparation, coarse.valid, nativeImportDigest(expectedCoarseSHA256),
+        guard let coarse = intent.coarsePreparation, coarse.approvalId != nil, coarse.valid, nativeImportDigest(expectedCoarseSHA256),
               (1..<2_147_483_647).contains(studioRevision),
               etag.hasPrefix("\"studio-r\(studioRevision)-") else {
             throw AuthoringFailure("IMPORT_INPUT_INVALID")
@@ -1865,6 +1877,11 @@ public actor AuthoringAPI {
     public var admitsProductImagePreparation: Bool {
         admitsWorkspaceMaterials && productImageRuntimeQualified && admitsRequiredModelPreparation
             && session?.nativeProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
+    }
+
+    public var admitsOwnerLocalOriginalImageCoarse: Bool {
+        nativeSession && !authenticationBusy && Self.supportsOwnerLocalOriginalRuntime(manifest: nativeRuntimeManifestSHA256)
+            && session?.nativeOriginalImageCoarseProfile == "viewer-png-box-512-v1"
     }
 
     public var admitsFreshImagePreparation: Bool {
@@ -2089,8 +2106,20 @@ public actor AuthoringAPI {
         return try result.validated()
     }
     public func preparePublication(exhibitionId: String, etag: String, requestId: String, publicationProfile: String? = nil) async throws -> NativePublication {
-        struct Input: Encodable { let requestId: String }
-        let result: NativePublication = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/publications", method: "POST", body: encoded(Input(requestId: identifier(requestId))), ifMatch: etag, publicationProfile: publicationProfile, timeout: 120)
+        try await preparePublication(exhibitionId: exhibitionId, etag: etag, requestId: requestId,
+                                     publicationProfile: publicationProfile, originalImage: nil)
+    }
+    func preparePublication(exhibitionId: String, etag: String, requestId: String, publicationProfile: String?,
+                            originalImage: NativePublicationOriginalImage?) async throws -> NativePublication {
+        guard originalImage == nil || publicationProfile == "native-original-v1" else {
+            throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
+        }
+        struct Input: Encodable {
+            let requestId: String
+            let originalImage: NativePublicationOriginalImage?
+        }
+        let input = Input(requestId: try identifier(requestId), originalImage: originalImage)
+        let result: NativePublication = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/publications", method: "POST", body: encoded(input), ifMatch: etag, publicationProfile: publicationProfile, timeout: 120)
         return try result.validated()
     }
     public func publications(exhibitionId: String) async throws -> [NativePublication] {
@@ -2856,7 +2885,11 @@ public actor AuthoringAPI {
             }
             return job
         }
-        guard input.derived?.recipe.colourConversion == nil || admitsICCJPEG else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
+        let ownerLocalCoarse = input.coarsePreparation.map { $0.approvalId == nil } ?? false
+        guard input.derived?.recipe.colourConversion == nil || admitsICCJPEG
+            || (ownerLocalCoarse && admitsOwnerLocalOriginalImageCoarse) else {
+            throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE")
+        }
         if let preparation = input.modelPreparation {
             guard preparation.isLarge ? admitsLargeModelPreparation : admitsRequiredModelPreparation else {
                 throw AuthoringFailure("IMPORT_MODEL_UNAVAILABLE")
@@ -2864,7 +2897,7 @@ public actor AuthoringAPI {
             guard preparation.matches(input) else { throw AuthoringFailure("IMPORT_INPUT_INVALID") }
         }
         if let coarse = input.coarsePreparation {
-            guard admitsSameOwnerArtworkReplacement, nativeSession else {
+            guard nativeSession, ownerLocalCoarse ? admitsOwnerLocalOriginalImageCoarse : admitsSameOwnerArtworkReplacement else {
                 throw AuthoringFailure("ARTWORK_REPLACEMENT_UNAVAILABLE")
             }
             guard coarse.valid, input.mime == "image/jpeg", input.scaleMeters == 1,
@@ -3976,7 +4009,7 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsPinnedStartupDrain(manifest: String) -> Bool {
         #if DEBUG
-        manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
+        supportsOwnerLocalOriginalRuntime(manifest: manifest) || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
             || supportsPreReadyPreservationReadback(manifest: manifest)
@@ -4352,6 +4385,38 @@ public actor AuthoringAPI {
                   }) == true
               }) else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
         return approved
+    }
+
+    func approveOwnerLocalOriginalImage(artworkId: String, revision: Int, jobId: String,
+                                        intent: NativeImportIntent, assetId: String) async throws -> NativeArtwork {
+        let held = generation
+        let artwork = try await self.artwork(artworkId)
+        guard admitsOwnerLocalOriginalImageCoarse, !artwork.archived, artwork.revision == revision,
+              artwork.metadata?.rights == intent.rights else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
+        struct Approval: Encodable { let revision: Int; let jobId: String }
+        let approved: NativeArtwork = try await request(prefix + "/artworks/" + identifier(artworkId) + "/fresh-image-preparations/approve",
+            method: "POST", body: encoded(Approval(revision: revision, jobId: try identifier(jobId))))
+        let snapshot = try await studioArtwork(artworkId)
+        guard generation == held, admitsOwnerLocalOriginalImageCoarse,
+              approved.id == artworkId, approved.revision == revision, approved.approvedRevision == revision,
+              approved.approvedAssetId == assetId, approved.metadata == artwork.metadata,
+              snapshot.artwork["primaryAssetId"] == .string(assetId),
+              snapshot.artwork["revision"].integer == Int64(revision) else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
+        return approved
+    }
+
+    func approveOriginalImageForStatic(_ input: NativePublicationOriginalImage, in document: NativeDocumentState) async throws -> DocumentValue {
+        guard admitsOwnerLocalOriginalImageCoarse, !document.dirty, document.pending == nil,
+              let draft = document.draft, let etag = document.etag else { throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE") }
+        let held = generation
+        let saved = try await exhibition(draft.id)
+        guard saved.draft == draft, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let approval: DocumentValue = try await request(studioPrefix + "/exhibitions/" + identifier(draft.id) + "/native-original-static-approval",
+            method: "POST", body: encoded(input), ifMatch: etag, timeout: 120)
+        guard generation == held, approval["approved"] == .bool(true), approval["artworkId"] == .string(input.artworkId),
+              approval["artworkRevision"] == .integer(Int64(input.artworkRevision)) else { throw AuthoringFailure("ARTWORK_SCOPE_CHANGED") }
+        try saved.requireSameComparison(await exhibition(draft.id))
+        return approval
     }
 
     public func approveArtwork(_ id: String, revision: Int, assetId: String) async throws -> NativeArtwork {

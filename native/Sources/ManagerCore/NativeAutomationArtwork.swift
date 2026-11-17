@@ -155,6 +155,17 @@ enum NativeAutomationArtworkRules {
         }
         return value
     }
+    static func definitivelyRejectedOwnerLocalCreate(_ error: AuthoringFailure,
+                                                     beganHere: Bool, hasJob: Bool) -> Bool {
+        guard beganHere, !hasJob else { return false }
+        return switch (error.status, error.code) {
+        case (403, "RIGHTS_DENIED"), (409, "PROVISIONAL_ASSET_MISMATCH"), (409, "REVISION_CONFLICT"):
+            true
+        default:
+            NativeProductImagePreparationIntent.definitivelyRejectedCreate(error)
+        }
+    }
+
     static func reviewedJobValue(_ job: NativeImportJob, intent: NativeImportIntent) throws -> DocumentValue {
         guard let coarse = intent.coarsePreparation, let status = job.coarsePreparation,
               status.matches(coarse, job: job), let preparation = job.imagePreparation,
@@ -163,7 +174,7 @@ enum NativeAutomationArtworkRules {
         }
         var wire = jobValue(job)
         wire["coarsePreparation"] = .object([
-            "profile": .string(status.profile), "approvalId": .string(status.approvalId),
+            "profile": .string(status.profile), "approvalId": status.approvalId.map(DocumentValue.string) ?? .null,
             "artworkRevision": .integer(Int64(status.artworkRevision)), "status": .string(status.status),
             "workerDrained": .bool(status.workerDrained), "assetId": status.assetId.map(DocumentValue.string) ?? .null,
             "sha256": status.sha256.map(DocumentValue.string) ?? .null,
@@ -206,8 +217,12 @@ enum NativeAutomationArtworkTransfer {
                 state.jobId = job.id
                 state = try await bridge.saveUploadState(context, state: state)
             }, isCurrent: { !Task.isCancelled })
-        } catch let error as AuthoringFailure where product && NativeProductImagePreparationIntent.definitivelyRejectedCreate(error) {
-            if state.intent == intent, state.jobId == nil, !Task.isCancelled {
+        } catch let error as AuthoringFailure {
+            let rejectedProduct = product && NativeProductImagePreparationIntent.definitivelyRejectedCreate(error)
+            let rejectedOwnerLocal = intent.coarsePreparation.map { $0.approvalId == nil } == true
+                && NativeAutomationArtworkRules.definitivelyRejectedOwnerLocalCreate(error,
+                    beganHere: initial.intent == nil, hasJob: state.jobId != nil)
+            if (rejectedProduct || rejectedOwnerLocal), state.intent == intent, state.jobId == nil, !Task.isCancelled {
                 state.intent = nil; state.fileName = nil
                 _ = try await bridge.saveUploadState(context, state: state)
             }

@@ -120,6 +120,25 @@ public struct NativePublicationCompleted: Codable, Equatable, Sendable {
         throw AuthoringFailure("NATIVE_DETAIL_EXPORT_REPLAY_UNAVAILABLE")
     }
 }
+struct NativePublicationOriginalImage: Encodable, Sendable {
+    let artworkId: String
+    let artworkRevision: Int
+    let importJobId: String
+
+    init(_ value: DocumentValue) throws {
+        guard case .object(let fields) = value,
+              Set(fields.keys) == ["artworkId", "artworkRevision", "importJobId"],
+              let artworkId = value["artworkId"].string, UUID(uuidString: artworkId) != nil,
+              let importJobId = value["importJobId"].string, UUID(uuidString: importJobId) != nil,
+              let revision = value["artworkRevision"].integer, (1...2_147_483_647).contains(revision) else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        self.artworkId = artworkId.lowercased()
+        self.artworkRevision = Int(revision)
+        self.importJobId = importJobId.lowercased()
+    }
+}
+
 /// A separate output attempt for an already published native original, never a publication retry.
 struct NativeOriginalPublicationOutputCommand: Sendable {
     let etag: String, publicationId: String, revisionSha256: String
