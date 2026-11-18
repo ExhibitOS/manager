@@ -14,6 +14,11 @@ designated-requirement, profile and input-pin checks precede the normal fixed-pa
 replacement. The previous fixed app is retained by the existing rename procedure.
 The explicit internal stage remains available for qualification/reproduction;
 a refused partial publication is also retained for owner inspection.
+`prepare --staging-root ... --staged-app ...` can reuse the signed app in that
+root's direct private `.build-*` directory after revalidating source input pins,
+canonical paths, profile, signatures and inventories. It does not reassemble or
+resign the candidate. Symlink modes are copied without following their targets;
+recreated links must match the sealed source just like regular files.
 
 The final publication separately admits changed-file bytes plus 64 MiB clone
 metadata above the destination runtime's existing 3 GiB floor, and refuses if
