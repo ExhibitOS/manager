@@ -303,14 +303,15 @@ public struct LightObjectRequest: Sendable {
         }
         guard candidates.count <= 1 else { throw invalid }
         guard let row = candidates.first else { return nil }
-        let areas = lights.filter { same($0["id"].string, row["lightId"].string) }
+        guard let supplementalId = row["lightId"].string else { throw invalid }
+        let areas = lights.filter { same($0["id"].string, supplementalId) }
         guard areas.count == 1, let area = areas.first, case .object(let settings) = row,
               row["fixture"] == .string("none"), row["basePlacement"] == .string("auto"),
               try RoomCeilingFill.brightness(in: row["ceilingFill"]) == RoomCeilingFill.initialBrightness,
               settings["aim"] == nil, settings["trackAim"] == nil,
               area["type"] == .string("area"), area["unit"] == .string("lumen"),
               area["castsShadow"] == .bool(false), area["targetPlacementId"] == .null,
-              !(try rows(base, namespace: attachments)).contains(where: { same($0["lightId"].string, row["lightId"].string) }),
+              !(try rows(base, namespace: attachments)).contains(where: { same($0["lightId"].string, supplementalId) }),
               let room = base["rooms"].items?.first(where: { same($0["id"].string, roomId) }) else { throw invalid }
         let emitter = try RoomCeilingFill.emitter(dimensions: RoomCeilingFill.dimensions(in: base, room: room),
                                                  brightness: RoomCeilingFill.initialBrightness)
