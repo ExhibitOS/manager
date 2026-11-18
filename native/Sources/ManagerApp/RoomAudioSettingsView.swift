@@ -138,13 +138,14 @@ struct RoomAudioSettingsView: View {
                     } else {
                         Button(audioRequestId == nil ? "오디오 가져오기" : "같은 요청 다시 확인") {
                             guard let audioTarget else { return }
+                            let isFirstAttempt = audioRequestId == nil
                             let id = audioRequestId ?? UUID().uuidString.lowercased()
                             audioRequestId = id
                             let rights = audioRights
                             Task {
                                 audioReceipt = await model.intakeRoomAudio(audioFile, requestId: id, rights: rights,
                                                                           revision: audioTarget.revision)
-                                if audioReceipt == nil,
+                                if isFirstAttempt, audioReceipt == nil,
                                    ["AUDIO_SOURCE_INVALID", "AUDIO_DECLARATION_INVALID"].contains(model.failure?.code ?? "") {
                                     message = model.failure?.localizedDescription ?? ""
                                     audioRequestId = nil
