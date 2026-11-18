@@ -55,6 +55,10 @@ public actor NativeAutomationSession {
     static func checkOrdinarySuccessorOperation(_ operation: String, manifest: String?) throws {
         let voiceCorrection = AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest)
         let floorAndFrames = AuthoringAPI.supportsR203OrdinarySuccessor(manifest: manifest)
+        if operation == "floor-entrance-stone-footsteps-apply" {
+            guard floorAndFrames else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+            return
+        }
         guard voiceCorrection || floorAndFrames else { return }
         switch operation {
         case "read", "reopen-saved":

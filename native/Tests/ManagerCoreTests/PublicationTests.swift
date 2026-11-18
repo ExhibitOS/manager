@@ -16,13 +16,13 @@ final class PublicationTests: XCTestCase {
         XCTAssertFalse(NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: manifest, ready: false))
         XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: manifest, ready: true))
         for operation in ["read", "save", "reopen-saved", "floor-sound-status", "floor-quiet-oak-footsteps-apply",
-                          "workspace-furnishing-list", "workspace-furnishing-read", "workspace-frame-lineage-status",
+                          "floor-entrance-stone-footsteps-apply", "workspace-furnishing-list", "workspace-furnishing-read", "workspace-frame-lineage-status",
                           "workspace-frame-attach", "workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply",
                           "workspace-frame-image-fit-cancel", "saved-head-static-readiness", "export-oex", "export-static-saved-head"] {
             XCTAssertNoThrow(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest), operation)
         }
         for operation in ["placement-voice-apply", "applied-draft-save-resume", "room-audio-approve", "exhibition-new",
-                          "floor-appearance-apply", "floor-entrance-stone-footsteps-apply", "workspace-frame-detach",
+                          "floor-appearance-apply", "workspace-frame-detach",
                           "workspace-frame-lineage-prepare", "workspace-furnishing-update", "workspace-material-list",
                           "private-exhibition-export-static", "export-static", "export-static-native-original",
                           "export-static-native-original-publication"] {
@@ -34,6 +34,27 @@ final class PublicationTests: XCTestCase {
         XCTAssertFalse(AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest))
         XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: manifest))
+    }
+
+    func testEntranceStoneRequiresTheExactOrdinaryRuntime() {
+        let operation = "floor-entrance-stone-footsteps-apply"
+        let manifest = "efd30f7b66ee0babed897af289eecc2df6a1a16275ce4373ec69db8516180e29"
+        let otherRuntimes: [String?] = [
+            nil,
+            AuthoringAPI.r203CorrectedReleaseManifest,
+            AuthoringAPI.r125ApprovedReleaseManifest,
+            "ae894e6fe31a5e751406610e35e0e6a1e67033a9cf7527c588aaf26019b9564a",
+            manifest.uppercased(),
+            "0" + manifest.dropFirst(),
+        ]
+        for other in otherRuntimes {
+            XCTAssertThrowsError(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: other))
+        }
+        #if DEBUG && os(macOS)
+        XCTAssertNoThrow(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest))
+        #else
+        XCTAssertThrowsError(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest))
+        #endif
     }
 
     func testOrdinarySuccessorVoiceScopeRejectsOtherEditsAndSelectedOutput() throws {
