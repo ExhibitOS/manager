@@ -122,12 +122,9 @@ struct NativeRoomAudioPreparation {
 
     static func prepare(_ original: ImportFileSnapshot, profile: URL, requestID: String,
                         scope: DocumentValue) throws -> Self {
-        guard original.mime == "audio/mpeg", let id = UUID(uuidString: requestID) else { throw invalid() }
-        let directory = profile.appendingPathComponent("native-room-audio-" + id.uuidString.lowercased())
-        let binding: DocumentValue = .object([
-            "recipe": .string(recipe), "scope": scope, "originalSha256": .string(original.sha256),
-            "originalBytes": .integer(Int64(original.data.count))
-        ])
+        guard original.mime == "audio/mpeg" else { throw invalid() }
+        let directory = try custodyDirectory(profile: profile, requestID: requestID)
+        let binding = binding(scope: scope, hash: original.sha256, bytes: original.data.count)
         var info = stat()
         if lstat(directory.path, &info) != 0 {
             guard errno == ENOENT else { throw invalid() }
@@ -145,17 +142,40 @@ struct NativeRoomAudioPreparation {
                 throw invalid()
             }
         }
-        guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
-              info.st_mode & 0o777 == 0o700, info.st_uid == getuid() else { throw invalid() }
+        guard let prepared = try resume(profile: profile, requestID: requestID, scope: scope,
+                                        originalHash: original.sha256) else { throw invalid() }
+        return prepared
+    }
+
+    static func resume(profile: URL, requestID: String, scope: DocumentValue, originalHash: String) throws -> Self? {
+        guard nativeImportDigest(originalHash) else { throw invalid() }
+        let directory = try custodyDirectory(profile: profile, requestID: requestID)
+        var info = stat()
+        if lstat(directory.path, &info) != 0 {
+            guard errno == ENOENT else { throw invalid() }
+            return nil
+        }
+        guard info.st_mode & S_IFMT == S_IFDIR, info.st_mode & 0o777 == 0o700,
+              info.st_uid == getuid() else { throw invalid() }
         let stored = try readValue(directory.appendingPathComponent("preparation.json"))
-        guard stored["binding"] == binding,
-              try ImportFileSnapshot.readBytes(directory.appendingPathComponent("original.mp3"),
-                                               limit: byteLimit) == original.data else { throw invalid() }
+        let original = try ImportFileSnapshot.readBytes(directory.appendingPathComponent("original.mp3"), limit: byteLimit)
+        guard stored["binding"] == binding(scope: scope, hash: originalHash, bytes: original.count),
+              ImportFileSnapshot.digest(original) == originalHash else { throw invalid() }
         let wav = ImportFileSnapshot.preparedWAV(try ImportFileSnapshot.readBytes(
             directory.appendingPathComponent("prepared.wav"), limit: byteLimit))
         guard stored["wavSha256"] == .string(wav.sha256), isCanonicalWAV(wav.data) else { throw invalid() }
         try synchronizeDirectory(profile)
         return Self(directory: directory, wav: wav)
+    }
+
+    private static func custodyDirectory(profile: URL, requestID: String) throws -> URL {
+        guard let id = UUID(uuidString: requestID) else { throw invalid() }
+        return profile.appendingPathComponent("native-room-audio-" + id.uuidString.lowercased())
+    }
+
+    private static func binding(scope: DocumentValue, hash: String, bytes: Int) -> DocumentValue {
+        .object(["recipe": .string(recipe), "scope": scope, "originalSha256": .string(hash),
+                 "originalBytes": .integer(Int64(bytes))])
     }
 
     func record(_ receipt: NativeRoomAudioReceipt) throws {

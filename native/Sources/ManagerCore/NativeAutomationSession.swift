@@ -3168,28 +3168,41 @@ public actor NativeAutomationSession {
                 guard let path = request["inputPath"].string, let hash = inputs[path],
                       let requestId = command["requestId"].string else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
                 let url = URL(fileURLWithPath: path)
-                guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
-                let snapshot = try await ImportFileSnapshot.load(url, byteLimit: NativeRoomAudioPreparation.byteLimit,
-                                                                 allowWAV: true, allowMP3: true)
-                guard snapshot.sha256 == hash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
-                if snapshot.mime == "audio/mpeg" {
+                func readPinnedInput(allowMP3: Bool = false) async throws -> ImportFileSnapshot {
+                    guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                    let snapshot = try await ImportFileSnapshot.load(url, byteLimit: NativeRoomAudioPreparation.byteLimit,
+                                                                     allowWAV: true, allowMP3: allowMP3)
+                    guard snapshot.sha256 == hash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+                    return snapshot
+                }
+                if url.pathExtension.lowercased() == "mp3" {
                     guard !current.dirty, current.pending == nil, let draft = current.draft else {
                         throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
                     }
-                    let (_, _, latest) = try await checked(request)
-                    guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
                     let directory = try profileIdentity()
                     let scope: DocumentValue = .object([
                         "workspaceId": .string(current.workspaceId), "tenantId": .string(current.tenantId),
                         "principalId": .string(current.principalId), "exhibitionId": .string(draft.id),
                         "rights": command["rights"]
                     ])
-                    let prepared = try NativeRoomAudioPreparation.prepare(snapshot, profile: profile, requestID: requestId, scope: scope)
+                    let prepared: NativeRoomAudioPreparation
+                    if let retained = try NativeRoomAudioPreparation.resume(profile: profile, requestID: requestId,
+                                                                            scope: scope, originalHash: hash) {
+                        prepared = retained
+                    } else {
+                        let snapshot = try await readPinnedInput(allowMP3: true)
+                        let (_, _, latest) = try await checked(request)
+                        guard try profileIdentity() == directory, try value(latest) == value(current) else {
+                            throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED")
+                        }
+                        prepared = try NativeRoomAudioPreparation.prepare(snapshot, profile: profile, requestID: requestId, scope: scope)
+                    }
                     guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
                     receipt = try await api.intakeRoomAudio(prepared.wav, requestId: requestId, rights: command["rights"], in: current)
                     guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
                     try prepared.record(receipt)
                 } else {
+                    let snapshot = try await readPinnedInput()
                     receipt = try await api.intakeRoomAudio(snapshot, requestId: requestId, rights: command["rights"], in: current)
                 }
             } else {
