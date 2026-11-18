@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -223,6 +224,150 @@ class ManagerValidationGuiTests(unittest.TestCase):
             (legal / "extra.txt").symlink_to(legal / "source.txt")
             with self.assertRaisesRegex(launcher.ValidationError, "Links are not allowed"):
                 launcher.verify_legal_resources(legal, files, inventory=inventory)
+
+
+class InternalPublicationTests(unittest.TestCase):
+    def fixture(self, root):
+        app, candidate, profile = (root / name for name in ("fixed.app", "staged.app", "profile"))
+        profile.mkdir()
+        old = dict(unsignedGUI="a" * 64, unsignedHelper="b" * 64, runtimeManifest="c" * 64)
+        pins = dict(old, unsignedHelper="d" * 64)
+        for bundle, selected in [(app, old), (candidate, pins)]:
+            for relative, data in [(launcher.GUI, b"same GUI"), (launcher.HELPER, selected["unsignedHelper"].encode()),
+                    (launcher.MANIFEST, b"same runtime"), (Path("Contents/Resources/native-runtime/payload"), b"immutable payload"),
+                    (Path("Contents/_CodeSignature/CodeResources"), selected["unsignedHelper"].encode()),
+                    (launcher.INFO, plistlib.dumps({"ExhibitOSValidationInputs": selected}))]:
+                path = bundle / relative; path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data); path.chmod(0o500 if relative in (launcher.GUI, launcher.HELPER) else 0o444)
+            (bundle / "Contents/Resources/native-runtime/alias").symlink_to("payload")
+        return app, candidate, profile, pins
+
+    def test_real_clone_and_atomic_replacement_preserve_fixed_and_match_signed_stage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); app, candidate, profile, pins = self.fixture(root)
+            before = launcher.bundle_inventory(app)
+            with patch.object(launcher, "APP", app), patch.object(launcher, "verify_bundle"):
+                launcher.clone_publication(candidate, root / "publication.app", profile, pins)
+            published = root / "publication.app"
+            self.assertEqual(launcher.bundle_inventory(app), before)
+            self.assertEqual(launcher.bundle_inventory(published), launcher.bundle_inventory(candidate))
+            for relative in (launcher.HELPER, launcher.MANIFEST):
+                self.assertNotEqual((app / relative).stat().st_ino, (published / relative).stat().st_ino)
+                self.assertEqual((app / relative).stat().st_nlink, 1)
+
+    def test_clone_failure_never_falls_back_or_changes_current(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); app, candidate, profile, pins = self.fixture(root)
+            before = launcher.bundle_inventory(app)
+            with patch.object(launcher, "APP", app), patch.object(launcher, "verify_bundle"), \
+                 patch.object(launcher, "clone_file", side_effect=launcher.ValidationError("clone refused")), \
+                 patch.object(launcher.shutil, "copy2") as copy:
+                with self.assertRaisesRegex(launcher.ValidationError, "clone refused"):
+                    launcher.clone_publication(candidate, root / "publication.app", profile, pins)
+                copy.assert_not_called()
+            self.assertEqual(launcher.bundle_inventory(app), before)
+
+    def test_runtime_inventory_pin_and_space_drift_refuse_before_clone(self):
+        for mutation in ("runtime", "inventory", "pin", "space"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve(); app, candidate, profile, pins = self.fixture(root)
+                before = launcher.bundle_inventory(app)
+                if mutation == "runtime":
+                    target = candidate / launcher.MANIFEST; target.chmod(0o600); target.write_bytes(b"changed")
+                elif mutation == "inventory": (candidate / "extra").write_bytes(b"extra")
+                elif mutation == "pin": pins["runtimeManifest"] = "e" * 64
+                free = 3 * 1024 ** 3 if mutation == "space" else 20 * 1024 ** 3
+                with patch.object(launcher, "APP", app), patch.object(launcher, "verify_bundle"), \
+                     patch.object(launcher.shutil, "disk_usage", return_value=shutil._ntuple_diskusage(0, 0, free)), \
+                     patch.object(launcher, "clone_bundle") as clone:
+                    with self.assertRaises(launcher.ValidationError):
+                        launcher.clone_publication(candidate, root / "publication.app", profile, pins)
+                    clone.assert_not_called()
+                self.assertEqual(launcher.bundle_inventory(app), before)
+
+    def test_bad_clone_inventory_refuses_before_replacing_entries(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); app, candidate, profile, pins = self.fixture(root)
+            before = launcher.bundle_inventory(app)
+            def bad_clone(source, destination):
+                shutil.copytree(source, destination)
+                (destination / "extra").write_bytes(b"corrupt")
+            with patch.object(launcher, "APP", app), patch.object(launcher, "verify_bundle"), \
+                 patch.object(launcher, "clone_bundle", side_effect=bad_clone), patch.object(launcher.shutil, "copy2") as copy:
+                with self.assertRaisesRegex(launcher.ValidationError, "cloned fixed bundle differs"):
+                    launcher.clone_publication(candidate, root / "publication.app", profile, pins)
+                copy.assert_not_called()
+            self.assertEqual(launcher.bundle_inventory(app), before)
+
+    def test_internal_prepare_publishes_at_fixed_path_and_retains_old_bundle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); app, profile, runtime, staging = (root / name for name in ("fixed.app", "profile", "runtime", "staging"))
+            for path in (profile, runtime, staging): path.mkdir(mode=0o700)
+            (runtime / "manifest.json").write_text('{"mode":"local-validation","redistributionQualified":false}')
+            gui, old_helper, helper = (root / name for name in ("gui", "old-helper", "helper"))
+            for path, data in [(gui, b"GUI fixture"), (old_helper, b"old helper fixture"), (helper, b"new helper fixture")]:
+                path.write_bytes(data); path.chmod(0o500)
+            old_pins = dict(unsignedGUI=launcher.sha(gui), unsignedHelper=launcher.sha(old_helper), runtimeManifest=launcher.sha(runtime / "manifest.json"))
+            pins = dict(old_pins, unsignedHelper=launcher.sha(helper))
+            def run(*args):
+                if args[0] == "/usr/bin/python3":
+                    return subprocess.check_output([sys.executable, "-B", *args[3:]], text=True)
+                self.assertEqual(args[:4], (launcher.CODESIGN, "--force", "--sign", launcher.CERT))
+                target = Path(args[-1])
+                if target.is_dir():
+                    signature = target / "Contents/_CodeSignature/CodeResources"
+                    signature.parent.mkdir(); signature.write_text(launcher.sha(target / launcher.HELPER))
+                return ""
+            with patch.object(launcher, "APP", app), patch.object(launcher, "output", side_effect=run), \
+                 patch.object(launcher, "verify_signature"), patch.object(launcher, "pids", return_value=set()), \
+                 patch.object(launcher, "launch_services_has_app", return_value=False):
+                launcher.prepare(profile, old_pins, gui, old_helper, runtime)
+                before = launcher.bundle_inventory(app)
+                launcher.prepare(profile, pins, gui, helper, runtime, staging_root=staging)
+                launcher.verify_bundle(app, profile, pins)
+            retained, = root.glob("retained-*.app")
+            self.assertEqual(launcher.bundle_inventory(retained), before)
+            self.assertEqual((app / launcher.HELPER).read_bytes(), helper.read_bytes())
+            stage, = staging.iterdir()
+            self.assertEqual(launcher.bundle_inventory(stage / app.name), launcher.bundle_inventory(app))
+            self.assertEqual(list(root.glob(".publish-*")), [])
+
+    def test_staging_floor_and_redirect_refuse_before_assembly(self):
+        for mutation in ("floor", "redirect", "permissions"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve(); app, candidate, profile, _ = self.fixture(root)
+                before = launcher.bundle_inventory(app)
+                gui, helper, runtime = candidate / launcher.GUI, candidate / launcher.HELPER, candidate / launcher.MANIFEST.parent
+                pins = dict(unsignedGUI=launcher.sha(gui), unsignedHelper=launcher.sha(helper), runtimeManifest=launcher.sha(runtime / "manifest.json"))
+                staging = root / "staging"; staging.mkdir(mode=0o700)
+                if mutation == "redirect":
+                    link = root / "link"; link.symlink_to(staging); staging = link
+                elif mutation == "permissions": staging.chmod(0o755)
+                free = 6 * 1024 ** 3 if mutation == "floor" else 20 * 1024 ** 3
+                with patch.object(launcher, "APP", app), patch.object(launcher, "pids", return_value=set()), \
+                     patch.object(launcher, "launch_services_has_app", return_value=False), \
+                     patch.object(launcher, "verify_bundle", side_effect=launcher.ValidationError("old pins")), \
+                     patch.object(launcher.shutil, "disk_usage", return_value=shutil._ntuple_diskusage(0, 0, free)), \
+                     patch.object(launcher, "output") as run:
+                    with self.assertRaises(launcher.ValidationError):
+                        launcher.prepare(profile, pins, gui, helper, runtime, staging_root=staging)
+                    run.assert_not_called()
+                self.assertEqual(launcher.bundle_inventory(app), before)
+
+    def test_escaping_symlink_refuses_inventory(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); app, _, _, _ = self.fixture(root)
+            (app / "escape").symlink_to(root / "outside")
+            with self.assertRaisesRegex(launcher.ValidationError, "links must remain"):
+                launcher.bundle_inventory(app)
+
+    def test_clonefile_syscall_failure_has_no_copy_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve(); source = root / "source"; source.write_bytes(b"same")
+            destination = root / "existing"; destination.write_bytes(b"preserve")
+            with self.assertRaisesRegex(launcher.ValidationError, "clonefile refused"):
+                launcher.clone_file(source, destination)
+            self.assertEqual(destination.read_bytes(), b"preserve")
 
 
 class ManagerSceneCaptureTests(unittest.TestCase):

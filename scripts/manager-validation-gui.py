@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prepare and launch the approved, fixed local Manager validation app."""
 import argparse
+import ctypes
 from contextlib import ExitStack
 import fcntl
 import hashlib
@@ -222,7 +223,106 @@ def check_return(bundle, profile, pins, receipt_path):
     return {**receipt, "returnVerified": True, "innerProfileLeasesAvailable": True}
 
 
-def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, scene_capture_cli=False):
+def bundle_inventory(bundle):
+    """Compare copied signatures/resources byte-for-byte, independently of inodes."""
+    rows = {}
+    for path in sorted(bundle.rglob("*")):
+        info = path.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        if stat.S_ISLNK(info.st_mode):
+            link = os.readlink(path)
+            require(not Path(link).is_absolute() and path.resolve().is_relative_to(bundle),
+                    "Bundle links must remain within the reviewed bundle.")
+            row = ("link", mode, link)
+        elif stat.S_ISDIR(info.st_mode):
+            row = ("directory", mode)
+        else:
+            require(stat.S_ISREG(info.st_mode) and info.st_nlink == 1,
+                    "Bundle publication requires regular, unlinked files.")
+            row = ("file", mode, info.st_size, sha(path))
+        rows[path.relative_to(bundle)] = row
+    return rows
+
+
+def clone_file(source, destination):
+    # cp -c can silently fall back to copyfile. Call clonefile directly instead.
+    try:
+        clone = ctypes.CDLL(None, use_errno=True).clonefile
+    except AttributeError:
+        raise ValidationError("clonefile is unavailable; no full-copy fallback is allowed.") from None
+    clone.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32)
+    clone.restype = ctypes.c_int
+    # CLONE_NOFOLLOW | CLONE_ACL, from sys/clonefile.h.
+    if clone(os.fsencode(source), os.fsencode(destination), 0x0001 | 0x0004) != 0:
+        raise ValidationError("clonefile refused publication: " + os.strerror(ctypes.get_errno()))
+
+
+def clone_bundle(source, destination):
+    require(source.stat().st_dev == destination.parent.stat().st_dev,
+            "Clone publication requires the same physical filesystem.")
+    destination.mkdir(mode=0o700)
+    directories = [(source, destination)]
+    for path in sorted(source.rglob("*")):
+        target = destination / path.relative_to(source)
+        if path.is_symlink():
+            target.symlink_to(os.readlink(path))
+        elif path.is_dir():
+            target.mkdir(mode=0o700)
+            directories.append((path, target))
+        else:
+            require(path.is_file(), "Unexpected clone source entry.")
+            clone_file(path, target)
+    for source_directory, target in reversed(directories):
+        shutil.copystat(source_directory, target, follow_symlinks=False)
+
+
+def clone_publication(candidate, destination, profile, pins):
+    """Publish an unchanged runtime without a full-copy fallback on low space."""
+    require(APP.is_dir() and APP.resolve() == APP, "Internal staging requires the existing fixed bundle.")
+    old_pins = plistlib.loads((APP / INFO).read_bytes()).get("ExhibitOSValidationInputs")
+    require(isinstance(old_pins, dict) and all(old_pins.get(key) == pins.get(key)
+            for key in ("unsignedGUI", "runtimeManifest", "legalInventory")),
+            "Internal staging requires unchanged reviewed GUI/runtime/legal inputs.")
+    verify_bundle(APP, profile, old_pins)
+    before, expected = bundle_inventory(APP), bundle_inventory(candidate)
+    require(before.keys() == expected.keys(), "Internal publication cannot change the resource inventory.")
+    changed = [name for name in expected if before[name] != expected[name]]
+    allowed = {GUI, HELPER, INFO, Path("Contents/_CodeSignature/CodeResources")}
+    require(all(name in allowed and before[name][0] == expected[name][0] == "file" for name in changed),
+            "Internal publication may replace only the signed executables, Info and signature record.")
+    # Assembly retains its 6 GiB floor on staging storage. This distinct final
+    # publication allocates only changed files plus bounded clone metadata and
+    # retains the existing runtime's 3 GiB floor on the destination volume.
+    additional = sum(expected[name][2] for name in changed) + 64 * 1024 ** 2
+    available_before = shutil.disk_usage(APP.parent).free
+    require(available_before >= 3 * 1024 ** 3 + additional,
+            "Insufficient destination headroom for bounded clone publication.")
+    clone_bundle(APP, destination)  # Direct clonefile calls; refuse on any failure.
+    require(bundle_inventory(destination) == before, "The cloned fixed bundle differs from its source.")
+    require(available_before - shutil.disk_usage(APP.parent).free <= 64 * 1024 ** 2
+            and shutil.disk_usage(APP.parent).free >= 3 * 1024 ** 3 + additional - 64 * 1024 ** 2,
+            "Clone metadata exceeded its publication allocation; retain the current bundle.")
+    for name in changed:
+        # Replace a private clone entry, never write through shared extents or
+        # alter the still-current bundle. The signed candidate supplies its mode.
+        target = destination / name
+        with tempfile.NamedTemporaryFile(prefix=".replace-", dir=target.parent, delete=False) as file:
+            temporary = Path(file.name)
+        try:
+            shutil.copy2(candidate / name, temporary)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    require(bundle_inventory(destination) == expected, "Published bundle differs from the signed staged candidate.")
+    verify_bundle(destination, profile, pins)
+    require(bundle_inventory(APP) == before, "The current bundle changed during publication.")
+    verify_bundle(APP, profile, old_pins)
+    require(shutil.disk_usage(APP.parent).free >= 3 * 1024 ** 3
+            and available_before - shutil.disk_usage(APP.parent).free <= additional,
+            "Destination headroom or declared allocation changed during publication; retain the current bundle.")
+
+
+def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, scene_capture_cli=False, staging_root=None):
     pinned_legal = "legalInventory" in pins
     require((legal is not None) == pinned_legal and (inventory is not None) == pinned_legal,
             "Legal resources, inventory and its reviewed SHA-256 must be supplied together.")
@@ -247,9 +347,24 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, sce
     if legal is not None:
         inventory_bytes, legal_files = read_legal_inventory(inventory, pins["legalInventory"])
         verify_legal_resources(legal, legal_files, inventory=inventory)
+    if staging_root is not None:
+        require(staging_root.is_absolute() and staging_root.resolve(strict=True) == staging_root
+                and staging_root.is_dir() and staging_root.stat().st_uid == os.getuid()
+                and stat.S_IMODE(staging_root.stat().st_mode) == 0o700,
+                "Use an existing canonical, private owned staging directory.")
+        sources = [runtime] + ([legal] if legal is not None else [])
+        additional = gui.stat().st_size + helper.stat().st_size + 64 * 1024 ** 2
+        additional += sum(path.stat().st_size for source in sources for path in source.rglob("*")
+                          if path.is_file() and not path.is_symlink())
+        require(shutil.disk_usage(staging_root).free >= 6 * 1024 ** 3 + additional,
+                "Insufficient staging space above the retained 6 GiB assembly floor.")
     producer = Path(__file__).resolve().with_name("package-native-preview.py")
-    with tempfile.TemporaryDirectory(prefix=".build-", dir=APP.parent) as temporary:
-        scratch = Path(temporary)
+    with ExitStack() as temporary_stack:
+        # Explicit job staging is retained for qualification/reproduction, also
+        # on failure. Its sealed runtime directories may intentionally be 0555.
+        scratch = Path(tempfile.mkdtemp(prefix=".build-", dir=staging_root)) if staging_root is not None else Path(
+            temporary_stack.enter_context(tempfile.TemporaryDirectory(prefix=".build-", dir=APP.parent)))
+        publication_root = None
         candidate = scratch / APP.name
         output("/usr/bin/python3", "-I", "-B", str(producer), "--app", str(candidate),
                "--swift-executable", str(gui), "--rust-helper", str(helper),
@@ -275,6 +390,15 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, sce
         output(CODESIGN, "--force", "--sign", CERT, str(candidate / HELPER))
         output(CODESIGN, "--force", "--sign", CERT, str(candidate))
         verify_bundle(candidate, profile, pins)
+        if staging_root is not None:
+            require(shutil.disk_usage(staging_root).free >= 6 * 1024 ** 3,
+                    "Assembly exceeded its retained 6 GiB staging floor.")
+            # Preserve a refused partial clone for bounded owner inspection;
+            # never chmod/delete sealed resources while handling a failure.
+            publication_root = Path(tempfile.mkdtemp(prefix=".publish-", dir=APP.parent))
+            publication = publication_root / APP.name
+            clone_publication(candidate, publication, profile, pins)
+            candidate = publication
         require(not pids() and not launch_services_has_app(),
                 "The validation app opened during preparation. Quit it normally before installing the signed bundle.")
         previous = None
@@ -283,6 +407,8 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, sce
             APP.rename(previous)
         try:
             candidate.rename(APP)
+            if publication_root is not None:
+                publication_root.rmdir()  # Empty after the successful rename.
         except OSError:
             if previous is not None and not APP.exists():
                 previous.rename(APP)
@@ -422,8 +548,10 @@ def main():
     parser.add_argument("--launch-receipt", type=Path)
     parser.add_argument("--request", type=Path)
     parser.add_argument("--scene-capture-cli", action="store_true")
+    parser.add_argument("--staging-root", type=Path, help="Prepare only: private assembly storage; same-runtime clone publication.")
     args = parser.parse_args()
     try:
+        require(args.staging_root is None or args.action == "prepare", "--staging-root is prepare-only.")
         require(not args.scene_capture_cli or args.action == "prepare", "--scene-capture-cli is a reviewed prepare-only admission.")
         require((args.request is not None) == (args.action == "capture"), "Only capture requires --request.")
         require(args.owner is None or (args.action == "launch" and valid_owner(args.owner)),
@@ -457,7 +585,8 @@ def main():
             if args.action == "prepare":
                 require(args.profile.resolve(strict=True) == args.profile and args.profile.is_dir(),
                         "Use the canonical existing validation profile.")
-                prepare(args.profile, pins, args.gui, args.helper, args.runtime, *legal_paths, scene_capture_cli=args.scene_capture_cli)
+                prepare(args.profile, pins, args.gui, args.helper, args.runtime, *legal_paths,
+                        scene_capture_cli=args.scene_capture_cli, staging_root=args.staging_root)
             result = dict(app=str(APP), bundleId=BUNDLE_ID, profile=str(args.profile), pins=pins)
             if args.action == "capture":
                 result = capture(args.app, args.profile, pins, args.request)
