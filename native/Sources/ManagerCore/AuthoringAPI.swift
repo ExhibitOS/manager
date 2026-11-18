@@ -670,6 +670,7 @@ public actor AuthoringAPI {
         workspacePortalFinishRuntimeQualified = portalQualified || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
+            || Self.supportsDefault119CleanFurnishingRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
             || Self.supportsBenchBaseColorPreparationRuntime(manifest: manifest)
@@ -3323,6 +3324,14 @@ public actor AuthoringAPI {
         guard (1...2_147_483_647).contains(version) else { throw AuthoringFailure("MATERIAL_DECLARATION") }
         return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version), catalogRead: catalogRead)
     }
+    nonisolated static func supportsDefault119CleanFurnishingRuntime(manifest: String) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7"
+        #else
+        false
+        #endif
+    }
+
     public var admitsWorkspaceFurnishings: Bool {
         workspaceFurnishingRuntimeQualified && nativeSession && !authenticationBusy
             && session?.workspaceFurnishingProfile == "workspace-furnishing-intake-v1"
@@ -3372,7 +3381,8 @@ public actor AuthoringAPI {
     public var admitsWorkspaceStraightMiterFrameFit: Bool {
         admitsWorkspaceArtworkFrames && session?.advertisesWorkspaceArtworkFrameModels == true
             && session?.workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
-            && Self.supportsStraightMiterFrameRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && (Self.supportsStraightMiterFrameRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+                || Self.supportsDefault119CleanFurnishingRuntime(manifest: nativeRuntimeManifestSHA256 ?? ""))
     }
 
     private var admitsWorkspaceArtworkFramePreparation: Bool {
