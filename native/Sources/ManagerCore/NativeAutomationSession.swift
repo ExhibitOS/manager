@@ -220,11 +220,16 @@ public actor NativeAutomationSession {
         try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot)
     }
 
-    public init(installedAuthoringCLIHelper helper: URL, profile: URL, outputRoot: URL) throws {
-        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot, authoring: true)
+    public init(installedAuthoringCLIHelper helper: URL, profile: URL, outputRoot: URL,
+                audioInputs: [String: String] = [:]) throws {
+        guard audioInputs.count <= 1, audioInputs.allSatisfy({ path, hash in
+            path.hasPrefix("/") && URL(fileURLWithPath: path).path == path && nativeImportDigest(hash)
+        }) else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true,
+                      exportRoot: outputRoot, authoring: true, audioInputs: audioInputs)
     }
 
-    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?, authoring: Bool = false) throws {
+    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?, authoring: Bool = false, audioInputs: [String: String] = [:]) throws {
         var metadata = stat()
         if lstat(profile.path, &metadata) != 0 && errno == ENOENT {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
@@ -235,7 +240,7 @@ public actor NativeAutomationSession {
         self.root = exportRoot ?? profile
         self.temporaryRoot = profile
         self.ports = [:]
-        self.inputs = [:]
+        self.inputs = audioInputs
         self.installedAuthoringCLI = authoring
         self.installedImageCLI = exportRoot == nil
         self.installedExportRootIdentity = try exportRoot.map { try Self.exportRootIdentity($0, profile: profile) }
@@ -2093,7 +2098,7 @@ public actor NativeAutomationSession {
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
         if installedAuthoringCLI {
-            let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
+            let allowed: Set<String> = ["room-audio-intake", "room-audio-status", "room-audio-approve", "workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))

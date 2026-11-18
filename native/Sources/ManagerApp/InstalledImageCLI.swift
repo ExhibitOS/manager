@@ -49,18 +49,19 @@ enum InstalledImageCLI {
     }
 
     static func runExport(_ arguments: [String], authoring: Bool = false) async -> Int32 {
-        let usage = "Usage: ExhibitOSManager \(authoring ? "--authoring-cli" : "--export-cli") --profile ABSOLUTE_PATH --output-root ABSOLUTE_PATH"
+        let usage = "Usage: ExhibitOSManager \(authoring ? "--authoring-cli" : "--export-cli") --profile ABSOLUTE_PATH --output-root ABSOLUTE_PATH\(authoring ? " [--audio-input ABSOLUTE_PATH --audio-sha256 SHA256]" : "")"
         if arguments == ["--help"] {
             print("""
                 \(usage)
-                Commands: \(authoring ? "read, exhibition-new, architecture-apply, save, reopen-saved, pedestal/light/plaque-prepare, -apply, -cancel, thumbnail-prepare, thumbnail-status, thumbnail-select." : "read, export-oex, export-static, export-static-status.")
+                Commands: \(authoring ? "read, exhibition-new, architecture-apply, save, reopen-saved, pedestal/light/plaque-prepare, -apply, -cancel, thumbnail-prepare, thumbnail-status, thumbnail-select, room-audio-intake, room-audio-status, room-audio-approve." : "read, export-oex, export-static, export-static-status.")
                 Send one JSON request per line.
                 Use a saved personal workspace and a separate owner-only output directory on the same volume.
                 End stdin to close and drain the owned runtime.
                 """)
             return 0
         }
-        guard arguments.count == 4, arguments[0] == "--profile", arguments[1].hasPrefix("/"),
+        guard (arguments.count == 4 || (authoring && arguments.count == 8)),
+              arguments[0] == "--profile", arguments[1].hasPrefix("/"),
               arguments[2] == "--output-root", arguments[3].hasPrefix("/") else {
             FileHandle.standardError.write(Data((usage + "\n").utf8))
             return 2
@@ -70,10 +71,22 @@ enum InstalledImageCLI {
             report(BridgeFailure("AUTOMATION_OUTPUT_INVALID"))
             return 2
         }
-        return await run(profilePath: arguments[1], outputRoot: output, authoring: authoring)
+        var audioInputs: [String: String] = [:]
+        if arguments.count == 8 {
+            let path = arguments[5], hash = arguments[7]
+            guard arguments[4] == "--audio-input", arguments[6] == "--audio-sha256",
+                  path.hasPrefix("/"), URL(fileURLWithPath: path).path == path,
+                  hash.utf8.count == 64, hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                report(BridgeFailure("AUTOMATION_INPUT_INVALID"))
+                return 2
+            }
+            audioInputs[path] = hash
+        }
+        return await run(profilePath: arguments[1], outputRoot: output, authoring: authoring, audioInputs: audioInputs)
     }
 
-    private static func run(profilePath: String?, outputRoot: URL? = nil, authoring: Bool = false) async -> Int32 {
+    private static func run(profilePath: String?, outputRoot: URL? = nil, authoring: Bool = false,
+                            audioInputs: [String: String] = [:]) async -> Int32 {
         // Let the CLI cancel the request and close the pipe. The helper retains
         // its own signal and EOF shutdown paths.
         signal(SIGPIPE, SIG_IGN)
@@ -81,7 +94,7 @@ enum InstalledImageCLI {
             signal(number, SIG_IGN)
             return DispatchSource.makeSignalSource(signal: number, queue: .global())
         }
-        let task = Task { await runSession(profilePath: profilePath, outputRoot: outputRoot, authoring: authoring) }
+        let task = Task { await runSession(profilePath: profilePath, outputRoot: outputRoot, authoring: authoring, audioInputs: audioInputs) }
         for source in signals {
             source.setEventHandler { task.cancel() }
             source.resume()
@@ -91,7 +104,8 @@ enum InstalledImageCLI {
         return status
     }
 
-    private static func runSession(profilePath: String?, outputRoot: URL?, authoring: Bool) async -> Int32 {
+    private static func runSession(profilePath: String?, outputRoot: URL?, authoring: Bool,
+                                   audioInputs: [String: String]) async -> Int32 {
         var session: NativeAutomationSession?
         var status: Int32 = 0
         do {
@@ -112,7 +126,8 @@ enum InstalledImageCLI {
             }
             let owner: NativeAutomationSession
             if authoring, let outputRoot {
-                owner = try NativeAutomationSession(installedAuthoringCLIHelper: helper, profile: profile, outputRoot: outputRoot)
+                owner = try NativeAutomationSession(installedAuthoringCLIHelper: helper, profile: profile,
+                                                    outputRoot: outputRoot, audioInputs: audioInputs)
             } else if let outputRoot {
                 owner = try NativeAutomationSession(installedExportCLIHelper: helper, profile: profile, outputRoot: outputRoot)
             } else {
