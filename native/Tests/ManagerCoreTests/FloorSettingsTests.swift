@@ -141,6 +141,67 @@ final class FloorSettingsTests: XCTestCase {
         XCTAssertEqual(draft, before)
     }
 
+    func testEntranceStoneOnlyChangesLegacyFootstepsAndDoesNotDeclareABank() throws {
+        var (draft, target) = try fixture()
+        let surface = try XCTUnwrap(draft.candidate["surfaces"].items?.first?["id"].string)
+        let material = UUID().uuidString.lowercased()
+        var candidate = draft.candidate
+        candidate["extensions"][WorkspaceFloorMaterialBinding.namespace] = .object([
+            "version": .integer(1),
+            "bindings": .array([.object(["surfaceId": .string(surface), "materialId": .string(material),
+                "materialVersion": .integer(1), "repeatMeters": .vector([1, 1]), "rotation": .integer(0)])]),
+            "materials": .array([.object(["id": .string(material), "version": .integer(1), "kind": .string("floor"),
+                "maps": .object(["color": .object(["sha256": .string(ConcreteFootsteps.entranceStoneColorSHA256)])])])])
+        ])
+        candidate["extensions"][ConcreteFootsteps.resourceNamespace] = .object([
+            "version": .integer(1), "families": .array([.string("concrete"), .string("wood")])
+        ])
+        let namespace = ConcreteFootsteps.experienceNamespace
+        candidate["extensions"][namespace] = .object([
+            "version": .integer(1), "footsteps": .array([]), "voices": .array([]),
+            "annotations": .array([]), "rooms": .array([]), "translations": .array([]),
+            "audioDefaults": .object(["footstepsOn": .bool(false)])
+        ])
+        try draft.replaceCandidate(candidate)
+        let before = draft
+        var expected = candidate
+        expected["extensions"][namespace]["footsteps"] = .array([
+            .object(["surfaceId": .string(surface), "material": .string("stone")])
+        ])
+        XCTAssertEqual(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target), expected)
+        let sound = try FloorSettings.soundStatus(target: target, candidate: expected)
+        XCTAssertEqual(sound.mode, .legacy)
+        XCTAssertEqual(sound.source, .procedural)
+        XCTAssertEqual(sound.material, "stone")
+        try draft.replaceCandidate(expected)
+        XCTAssertThrowsError(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+        try draft.restoreEditHistory(before)
+        XCTAssertEqual(draft.candidate, before.candidate)
+        XCTAssertEqual(try FloorSettings.soundStatus(target: target, candidate: draft.candidate).mode, .fallback)
+
+        let asset = UUID().uuidString.lowercased()
+        candidate["mediaAssets"] = .array([.object(["id": .string(asset), "mime": .string("audio/wav")])])
+        try draft.replaceCandidate(candidate)
+        let floor = try preset(.tile, draft: draft, target: target)
+        for assignment: DocumentValue in [
+            .object(["mode": .string("explicit"), "gain": .number(0.4), "assetIds": .array([.string(asset)])]),
+            .object(["mode": .string("none"), "gain": .number(0)])
+        ] {
+            try draft.setFloor(floor.replacing(.sound, with: assignment, candidate: draft.candidate), target: target)
+            let configured = draft
+            XCTAssertThrowsError(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+            XCTAssertEqual(draft, configured)
+        }
+        try draft.restoreEditHistory(before)
+        var other = before.candidate
+        let lookup = WorkspaceFloorMaterialBinding.namespace
+        var badBinding = try XCTUnwrap(other["extensions"][lookup]["bindings"].items?.first)
+        badBinding["materialVersion"] = .integer(2)
+        other["extensions"][lookup]["bindings"] = .array([badBinding])
+        try draft.replaceCandidate(other)
+        XCTAssertThrowsError(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+    }
+
     func testWholePresetWritesAppearanceAndSoundWithCanonicalReferenceAndNoop() throws {
         var (draft, target) = try fixture()
         let noBinding = draft

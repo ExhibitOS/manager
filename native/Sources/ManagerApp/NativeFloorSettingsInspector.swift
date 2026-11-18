@@ -18,8 +18,12 @@ struct NativeFloorSettingsInspector: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let selection = model.floor.recordedFootsteps {
-                let name = selection == .quietOak ? "목재 발소리" : "콘크리트 발소리"
+            if let selection = model.floor.footstepSelection {
+                let name = switch selection {
+                case .concrete: "콘크리트 발소리"
+                case .quietOak: "목재 발소리"
+                case .entranceStone: "석재 합성 발소리"
+                }
                 Text("선택한 바닥의 " + name + " 적용 전 확인입니다. 바닥 외관과 다른 소리는 유지합니다.")
                 Text("관람객의 소리 끄기·음량 설정이 우선합니다. 여기서는 소리를 자동 재생하지 않습니다.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -51,11 +55,14 @@ struct NativeFloorSettingsInspector: View {
             } else if model.privateFloorLoadFailed {
                 Button("헤링본 재질 목록 다시 확인") { Task { await model.loadPrivateFloorCatalog() } }
             }
-            if ready && model.canStageRecordedFootsteps(.quietOak) {
-                Button("승인된 목재 발소리 입력") { model.stageRecordedFootsteps(.quietOak) }
+            if ready && model.canStageFootsteps(.quietOak) {
+                Button("승인된 목재 발소리 입력") { model.stageFootsteps(.quietOak) }
             }
-            Button("승인된 콘크리트 발소리 입력") { model.stageRecordedFootsteps(.concrete) }
-                .disabled(!ready || !model.canStageRecordedFootsteps(.concrete))
+            if ready && model.canStageFootsteps(.entranceStone) {
+                Button("석재 합성 발소리 입력") { model.stageFootsteps(.entranceStone) }
+            }
+            Button("승인된 콘크리트 발소리 입력") { model.stageFootsteps(.concrete) }
+                .disabled(!ready || !model.canStageFootsteps(.concrete))
             Text("선택한 바닥의 발소리를 승인된 녹음으로 바꿉니다. 바닥 외관은 유지합니다. 바닥 재질의 소리 설정이 있으면 변경할 수 없습니다.")
                 .font(.caption).foregroundStyle(.secondary)
             }

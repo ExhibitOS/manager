@@ -151,6 +151,10 @@ Operations:
   the matching revision and edit version, a ready qualified audio runtime and
   no existing floor or legacy footstep assignment. The response contains
   `document`. Use ordinary Save separately.
+- `floor-entrance-stone-footsteps-apply` uses the same target, ETag, revision
+  and separate Save. It requires the selected surface's reviewed Entrance
+  material v1 and adds only a procedural stone footstep entry. It leaves
+  existing floor and legacy sound choices in place and declares no sound bank.
 - `floor-appearance-apply` accepts `roomId` and `surfaceId` in `command` plus
   exactly one selection. Use `preset` (`wood`, `marble`, `tile` or `carpet`)
   for the existing presets. Use `catalog: {"id":"quiet-oak-herringbone","version":1}`

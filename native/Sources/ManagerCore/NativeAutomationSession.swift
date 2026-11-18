@@ -1019,8 +1019,8 @@ public actor NativeAutomationSession {
         try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: state)
         return policy
     }
-    private func applyQuietOakFootsteps(_ request: DocumentValue, context: Context, api: AuthoringAPI,
-                                        current: NativeDocumentState) async throws -> DocumentValue {
+    private func applyFloorFootsteps(_ request: DocumentValue, context: Context, api: AuthoringAPI,
+                                     current: NativeDocumentState, requireRecordedWood: Bool) async throws -> DocumentValue {
         try checkedRevision(request, current)
         guard selectedOEXFormat == nil, var draft = current.draft, let etag = current.etag else {
             throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
@@ -1028,13 +1028,16 @@ public actor NativeAutomationSession {
         let command = try NativeAutomationArtworkRules.command(request, keys: ["target", "etag"])
         guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
         let target = try FloorSettings.target(command["target"])
-        let policy = try await checkSavedSurfacePolicy(current, api: api)
-        guard policy.revision == current.revision else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
-        let status = try await bridge.nativeStatus(context)
-        let manifest = status.configuration?.manifestSha256
-        let available = manifest == runtimeManifest && NativeFloorAudioRuntime.supports(
-            manifestSHA256: manifest, ready: status.runtime?.readiness.ready == true)
-        try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: available)
+        try await checkSavedSurfacePolicy(current, api: api)
+        if requireRecordedWood {
+            let status = try await bridge.nativeStatus(context)
+            let manifest = status.configuration?.manifestSha256
+            let available = manifest == runtimeManifest && NativeFloorAudioRuntime.supports(
+                manifestSHA256: manifest, ready: status.runtime?.readiness.ready == true)
+            try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: available)
+        } else {
+            try draft.replaceCandidate(ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+        }
         let (_, _, refreshed) = try await checked(request)
         try Task.checkCancellation()
         guard try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
@@ -2240,7 +2243,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
             }
         }
-        if ["artwork-placement-move", "artwork-interpretation-set", "procedural-frame-set", "floor-sound-status", "floor-quiet-oak-footsteps-apply"].contains(operation) {
+        if ["artwork-placement-move", "artwork-interpretation-set", "procedural-frame-set", "floor-sound-status", "floor-quiet-oak-footsteps-apply", "floor-entrance-stone-footsteps-apply"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
@@ -3346,8 +3349,9 @@ public actor NativeAutomationSession {
             let command = try NativeAutomationArtworkRules.command(request, keys: ["target"])
             let target = try FloorSettings.target(command["target"])
             result = try FloorSettings.soundStatus(target: target, candidate: draft.candidate).value
-        case "floor-quiet-oak-footsteps-apply":
-            result = try await applyQuietOakFootsteps(request, context: context, api: api, current: current)
+        case "floor-quiet-oak-footsteps-apply", "floor-entrance-stone-footsteps-apply":
+            result = try await applyFloorFootsteps(request, context: context, api: api, current: current,
+                                                    requireRecordedWood: operation == "floor-quiet-oak-footsteps-apply")
         case "floor-appearance-apply":
             try checkedRevision(request, current)
             let policy = try await checkSavedSurfacePolicy(current, api: api)

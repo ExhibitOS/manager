@@ -58,10 +58,12 @@ struct FloorSettingsView: View {
         case .none: return "발소리 없음"
         case .explicit: return "직접 선택한 WAV" + level
         case .legacy:
+            let materials = ["wood": "목재", "stone": "석재", "concrete": "콘크리트", "carpet": "카펫", "metal": "금속"]
+            let name = soundStatus.material.flatMap { materials[$0] } ?? "기존 재질"
             switch soundStatus.source {
-            case .publication: return "기존에 지정한 녹음" + level
-            case .builtin: return "기존 재질의 기본 녹음"
-            default: return "기존 재질 · 합성 발소리"
+            case .publication: return name + " · 기존 지정 녹음" + level
+            case .builtin: return name + " · 기본 녹음"
+            default: return name + " · 합성 발소리"
             }
         case .materialDefault:
             let material = soundStatus.material.flatMap(FloorSettings.Preset.init(rawValue:)).map(presetName)

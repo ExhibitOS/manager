@@ -12,9 +12,9 @@ public struct FloorFormBuffer: Equatable, Sendable {
     public var soundMode: String?
     public var assetIds: [String]
     public var restoreLegacy = false
-    public enum RecordedFootsteps: Equatable, Sendable { case concrete, quietOak }
+    public enum FootstepSelection: Equatable, Sendable { case concrete, quietOak, entranceStone }
     /// Explicitly staged sound-only edit; never inferred from a material preset.
-    public var recordedFootsteps: RecordedFootsteps?
+    public var footstepSelection: FootstepSelection?
     /// Transient explicit choice, never inferred from a previously saved sound.
     public private(set) var materialSoundChosen = false
     public private(set) var soundChoiceRevision: UInt64 = 0
