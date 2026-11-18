@@ -602,6 +602,45 @@ public actor NativeAutomationSession {
               request["expectedRevision"].integer == Int64(state.revision),
               request["expectedEditVersion"] == (state.draft?.document["editVersion"] ?? .null) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
     }
+
+    static func preparePlacementVoiceApply(_ request: DocumentValue, using api: AuthoringAPI,
+                                           in current: NativeDocumentState) async throws -> NativePlacementVoicePreview {
+        let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId",
+                                 "principalId", "expectedRevision", "expectedEditVersion", "retainSaveIntent", "command"]
+        guard case .object(let fields) = request, Set(fields.keys) == keys,
+              request["retainSaveIntent"] == .bool(true),
+              let requestId = request["requestId"].string,
+              UUID(uuidString: requestId)?.uuidString.lowercased() == requestId else {
+            throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
+        }
+        guard request["workspaceId"] == .string(current.workspaceId),
+              request["tenantId"] == .string(current.tenantId),
+              request["principalId"] == .string(current.principalId) else {
+            throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+        }
+        try checkDocumentRevision(request, current)
+        let command = try NativeAutomationArtworkRules.command(request,
+            keys: ["etag", "placementId", "audioId", "locale", "transcript", "expectedMediaAsset"])
+        guard let placementId = command["placementId"].string,
+              UUID(uuidString: placementId)?.uuidString.lowercased() == placementId,
+              let audioId = command["audioId"].string,
+              UUID(uuidString: audioId)?.uuidString.lowercased() == audioId,
+              let locale = command["locale"].string, let transcript = command["transcript"].string,
+              case .object = command["expectedMediaAsset"] else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        guard let etag = current.etag, command["etag"] == .string(etag) else {
+            throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        guard await api.admitsSavedHeadAuthoring else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let audio = try await api.roomAudioStatus(audioId, expectedMedia: command["expectedMediaAsset"], in: current)
+        let binding = try NativePlacementVoice(placementId: placementId, locale: locale, transcript: transcript,
+                                               approvedAudio: audio)
+        return try await binding.prepare(using: api, in: current)
+    }
+
     private func thumbnailCandidate(_ request: DocumentValue, id: String, context: Context,
                                     api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
         try checkedRevision(request, current)
@@ -3184,6 +3223,20 @@ public actor NativeAutomationSession {
             let (_, _, latest) = try await checked(request)
             guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
             result = .object(["audio": receipt.value, "document": try value(current)])
+        case "placement-voice-apply":
+            guard existingWorkspaceV5 != nil, selectedOEXFormat == nil else {
+                throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+            let preview = try await Self.preparePlacementVoiceApply(request, using: api, in: current)
+            let (_, _, latest) = try await checked(request)
+            let next = try preview.applying(to: latest, requestId: id)
+            try Task.checkCancellation()
+            // Same-session Save recovers the exact journaled body from this response.
+            if preview.changed {
+                result = try value(await bridge.saveDocumentState(context, state: next))
+            } else {
+                result = try value(latest)
+            }
         case "room-audio-apply":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["roomId", "etag", "settings"])

@@ -5,7 +5,10 @@ import Foundation
 /// The caller's original intent is an input, not a second recovery journal.
 enum NativeAppliedDraftSave {
     static let origin = "automation-applied-draft-v1"
-    static let applyOperations: Set<String> = ["pedestal-apply", "light-apply", "fixture-apply", "light-attachment-apply", "light-object-apply"]
+    static let applyOperations: Set<String> = [
+        "pedestal-apply", "light-apply", "fixture-apply", "light-attachment-apply", "light-object-apply",
+        "placement-voice-apply"
+    ]
 
     struct Anchor: Equatable, Sendable {
         let requestId: String, workspaceId: String, tenantId: String, principalId: String
