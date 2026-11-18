@@ -329,6 +329,7 @@ mod tests {
     use std::os::unix::fs::DirBuilderExt;
 
     struct Synthetic {
+        root: PathBuf,
         profile: PathBuf,
         service: PathBuf,
         owner_hash: String,
@@ -348,10 +349,12 @@ mod tests {
 
     impl Synthetic {
         fn new() -> Self {
-            let profile = fs::canonicalize(std::env::temp_dir())
+            let root = fs::canonicalize(std::env::temp_dir())
                 .unwrap()
                 .join(format!("exhibitos-rebind-test-{}", uuid::Uuid::new_v4()));
+            let profile = root.join("profile");
             let service = profile.join("local-runtime");
+            DirBuilder::new().mode(0o700).create(&root).unwrap();
             DirBuilder::new().mode(0o700).create(&profile).unwrap();
             DirBuilder::new().mode(0o700).create(&service).unwrap();
             let id = "bb4b11b4-1cb7-4310-af04-1bdb8911905e";
@@ -364,12 +367,33 @@ mod tests {
             .unwrap();
             private_file(&service, RECORD, &owner);
             private_file(&service, "runtime.env", b"unchanged");
+            let registry = serde_json::to_vec(&serde_json::json!({
+                "format": 1, "activeId": id,
+                "installations": [{"id": id, "kind": "default", "createdAt": 1}],
+            }))
+            .unwrap();
+            private_file(&profile, "installation-selection.json", &registry);
+            let document = serde_json::to_vec(&serde_json::json!({
+                "format": 1, "revision": 514, "workspaceId": id, "tenantId": id, "principalId": id,
+                "draft": {"kind": "exhibition-draft", "schemaVersion": "1.0.0-draft.2",
+                    "id": id, "exhibitionId": id, "editVersion": 234, "candidate": {
+                        "kind": "exhibition-revision", "schemaVersion": "1.0.0-draft.2", "id": id}},
+                "etag": format!("\"studio-r178-{}\"", "a".repeat(64)),
+                "savedEditVersion": 234, "pending": null,
+            }))
+            .unwrap();
+            let new_key = digest(service.as_os_str().as_encoded_bytes());
             let journals = JOURNALS
                 .iter()
                 .enumerate()
                 .map(|(i, (kind, limit))| {
-                    let names = [format!("{kind}-old.json"), format!("{kind}-new.json")];
-                    let body = [i as u8];
+                    let names = [format!("{kind}-old.json"), format!("{kind}-{new_key}.json")];
+                    let filler = [i as u8];
+                    let body = if i == 0 {
+                        document.as_slice()
+                    } else {
+                        filler.as_slice()
+                    };
                     private_file(&profile, &names[0], &body);
                     Journal {
                         names,
@@ -379,6 +403,7 @@ mod tests {
                 })
                 .collect();
             Self {
+                root,
                 profile,
                 service,
                 owner_hash: digest(&owner),
@@ -389,71 +414,126 @@ mod tests {
 
     impl Drop for Synthetic {
         fn drop(&mut self) {
-            fs::remove_dir_all(&self.profile).unwrap();
+            fs::remove_dir_all(&self.root).unwrap();
         }
     }
 
     #[test]
     fn r178_rebind_interrupted_after_each_rename_resumes_or_rolls_back() {
-        for moved in 0..=JOURNALS.len() {
-            for destination in [false, true] {
-                let t = Synthetic::new();
-                let manager = LifecycleService::bound_existing(t.service.clone()).unwrap();
-                let identity = manager.personal_identity().unwrap();
-                let owner_inode = fs::metadata(t.service.join(RECORD)).unwrap().ino();
-                let journal_inodes: Vec<_> = t
-                    .journals
-                    .iter()
-                    .map(|entry| fs::metadata(t.profile.join(&entry.names[0])).unwrap().ino())
-                    .collect();
-                let profile = DirectoryPin::open(&t.profile).unwrap();
-                let service = DirectoryPin::open(&t.service).unwrap();
-                rename_exclusive(&service, RECORD, FENCE).unwrap();
-                for entry in t.journals.iter().take(moved) {
-                    rename_exclusive(&profile, &entry.names[0], &entry.names[1]).unwrap();
-                }
-                assert!(manager.personal_identity().is_err());
-                move_journals(
-                    &t.profile,
-                    &t.service,
-                    &t.journals,
-                    &t.owner_hash,
-                    destination,
-                )
-                .unwrap();
-                assert_eq!(manager.personal_identity().unwrap(), identity);
-                assert_eq!(
-                    fs::metadata(t.service.join(RECORD)).unwrap().ino(),
-                    owner_inode
-                );
-                assert!(!t.service.join(FENCE).exists());
-                for (entry, inode) in t.journals.iter().zip(journal_inodes) {
-                    assert_eq!(entry.location(&t.profile).unwrap(), destination);
+        for start_at_destination in [false, true] {
+            for moved in 0..=JOURNALS.len() {
+                for destination in [false, true] {
+                    let t = Synthetic::new();
+                    let manager = LifecycleService::bound_existing(t.service.clone()).unwrap();
+                    let identity = manager.personal_identity().unwrap();
+                    let owner_inode = fs::metadata(t.service.join(RECORD)).unwrap().ino();
+                    let journal_inodes: Vec<_> = t
+                        .journals
+                        .iter()
+                        .map(|entry| fs::metadata(t.profile.join(&entry.names[0])).unwrap().ino())
+                        .collect();
+                    let profile = DirectoryPin::open(&t.profile).unwrap();
+                    let service = DirectoryPin::open(&t.service).unwrap();
+                    if start_at_destination {
+                        move_journals(&t.profile, &t.service, &t.journals, &t.owner_hash, true)
+                            .unwrap();
+                    }
+                    rename_exclusive(&service, RECORD, FENCE).unwrap();
+                    for entry in t.journals.iter().take(moved) {
+                        rename_exclusive(
+                            &profile,
+                            &entry.names[usize::from(start_at_destination)],
+                            &entry.names[usize::from(!start_at_destination)],
+                        )
+                        .unwrap();
+                    }
+                    assert!(manager.personal_identity().is_err());
+                    {
+                        let controller =
+                            InstallationController::open_existing_managed(t.profile.clone())
+                                .unwrap();
+                        let token = controller.context().unwrap().selection_token;
+                        assert!(controller.native_document(&token).is_err());
+                        assert!(crate::profile_backup::session_lock(&t.profile, true).is_err());
+                    }
+                    move_journals(
+                        &t.profile,
+                        &t.service,
+                        &t.journals,
+                        &t.owner_hash,
+                        destination,
+                    )
+                    .unwrap();
+                    assert_eq!(manager.personal_identity().unwrap(), identity);
                     assert_eq!(
-                        digest(&entry.bytes(&t.profile, destination).unwrap()),
-                        entry.digest
+                        fs::metadata(t.service.join(RECORD)).unwrap().ino(),
+                        owner_inode
                     );
+                    assert!(!t.service.join(FENCE).exists());
+                    for (entry, inode) in t.journals.iter().zip(journal_inodes) {
+                        assert_eq!(entry.location(&t.profile).unwrap(), destination);
+                        assert_eq!(
+                            digest(&entry.bytes(&t.profile, destination).unwrap()),
+                            entry.digest
+                        );
+                        assert_eq!(
+                            fs::metadata(t.profile.join(&entry.names[usize::from(destination)]))
+                                .unwrap()
+                                .ino(),
+                            inode
+                        );
+                    }
                     assert_eq!(
-                        fs::metadata(t.profile.join(&entry.names[usize::from(destination)]))
-                            .unwrap()
-                            .ino(),
-                        inode
+                        fs::read(t.service.join("runtime.env")).unwrap(),
+                        b"unchanged"
                     );
+                    {
+                        let controller =
+                            InstallationController::open_existing_managed(t.profile.clone())
+                                .unwrap();
+                        let token = controller.context().unwrap().selection_token;
+                        let document = controller.native_document(&token).unwrap();
+                        if destination {
+                            assert_eq!(
+                                (document.revision, document.saved_edit_version),
+                                (514, Some(234))
+                            );
+                        } else {
+                            assert!(document.draft.is_none());
+                        }
+                    }
+                    move_journals(
+                        &t.profile,
+                        &t.service,
+                        &t.journals,
+                        &t.owner_hash,
+                        destination,
+                    )
+                    .unwrap();
                 }
-                assert_eq!(
-                    fs::read(t.service.join("runtime.env")).unwrap(),
-                    b"unchanged"
-                );
-                move_journals(
-                    &t.profile,
-                    &t.service,
-                    &t.journals,
-                    &t.owner_hash,
-                    destination,
-                )
-                .unwrap();
             }
         }
+    }
+
+    #[test]
+    fn r178_rebind_unrelated_path_is_rejected_before_lock_creation() {
+        let t = Synthetic::new();
+        let error = rebind_r178_workspace(
+            &t.profile,
+            &t.root.join("old"),
+            &t.root.join("checkpoint"),
+            &t.root.join("checkpoint.key"),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "NATIVE_R178_REBIND_UNAVAILABLE");
+        assert_eq!(fs::read_dir(&t.root).unwrap().count(), 1);
+        assert!(!t.profile.join("profile-session.lock").exists());
+        assert!(
+            t.journals
+                .iter()
+                .all(|entry| !entry.location(&t.profile).unwrap())
+        );
     }
 
     #[test]
