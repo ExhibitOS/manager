@@ -144,6 +144,15 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: target))
         XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: target))
         XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: target, ready: true))
+        XCTAssertNoThrow(try NativeAutomationSession.checkUpperFramingOutputOperation(
+            manifest: target, operation: "export-static-saved-head"))
+        for operation in ["private-exhibition-export-static", "export-static-native-original",
+                          "export-static-native-original-publication"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkUpperFramingOutputOperation(
+                manifest: target, operation: operation))
+            XCTAssertNoThrow(try NativeAutomationSession.checkUpperFramingOutputOperation(
+                manifest: parent, operation: operation))
+        }
         for denied in ["0" + String(target.dropFirst()), target.uppercased()] {
             XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: denied))
             XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: denied))
