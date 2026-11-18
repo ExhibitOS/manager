@@ -792,11 +792,8 @@ final class ExhibitionModel: ObservableObject {
     var floorTarget: FloorSettings.Target? { floorTargets.first { $0.key == floorTargetKey } }
     var floorCurrentValues: [FloorSettings.Field: DocumentValue] {
         guard let draft, let target = floorTarget else { return [:] }
-        let legacySound = draft.candidate["extensions"]["org.exhibitos.viewer/experience"]["footsteps"].items?.first(where: { target.kind == .surface && $0["surfaceId"].string?.lowercased() == target.id.lowercased() })
         if let settings = (try? floor.value(candidate: draft.candidate)) ?? floor.settings {
-            var values = (try? settings.effectiveAppearance(candidate: draft.candidate)) ?? [:]
-            values[.sound] = settings.value["sound"] == .null ? legacySound : settings.value["sound"]
-            return values
+            return (try? settings.effectiveAppearance(candidate: draft.candidate)) ?? [:]
         }
         var values: [FloorSettings.Field: DocumentValue] = [:]
         if target.kind == .surface {
@@ -804,9 +801,13 @@ final class ExhibitionModel: ObservableObject {
                let material = materials.first(where: { $0.key.lowercased() == target.id.lowercased() })?.value {
                 for field in [FloorSettings.Field.color, .roughness, .metalness] { values[field] = material[field.rawValue] }
             }
-            values[.sound] = draft.candidate["extensions"]["org.exhibitos.viewer/experience"]["footsteps"].items?.first(where: { $0["surfaceId"].string?.lowercased() == target.id.lowercased() })
         }
         return values
+    }
+
+    var floorSoundStatus: FloorSettings.SoundStatus? {
+        guard let draft, let target = floorTarget else { return nil }
+        return try? FloorSettings.soundStatus(target: target, candidate: draft.candidate)
     }
 
     var floorCustomized: Set<FloorSettings.Field> {
@@ -2826,21 +2827,39 @@ final class ExhibitionModel: ObservableObject {
     }
     func previewFloor() { guard canEditFloor else { return }; refreshFloorPreview() }
     private func setFloorCandidate(_ next: inout NativeExhibitionDraft, target: FloorSettings.Target) throws {
-        if floor.concreteFootstepsRequested {
-            try next.replaceCandidate(ConcreteFootsteps.proposedCandidate(in: next, target: target, resourcesAvailable: floorAudioRuntimeAvailable))
+        if let selection = floor.footstepSelection {
+            try setSelectedFootsteps(selection, in: &next, target: target)
             return
         }
         let settings = try floor.value(candidate: next.candidate)
         let declare = try floor.declareSoundResources(available: floorAudioRuntimeAvailable, requiresQualifiedRuntime: floorAudioIntentBound)
         try next.setFloor(settings, target: target, declareDefaultSound: declare)
     }
-    var canStageConcreteFootsteps: Bool {
-        guard canEditFloor, !floorDirty, floorAudioRuntimeAvailable, let draft, let target = floorTarget else { return false }
-        return (try? ConcreteFootsteps.proposedCandidate(in: draft, target: target, resourcesAvailable: true)) != nil
+    private func setSelectedFootsteps(_ selection: FloorFormBuffer.FootstepSelection, in draft: inout NativeExhibitionDraft,
+                                      target: FloorSettings.Target) throws {
+        switch selection {
+        case .concrete:
+            try draft.replaceCandidate(ConcreteFootsteps.proposedCandidate(in: draft, target: target, resourcesAvailable: floorAudioRuntimeAvailable))
+        case .quietOak:
+            guard state?.dirty == false else { throw AuthoringFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+            try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: floorAudioRuntimeAvailable)
+        case .entranceStone:
+            guard state?.dirty == false else { throw AuthoringFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
+            try draft.replaceCandidate(ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+        }
     }
-    func stageConcreteFootsteps() {
-        guard canStageConcreteFootsteps else { return }
-        var fields = floor; fields.concreteFootstepsRequested = true; floor = fields
+    func canStageFootsteps(_ selection: FloorFormBuffer.FootstepSelection) -> Bool {
+        guard canEditFloor, !floorDirty, var draft, let target = floorTarget else { return false }
+        do {
+            try setSelectedFootsteps(selection, in: &draft, target: target)
+            return true
+        } catch { return false }
+    }
+    func stageFootsteps(_ selection: FloorFormBuffer.FootstepSelection) {
+        guard canStageFootsteps(selection) else { return }
+        var fields = floor
+        fields.footstepSelection = selection
+        floor = fields
     }
     func stageFloorPreset(_ preset: FloorSettings.Preset, fields: Set<FloorSettings.Field>) {
         stageFloorMaterial(preset, defaults: FloorSettings.defaults(preset), fields: fields)

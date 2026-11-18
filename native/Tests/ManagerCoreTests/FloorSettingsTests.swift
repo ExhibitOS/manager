@@ -25,6 +25,224 @@ final class FloorSettingsTests: XCTestCase {
         XCTAssertNil(NativePrivateFloorCatalog.defaults[.sound])
     }
 
+    func testEffectiveSoundReadbackRespectsBindingsAndLegacyPrecedence() throws {
+        var (draft, target) = try fixture()
+        let floor = try preset(.tile, draft: draft, target: target)
+        let status = { (value: NativeExhibitionDraft) in
+            try FloorSettings.soundStatus(target: target, candidate: value.candidate)
+        }
+        XCTAssertEqual(try status(draft).mode, .fallback)
+        try draft.setFloor(floor, target: target)
+        XCTAssertEqual(try status(draft).mode, .materialDefault)
+        XCTAssertEqual(try status(draft).source, .procedural)
+        try draft.setFloor(floor, target: target, declareDefaultSound: true)
+        XCTAssertEqual(try status(draft).source, .builtin)
+
+        let id = UUID().uuidString.lowercased()
+        var candidate = draft.candidate
+        candidate["mediaAssets"] = .array([.object(["id": .string(id), "mime": .string("audio/wav")])])
+        candidate["extensions"][ConcreteFootsteps.experienceNamespace] = .object(["footsteps": .array([
+            .object(["surfaceId": .string(target.id), "material": .string("wood"),
+                     "bank": .array([.object(["assetId": .string(id)])])])
+        ])])
+        try draft.replaceCandidate(candidate)
+        let before = draft
+        XCTAssertEqual(try status(draft).mode, .legacy)
+        XCTAssertEqual(try status(draft).source, .publication)
+        XCTAssertEqual(try status(draft).material, "wood")
+        XCTAssertEqual(draft, before)
+
+        let explicit = try floor.replacing(.sound, with: .object([
+            "mode": .string("explicit"), "gain": .number(0.25), "assetIds": .array([.string(id)])
+        ]), candidate: draft.candidate)
+        try draft.setFloor(explicit, target: target)
+        XCTAssertEqual(try status(draft).mode, .explicit)
+        XCTAssertEqual(try status(draft).gain, 0.25)
+        let muted = try floor.replacing(.sound, with: .object([
+            "mode": .string("none"), "gain": .number(1)
+        ]), candidate: draft.candidate)
+        try draft.setFloor(muted, target: target)
+        XCTAssertEqual(try status(draft).mode, .none)
+        XCTAssertEqual(try status(draft).gain, 0)
+        XCTAssertNil(try status(draft).source)
+
+        let roomBase = FloorSettings.Target(kind: .roomBase, id: draft.rooms[0]["id"].string!)
+        XCTAssertEqual(try FloorSettings.soundStatus(target: roomBase, candidate: draft.candidate).mode, .inactive)
+        XCTAssertThrowsError(try FloorSettings.soundStatus(target: .init(kind: .surface, id: UUID().uuidString),
+                                                          candidate: draft.candidate))
+    }
+
+    func testQuietOakSoundOnlyApplyAndHistoryRestore() throws {
+        var (draft, target) = try fixture()
+        let room = try XCTUnwrap(draft.rooms[0]["id"].string)
+        let surface = try XCTUnwrap(draft.candidate["surfaces"].items?.first?["id"].string)
+        try draft.applyFloorAppearance(.wood, roomId: room, surfaceId: surface, defaults: NativePrivateFloorCatalog.defaults)
+        var candidate = draft.candidate
+        candidate["extensions"][ConcreteFootsteps.resourceNamespace] = .object([
+            "version": .integer(1), "families": .array([.string("concrete")])
+        ])
+        candidate["extensions"][ConcreteFootsteps.experienceNamespace] = .object([
+            "footsteps": .array([]), "audioDefaults": .object(["footstepsOn": .bool(false)])
+        ])
+        try draft.replaceCandidate(candidate)
+        let before = draft
+        XCTAssertThrowsError(try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: false))
+        XCTAssertEqual(draft, before)
+
+        try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true)
+        var expected = before.candidate
+        let floor = try XCTUnwrap(FloorSettings.read(from: before, target: target))
+        var row = floor.value
+        row["sound"] = .object(["mode": .string("material-default"), "gain": .number(1)])
+        expected["extensions"][FloorSettings.namespace]["bindings"] = .array([row])
+        expected["extensions"][ConcreteFootsteps.resourceNamespace]["families"] = .array([.string("concrete"), .string("wood")])
+        XCTAssertEqual(draft.candidate, expected)
+        XCTAssertEqual(try FloorSettings.soundStatus(target: target, candidate: draft.candidate).source, .builtin)
+        let applied = draft
+        XCTAssertThrowsError(try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true))
+        XCTAssertEqual(draft, applied)
+        try draft.restoreEditHistory(before)
+        XCTAssertEqual(draft.candidate, before.candidate)
+        try draft.restoreEditHistory(applied)
+        XCTAssertEqual(draft.candidate, applied.candidate)
+    }
+
+    func testQuietOakSoundOnlyRefusesExplicitMuteAndLegacyChoices() throws {
+        var (draft, target) = try fixture()
+        let room = try XCTUnwrap(draft.rooms[0]["id"].string)
+        let surface = try XCTUnwrap(draft.candidate["surfaces"].items?.first?["id"].string)
+        let ordinaryWood = try preset(.wood, draft: draft, target: target, fields: [.texturePack])
+        try draft.setFloor(ordinaryWood, target: target)
+        XCTAssertThrowsError(try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true))
+        try draft.applyFloorAppearance(.wood, roomId: room, surfaceId: surface, defaults: NativePrivateFloorCatalog.defaults)
+        let asset = UUID().uuidString.lowercased()
+        var candidate = draft.candidate
+        candidate["mediaAssets"] = .array([.object(["id": .string(asset), "mime": .string("audio/wav")])])
+        try draft.replaceCandidate(candidate)
+        let floor = try XCTUnwrap(FloorSettings.read(from: draft, target: target))
+        for assignment: DocumentValue in [
+            .object(["mode": .string("explicit"), "gain": .number(1), "assetIds": .array([.string(asset)])]),
+            .object(["mode": .string("none"), "gain": .number(0)])
+        ] {
+            let settings = try floor.replacing(.sound, with: assignment, candidate: draft.candidate)
+            try draft.setFloor(settings, target: target)
+            let before = draft
+            XCTAssertThrowsError(try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true))
+            XCTAssertEqual(draft, before)
+        }
+        try draft.setFloor(floor, target: target)
+        candidate = draft.candidate
+        candidate["extensions"][ConcreteFootsteps.experienceNamespace] = .object(["footsteps": .array([
+            .object(["surfaceId": .string(surface), "material": .string("concrete")])
+        ])])
+        try draft.replaceCandidate(candidate)
+        let before = draft
+        XCTAssertThrowsError(try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true))
+        XCTAssertEqual(draft, before)
+    }
+
+    func testQuietOakWriteRefusesToChangeAnotherFloorsEffectiveWoodSound() throws {
+        var (draft, target) = try fixture()
+        let room = try XCTUnwrap(draft.rooms[0]["id"].string)
+        let surface = try XCTUnwrap(draft.candidate["surfaces"].items?.first?["id"].string)
+        try draft.applyFloorAppearance(.wood, roomId: room, surfaceId: surface, defaults: NativePrivateFloorCatalog.defaults)
+        let other = FloorSettings.Target(kind: .surface, id: UUID().uuidString.lowercased())
+        var candidate = draft.candidate
+        candidate["surfaces"] = .array(try XCTUnwrap(candidate["surfaces"].items) + [
+            .object(["id": .string(other.id), "type": .string("floor"), "roomId": .string(room)])
+        ])
+        try draft.replaceCandidate(candidate)
+        let wood = try preset(.wood, draft: draft, target: other)
+        try draft.setFloor(wood, target: other)
+        XCTAssertEqual(try FloorSettings.soundStatus(target: other, candidate: draft.candidate).source, .procedural)
+        let before = draft
+        XCTAssertThrowsError(try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true))
+        XCTAssertEqual(draft, before)
+
+        try draft.setFloor(wood, target: other, declareDefaultSound: true)
+        let otherSound = try FloorSettings.soundStatus(target: other, candidate: draft.candidate)
+        XCTAssertEqual(otherSound.source, .builtin)
+        try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true)
+        XCTAssertEqual(try FloorSettings.soundStatus(target: other, candidate: draft.candidate), otherSound)
+    }
+
+    func testEntranceStoneOnlyChangesLegacyFootstepsAndDoesNotDeclareABank() throws {
+        var (draft, target) = try fixture()
+        let surface = try XCTUnwrap(draft.candidate["surfaces"].items?.first?["id"].string)
+        let material = UUID().uuidString.lowercased()
+        let color = String(repeating: "a", count: 64)
+        let expectedMaterial = try ConcreteFootsteps.entranceMaterialCommitment(id: material, version: 1, colorSHA256: color)
+        let candidateForStone = { (draft: NativeExhibitionDraft) in
+            try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target, expectedMaterial: expectedMaterial)
+        }
+        var candidate = draft.candidate
+        candidate["extensions"][WorkspaceFloorMaterialBinding.namespace] = .object([
+            "version": .integer(1),
+            "bindings": .array([.object(["surfaceId": .string(surface), "materialId": .string(material),
+                "materialVersion": .integer(1), "repeatMeters": .vector([1, 1]), "rotation": .integer(0)])]),
+            "materials": .array([.object(["id": .string(material), "version": .integer(1), "kind": .string("floor"),
+                "maps": .object(["color": .object(["sha256": .string(color)])])])])
+        ])
+        candidate["extensions"][ConcreteFootsteps.resourceNamespace] = .object([
+            "version": .integer(1), "families": .array([.string("concrete"), .string("wood")])
+        ])
+        let namespace = ConcreteFootsteps.experienceNamespace
+        candidate["extensions"][namespace] = .object([
+            "version": .integer(1), "footsteps": .array([]), "voices": .array([]),
+            "annotations": .array([]), "rooms": .array([]), "translations": .array([]),
+            "audioDefaults": .object(["footstepsOn": .bool(false)])
+        ])
+        try draft.replaceCandidate(candidate)
+        let before = draft
+        var expected = candidate
+        expected["extensions"][namespace]["footsteps"] = .array([
+            .object(["surfaceId": .string(surface), "material": .string("stone")])
+        ])
+        XCTAssertEqual(try candidateForStone(draft), expected)
+        XCTAssertThrowsError(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+        let sound = try FloorSettings.soundStatus(target: target, candidate: expected)
+        XCTAssertEqual(sound.mode, .legacy)
+        XCTAssertEqual(sound.source, .procedural)
+        XCTAssertEqual(sound.material, "stone")
+        try draft.replaceCandidate(expected)
+        XCTAssertThrowsError(try candidateForStone(draft))
+        try draft.restoreEditHistory(before)
+        XCTAssertEqual(draft.candidate, before.candidate)
+        XCTAssertEqual(try FloorSettings.soundStatus(target: target, candidate: draft.candidate).mode, .fallback)
+
+        let asset = UUID().uuidString.lowercased()
+        candidate["mediaAssets"] = .array([.object(["id": .string(asset), "mime": .string("audio/wav")])])
+        try draft.replaceCandidate(candidate)
+        let floor = try preset(.tile, draft: draft, target: target)
+        for assignment: DocumentValue in [
+            .object(["mode": .string("explicit"), "gain": .number(0.4), "assetIds": .array([.string(asset)])]),
+            .object(["mode": .string("none"), "gain": .number(0)])
+        ] {
+            try draft.setFloor(floor.replacing(.sound, with: assignment, candidate: draft.candidate), target: target)
+            let configured = draft
+            XCTAssertThrowsError(try candidateForStone(draft))
+            XCTAssertEqual(draft, configured)
+        }
+        try draft.restoreEditHistory(before)
+        var other = before.candidate
+        let lookup = WorkspaceFloorMaterialBinding.namespace
+        var badBinding = try XCTUnwrap(other["extensions"][lookup]["bindings"].items?.first)
+        badBinding["materialVersion"] = .integer(2)
+        other["extensions"][lookup]["bindings"] = .array([badBinding])
+        try draft.replaceCandidate(other)
+        XCTAssertThrowsError(try candidateForStone(draft))
+        var alternate = before.candidate
+        let otherMaterial = UUID().uuidString.lowercased()
+        var alternateBinding = try XCTUnwrap(alternate["extensions"][lookup]["bindings"].items?.first)
+        var alternateDescriptor = try XCTUnwrap(alternate["extensions"][lookup]["materials"].items?.first)
+        alternateBinding["materialId"] = .string(otherMaterial)
+        alternateDescriptor["id"] = .string(otherMaterial)
+        alternate["extensions"][lookup]["bindings"] = .array([alternateBinding])
+        alternate["extensions"][lookup]["materials"] = .array([alternateDescriptor])
+        try draft.replaceCandidate(alternate)
+        XCTAssertThrowsError(try candidateForStone(draft))
+    }
+
     func testWholePresetWritesAppearanceAndSoundWithCanonicalReferenceAndNoop() throws {
         var (draft, target) = try fixture()
         let noBinding = draft

@@ -334,7 +334,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "ROOM_AUDIO_SAVE_REQUIRED": return "편집 가능한 전시를 저장한 뒤 공간 소리를 설정하세요."
         case "ROOM_AUDIO_TRACK_UNAVAILABLE": return "이 전시에서 공개 재생과 내보내기를 허용한 승인 WAV를 선택하세요."
         case "ROOM_AUDIO_MEDIA_LIMIT": return "전시에 연결할 수 있는 오디오 파일 수를 초과했습니다."
-        case "FLOOR_SOUND_CONFLICT": return "선택한 바닥에 재질 소리 설정이 있습니다. 기존 설정을 바꾸지 않고 콘크리트 발소리 선택을 중단했습니다."
+        case "FLOOR_SOUND_CONFLICT": return "선택한 바닥에 이미 발소리 설정이 있습니다. 기존 설정은 유지됩니다."
         case "EXHIBITION_EXPORT_SAVE_REQUIRED": return "현재 입력을 전시 저장본에 반영한 뒤 내보내세요."
         case "VIEWER_ENTRANCE_INVALID": return "시작 화면의 작가·소개·이미지 설정을 확인하세요. 작가는 512자, 소개는 4,096자, 입장권 제목은 160자, 안내는 512자, 이미지 설명은 2,048자까지 지원하며, 표지는 전시에 포함한 8 MiB 이하 PNG와 설명이 필요합니다."
         case "PUBLICATION_REVIEW_REQUIRED": return "현재 저장본을 확인하고 작품의 표시 권리를 확인하세요."

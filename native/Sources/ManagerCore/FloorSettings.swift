@@ -16,6 +16,27 @@ public struct FloorSettings: Equatable, Sendable {
         public var key: String { kind.rawValue + ":" + id.lowercased() }
         public var value: DocumentValue { .object(["kind": .string(kind.rawValue), kind == .surface ? "surfaceId" : "roomId": .string(id)]) }
     }
+    public struct SoundStatus: Equatable, Sendable {
+        public enum Mode: String, Sendable {
+            case inactive, none, explicit, materialDefault = "material-default", legacy, fallback
+        }
+        public enum Source: String, Sendable { case publication, builtin, procedural }
+        public let mode: Mode
+        public let source: Source?
+        public let material: String?
+        public let gain: Double?
+
+        var value: DocumentValue {
+            var fields: [String: DocumentValue] = ["mode": .string(mode.rawValue)]
+            fields["source"] = source.map { .string($0.rawValue) }
+            fields["material"] = material.map(DocumentValue.string)
+            fields["gain"] = gain.map(DocumentValue.number)
+            return .object(fields)
+        }
+    }
+    private static let footstepResources = ConcreteFootsteps.resourceNamespace
+    private static let legacyRecordedFamilies: Set<String> = ["wood", "carpet", "concrete"]
+
     public private(set) var value: DocumentValue
     public var preset: Preset { Preset(rawValue: value["preset"].string!)! }
     public var target: Target { try! Self.target(value["target"]) }
@@ -112,7 +133,7 @@ public struct FloorSettings: Equatable, Sendable {
     private static func bounded(_ value: DocumentValue?, _ range: ClosedRange<Double>) throws {
         guard let number = value?.double, number.isFinite, range.contains(number) else { throw invalid() }
     }
-    private static func target(_ value: DocumentValue) throws -> Target {
+    static func target(_ value: DocumentValue) throws -> Target {
         guard let raw = value["kind"].string, let kind = Target.Kind(rawValue: raw) else { throw invalid() }
         let key = kind == .surface ? "surfaceId" : "roomId"
         _ = try keys(value, required: ["kind", key])
@@ -181,6 +202,62 @@ public struct FloorSettings: Equatable, Sendable {
         }
     }
     public static func read(from draft: NativeExhibitionDraft, target: Target) throws -> Self? { try all(in: draft.candidate).first { $0.target.key == target.key } }
+    private static func legacyFootstep(target: Target, candidate: DocumentValue) -> DocumentValue? {
+        guard target.kind == .surface else { return nil }
+        return candidate["extensions"][ConcreteFootsteps.experienceNamespace]["footsteps"].items?.first {
+            $0["surfaceId"].string?.lowercased() == target.id.lowercased()
+        }
+    }
+
+    private static func declaredSoundFamilies(_ value: DocumentValue?) throws -> [String] {
+        guard let value else { return [] }
+        let declaration = try keys(value, required: ["version", "families"])
+        guard declaration["version"]?.double == 1, let entries = declaration["families"]?.items else { throw invalid() }
+        let families = entries.compactMap(\.string)
+        let allowed = Set(Preset.allCases.map(\.rawValue)).union(legacyRecordedFamilies)
+        guard !families.isEmpty, families.count == entries.count, families.count <= allowed.count,
+              families == Array(Set(families)).sorted(), families.allSatisfy(allowed.contains) else { throw invalid() }
+        return families
+    }
+
+    /// Display projection of the floor metadata, using Viewer's floor-level precedence.
+    /// Visitor consent, room controls and real playback remain with Viewer.
+    public static func soundStatus(target: Target, candidate: DocumentValue) throws -> SoundStatus {
+        guard try targets(in: candidate).contains(where: { $0.key == target.key }) else { throw invalid() }
+        guard isActive(target, in: candidate) else {
+            return SoundStatus(mode: .inactive, source: nil, material: nil, gain: nil)
+        }
+        let binding = try all(in: candidate).first { $0.target.key == target.key }
+        let resources = try optionalObject(candidate["extensions"])[footstepResources]
+        let families = (try? declaredSoundFamilies(resources)) ?? []
+        return effectiveSound(binding: binding, legacy: legacyFootstep(target: target, candidate: candidate), families: families)
+    }
+
+    private static func effectiveSound(binding: Self?, legacy: DocumentValue?, families: [String]) -> SoundStatus {
+        let sound = binding?.value["sound"] ?? .null
+        let material = binding?.preset.rawValue
+        let gain = sound["gain"].double ?? 1
+        switch sound["mode"].string {
+        case "none":
+            return SoundStatus(mode: .none, source: nil, material: nil, gain: 0)
+        case "explicit":
+            return SoundStatus(mode: .explicit, source: .publication, material: material, gain: gain)
+        default: break
+        }
+        if let legacy, legacy["bank"].items != nil || legacy["assetId"].string != nil {
+            return SoundStatus(mode: .legacy, source: .publication, material: legacy["material"].string, gain: gain)
+        }
+        if sound["mode"].string == "material-default", let material {
+            return SoundStatus(mode: .materialDefault, source: families.contains(material) ? .builtin : .procedural,
+                               material: material, gain: gain)
+        }
+        if let legacy, let material = legacy["material"].string {
+            let recorded = legacyRecordedFamilies.contains(material) && families.contains(material)
+            return SoundStatus(mode: .legacy, source: recorded ? .builtin : .procedural, material: material, gain: 1)
+        }
+        return SoundStatus(mode: .fallback, source: .procedural, material: "concrete", gain: 1)
+    }
+
     /// Authored presence counts, including zero/default-equal values. Legacy
     /// extension values are only inspected; never rewritten by floor edits.
     public static func customizedFields(target: Target, candidate: DocumentValue) throws -> Set<Field> {
@@ -193,10 +270,42 @@ public struct FloorSettings: Equatable, Sendable {
         }
         if target.kind == .surface {
             if case .object(let materials) = candidate["extensions"]["org.exhibitos.studio/materials"]["surfaces"], materials.keys.contains(where: { $0.lowercased() == target.id.lowercased() }) { fields.formUnion([.color, .roughness, .metalness]) }
-            if (candidate["extensions"]["org.exhibitos.viewer/experience"]["footsteps"].items ?? []).contains(where: { $0["surfaceId"].string?.lowercased() == target.id.lowercased() }) { fields.insert(.sound) }
+            if legacyFootstep(target: target, candidate: candidate) != nil { fields.insert(.sound) }
         }
         return fields
     }
+    fileprivate static func applyQuietOakFootsteps(target: Target, on draft: inout NativeExhibitionDraft) throws {
+        guard target.kind == .surface,
+              let binding = try read(from: draft, target: target),
+              binding.preset == .wood, binding.value["texturePack"] == NativePrivateFloorCatalog.reference else {
+            throw AuthoringFailure("FLOOR_TARGET_INVALID")
+        }
+        guard binding.value["sound"] == .null, legacyFootstep(target: target, candidate: draft.candidate) == nil else {
+            throw AuthoringFailure("FLOOR_SOUND_CONFLICT")
+        }
+        let woodSound = defaults(.wood)[.sound]!
+        let next = try binding.replacing(.sound, with: woodSound, candidate: draft.candidate)
+        var proposed = draft
+        try set(next, target: target, on: &proposed, declareDefaultSound: true)
+        let extensions = try optionalObject(draft.candidate["extensions"])
+        let oldFamilies = try declaredSoundFamilies(extensions[footstepResources])
+        if !oldFamilies.contains(Preset.wood.rawValue) {
+            // The bank declaration applies to the whole exhibition. Refuse it
+            // if a different floor would begin using the wood recordings too.
+            let bindings = try all(in: draft.candidate)
+            let newFamilies = oldFamilies + [Preset.wood.rawValue]
+            for other in try targets(in: draft.candidate) where other.key != target.key && isActive(other, in: draft.candidate) {
+                let binding = bindings.first { $0.target.key == other.key }
+                let legacy = legacyFootstep(target: other, candidate: draft.candidate)
+                guard effectiveSound(binding: binding, legacy: legacy, families: oldFamilies) ==
+                        effectiveSound(binding: binding, legacy: legacy, families: newFamilies) else {
+                    throw AuthoringFailure("FLOOR_SOUND_CONFLICT")
+                }
+            }
+        }
+        draft = proposed
+    }
+
     public static func set(_ settings: Self?, target: Target, on draft: inout NativeExhibitionDraft, declareDefaultSound: Bool = false) throws {
         guard let actual = try targets(in: draft.candidate).first(where: { $0.key == target.key }) else { throw invalid() }
         var rows = try all(in: draft.candidate).map(\.value)
@@ -216,18 +325,9 @@ public struct FloorSettings: Equatable, Sendable {
         else { extensions[namespace] = .object(["version": .integer(1), "bindings": .array(rows)]) }
         if declareDefaultSound {
             guard let settings, settings.value["sound"]["mode"].string == "material-default" else { throw invalid() }
-            let key = "org.exhibitos.viewer/footstep-resources"
-            let allowed: Set<String> = ["carpet", "concrete", "marble", "tile", "wood"]
-            var families: [String] = []
-            if let existing = extensions[key] {
-                let value = try keys(existing, required: ["version", "families"])
-                guard value["version"]?.double == 1, let entries = value["families"]?.items else { throw invalid() }
-                families = entries.compactMap(\.string)
-                guard !families.isEmpty, families.count == entries.count, families.count <= 5,
-                      families == Array(Set(families)).sorted(), families.allSatisfy({ allowed.contains($0) }) else { throw invalid() }
-            }
+            var families = try declaredSoundFamilies(extensions[footstepResources])
             if !families.contains(settings.preset.rawValue) { families.append(settings.preset.rawValue); families.sort() }
-            extensions[key] = .object(["version": .integer(1), "families": .array(families.map(DocumentValue.string))])
+            extensions[footstepResources] = .object(["version": .integer(1), "families": .array(families.map(DocumentValue.string))])
         }
         candidate["extensions"] = .object(extensions)
         _ = try all(in: candidate)
@@ -238,6 +338,13 @@ public struct FloorSettings: Equatable, Sendable {
 
 extension NativeExhibitionDraft {
     public mutating func setFloor(_ settings: FloorSettings?, target: FloorSettings.Target, declareDefaultSound: Bool = false) throws { try FloorSettings.set(settings, target: target, on: &self, declareDefaultSound: declareDefaultSound) }
+
+    /// Adds the approved wood bank to an existing QuietOak surface.
+    /// Existing sound choices and the full appearance stay in their own fields.
+    public mutating func applyQuietOakFootsteps(target: FloorSettings.Target, resourcesAvailable: Bool) throws {
+        guard resourcesAvailable else { throw AuthoringFailure("FLOOR_AUDIO_RUNTIME_UNAVAILABLE") }
+        try FloorSettings.applyQuietOakFootsteps(target: target, on: &self)
+    }
 
     mutating func applyFloorAppearance(_ preset: FloorSettings.Preset, roomId: String, surfaceId: String,
                                        defaults: [FloorSettings.Field: DocumentValue]? = nil) throws {
