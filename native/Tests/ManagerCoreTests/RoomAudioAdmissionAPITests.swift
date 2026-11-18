@@ -95,7 +95,7 @@ final class RoomAudioAdmissionAPITests: XCTestCase {
         XCTAssertEqual(RoomAudioAPIProtocol.calls().count, before)
         let preview = try await NativeAutomationSession.preparePlacementVoiceApply(request, using: api, in: state)
         XCTAssertTrue(preview.changed)
-        var pending = try preview.applying(to: state, requestId: applyId)
+        var pending = try await NativeAutomationSession.checkedPlacementVoiceApply(preview, to: state, requestId: applyId, using: api)
         pending.revision += 1 // The native journal performs this CAS increment.
         let body = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(pending))
         let manifest = "f5f135851f2729bece3e7c89f3e1ea5c5d5d6580d85a399e078beb5827d2c13c"
@@ -111,6 +111,31 @@ final class RoomAudioAdmissionAPITests: XCTestCase {
         XCTAssertEqual(posts[0].value(forHTTPHeaderField: "x-csrf-token"), "synthetic-csrf")
         XCTAssertNil(state.pending)
         XCTAssertEqual(state.draft, draft)
+
+        RoomAudioAPIProtocol.revokeAudio()
+        do {
+            _ = try await NativeAutomationSession.checkedPlacementVoiceApply(preview, to: state, requestId: applyId, using: api)
+            XCTFail("Approval revoked before the journal write was admitted")
+        } catch let error as AuthoringFailure {
+            XCTAssertEqual(error.code, "AUDIO_APPROVAL_CHANGED")
+        }
+        do {
+            _ = try await NativeAppliedDraftSave.replayOriginal(anchor, current: pending, manifest: manifest, api: api)
+            XCTFail("Approval revoked before first Save was admitted")
+        } catch let error as AuthoringFailure {
+            XCTAssertEqual(error.code, "ROOM_AUDIO_TRACK_UNAVAILABLE")
+        }
+        XCTAssertFalse(RoomAudioAPIProtocol.calls().contains { $0.httpMethod == "PUT" })
+        XCTAssertEqual(pending.pending?.requestId, applyId)
+
+        let committed = try XCTUnwrap(pending.draft)
+        try RoomAudioAPIProtocol.recordCommittedVoice(committed, source: state)
+        let replayStart = RoomAudioAPIProtocol.calls().count
+        let saved = try await NativeAppliedDraftSave.replayOriginal(anchor, current: pending, manifest: manifest, api: api)
+        XCTAssertEqual(saved.draft, committed)
+        let replay = RoomAudioAPIProtocol.calls().dropFirst(replayStart)
+        XCTAssertFalse(replay.contains { $0.url?.path.contains("/audio/") == true })
+        XCTAssertEqual(replay.filter { $0.httpMethod == "PUT" }.compactMap { $0.value(forHTTPHeaderField: "If-Match") }, [anchor.etag])
 
         let revokedAPI = try await connected(state, mode: "voice-revoked-after-proposal")
         do {
@@ -186,6 +211,7 @@ private final class RoomAudioAPIProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var responses: [String: Data] = [:]
     nonisolated(unsafe) private static var mode = "valid"
     nonisolated(unsafe) private static var audioState = "validated"
+    nonisolated(unsafe) private static var audioRevoked = false
     static func configure(_ state: NativeDocumentState, mode: String) throws {
         let draft = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state.draft!))
         let id = state.draft!.id, prefix = "/api/v1/tenants/\(state.tenantId)/studio/exhibitions/\(id)"
@@ -210,8 +236,17 @@ private final class RoomAudioAPIProtocol: URLProtocol, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         requests = []; responses = values; Self.mode = mode
         audioState = mode.hasPrefix("voice") ? "approved" : "validated"
+        audioRevoked = false
     }
     static func calls() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
+    static func revokeAudio() { lock.lock(); defer { lock.unlock() }; audioRevoked = true }
+    static func recordCommittedVoice(_ draft: NativeExhibitionDraft, source: NativeDocumentState) throws {
+        let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(draft))
+        let data = try JSONSerialization.data(withJSONObject: ["revision": 2, "draft": body,
+            "etag": "\"studio-r2-" + String(repeating: "b", count: 64) + "\""])
+        let path = "/api/v1/tenants/\(source.tenantId)/studio/exhibitions/\(draft.id)"
+        lock.lock(); defer { lock.unlock() }; responses[path] = data
+    }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -234,8 +269,8 @@ private final class RoomAudioAPIProtocol: URLProtocol, @unchecked Sendable {
             let media: [String: Any] = ["id": audioId, "path": "media/\(audioId)/audio.wav", "mime": "audio/wav",
                 "bytes": 44, "sha256": "85759b3811ff7dc47b03792ac85317be51431a3f9e01dcafce317ed736a391b0",
                 "rights": ["creditLine": "Synthetic WAV", "permissions": ["display": true, "export": true]]]
-            let revoked = Self.mode == "voice-revoked-after-proposal"
-                && Self.requests.contains { $0.url?.path.hasSuffix("/native-authoring-proposal") == true }
+            let revoked = Self.audioRevoked || (Self.mode == "voice-revoked-after-proposal"
+                && Self.requests.contains { $0.url?.path.hasSuffix("/native-authoring-proposal") == true })
             let audio: [String: Any] = ["id": audioId, "state": Self.audioState, "revision": 1, "revoked": revoked,
                 "durationSeconds": Self.audioState == "uploading" ? (NSNull() as Any) : (1 as Any), "mediaAsset": media]
             let payload: [String: Any]

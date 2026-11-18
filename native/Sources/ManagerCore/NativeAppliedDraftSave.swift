@@ -161,14 +161,48 @@ enum NativeAppliedDraftSave {
     static func replayOriginal(_ anchor: Anchor, current: NativeDocumentState, manifest: String,
                                api: AuthoringAPI) async throws -> NativeStudioResponse {
         _ = try anchor.state(current, manifest: manifest)
-        try anchor.checkHead(await api.exhibition(anchor.exhibitionId), current: current, manifest: manifest)
+        let head = try await api.exhibition(anchor.exhibitionId)
+        try anchor.checkHead(head, current: current, manifest: manifest)
         guard let body = current.pending?.draft ?? anchor.originalDraft else {
             throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT")
+        }
+        if head.etag == anchor.etag {
+            try await checkNewPlacementVoices(in: body, comparedTo: head, current: current, using: api)
         }
         let saved = try await api.saveExhibition(body, requestId: anchor.requestId, etag: anchor.etag)
         guard saved.revision == Anchor.serverRevision(anchor.etag).map({ $0 + 1 }), saved.etag != anchor.etag,
               saved.draft == body else { throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT") }
         try saved.requireSameComparison(await api.exhibition(anchor.exhibitionId))
         return saved
+    }
+
+    private static func checkNewPlacementVoices(in body: NativeExhibitionDraft, comparedTo head: NativeStudioResponse,
+                                                 current: NativeDocumentState, using api: AuthoringAPI) async throws {
+        let namespace = ConcreteFootsteps.experienceNamespace
+        let previous = head.draft.candidate, proposed = body.candidate
+        let oldVoices = previous["extensions"][namespace]["voices"]
+        let newVoices = proposed["extensions"][namespace]["voices"]
+        guard newVoices != .null, newVoices != oldVoices || proposed["mediaAssets"] != previous["mediaAssets"] else { return }
+        guard let voices = newVoices.items, let media = proposed["mediaAssets"].items else {
+            throw AuthoringFailure("PLACEMENT_VOICE_INVALID")
+        }
+        let oldRows = oldVoices.items ?? []
+        let oldMedia = previous["mediaAssets"].items ?? []
+        var saved = current
+        saved.draft = head.draft; saved.etag = head.etag
+        saved.savedEditVersion = head.draft.document["editVersion"].integer; saved.pending = nil
+        var checkedAssets = Set<String>()
+        // Recheck only newly bound or changed voice snapshots on the first PUT.
+        // Compare the exact candidate to its saved head so restart needs no new journal field.
+        for voice in voices {
+            let assetId = voice["assetId"]
+            let matches = media.filter { $0["id"] == assetId }
+            if oldRows.contains(voice), matches == oldMedia.filter({ $0["id"] == assetId }) { continue }
+            guard let id = assetId.string, matches.count == 1 else { throw AuthoringFailure("PLACEMENT_VOICE_INVALID") }
+            if !checkedAssets.insert(id).inserted { continue }
+            let audio = try await api.roomAudioStatus(id, expectedMedia: matches[0], in: saved)
+            guard audio.state == "approved" else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
+            try audio.requireAssignableRights()
+        }
     }
 }

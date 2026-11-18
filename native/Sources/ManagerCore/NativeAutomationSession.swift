@@ -641,6 +641,18 @@ public actor NativeAutomationSession {
         return try await binding.prepare(using: api, in: current)
     }
 
+    static func checkedPlacementVoiceApply(_ preview: NativePlacementVoicePreview, to current: NativeDocumentState,
+                                            requestId: String, using api: AuthoringAPI) async throws -> NativeDocumentState {
+        let next = try preview.applying(to: current, requestId: requestId)
+        if preview.changed {
+            let expected = preview.approvedAudio
+            let live = try await api.roomAudioStatus(expected.id, expectedMedia: expected.mediaAsset, in: current)
+            guard live.value == expected.value else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
+            try live.requireAssignableRights()
+        }
+        return next
+    }
+
     private func thumbnailCandidate(_ request: DocumentValue, id: String, context: Context,
                                     api: AuthoringAPI, current: NativeDocumentState) async throws -> DocumentValue {
         try checkedRevision(request, current)
@@ -3229,7 +3241,7 @@ public actor NativeAutomationSession {
             }
             let preview = try await Self.preparePlacementVoiceApply(request, using: api, in: current)
             let (_, _, latest) = try await checked(request)
-            let next = try preview.applying(to: latest, requestId: id)
+            let next = try await Self.checkedPlacementVoiceApply(preview, to: latest, requestId: id, using: api)
             try Task.checkCancellation()
             // Same-session Save recovers the exact journaled body from this response.
             if preview.changed {
