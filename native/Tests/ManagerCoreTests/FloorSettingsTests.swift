@@ -15,6 +15,16 @@ final class FloorSettingsTests: XCTestCase {
     private func preset(_ preset: FloorSettings.Preset, draft: NativeExhibitionDraft, target: FloorSettings.Target, fields: Set<FloorSettings.Field> = Set(FloorSettings.Field.allCases)) throws -> FloorSettings {
         try FloorSettings.applying(preset: preset, defaults: FloorSettings.defaults(preset), fields: fields, target: target, prior: nil, candidate: draft.candidate)
     }
+    func testPrivateOakCatalogAdmitsOnlyExactReviewedPointVoiceSuccessorWhenReady() {
+        let pin = "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874"
+        XCTAssertTrue(NativePrivateFloorCatalog.supports(manifestSHA256: pin, ready: true))
+        XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: pin, ready: false))
+        XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: pin.uppercased(), ready: true))
+        XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: String(repeating: "0", count: 64), ready: true))
+        XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: nil, ready: true))
+        XCTAssertNil(NativePrivateFloorCatalog.defaults[.sound])
+    }
+
     func testWholePresetWritesAppearanceAndSoundWithCanonicalReferenceAndNoop() throws {
         var (draft, target) = try fixture()
         let noBinding = draft

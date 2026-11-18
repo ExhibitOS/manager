@@ -1185,7 +1185,7 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsR285FrameV11Runtime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        [r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime].contains(manifest)
+        [r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime, "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874"].contains(manifest)
         #else
         false
         #endif
@@ -1200,7 +1200,7 @@ public actor AuthoringAPI {
         #if DEBUG && os(macOS)
         [r285SettledHayesRuntime, r285GreekThumbnailOutcomeRuntime, r285BenchAfterTerminalRuntime,
          r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime,
-         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime].contains(manifest)
+         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime, "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874"].contains(manifest)
         #else
         false
         #endif
@@ -1248,7 +1248,7 @@ public actor AuthoringAPI {
          r285ClosingArticulationRuntime,
          r285SettledHayesRuntime,
          r285GreekThumbnailOutcomeRuntime, r285BenchAfterTerminalRuntime, r285GreekThumbnailV2Runtime, r285GreekThumbnailTraceRuntime,
-         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime,
+         r285GreekThumbnailTraceAbortRuntime, r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime, "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874",
          "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02",
          "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"].contains(manifest)
         #else
@@ -3403,7 +3403,7 @@ public actor AuthoringAPI {
         #if DEBUG && os(macOS)
         [r285BenchAfterTerminalRuntime, r285GreekThumbnailV2Runtime,
          r285GreekThumbnailTraceRuntime, r285GreekThumbnailTraceAbortRuntime,
-         r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime].contains(manifest)
+         r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailAllowanceRuntime, r285FrameV11Runtime, r285FrameFitV11Runtime, r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime, "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874"].contains(manifest)
             || manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
         #elseif DEBUG
         manifest == "50e589965a3fa68f70d85b0a10ac345f810cb371851e1e79f8636e05d6d956dd"
@@ -3422,7 +3422,7 @@ public actor AuthoringAPI {
     nonisolated static func benchPreparationReceiptManifests(runtime: String, allowRetained: Bool) -> Set<String> {
         guard supportsBenchBaseColorPreparationRuntime(manifest: runtime) else { return [] }
         #if DEBUG && os(macOS)
-        if allowRetained && [r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime].contains(runtime) {
+        if allowRetained && [r285FinishedHayesOriginalRuntime, r285DetailDiagnosticsRuntime, r285NativeDetailContextRuntime, "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874"].contains(runtime) {
             return [runtime, r285FinishedHayesOriginalRuntime, r285FrameFitV11Runtime, r285FrameV11Runtime, r285GreekThumbnailAllowanceRuntime,
                     r285GreekThumbnailPreviewOverlapRuntime, r285GreekThumbnailTraceAbortRuntime,
                     r285GreekThumbnailTraceRuntime, r285GreekThumbnailV2Runtime, r285BenchAfterTerminalRuntime]
@@ -4509,6 +4509,7 @@ public actor AuthoringAPI {
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
+        let placementVoice = operation == "set-placement-voice"
         let lightObject = LightObjectAuthoring.commands.contains(operation)
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let supplementalFill = operation == NativeAutomationScene.supplementalCeilingFillCommand
@@ -4529,7 +4530,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
+              (placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }

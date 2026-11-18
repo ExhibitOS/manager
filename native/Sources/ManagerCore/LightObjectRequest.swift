@@ -270,7 +270,43 @@ public struct LightObjectRequest: Sendable {
                 try Self.writeFurnishings(graph, base: base, in: &next)
             }
         case "remove-light-object":
+            // Preserve the canonical physical fill while retiring a legacy point.
+            let promoted: DocumentValue? = try {
+            let bindings = try Self.rows(base, namespace: Self.details)
+            guard original["type"] == .string("point"),
+                  let id = original["id"].string, let roomId = original["roomId"].string,
+                  let prior = bindings.first(where: { Self.same($0["lightId"].string, id) }),
+                  case .object(let fields) = prior, prior["purpose"] == .string("room-base"),
+                  fields["basePlacement"] == nil, fields["ceilingFill"] == nil else { return nil }
+            let lights = base["lights"].items ?? []
+            let candidates = bindings.filter { row in
+                guard let candidateId = row["lightId"].string else { return false }
+                return row["purpose"] == RoomCeilingFill.supplementalPurpose
+                    && lights.contains(where: { Self.same($0["id"].string, candidateId) && Self.same($0["roomId"].string, roomId) })
+            }
+            guard candidates.count <= 1 else { throw Self.invalid }
+            guard let row = candidates.first else { return nil }
+            guard let supplementalId = row["lightId"].string else { throw Self.invalid }
+            let areas = lights.filter { Self.same($0["id"].string, supplementalId) }
+            guard areas.count == 1, let area = areas.first, case .object(let settings) = row,
+                  row["fixture"] == .string("none"), row["basePlacement"] == .string("auto"),
+                  try RoomCeilingFill.brightness(in: row["ceilingFill"]) == RoomCeilingFill.initialBrightness,
+                  settings["aim"] == nil, settings["trackAim"] == nil,
+                  area["type"] == .string("area"), area["unit"] == .string("lumen"),
+                  area["castsShadow"] == .bool(false), area["targetPlacementId"] == .null,
+                  !(try Self.rows(base, namespace: Self.attachments)).contains(where: { Self.same($0["lightId"].string, supplementalId) }),
+                  let room = base["rooms"].items?.first(where: { Self.same($0["id"].string, roomId) }) else { throw Self.invalid }
+            let emitter = try RoomCeilingFill.emitter(dimensions: RoomCeilingFill.dimensions(in: base, room: room),
+                                                     brightness: RoomCeilingFill.initialBrightness)
+            guard area["dimensions"] == emitter["dimensions"], area["intensity"] == emitter["intensity"],
+                  RoomBaseLightIntent.samePose(area["transform"], emitter["transform"]) else { throw Self.invalid }
+            return row
+            }()
             for namespace in [Self.details, Self.attachments] { try Self.removeRow(sourceLightId, namespace: namespace, in: &next) }
+            if var row = promoted, let id = row["lightId"].string {
+                row["purpose"] = .string("room-base")
+                try Self.upsert(row, id: id, namespace: Self.details, in: &next)
+            }
             lights.remove(at: index); next["lights"] = .array(lights)
             var graph = try Self.furnishings(base)
             graph.bindings.removeAll { $0["hostKind"] == .string("light") && Self.same($0["hostId"].string, sourceLightId) }

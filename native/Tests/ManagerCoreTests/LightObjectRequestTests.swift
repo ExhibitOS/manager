@@ -582,6 +582,78 @@ final class LightObjectRequestTests: XCTestCase {
         XCTAssertThrowsError(try LightObjectRequest.mountCommand(lightId: source, attachment: .null, frame: frame(base, disabled: true)))
         XCTAssertThrowsError(try LightObjectRequest.mountCommand(lightId: clone, attachment: attachment, frame: frame(base)))
     }
+    private func legacyPointAndSupplementalFill() throws -> NativeExhibitionDraft {
+        var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
+        if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
+        let room = draft.rooms[0], roomId = room["id"]
+        let point: DocumentValue = .object(["id": .string(source), "roomId": roomId, "type": .string("point"),
+            "unit": .string("candela"), "intensity": .number(16), "color": .vector([1, 1, 1]),
+            "castsShadow": .bool(false), "transform": NativeExhibitionDraft.identity])
+        var area = try RoomCeilingFill.emitter(dimensions: RoomCeilingFill.dimensions(in: candidate, room: room), brightness: 0.5)
+        area["id"] = .string(other); area["roomId"] = roomId; area["type"] = .string("area")
+        area["unit"] = .string("lumen"); area["color"] = .vector([1, 1, 1]); area["castsShadow"] = .bool(false)
+        candidate["lights"] = .array([point, area])
+        candidate["extensions"][details] = .object(["version": .integer(1), "lights": .array([
+            .object(["lightId": .string(source), "fixture": .string("none"), "purpose": .string("room-base"), "range": .number(10)]),
+            .object(["lightId": .string(other), "fixture": .string("none"), "purpose": .string("room-supplemental-fill"),
+                "basePlacement": .string("auto"), "ceilingFill": .object(["version": .integer(1), "brightness": .number(0.5)])])])])
+        candidate["extensions"][template] = .object(["modified": .bool(false)])
+        candidate["extensions"]["example.unrelated/keep"] = .object(["value": .string("untouched")])
+        try draft.replaceCandidate(candidate); return draft
+    }
+    private func deletingPoint(_ base: NativeExhibitionDraft, promote: Bool = true) -> DocumentValue {
+        var candidate = base.candidate
+        candidate["lights"] = .array(base.candidate["lights"].items!.filter { $0["id"] != .string(source) })
+        var rows = base.candidate["extensions"][details]["lights"].items!.filter { $0["lightId"] != .string(source) }
+        if promote, let i = rows.firstIndex(where: { $0["lightId"] == .string(other) }) { rows[i]["purpose"] = .string("room-base") }
+        candidate["extensions"][details]["lights"] = .array(rows)
+        return changed(candidate)
+    }
+    func testLegacyBasePointRemovalPromotesOnlyCanonicalAreaPurpose() throws {
+        let base = try legacyPointAndSupplementalFill(), request = try makeRequest("remove-light-object", base)
+        let expected = deletingPoint(base), preview = try request.checkedReply(reply(request, candidate: expected))
+        XCTAssertEqual(preview.candidate, expected)
+        XCTAssertEqual(preview.candidate["lights"].items, [base.candidate["lights"].items![1]])
+        XCTAssertEqual(preview.candidate["extensions"][details]["lights"].items?.first?["ceilingFill"],
+                       base.candidate["extensions"][details]["lights"].items?[1]["ceilingFill"])
+        var altered = expected, lights = altered["lights"].items!
+        lights[0]["intensity"] = .number(1); altered["lights"] = .array(lights)
+        XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: altered)))
+        altered = expected; var rows = altered["extensions"][details]["lights"].items!
+        rows[0]["ceilingFill"]["brightness"] = .number(0.4); altered["extensions"][details]["lights"] = .array(rows)
+        XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: altered)))
+        XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: deletingPoint(base, promote: false))))
+    }
+    func testLegacyPointRemovalRejectsAmbiguousManualDimmedAndNoncanonicalPromotion() throws {
+        for mode in ["ambiguous", "manual", "dimmed", "noncanonical"] {
+            var base = try legacyPointAndSupplementalFill(), candidate = base.candidate
+            var rows = candidate["extensions"][details]["lights"].items!, lights = candidate["lights"].items!
+            if mode == "ambiguous" {
+                var extra = rows[1]; extra["lightId"] = .string(clone); rows.append(extra)
+                var area = lights[1]; area["id"] = .string(clone); lights.append(area)
+            }
+            if mode == "manual" { rows[1]["basePlacement"] = .string("manual") }
+            if mode == "dimmed" { rows[1]["ceilingFill"]["brightness"] = .number(0.4) }
+            if mode == "noncanonical" { lights[1]["intensity"] = .number(1) }
+            candidate["extensions"][details]["lights"] = .array(rows); candidate["lights"] = .array(lights)
+            try base.replaceCandidate(candidate)
+            do {
+                let request = try makeRequest("remove-light-object", base)
+                XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: deletingPoint(base))), mode)
+            } catch { /* Refusal during typed request validation is also closed. */ }
+        }
+    }
+    func testLegacyPointRemovalWithoutSupplementalCreatesNoReplacementLight() throws {
+        var base = try legacyPointAndSupplementalFill(), candidate = base.candidate
+        candidate["lights"] = .array([candidate["lights"].items![0]])
+        candidate["extensions"][details]["lights"] = .array([candidate["extensions"][details]["lights"].items![0]])
+        try base.replaceCandidate(candidate)
+        let request = try makeRequest("remove-light-object", base)
+        let preview = try request.checkedReply(reply(request, candidate: deletingPoint(base, promote: false)))
+        XCTAssertEqual(preview.candidate["lights"], .array([]))
+        XCTAssertEqual(preview.candidate["extensions"][details]["lights"], .array([]))
+    }
+
 }
 
 private final class LightTransportProtocol: URLProtocol, @unchecked Sendable {

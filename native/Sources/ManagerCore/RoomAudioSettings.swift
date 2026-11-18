@@ -204,3 +204,155 @@ public struct NativeRoomAudioReceipt: Sendable {
         guard item.eligible(at: Date()) != nil else { throw AuthoringFailure("ROOM_AUDIO_TRACK_UNAVAILABLE") }
     }
 }
+
+/// One approved audio snapshot bound to an existing artwork placement.
+/// Preparation is read-only; applying retains the original ordinary Save intent.
+public struct NativePlacementVoice: Sendable {
+    public let placementId: String
+    public let locale: String
+    public let transcript: String
+    public let approvedAudio: NativeRoomAudioReceipt
+
+    public init(placementId: String, locale: String, transcript: String,
+                approvedAudio: NativeRoomAudioReceipt) throws {
+        guard UUID(uuidString: placementId) != nil,
+              Self.validLocale(locale), !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              transcript.utf16.count <= 16_384, approvedAudio.state == "approved" else {
+            throw AuthoringFailure("PLACEMENT_VOICE_INVALID")
+        }
+        try approvedAudio.requireAssignableRights()
+        self.placementId = placementId; self.locale = locale; self.transcript = transcript
+        self.approvedAudio = approvedAudio
+    }
+
+    public func prepare(using api: AuthoringAPI, in document: NativeDocumentState) async throws -> NativePlacementVoicePreview {
+        guard !document.dirty, document.pending == nil, let draft = document.draft,
+              let etag = document.etag else { throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED") }
+        // Reuse the existing native-session, owner, ordinary policy and saved-head guard.
+        let currentAudio = try await api.roomAudioStatus(approvedAudio.id,
+            expectedMedia: approvedAudio.mediaAsset, in: document)
+        guard currentAudio.state == "approved" else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
+        try currentAudio.requireAssignableRights()
+        let saved = try await api.exhibition(draft.id)
+        guard saved.draft == draft, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let request = try PlacementVoiceRequest(binding: self, document: document)
+        let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
+            etag: etag, proposal: request.value)
+        let after = try await api.roomAudioStatus(approvedAudio.id,
+            expectedMedia: approvedAudio.mediaAsset, in: document)
+        guard after.value == currentAudio.value else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
+        return try request.checkedReply(reply)
+    }
+
+    static func validLocale(_ value: String) -> Bool {
+        value.range(of: #"\A[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8}){0,4}\z"#,
+                    options: .regularExpression) != nil
+    }
+}
+
+public struct NativePlacementVoicePreview: Sendable {
+    let initial: NativeDocumentState
+    let approvedAudio: NativeRoomAudioReceipt
+    public let candidate: DocumentValue
+    public var changed: Bool { candidate != initial.draft?.candidate }
+
+    /// The existing helper persists this exact draft and original Save ID together.
+    /// No caller-provided candidate or rights can replace the checked proposal.
+    public func applying(to current: NativeDocumentState, requestId: String) throws -> NativeDocumentState {
+        guard current.format == initial.format, current.revision == initial.revision,
+              current.workspaceId == initial.workspaceId, current.tenantId == initial.tenantId,
+              current.principalId == initial.principalId, current.draft == initial.draft,
+              current.etag == initial.etag, current.savedEditVersion == initial.savedEditVersion,
+              current.pending == nil, !current.dirty, var draft = current.draft else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        try approvedAudio.requireAssignableRights()
+        guard changed else { return current }
+        try draft.replaceCandidate(candidate)
+        return try NativeAppliedDraftSave.stage(current, draft: draft, requestId: requestId)
+    }
+}
+
+/// Closed request and complete expected delta, analogous to the existing typed light helpers.
+struct PlacementVoiceRequest: Sendable {
+    let initial: NativeDocumentState
+    let approvedAudio: NativeRoomAudioReceipt
+    let value: DocumentValue
+    let expected: DocumentValue
+    let placementId: String
+
+    init(binding: NativePlacementVoice, document: NativeDocumentState) throws {
+        guard document.format == 1, !document.dirty, document.pending == nil,
+              document.etag != nil, let draft = document.draft,
+              [document.workspaceId, document.tenantId, document.principalId].allSatisfy({ UUID(uuidString: $0) != nil }),
+              let media = draft.candidate["mediaAssets"].items, media.count <= 32 else { throw Self.invalid }
+        let placements = draft.placements.filter { $0["id"].string?.lowercased() == binding.placementId.lowercased() }
+        guard placements.count == 1, let placementId = placements[0]["id"].string else { throw Self.invalid }
+        try binding.approvedAudio.requireAssignableRights()
+        var candidate = draft.candidate
+        var assets = media
+        let matches = assets.filter { $0["id"].string?.lowercased() == binding.approvedAudio.id.lowercased() }
+        guard matches.isEmpty || matches == [binding.approvedAudio.mediaAsset] else {
+            throw AuthoringFailure("AUDIO_APPROVAL_CHANGED")
+        }
+        if matches.isEmpty {
+            guard assets.count < 32 else { throw AuthoringFailure("ROOM_AUDIO_MEDIA_LIMIT") }
+            assets.append(binding.approvedAudio.mediaAsset)
+        }
+        var extensions: [String: DocumentValue]
+        switch candidate["extensions"] {
+        case .null: extensions = [:]
+        case .object(let fields): extensions = fields
+        default: throw Self.invalid
+        }
+        let ns = ConcreteFootsteps.experienceNamespace
+        var experience: [String: DocumentValue]
+        if let old = extensions[ns] {
+            guard case .object(let fields) = old, fields["version"] == .integer(1),
+                  ["footsteps", "voices", "annotations", "rooms", "translations"].allSatisfy({ fields[$0]?.items != nil }) else { throw Self.invalid }
+            experience = fields
+        } else {
+            experience = ["version": .integer(1), "footsteps": .array([]), "voices": .array([]),
+                          "annotations": .array([]), "rooms": .array([]), "translations": .array([])]
+        }
+        guard var voices = experience["voices"]?.items, voices.count <= 64 else { throw Self.invalid }
+        var keys = Set<String>()
+        for row in voices {
+            guard case .object(let fields) = row, Set(fields.keys) == ["placementId", "assetId", "locale", "transcript"],
+                  let id = row["placementId"].string, UUID(uuidString: id) != nil,
+                  let assetId = row["assetId"].string, UUID(uuidString: assetId) != nil,
+                  let locale = row["locale"].string, NativePlacementVoice.validLocale(locale),
+                  let text = row["transcript"].string, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  text.utf16.count <= 16_384,
+                  keys.insert(id.lowercased() + ":" + locale.lowercased()).inserted else { throw Self.invalid }
+        }
+        let voice: DocumentValue = .object(["placementId": .string(placementId),
+            "assetId": .string(binding.approvedAudio.id), "locale": .string(binding.locale), "transcript": .string(binding.transcript)])
+        if let index = voices.firstIndex(where: {
+            $0["placementId"].string?.lowercased() == placementId.lowercased()
+                && $0["locale"].string?.lowercased() == binding.locale.lowercased()
+        }) { voices[index] = voice }
+        else { guard voices.count < 64 else { throw Self.invalid }; voices.append(voice) }
+        experience["voices"] = .array(voices); extensions[ns] = .object(experience)
+        candidate["extensions"] = .object(extensions); candidate["mediaAssets"] = .array(assets)
+        guard try JSONEncoder().encode(candidate).count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        self.initial = document; self.approvedAudio = binding.approvedAudio
+        self.expected = candidate; self.placementId = placementId
+        value = .object(["version": .integer(1), "epoch": .string(UUID().uuidString.lowercased()), "sequence": .integer(1),
+            "tenantId": .string(document.tenantId), "principalId": .string(document.principalId),
+            "requestId": .string(UUID().uuidString.lowercased()), "type": .string("set-placement-voice"),
+            "placementId": .string(placementId), "audioId": .string(binding.approvedAudio.id),
+            "locale": .string(binding.locale), "transcript": .string(binding.transcript),
+            "expectedMediaAsset": binding.approvedAudio.mediaAsset])
+    }
+
+    func checkedReply(_ reply: DocumentValue) throws -> NativePlacementVoicePreview {
+        let identity: Set<String> = ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"]
+        guard case .object(let fields) = reply, Set(fields.keys) == identity.union(["candidate", "placementId"]),
+              try JSONEncoder().encode(reply).count <= 1_100_000,
+              identity.allSatisfy({ reply[$0] == value[$0] }), reply["placementId"] == .string(placementId),
+              reply["candidate"] == expected else { throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED") }
+        return NativePlacementVoicePreview(initial: initial, approvedAudio: approvedAudio, candidate: expected)
+    }
+    private static var invalid: AuthoringFailure { AuthoringFailure("PLACEMENT_VOICE_INVALID") }
+}

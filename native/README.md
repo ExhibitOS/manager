@@ -50,6 +50,16 @@ failures, restores, foreign identities and other failure classes retain their
 existing refusal/recovery behavior. Source tests do not qualify an installed app
 or prove that a retained workspace has successfully reopened.
 
+## Exact point and approved voice successor
+
+The Debug macOS owner-validation runtime `66c6bc51…` (source `8e789696…`,
+producer `1f9ede64…`) admits only the clean directed transition from `e2a21950…`.
+It preserves the catalog, saved head, grants, reader lineage and existing ordinary
+output. The exact reviewed quiet oak catalog is available without changing floor
+audio. Unknown, reverse and skipped runtime transitions remain refused.
+Source checks do not establish actual Save, narration rights/listening, Viewer
+appearance or public release.
+
 ## Native detail producer context
 
 The exact `e2a21950…` successor (source `1d289b5f…`, producer `df1a584a…`)
