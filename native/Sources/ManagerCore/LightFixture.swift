@@ -40,7 +40,7 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
             return .object(["fixture": .string(Self.none.rawValue)])
         }
         guard case .object(var fields) = row,
-              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "ceilingFill", "trackAim"]),
+              Set(fields.keys).isSubset(of: ["lightId", "fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "ceilingFill", "trackAim", "angularProfile"]),
               fields["purpose"].map({ $0 == .string("room-base") || $0 == RoomCeilingFill.supplementalPurpose }) ?? true,
               row["fixture"].string.flatMap(Self.init(rawValue:)) != nil else { throw invalid() }
         try RoomBaseLightIntent.checkMarker(row)
@@ -48,6 +48,10 @@ public enum NativeLightFixture: String, CaseIterable, Sendable {
             guard fields["fixture"] == .string("none"), fields["aim"] == nil,
                   fields["purpose"] == nil, fields["basePlacement"] == nil else { throw invalid() }
             try NativeTrackSpotAim.check(trackAim)
+        }
+        if let angular = fields["angularProfile"] {
+            guard row["trackAim"]["aim"]["kind"] == .string("placement-center") else { throw Self.invalid() }
+            _ = try NativeUpperFramingProfile(angular)
         }
         fields.removeValue(forKey: "lightId")
         return .object(fields)

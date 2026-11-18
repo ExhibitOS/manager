@@ -8,6 +8,10 @@ public struct LightObjectRequest: Sendable {
     public let command: DocumentValue
     public let value: DocumentValue
     public let sourceLightId: String
+    public var requiresUpperFramingCapability: Bool {
+        command["settings"]["angularProfile"] != .null
+            || NativeUpperFramingProfile.stored(in: frame.draft, lightId: sourceLightId) != .null
+    }
 
     private static let details = NativeLightFixture.namespace
     private static let attachments = "org.exhibitos.studio/light-attachments"
@@ -401,9 +405,15 @@ public struct LightObjectRequest: Sendable {
     }
     private static func checkSettings(_ value: DocumentValue) throws {
         guard case .object(let fields) = value, fields["fixture"] != nil,
-              Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "ceilingFill", "trackAim"]),
+              Set(fields.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin", "purpose", "basePlacement", "ceilingFill", "trackAim", "angularProfile"]),
               let fixture = value["fixture"].string, NativeLightFixture(rawValue: fixture) != nil,
               fields["purpose"].map({ $0 == .string("room-base") || $0 == RoomCeilingFill.supplementalPurpose }) ?? true else { throw invalid }
+        if let angular = fields["angularProfile"] {
+            guard value["trackAim"]["aim"]["kind"] == .string("placement-center") else {
+                throw AuthoringFailure("LIGHT_ANGULAR_PROFILE_INVALID")
+            }
+            _ = try NativeUpperFramingProfile(angular)
+        }
         if value["purpose"] == RoomCeilingFill.supplementalPurpose {
             try RoomBaseLightIntent.checkMarker(value)
             return

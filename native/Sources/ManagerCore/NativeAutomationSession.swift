@@ -2415,6 +2415,9 @@ public actor NativeAutomationSession {
                     guard await api.admitsNativeTrackSpotAim else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
                 }
                 let proposal = try LightObjectRequest(command: command, frame: frame)
+                if proposal.requiresUpperFramingCapability {
+                    guard await api.admitsNativeUpperFraming else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                }
                 let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
                 let checked = try proposal.checkedReply(reply)
                 preview = .lightObject(checked); candidate = checked.candidate
@@ -2487,6 +2490,11 @@ public actor NativeAutomationSession {
             } else {
                 if operation == "light-object-apply" {
                     guard await api.admitsNativeLightObjectAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                    if case .lightObject(let object) = preview,
+                       object.command["settings"]["angularProfile"] != .null
+                        || NativeUpperFramingProfile.stored(in: object.base, lightId: object.command["lightId"].string ?? "") != .null {
+                        guard await api.admitsNativeUpperFraming else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                    }
                     if case .lightObject(let object) = preview,
                        NativeTrackSpotAim.requiresCapability(object.command)
                         || NativeTrackSpotAim.binding(in: object.base, lightId: object.lightId) != .null {
