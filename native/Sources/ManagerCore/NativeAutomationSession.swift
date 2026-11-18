@@ -52,6 +52,19 @@ public actor NativeAutomationSession {
         }
     }
 
+    static func checkUpperFramingOutputOperation(manifest: String?, operation: String) throws {
+        guard let manifest, AuthoringAPI.supportsR285UpperFramingRuntime(manifest: manifest) else { return }
+        // Refuse before protected or original export can freeze a publication.
+        switch operation {
+        case "private-exhibition-export-static":
+            throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
+        case "export-static-native-original", "export-static-native-original-publication":
+            throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+        default:
+            break
+        }
+    }
+
     private var bridge: NativeBridge
     private var bridgeOpen = true
     private var closeFailure: Error?
@@ -2092,6 +2105,7 @@ public actor NativeAutomationSession {
         }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
+        try Self.checkUpperFramingOutputOperation(manifest: runtimeManifest, operation: operation)
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
@@ -2415,6 +2429,9 @@ public actor NativeAutomationSession {
                     guard await api.admitsNativeTrackSpotAim else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
                 }
                 let proposal = try LightObjectRequest(command: command, frame: frame)
+                if proposal.requiresUpperFramingCapability {
+                    guard await api.admitsNativeUpperFraming else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                }
                 let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
                 let checked = try proposal.checkedReply(reply)
                 preview = .lightObject(checked); candidate = checked.candidate
@@ -2487,6 +2504,11 @@ public actor NativeAutomationSession {
             } else {
                 if operation == "light-object-apply" {
                     guard await api.admitsNativeLightObjectAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                    if case .lightObject(let object) = preview,
+                       object.command["settings"]["angularProfile"] != .null
+                        || NativeUpperFramingProfile.stored(in: object.base, lightId: object.command["lightId"].string ?? "") != .null {
+                        guard await api.admitsNativeUpperFraming else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                    }
                     if case .lightObject(let object) = preview,
                        NativeTrackSpotAim.requiresCapability(object.command)
                         || NativeTrackSpotAim.binding(in: object.base, lightId: object.lightId) != .null {

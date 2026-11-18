@@ -39,14 +39,16 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "849dc7f88a1a47caaa3c218db69cae295f6dba5d3f3db53615062829c7537a4d"
             || manifest == "e2a219503b653a1995df732229c1ec9263d1f9f2abe9c0cf26ca727ea3a99f01"
             || manifest == "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874"
-            || plain_baseboard_saved_head_runtime_allowed(manifest)
+            || r285_saved_head_runtime_allowed(manifest)
             || bench_basecolor_saved_head_runtime_allowed(manifest)
             || owner_local_original_saved_head_runtime_allowed(manifest)
             || isolated_saved_head_runtime_allowed(manifest))
 }
-fn plain_baseboard_saved_head_runtime_allowed(manifest: &str) -> bool {
+fn r285_saved_head_runtime_allowed(manifest: &str) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return manifest == crate::native_payload::R285_PLAIN_BASEBOARD_TARGET.2;
+    return [crate::native_payload::R285_PLAIN_BASEBOARD_TARGET.2,
+        crate::native_payload::R285_UPPER_FRAMING_TARGET.2,
+        crate::native_payload::R285_ORDINARY_PUBLICATION_BUDGET_TARGET.2].contains(&manifest);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = manifest; false }
 }
@@ -2621,6 +2623,18 @@ mod detail_tests {
         assert!(!isolated_saved_head_runtime_allowed(current));
         assert!(!saved_head_runtime_allowed(&current.to_uppercase()));
         assert!(!saved_head_runtime_allowed(&format!("0{}", &current[1..])));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn r285_upper_framing_saved_head_export_is_ordinary_only_and_exact() {
+        for target in [crate::native_payload::R285_UPPER_FRAMING_TARGET.2,
+            crate::native_payload::R285_ORDINARY_PUBLICATION_BUDGET_TARGET.2] {
+            assert!(saved_head_runtime_allowed(target));
+            assert!(!isolated_saved_head_runtime_allowed(target));
+            assert!(!saved_head_runtime_allowed(&target.to_uppercase()));
+            assert!(!saved_head_runtime_allowed(&format!("0{}", &target[1..])));
+        }
     }
 
     #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]

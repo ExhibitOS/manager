@@ -70,6 +70,66 @@ public enum NativeTrackSpotAim {
     }
 }
 
+/// The authored profile in the solved spotlight's local frame. Shared owns
+/// geometry and containment checks on every proposal, Save and export.
+public struct NativeUpperFramingProfile: Equatable, Sendable {
+    public static let capability = "saved-head-upper-framing-v1"
+    public let cutoffAngle: Double
+    public let softnessAngle: Double
+
+    public init(cutoffAngle: Double, softnessAngle: Double) throws {
+        let inverse = Float(1 / sin(softnessAngle))
+        guard cutoffAngle.isFinite, softnessAngle.isFinite, cutoffAngle > -.pi / 2, cutoffAngle < .pi / 2,
+              softnessAngle > 0, cutoffAngle + softnessAngle <= .pi / 2, inverse.isFinite, inverse > 0 else {
+            throw AuthoringFailure("LIGHT_ANGULAR_PROFILE_INVALID")
+        }
+        self.cutoffAngle = cutoffAngle
+        self.softnessAngle = softnessAngle
+    }
+
+    init(_ value: DocumentValue) throws {
+        guard case .object(let fields) = value, Set(fields.keys) == ["version", "kind", "cutoffAngle", "softnessAngle"],
+              value["version"] == .integer(1), value["kind"] == .string("upper-framing"),
+              let cutoff = value["cutoffAngle"].double, let softness = value["softnessAngle"].double else {
+            throw AuthoringFailure("LIGHT_ANGULAR_PROFILE_INVALID")
+        }
+        try self.init(cutoffAngle: cutoff, softnessAngle: softness)
+    }
+
+    var value: DocumentValue {
+        .object(["version": .integer(1), "kind": .string("upper-framing"),
+                 "cutoffAngle": .number(cutoffAngle), "softnessAngle": .number(softnessAngle)])
+    }
+
+    static func stored(in draft: NativeExhibitionDraft, lightId: String) -> DocumentValue {
+        draft.candidate["extensions"][NativeLightFixture.namespace]["lights"].items?
+            .first { $0["lightId"].string?.lowercased() == lightId.lowercased() }?["angularProfile"] ?? .null
+    }
+
+    public static func read(in draft: NativeExhibitionDraft, lightId: String) throws -> Self? {
+        let value = stored(in: draft, lightId: lightId)
+        return value == .null ? nil : try Self(value)
+    }
+
+    /// The unprofiled round beam is expressed by an absent field, never null.
+    public static func command(in draft: NativeExhibitionDraft, lightId: String, profile: Self?) throws -> DocumentValue {
+        guard let row = draft.candidate["lights"].items?.first(where: { $0["id"].string == lightId }),
+              row["type"] == .string("spot") else { throw AuthoringFailure("LIGHT_ANGULAR_PROFILE_INVALID") }
+        let binding = NativeTrackSpotAim.binding(in: draft, lightId: lightId)
+        guard binding["aim"]["kind"] == .string("placement-center") else {
+            throw AuthoringFailure("LIGHT_ANGULAR_PROFILE_INVALID")
+        }
+        var command = try NativeTrackSpotAim.updateCommand(in: draft, lightId: lightId, binding: binding,
+            shadowPriority: row["targetPlacementId"].string ?? "", prefersShadow: row["castsShadow"] == .bool(true))
+        guard case .object(var settings) = command["settings"] else {
+            throw AuthoringFailure("LIGHT_ANGULAR_PROFILE_INVALID")
+        }
+        settings["angularProfile"] = profile?.value
+        command["settings"] = .object(settings)
+        return command
+    }
+}
+
 /// Exact producer diagnostics, scoped by AuthoringAPI to a negotiated proposal.
 public struct NativeTrackSpotAimDiagnostic: Sendable, Equatable {
     public let reason: String

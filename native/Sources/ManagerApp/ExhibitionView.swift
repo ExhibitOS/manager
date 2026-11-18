@@ -3032,6 +3032,29 @@ final class ExhibitionModel: ObservableObject {
             lightStatus = "레일, 조준 대상과 입력 범위를 확인하세요."
         }
     }
+    var upperFramingAvailable: Bool {
+        guard trackSpotAimAvailable, session?.advertisesUpperFraming == true,
+              selectedLightUsesTrackAim, let draft else { return false }
+        let binding = NativeTrackSpotAim.binding(in: draft, lightId: selectedLightId)
+        guard binding["aim"]["kind"] == .string("placement-center"),
+              let target = binding["aim"]["placementId"].string,
+              let placement = draft.placements.first(where: { $0["id"].string?.lowercased() == target.lowercased() }),
+              let revision = placement["artworkRevisionId"].string?.lowercased() else { return false }
+        return draft.artworks.contains {
+            $0["revisionId"].string?.lowercased() == revision && $0["artworkType"] == .string("image")
+        }
+    }
+
+    func previewUpperFraming(_ profile: NativeUpperFramingProfile?) async {
+        guard upperFramingAvailable, canPreviewLightObjectAction, let draft else { return }
+        do {
+            let command = try NativeUpperFramingProfile.command(in: draft, lightId: selectedLightId, profile: profile)
+            await previewLightObject(command)
+        } catch {
+            failure = error as? AuthoringFailure ?? AuthoringFailure("LIGHT_ANGULAR_PROFILE_INVALID")
+        }
+    }
+
     func previewLight() async {
         guard trackSpotAimForm == nil, canPreviewLight, let fields = light, let base = draft else { return }
         if lightObjectAuthorityAvailable {
@@ -3118,7 +3141,10 @@ final class ExhibitionModel: ObservableObject {
     }
     private func lightObjectCommandAvailable(_ command: DocumentValue) -> Bool {
         let needsAim = NativeTrackSpotAim.requiresCapability(command) || selectedLightUsesTrackAim
+        let hasStoredProfile = draft.flatMap { try? NativeUpperFramingProfile.read(in: $0, lightId: selectedLightId) } != nil
+        let needsFraming = command["settings"]["angularProfile"] != .null || hasStoredProfile
         return (!needsAim || trackSpotAimAvailable)
+            && (!needsFraming || session?.advertisesUpperFraming == true)
             && (command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true)
             && (command["type"] != .string("set-room-ceiling-fill-brightness") || session?.advertisesRoomCeilingFill == true)
     }

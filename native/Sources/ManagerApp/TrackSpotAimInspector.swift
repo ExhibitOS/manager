@@ -160,6 +160,11 @@ struct TrackSpotAimInspector: View {
                                 ForEach(targets) { Text($0.title).tag($0.id) }
                             }
                         }
+                        if model.upperFramingAvailable, let draft = model.draft {
+                            let profile = try? NativeUpperFramingProfile.read(in: draft, lightId: model.selectedLightId)
+                            UpperFramingFields(model: model, saved: profile, ready: ready)
+                                .id(FramingSelection(lightId: model.selectedLightId, saved: profile))
+                        }
                         Button("조준 미리보기") { Task { await model.previewTrackSpotAim() } }
                             .disabled(!ready || !model.canPreviewTrackSpotAim)
                         if let emitter = model.trackSpotAimPreviewEmitter, emitter.count == 3 {
@@ -175,5 +180,59 @@ struct TrackSpotAimInspector: View {
                 }.textFieldStyle(.roundedBorder)
             }
         }
+    }
+}
+
+private struct FramingSelection: Hashable {
+    let lightId: String
+    let cutoff: Double?
+    let softness: Double?
+
+    init(lightId: String, saved: NativeUpperFramingProfile?) {
+        self.lightId = lightId
+        cutoff = saved?.cutoffAngle
+        softness = saved?.softnessAngle
+    }
+}
+
+private struct UpperFramingFields: View {
+    @ObservedObject var model: ExhibitionModel
+    let saved: NativeUpperFramingProfile?
+    let ready: Bool
+    @State private var cutoff: String
+    @State private var softness: String
+
+    init(model: ExhibitionModel, saved: NativeUpperFramingProfile?, ready: Bool) {
+        self.model = model
+        self.saved = saved
+        self.ready = ready
+        _cutoff = State(initialValue: saved.map { String($0.cutoffAngle * 180 / .pi) } ?? "")
+        _softness = State(initialValue: saved.map { String($0.softnessAngle * 180 / .pi) } ?? "")
+    }
+
+    private var input: NativeUpperFramingProfile? {
+        func radians(_ text: String) -> Double? {
+            Double(text.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: Locale.current.decimalSeparator ?? ".", with: "."))
+                .map { $0 * .pi / 180 }
+        }
+        guard let cutoff = radians(cutoff), let softness = radians(softness) else { return nil }
+        return try? NativeUpperFramingProfile(cutoffAngle: cutoff, softnessAngle: softness)
+    }
+
+    var body: some View {
+        DisclosureGroup("상부 빛 차단") {
+            TextField("차단 시작 각도 · °", text: $cutoff)
+            TextField("차단 가장자리 부드러움 · °", text: $softness)
+            Button("상부 차단 미리보기") {
+                guard let input else { return }
+                Task { await model.previewUpperFraming(input) }
+            }
+            .disabled(input == nil)
+            if saved != nil {
+                Button("상부 차단 해제 미리보기") { Task { await model.previewUpperFraming(nil) } }
+            }
+        }
+        .disabled(!ready || !model.canPreviewLightObjectAction)
     }
 }

@@ -210,6 +210,41 @@ final class LightObjectRequestTests: XCTestCase {
         XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: bad)))
 
         let attached = try entry.apply(to: base)
+        let profile = try NativeUpperFramingProfile(cutoffAngle: 0.17, softnessAngle: 0.2)
+        let shaped = try NativeUpperFramingProfile.command(in: attached, lightId: source, profile: profile)
+        let shapeRequest = try LightObjectRequest(command: shaped, frame: frame(attached))
+        XCTAssertTrue(shapeRequest.requiresUpperFramingCapability)
+        var framed = attached.candidate
+        var framedRows = framed["extensions"][details]["lights"].items!
+        framedRows[0]["angularProfile"] = profile.value
+        framed["extensions"][details]["lights"] = .array(framedRows)
+        let applied = try shapeRequest.checkedReply(reply(shapeRequest, candidate: framed)).apply(to: attached)
+        XCTAssertEqual(applied.candidate, framed)
+        XCTAssertEqual(try NativeUpperFramingProfile.read(in: applied, lightId: source), profile)
+        let ordinary = try NativeTrackSpotAim.updateCommand(in: applied, lightId: source, binding: binding,
+            shadowPriority: "", prefersShadow: false)
+        XCTAssertEqual(ordinary["settings"]["angularProfile"], profile.value)
+
+        var untrusted = framed
+        framedRows[0]["angularProfile"]["softnessAngle"] = .number(0.3)
+        untrusted["extensions"][details]["lights"] = .array(framedRows)
+        XCTAssertThrowsError(try shapeRequest.checkedReply(reply(shapeRequest, candidate: untrusted)))
+        var invalid = shaped
+        invalid["settings"]["angularProfile"] = .null
+        XCTAssertThrowsError(try LightObjectRequest(command: invalid, frame: frame(attached)))
+        invalid = shaped
+        invalid["settings"]["trackAim"]["aim"] = .object(["kind": .string("point"), "position": .vector([0, 1, 0])])
+        XCTAssertThrowsError(try LightObjectRequest(command: invalid, frame: frame(attached)))
+        XCTAssertThrowsError(try NativeUpperFramingProfile(cutoffAngle: 0.17, softnessAngle: .leastNonzeroMagnitude))
+
+        let clear = try NativeUpperFramingProfile.command(in: applied, lightId: source, profile: nil)
+        guard case .object(let clearSettings) = clear["settings"] else { return XCTFail("Missing settings") }
+        XCTAssertNil(clearSettings["angularProfile"])
+        let clearRequest = try LightObjectRequest(command: clear, frame: frame(applied))
+        XCTAssertTrue(clearRequest.requiresUpperFramingCapability)
+        XCTAssertEqual(try clearRequest.checkedReply(reply(clearRequest, candidate: attached.candidate)).candidate,
+                       attached.candidate)
+
         var manual = binding
         manual["aim"] = .object(["kind": .string("manual"), "yaw": .integer(0), "pitch": .number(-1)])
         let update = try NativeTrackSpotAim.updateCommand(in: attached, lightId: source, binding: manual,

@@ -38,6 +38,11 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
     public var nativeTrackSpotAimProfile: String? = nil
+    public var nativeUpperFramingProfile: String? = nil
+
+    public var advertisesUpperFraming: Bool {
+        nativeUpperFramingProfile == NativeUpperFramingProfile.capability
+    }
     public var nativeFrameImageFitProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
@@ -269,6 +274,8 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FURNISHING_FIELDS_INVALID": return "받침의 위치·회전·비례 크기를 확인하세요. 위치는 미터, 회전은 −180–180도, 비율은 0.1–4입니다. 입력과 기존 전시는 유지됩니다."
         case "FURNISHING_INVALID", "FURNISHING_CATALOG_INVALID": return "현재 지원하는 받침 정보를 확인하지 못했습니다. 기존 받침과 입력은 유지됩니다."
         case "FURNISHING_PREVIEW_FAILED": return "받침을 미리 보지 못했습니다. 받침 전체가 공간 안에 들어가는 위치와 크기를 확인하세요. 기존 전시와 입력은 유지됩니다."
+        case "LIGHT_ANGULAR_PROFILE_INVALID": return "작품을 향한 트랙 스포트의 상부 차단 각도를 확인하세요."
+        case "LIGHT_ANGULAR_PROFILE_REQUALIFY": return "작품 전체가 차단 시작 각도 아래에 오도록 각도를 다시 맞추거나 상부 차단을 해제하세요."
         case "LIGHT_FIELDS_INVALID": return "조명 입력을 확인하세요. 밝기는 0–1000000, 선형 RGB는 0–1, 빔 전체각은 0보다 크고 90도 이하, 면광원 크기는 0.01–100m입니다. 입력과 기존 설정은 유지됩니다."
         case "LIGHT_SELECTION_CHANGED": return "선택한 조명을 다시 확인하세요. 현재 입력과 저장된 설정은 유지됩니다."
         case "LIGHT_PREVIEW_FAILED": return "조명 미리보기를 확인하지 못했습니다. 조명이 속한 공간 안의 위치와 입력, 로컬 제작 연결을 확인하세요. 입력과 저장된 설정은 유지됩니다."
@@ -4283,11 +4290,21 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsR285UpperFramingRuntime(manifest: String) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
+            || manifest == "ff09c9e7f7ca92575f4b307c59fa42418a4195c03319e5d2a6ff2754489d0cb6"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
+            || supportsR285UpperFramingRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -4301,6 +4318,7 @@ public actor AuthoringAPI {
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || supportsR285SettledHayesRuntime(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
+            || supportsR285UpperFramingRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
@@ -4368,6 +4386,7 @@ public actor AuthoringAPI {
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
+            || supportsR285UpperFramingRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
@@ -4499,11 +4518,16 @@ public actor AuthoringAPI {
         admitsNativeLightObjectAuthoringProposal && session?.nativeTrackSpotAimProfile == NativeTrackSpotAim.profile
     }
 
+    public var admitsNativeUpperFraming: Bool {
+        admitsNativeTrackSpotAim && session?.advertisesUpperFraming == true
+    }
+
     /// Reuse the existing typed saved-head SDK transport for a Native preview.
     /// This is a pure proposal: it never writes the draft or saves an exhibition.
     public func prepareNativeLightObject(_ proposal: LightObjectRequest, in document: NativeDocumentState,
                                         saved: NativeStudioResponse) async throws -> LightObjectPreview {
         guard admitsNativeLightObjectAuthoringProposal, let session,
+              !proposal.requiresUpperFramingCapability || admitsNativeUpperFraming,
               (NativeTrackSpotAim.binding(in: proposal.frame.draft, lightId: proposal.sourceLightId) == .null || admitsNativeTrackSpotAim),
               !document.dirty, document.pending == nil, let draft = document.draft,
               document.tenantId == tenant, document.principalId == session.userId,
@@ -4533,6 +4557,7 @@ public actor AuthoringAPI {
             : hasSavedHeadAuthoringAdmission()
         guard admitted,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
+              proposal["settings"]["angularProfile"] == .null || (operation == "set-light-object" && admitsNativeUpperFraming),
               let session,
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
               operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
