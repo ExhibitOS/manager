@@ -1640,6 +1640,13 @@ the existing exact-envelope request-ID fence still rejects changed requests.
 Existing server ownership,
 CSRF, session and Save constraints remain authoritative.
 
+The installed `--authoring-cli` accepts the same intake, status and approval
+operations. For intake add `--audio-input ABSOLUTE_PATH --audio-sha256 SHA256`
+to the existing profile and output-root arguments and send the matching
+`inputPath` in the request. The Manager room audio inspector also accepts MP3
+and WAV. Select the file, enter rights, and use the separate approval button
+for the returned audio item. Assignment and exhibition Save remain separate.
+
 ### Workspace furnishing registration (source integration)
 
 The Manager client has a separate workspace furnishing catalog for pedestal,

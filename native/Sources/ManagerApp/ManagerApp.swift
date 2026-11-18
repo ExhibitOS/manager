@@ -54,6 +54,7 @@ final class ManagerModel: ObservableObject {
     @Published private(set) var failure: BridgeFailure?
     @Published private(set) var authoring = AuthoringModel()
     @Published private(set) var exhibitions = ExhibitionModel()
+    private var audioCustodyProfile: URL?
     @Published private(set) var publication = PublicationModel()
     @Published private(set) var staticExport = StaticExportModel()
     @Published private(set) var hosting = HostingModel()
@@ -163,6 +164,7 @@ final class ManagerModel: ObservableObject {
                         .appendingPathComponent("org.exhibitos.manager", isDirectory: true)
                 }
                 bridge = try NativeBridge(helper: helper, profile: profile)
+                audioCustodyProfile = profile
             }
             guard let bridge else { throw BridgeFailure("NATIVE_HELPER_MISSING") }
             selection.refresh(try await bridge.presentation())
@@ -360,6 +362,7 @@ final class ManagerModel: ObservableObject {
                 await exhibitions.connect(api: api, session: session, credentials: credentials,
                     selectedBoundedPolicy: selected, ordinaryBoundedRuntime: boundedWorkspace && !selected,
                     boundedRuntimeQualified: gate.oex027Qualified == true,
+                    audioCustodyProfile: audioCustodyProfile,
                     read: { try await bridge.documentState(context) }, write: { state in try await bridge.saveDocumentState(context, state: state) },
                     readThumbnailCheckpoint: { try await bridge.furnishingThumbnailState(context) },
                     writeThumbnailCheckpoint: { state in try await bridge.saveFurnishingThumbnailState(context, state: state) })

@@ -7,7 +7,7 @@ final class RoomAudioSettingsTests: XCTestCase {
     private let trackId = "5fd33e2b-a4ab-480d-986d-d82e17de175a"
 
     func testMP3RetryUsesRetainedFilesAndRejectsChangedPins() throws {
-        let profile = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let profile = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: profile) }

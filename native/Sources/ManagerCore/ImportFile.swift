@@ -169,7 +169,11 @@ struct NativeRoomAudioPreparation {
     }
 
     private static func custodyDirectory(profile: URL, requestID: String) throws -> URL {
-        guard let id = UUID(uuidString: requestID) else { throw invalid() }
+        var info = stat()
+        guard let id = UUID(uuidString: requestID), profile.isFileURL,
+              profile.resolvingSymlinksInPath().path == profile.path,
+              lstat(profile.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
+              info.st_mode & 0o777 == 0o700, info.st_uid == getuid() else { throw invalid() }
         return profile.appendingPathComponent("native-room-audio-" + id.uuidString.lowercased())
     }
 

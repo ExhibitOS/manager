@@ -1749,6 +1749,29 @@ public actor AuthoringAPI {
         return current
     }
 
+    /// The local inspector and the automation entry use the same private
+    /// preparation and server intake contracts.
+    public func intakeLocalRoomAudio(_ file: ImportFileSnapshot, profile: URL, requestId: String,
+                                     rights: ArtworkMetadata.Rights,
+                                     in document: NativeDocumentState) async throws -> NativeRoomAudioReceipt {
+        let rightsValue = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(rights))
+        if file.mime != "audio/mpeg" {
+            return try await intakeRoomAudio(file, requestId: requestId, rights: rightsValue, in: document)
+        }
+        let held = generation
+        let draft = try await roomAudioHead(document)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let scope: DocumentValue = .object([
+            "workspaceId": .string(document.workspaceId), "tenantId": .string(document.tenantId),
+            "principalId": .string(document.principalId), "exhibitionId": .string(draft.id), "rights": rightsValue
+        ])
+        let prepared = try NativeRoomAudioPreparation.prepare(file, profile: profile, requestID: requestId, scope: scope)
+        let receipt = try await intakeRoomAudio(prepared.wav, requestId: requestId, rights: rightsValue, in: document)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try prepared.record(receipt)
+        return receipt
+    }
+
     public func roomAudioStatus(_ id: String, expectedMedia: DocumentValue? = nil,
                                 in document: NativeDocumentState) async throws -> NativeRoomAudioReceipt {
         let draft = try await roomAudioHead(document)
