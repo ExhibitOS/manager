@@ -1,5 +1,26 @@
 # Native macOS application (in progress)
 
+## Internal staging for the fixed validation app
+
+The existing `scripts/manager-validation-gui.py prepare` accepts an explicit
+`--staging-root` pointing to a canonical private owned directory. Assembly and
+signing retain the 6 GiB free-space floor on that volume. This optional path
+requires an already verified fixed app with unchanged GUI/runtime/legal input
+pins and an identical resource inventory. It uses direct same-volume `clonefile`
+calls for final publication, with no full-copy fallback. Only signed GUI/helper,
+Info and signature-record bytes may differ; each replacement is atomic inside
+the private clone. Complete file/mode/link inventories and existing certificate,
+designated-requirement, profile and input-pin checks precede the normal fixed-path
+replacement. The previous fixed app is retained by the existing rename procedure.
+The explicit internal stage remains available for qualification/reproduction;
+a refused partial publication is also retained for owner inspection.
+
+The final publication separately admits changed-file bytes plus 64 MiB clone
+metadata above the destination runtime's existing 3 GiB floor, and refuses if
+actual free-space loss exceeds that allocation. Logical APFS sizes are not
+capacity guarantees. This path does not launch an app, alter a profile, broaden
+runtime admission, or provide a general installer/storage-recovery mechanism.
+
 ## Storage refusal before process startup
 
 The native runtime checks its existing 3 GiB free-space floor before consuming a
