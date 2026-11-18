@@ -2,6 +2,85 @@
 import XCTest
 @testable import ManagerCore
 final class PublicationTests: XCTestCase {
+    func testApprovedReleaseSelectionRequiresTheExactOriginalOperationAndAdmittedRuntime() throws {
+        let selection = NativePublicationReleaseSelection.r125ApprovedR201
+        func request(_ operation: String, selection: DocumentValue?) -> DocumentValue {
+            var command: [String: DocumentValue] = [:]
+            command["releaseSelection"] = selection
+            return .object(["operation": .string(operation), "command": .object(command)])
+        }
+        let exact = request("export-static-native-original", selection: .string(selection.rawValue))
+        XCTAssertEqual(try NativePublicationReleaseSelection.checked(in: exact, runtimeAdmitted: true), selection)
+        XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: exact, runtimeAdmitted: false))
+        let admitted = "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: admitted))
+        XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: admitted))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: admitted))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: admitted))
+        #endif
+        for manifest in [nil, admitted.uppercased(), "0" + String(admitted.dropFirst()),
+                         "ff09c9e7f7ca92575f4b307c59fa42418a4195c03319e5d2a6ff2754489d0cb6",
+                         "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"] {
+            XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
+        }
+        for invalid in [DocumentValue.null, .string("r125-approved-r201-v2")] {
+            XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+                in: request("export-static-native-original", selection: invalid), runtimeAdmitted: true))
+        }
+        for operation in ["export-static", "export-static-saved-head", "export-static-native-original-publication",
+                          "private-exhibition-export-static", "artwork-original-image-static-approve"] {
+            XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+                in: request(operation, selection: .string(selection.rawValue)), runtimeAdmitted: true))
+        }
+        for operation in ["export-static", "export-static-saved-head", "export-static-native-original-publication",
+                          "private-exhibition-export-static", "save", "room-audio-approve", "export-oex"] {
+            XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+                in: request(operation, selection: nil), runtimeAdmitted: true))
+        }
+        for operation in ["read", "room-audio-status"] {
+            XCTAssertNil(try NativePublicationReleaseSelection.checked(
+                in: request(operation, selection: nil), runtimeAdmitted: true))
+        }
+        let noSelection = request("export-static-native-original", selection: nil)
+        XCTAssertNil(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: false))
+        XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: true))
+    }
+
+    func testApprovedReleaseSelectionBindsTheCurrentHeadAndOriginalImageOnTheWire() throws {
+        let selection = NativePublicationReleaseSelection.r125ApprovedR201
+        let etag = "\"studio-r1-" + String(repeating: "a", count: 64) + "\""
+        let requestID = "10000000-0000-4000-8000-000000000013"
+        let fields: DocumentValue = .object([
+            "artworkId": .string("10000000-0000-4000-8000-000000000011"), "artworkRevision": .integer(1),
+            "importJobId": .string("10000000-0000-4000-8000-000000000012")
+        ])
+        let image = try NativePublicationOriginalImage(fields)
+        let commit = try selection.sourceCommitment(etag: etag, originalImage: image)
+        XCTAssertEqual(commit, "db173da039940c6486f58f43a23b79830953cd2c6525b31d97166cdb248a3ab7")
+        XCTAssertNotEqual(try selection.sourceCommitment(etag: etag + " ", originalImage: image), commit)
+        for (field, replacement) in [
+            ("artworkId", DocumentValue.string("10000000-0000-4000-8000-000000000014")),
+            ("artworkRevision", .integer(2)),
+            ("importJobId", .string("10000000-0000-4000-8000-000000000015")),
+        ] {
+            var other = fields
+            other[field] = replacement
+            let changedImage = try NativePublicationOriginalImage(other)
+            XCTAssertNotEqual(try selection.sourceCommitment(etag: etag, originalImage: changedImage), commit)
+        }
+        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: image))
+        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: nil))
+
+        func wire(_ selection: NativePublicationReleaseSelection?) throws -> DocumentValue {
+            let input = NativePublicationPrepareRequest(requestId: requestID, originalImage: image, releaseSelection: selection)
+            return try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(input))
+        }
+        XCTAssertEqual(try wire(selection), .object(["requestId": .string(requestID), "originalImage": fields,
+                                                    "releaseSelection": .string("r125-approved-r201-v1")]))
+        XCTAssertEqual(try wire(nil), .object(["requestId": .string(requestID), "originalImage": fields]))
+    }
+
     func testNativeOriginalIntentBindsTheSavedSourceAndReplayID() throws {
         let draft = try NativeExhibitionDraft.new()
         let etag = "\"studio-r6-" + String(repeating: "a", count: 64) + "\""

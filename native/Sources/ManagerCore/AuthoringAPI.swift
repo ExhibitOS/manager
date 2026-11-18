@@ -2304,15 +2304,21 @@ public actor AuthoringAPI {
                                      publicationProfile: publicationProfile, originalImage: nil)
     }
     func preparePublication(exhibitionId: String, etag: String, requestId: String, publicationProfile: String?,
-                            originalImage: NativePublicationOriginalImage?) async throws -> NativePublication {
-        guard originalImage == nil || publicationProfile == "native-original-v1" else {
+                            originalImage: NativePublicationOriginalImage?,
+                            releaseSelection: NativePublicationReleaseSelection? = nil) async throws -> NativePublication {
+        guard (originalImage == nil && releaseSelection == nil) || publicationProfile == "native-original-v1" else {
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
-        struct Input: Encodable {
-            let requestId: String
-            let originalImage: NativePublicationOriginalImage?
+        if publicationProfile == "native-original-v1",
+           Self.supportsR125ApprovedReleaseRuntime(manifest: nativeRuntimeManifestSHA256) != (releaseSelection != nil) {
+            throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
-        let input = Input(requestId: try identifier(requestId), originalImage: originalImage)
+        if let releaseSelection {
+            guard nativeSession, !authenticationBusy else { throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE") }
+            try releaseSelection.checkSource(etag: etag, originalImage: originalImage)
+        }
+        let input = NativePublicationPrepareRequest(requestId: try identifier(requestId),
+            originalImage: originalImage, releaseSelection: releaseSelection)
         let result: NativePublication = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/publications", method: "POST", body: encoded(input), ifMatch: etag, publicationProfile: publicationProfile, timeout: 120)
         return try result.validated()
     }
@@ -4290,6 +4296,14 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsR125ApprovedReleaseRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsR285UpperFramingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
@@ -4319,6 +4333,7 @@ public actor AuthoringAPI {
             || supportsR285SettledHayesRuntime(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsR285UpperFramingRuntime(manifest: manifest)
+            || supportsR125ApprovedReleaseRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)

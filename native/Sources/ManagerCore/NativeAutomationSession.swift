@@ -161,6 +161,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
@@ -458,6 +459,8 @@ public actor NativeAutomationSession {
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
+        let admitsApprovedRelease = AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: config.manifestSha256)
+            && session.nativePublicationProfile == "bounded-local-v1"
         let admitsPreparedBudget = Self.admitsPreparedBudgetReadback(manifest: config.manifestSha256,
             publicationProfile: session.nativePublicationProfile)
         let admitsDefaultSeats = await api.admitsWorkspaceDefaultSeatProposal
@@ -475,7 +478,7 @@ public actor NativeAutomationSession {
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
-                || admitsPreparedBudget || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
+                || admitsPreparedBudget || admitsApprovedRelease || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
@@ -2157,6 +2160,8 @@ public actor NativeAutomationSession {
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
         try Self.checkUpperFramingOutputOperation(manifest: runtimeManifest, operation: operation)
+        let releaseSelection = try NativePublicationReleaseSelection.checked(in: request,
+            runtimeAdmitted: AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: runtimeManifest))
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
@@ -4328,11 +4333,14 @@ public actor NativeAutomationSession {
             let originalImage: NativePublicationOriginalImage?
             if nativeOriginal {
                 let hasImage = request["command"]["originalImage"] != .null
-                if hasImage, !(await api.admitsOwnerLocalOriginalImageCoarse) {
+                if hasImage, releaseSelection == nil, !(await api.admitsOwnerLocalOriginalImageCoarse) {
                     throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
                 }
-                let command = try NativeAutomationArtworkRules.command(request, keys: hasImage ? ["etag", "originalImage"] : ["etag"])
+                var keys: Set<String> = hasImage ? ["etag", "originalImage"] : ["etag"]
+                if releaseSelection != nil { keys.insert("releaseSelection") }
+                let command = try NativeAutomationArtworkRules.command(request, keys: keys)
                 originalImage = try hasImage ? NativePublicationOriginalImage(command["originalImage"]) : nil
+                try releaseSelection?.checkSource(etag: etag, originalImage: originalImage)
                 guard existingWorkspaceV5 != nil, selectedOEXFormat == nil, current.pending == nil,
                       fields["inputPath"] == nil, command["etag"] == .string(etag),
                       authoringSession?.nativePublicationProfile == "bounded-local-v1" else {
@@ -4406,7 +4414,8 @@ public actor NativeAutomationSession {
                 try Task.checkCancellation()
                 try pending.requirePlanBinding(planBinding)
                 frozen = try await api.preparePublication(exhibitionId: pending.snapshot.id, etag: snapshotETag,
-                    requestId: pending.publishRequestId, publicationProfile: publicationProfile, originalImage: originalImage)
+                    requestId: pending.publishRequestId, publicationProfile: publicationProfile, originalImage: originalImage,
+                    releaseSelection: releaseSelection)
                 publication.completed = NativePublicationCompleted(pending: pending, publication: frozen); publication.pending = nil
                 publication = try await bridge.savePublicationState(context, state: publication)
             }

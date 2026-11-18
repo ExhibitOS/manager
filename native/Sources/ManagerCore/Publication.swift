@@ -139,6 +139,54 @@ struct NativePublicationOriginalImage: Encodable, Sendable {
     }
 }
 
+enum NativePublicationReleaseSelection: String, Encodable, Sendable {
+    case r125ApprovedR201 = "r125-approved-r201-v1"
+
+    static func checked(in request: DocumentValue, runtimeAdmitted: Bool) throws -> Self? {
+        let operation = request["operation"].string
+        let command = request["command"]
+        if case .object(let fields) = command, let value = fields["releaseSelection"] {
+            guard runtimeAdmitted, operation == "export-static-native-original",
+                  let raw = value.string, let selection = Self(rawValue: raw) else {
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
+            return selection
+        }
+        if runtimeAdmitted {
+            switch operation {
+            case "private-exhibition-export-static", "export-static", "export-static-saved-head":
+                throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
+            case "read", "room-audio-status":
+                break
+            default:
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
+        }
+        return nil
+    }
+
+    // Domain-separated commitment to the existing exact private request tuple.
+    // Typed encoding preserves field boundaries and the guard runs before intent.
+    func sourceCommitment(etag: String, originalImage: NativePublicationOriginalImage) throws -> String {
+        let fields = [rawValue, etag, originalImage.artworkId, String(originalImage.artworkRevision), originalImage.importJobId]
+        return nativeImportSHA256(try JSONEncoder().encode(fields))
+    }
+
+    func checkSource(etag: String, originalImage: NativePublicationOriginalImage?) throws {
+        guard let originalImage,
+              try sourceCommitment(etag: etag, originalImage: originalImage) ==
+                "ddb95832da31069ef10596050f71079f14d19595c63f3a700ae5f269a22c3879" else {
+            throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
+        }
+    }
+}
+
+struct NativePublicationPrepareRequest: Encodable {
+    let requestId: String
+    let originalImage: NativePublicationOriginalImage?
+    let releaseSelection: NativePublicationReleaseSelection?
+}
+
 /// A separate output attempt for an already published native original, never a publication retry.
 struct NativeOriginalPublicationOutputCommand: Sendable {
     let etag: String, publicationId: String, revisionSha256: String
