@@ -823,7 +823,7 @@ pub(crate) const R285_ORDINARY_PUBLICATION_BUDGET_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const R285_APPROVED_RELEASE_TARGET: RuntimeTuple = (
+pub(crate) const R285_APPROVED_RELEASE_TARGET: RuntimeTuple = (
     "957ab9ba70f474fcc52c73ba26ff15f2ac116820",
     "685ac89628d83179ae1ef4609448ba513f0bcc472a25f06ef4d9c7544f194cc7",
     "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739",

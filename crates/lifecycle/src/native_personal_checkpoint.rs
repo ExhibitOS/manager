@@ -506,6 +506,15 @@ pub(crate) fn transition_source_ledger(payload: &crate::native_payload::Payload,
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none()
+        && pair == (crate::native_payload::R285_ORDINARY_PUBLICATION_BUDGET_TARGET.2,
+                    crate::native_payload::R285_APPROVED_RELEASE_TARGET.2)
+    {
+        // The clean source holds the completed ordinary publication blobs.
+        // Keep the complete private beforeimage and authenticated seal for this pair.
+        return MAX_BYTES + 128 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
         || crate::native_payload::white_rail_opposite_clean_transition(pair)
@@ -3152,6 +3161,39 @@ mod tests {
         assert_eq!(files[Path::new("blobs/oversize")].bytes, publication_limit);
         file.set_len(publication_limit + 1).unwrap();
         assert_eq!(inventory_with_limit(&root, false, publication_limit).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn approved_release_checkpoint_capacity_is_bounded_and_directed() {
+        let source = crate::native_payload::R285_ORDINARY_PUBLICATION_BUDGET_TARGET.2;
+        let target = crate::native_payload::R285_APPROVED_RELEASE_TARGET.2;
+        let predecessor = crate::native_payload::R285_UPPER_FRAMING_TARGET.2;
+        let limit = checkpoint_inventory_limit((source, target), None);
+        assert_eq!(limit, 2_281_701_376);
+        for denied in [(target, source), (target, target), (source, source), (predecessor, target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+        assert_eq!(checkpoint_inventory_limit((predecessor, source), None), MAX_BYTES);
+
+        let root = std::env::temp_dir().join(format!("approved-release-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let blob = Path::new("blobs/ordinary-publication");
+        let file = private_options().open(root.join(blob)).unwrap();
+        let observed = 2_212_837_162;
+        file.set_len(observed).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, MAX_BYTES).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[blob].bytes, observed);
+        file.set_len(limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
         fs::remove_dir_all(root).unwrap();
     }
 
