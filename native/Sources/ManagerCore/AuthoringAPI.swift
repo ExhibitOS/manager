@@ -2304,15 +2304,21 @@ public actor AuthoringAPI {
                                      publicationProfile: publicationProfile, originalImage: nil)
     }
     func preparePublication(exhibitionId: String, etag: String, requestId: String, publicationProfile: String?,
-                            originalImage: NativePublicationOriginalImage?) async throws -> NativePublication {
-        guard originalImage == nil || publicationProfile == "native-original-v1" else {
+                            originalImage: NativePublicationOriginalImage?,
+                            releaseSelection: NativePublicationReleaseSelection? = nil) async throws -> NativePublication {
+        guard (originalImage == nil && releaseSelection == nil) || publicationProfile == "native-original-v1" else {
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
-        struct Input: Encodable {
-            let requestId: String
-            let originalImage: NativePublicationOriginalImage?
+        if publicationProfile == "native-original-v1",
+           Self.supportsR125ApprovedReleaseRuntime(manifest: nativeRuntimeManifestSHA256) != (releaseSelection != nil) {
+            throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
-        let input = Input(requestId: try identifier(requestId), originalImage: originalImage)
+        if let releaseSelection {
+            guard nativeSession, !authenticationBusy else { throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE") }
+            try releaseSelection.checkSource(etag: etag, originalImage: originalImage)
+        }
+        let input = NativePublicationPrepareRequest(requestId: try identifier(requestId),
+            originalImage: originalImage, releaseSelection: releaseSelection)
         let result: NativePublication = try await request(studioPrefix + "/exhibitions/" + identifier(exhibitionId) + "/publications", method: "POST", body: encoded(input), ifMatch: etag, publicationProfile: publicationProfile, timeout: 120)
         return try result.validated()
     }
@@ -4285,6 +4291,18 @@ public actor AuthoringAPI {
     private nonisolated static func supportsR285PlainBaseboardRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "f5f135851f2729bece3e7c89f3e1ea5c5d5d6580d85a399e078beb5827d2c13c"
+        #else
+        false
+        #endif
+    }
+
+    // Exact local validation admission remains empty until the selected release runtime is sealed and reviewed.
+    private static let r125ApprovedReleaseRuntimeManifest: String? = nil
+
+    nonisolated static func supportsR125ApprovedReleaseRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        guard let pin = r125ApprovedReleaseRuntimeManifest else { return false }
+        return manifest == pin
         #else
         false
         #endif

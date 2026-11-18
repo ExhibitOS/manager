@@ -139,6 +139,47 @@ struct NativePublicationOriginalImage: Encodable, Sendable {
     }
 }
 
+enum NativePublicationReleaseSelection: String, Encodable, Sendable {
+    case r125ApprovedR201 = "r125-approved-r201-v1"
+
+    static func checked(in request: DocumentValue, runtimeAdmitted: Bool) throws -> Self? {
+        let operation = request["operation"].string
+        let command = request["command"]
+        if case .object(let fields) = command, let value = fields["releaseSelection"] {
+            guard runtimeAdmitted, operation == "export-static-native-original",
+                  let raw = value.string, let selection = Self(rawValue: raw) else {
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
+            return selection
+        }
+        if runtimeAdmitted {
+            switch operation {
+            case "private-exhibition-export-static":
+                throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
+            case "export-static-native-original", "export-static-native-original-publication":
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            default: break
+            }
+        }
+        return nil
+    }
+
+    func checkSource(etag: String, originalImage: NativePublicationOriginalImage?) throws {
+        guard etag == "\"studio-r201-2fac6adaf0ca67ae1b36d7924f2f916a4eed7e314a53e5b1262f204a54d002bc\"",
+              let originalImage, originalImage.artworkId == "d31d7f57-27a2-471a-a17a-eb2754f2e56b",
+              originalImage.artworkRevision == 1,
+              originalImage.importJobId == "41eb3e2d-06d1-48d2-b82c-557a6af58212" else {
+            throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
+        }
+    }
+}
+
+struct NativePublicationPrepareRequest: Encodable {
+    let requestId: String
+    let originalImage: NativePublicationOriginalImage?
+    let releaseSelection: NativePublicationReleaseSelection?
+}
+
 /// A separate output attempt for an already published native original, never a publication retry.
 struct NativeOriginalPublicationOutputCommand: Sendable {
     let etag: String, publicationId: String, revisionSha256: String

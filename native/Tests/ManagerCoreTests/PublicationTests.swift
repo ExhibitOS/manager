@@ -2,6 +2,60 @@
 import XCTest
 @testable import ManagerCore
 final class PublicationTests: XCTestCase {
+    func testApprovedReleaseSelectionRequiresTheExactOriginalOperationAndAdmittedRuntime() throws {
+        let selection = NativePublicationReleaseSelection.r125ApprovedR201
+        func request(_ operation: String, selection: DocumentValue?) -> DocumentValue {
+            var command: [String: DocumentValue] = [:]
+            command["releaseSelection"] = selection
+            return .object(["operation": .string(operation), "command": .object(command)])
+        }
+        let exact = request("export-static-native-original", selection: .string(selection.rawValue))
+        XCTAssertEqual(try NativePublicationReleaseSelection.checked(in: exact, runtimeAdmitted: true), selection)
+        XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: exact, runtimeAdmitted: false))
+        for manifest in [nil,
+                         "ff09c9e7f7ca92575f4b307c59fa42418a4195c03319e5d2a6ff2754489d0cb6",
+                         "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"] {
+            XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
+        }
+        for invalid in [DocumentValue.null, .string("r125-approved-r201-v2")] {
+            XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+                in: request("export-static-native-original", selection: invalid), runtimeAdmitted: true))
+        }
+        for operation in ["export-static", "export-static-saved-head", "export-static-native-original-publication",
+                          "private-exhibition-export-static", "artwork-original-image-static-approve"] {
+            XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+                in: request(operation, selection: .string(selection.rawValue)), runtimeAdmitted: true))
+        }
+        let noSelection = request("export-static-native-original", selection: nil)
+        XCTAssertNil(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: false))
+        XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: true))
+    }
+
+    func testApprovedReleaseSelectionBindsTheCurrentHeadAndOriginalImageOnTheWire() throws {
+        let selection = NativePublicationReleaseSelection.r125ApprovedR201
+        let etag = "\"studio-r201-2fac6adaf0ca67ae1b36d7924f2f916a4eed7e314a53e5b1262f204a54d002bc\""
+        let requestID = "11111111-1111-4111-8111-111111111111"
+        let fields: DocumentValue = .object([
+            "artworkId": .string("d31d7f57-27a2-471a-a17a-eb2754f2e56b"), "artworkRevision": .integer(1),
+            "importJobId": .string("41eb3e2d-06d1-48d2-b82c-557a6af58212")
+        ])
+        let image = try NativePublicationOriginalImage(fields)
+        XCTAssertNoThrow(try selection.checkSource(etag: etag, originalImage: image))
+        XCTAssertThrowsError(try selection.checkSource(etag: etag + " ", originalImage: image))
+        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: nil))
+        var otherImage = fields
+        otherImage["artworkRevision"] = .integer(2)
+        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: NativePublicationOriginalImage(otherImage)))
+
+        func wire(_ selection: NativePublicationReleaseSelection?) throws -> DocumentValue {
+            let input = NativePublicationPrepareRequest(requestId: requestID, originalImage: image, releaseSelection: selection)
+            return try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(input))
+        }
+        XCTAssertEqual(try wire(selection), .object(["requestId": .string(requestID), "originalImage": fields,
+                                                    "releaseSelection": .string("r125-approved-r201-v1")]))
+        XCTAssertEqual(try wire(nil), .object(["requestId": .string(requestID), "originalImage": fields]))
+    }
+
     func testNativeOriginalIntentBindsTheSavedSourceAndReplayID() throws {
         let draft = try NativeExhibitionDraft.new()
         let etag = "\"studio-r6-" + String(repeating: "a", count: 64) + "\""
