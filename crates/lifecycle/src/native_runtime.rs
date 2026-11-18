@@ -83,6 +83,7 @@ pub(crate) use furnishing_lifetime::WriterIdentity as FurnishingWriterIdentity;
 #[path = "native_runtime_furnishing_lease.rs"] mod furnishing_lease;
 #[path = "native_runtime_furnishing_lifecycle.rs"] mod furnishing_lifecycle;
 use furnishing_lifecycle::{Admission, Binding, Owner as FurnishingOwner, Phase, Restore as FurnishingRestore};
+#[path = "native_runtime_preprocess_retry.rs"] mod preprocess_retry;
 #[path = "native_runtime_oex_owner.rs"] mod oex_owner;
 #[path = "native_runtime_oex_recovery.rs"] pub(crate) mod oex_recovery;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2954,11 +2955,7 @@ const { isDeepStrictEqual } = require('node:util');
                     .map_err(|error| err(native_port_bind_code(&error)))?,
             );
         }
-        if fs2::available_space(&self.service.root).map_err(|_| err("STORAGE_UNAVAILABLE"))?
-            < 3 * 1024 * 1024 * 1024
-        {
-            return Err(err("STORAGE_LOW"));
-        }
+        preprocess_retry::check_storage(&self.service.root)?;
         let reopen_import = self.payload.workspace_import_version()
             .filter(|_| services && !self.normal_oex_selected);
         let require_existing = existing_database || reopen_import.is_some() || furnishing.is_some_and(FurnishingStart::opens_existing);
@@ -3683,6 +3680,9 @@ const { isDeepStrictEqual } = require('node:util');
         }
         // Keep the last writer binding when a DB-only job rotates the diagnostic pointer.
         check_interrupted_root(&self.service.root)?;
+        // Refuse insufficient storage before consuming the last completion or
+        // publishing an Active attempt. start_inner rechecks the allocation race.
+        preprocess_retry::check_storage(&self.service.root)?;
         let prior = current_run(&self.service.root)?;
         let id = Uuid::new_v4().to_string();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3692,6 +3692,8 @@ const { isDeepStrictEqual } = require('node:util');
             }
             trial.generation.clone()
         } else { id };
+        let mut id = id;
+        let mut preprocess_retry = None;
         let prior_binding = prior.as_ref().and_then(|current| current.furnishing.clone());
         if self.payload.private_signing_configuration() && matches!(mode, StartMode::Database) {
             let binding = prior_binding.as_ref()
@@ -3784,7 +3786,16 @@ const { isDeepStrictEqual } = require('node:util');
                             && source.matches_catalog_tuple(52, crate::native_payload::R285_ROOM_FILL_EXIT_TARGET);
                         #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
                         let r285_cosmic_recovery = false;
-                        if r285_cosmic_recovery {
+                        let storage_retry = source.phase == Phase::Active && transition.is_none()
+                            && furnishing == Some(FurnishingStart::Reopen)
+                            && read_run(&self.service.root, &source.generation)?.0.failure_code.as_deref() == Some("STORAGE_LOW");
+                        if storage_retry {
+                            let retry = preprocess_retry::admit(&self.service.root,
+                                prior.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?, &active, self.ports)?;
+                            id = source.generation.clone();
+                            active = source.clone();
+                            preprocess_retry = Some(retry);
+                        } else if r285_cosmic_recovery {
                             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                             {
                                 check_r285_cosmic_recovery_source(&self.service.root, prior.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?, self.ports)?;
@@ -3859,9 +3870,13 @@ const { isDeepStrictEqual } = require('node:util');
         }
         let parent = directory(&self.service.root, "native-runs")?;
         let run = directory(&parent, &id)?;
-        let file = private_options()
-            .open(run.join("process.log"))
-            .map_err(|_| err("NATIVE_LOG_UNAVAILABLE"))?;
+        let continuing_preprocess = preprocess_retry.is_some();
+        let file = if let Some(retry) = preprocess_retry {
+            retry.preserve(&run)?
+        } else {
+            private_options().open(run.join("process.log"))
+                .map_err(|_| err("NATIVE_LOG_UNAVAILABLE"))?
+        };
         self.log = Some(Arc::new(Log {
             file: Mutex::new((file, 0)),
             truncated: AtomicBool::new(false),
@@ -3887,6 +3902,7 @@ const { isDeepStrictEqual } = require('node:util');
         // No process or mutable bootstrap may start before Active is durable.
         if services {
             if let Some(prior) = &prior_binding
+                && !continuing_preprocess
                 && !binding.as_ref().is_some_and(|next| next.admission_kind == Admission::InterruptedReopen)
             {
                 let generation = self.job_id.as_deref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?;

@@ -1,5 +1,29 @@
 # Native macOS application (in progress)
 
+## Storage refusal before process startup
+
+The native runtime checks its existing 3 GiB free-space floor before consuming a
+clean completion and checks again immediately before database work. An ordinary
+same-installation reopen stranded by the older ordering may continue its existing
+generation only when its private journal records `STORAGE_LOW`, no child PIDs,
+no exits, no readiness and an empty private process log. Owner, runtime tuple,
+catalog and physical writer identity must agree. The already-durable Active
+binding authorizes continuation of that same attempt. Its predecessor's
+`consumedBy` corroborates the existing lineage; the stored completion hash is
+syntax-checked, not reauthenticated against an unavailable old full binding.
+It cannot authorize another generation, owner, runtime, catalog or installation.
+The original failed state, current pointer, predecessor state and empty log are
+preserved in a unique durable `preprocess-failures` archive before retry startup.
+This history remains a failure; it is not a clean return or a new admission.
+
+The existing root and writer fences span qualification, archival and startup;
+changed journal bytes refuse continuation. A crash before the new `starting`
+record permits another bounded attempt and retains each archive. A crash after
+that record leaves an uncertain start that this retry path refuses. Process-started
+failures, restores, foreign identities and other failure classes retain their
+existing refusal/recovery behavior. Source tests do not qualify an installed app
+or prove that a retained workspace has successfully reopened.
+
 ## Native detail producer context
 
 The exact `e2a21950…` successor (source `1d289b5f…`, producer `df1a584a…`)
