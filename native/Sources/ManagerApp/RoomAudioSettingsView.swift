@@ -24,6 +24,8 @@ struct RoomAudioSettingsView: View {
     private struct Target: Equatable {
         let exhibitionId: String
         let workspaceId: String
+        let tenantId: String
+        let principalId: String
         let roomId: String
         let revision: UInt64
     }
@@ -36,6 +38,7 @@ struct RoomAudioSettingsView: View {
         guard ready, let state = model.state, let draft = state.draft,
               draft.rooms.contains(where: { $0["id"].string == model.roomId }) else { return nil }
         return Target(exhibitionId: draft.id, workspaceId: state.workspaceId,
+                      tenantId: state.tenantId, principalId: state.principalId,
                       roomId: model.roomId, revision: state.revision)
     }
 
