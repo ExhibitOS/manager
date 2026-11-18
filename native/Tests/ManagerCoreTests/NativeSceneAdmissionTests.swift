@@ -272,12 +272,20 @@ final class NativeSceneAdmissionTests: XCTestCase {
                 XCTAssertEqual(reply.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
                 XCTAssertEqual(reply.1, ["GET"])
             }
-            let active = operation == "set-room-base-light-placement"
-                ? admitted.merging(["roomBaseLightProfile": RoomBaseLightAction.profile, "roomBaseLightPlacementProfile": RoomBaseLightPlacement.profile]) { _, value in value }
-                : admitted
+            var active = admitted
+            if ["set-room-base-light-placement", "set-room-ceiling-fill-brightness"].contains(operation) {
+                active["roomBaseLightProfile"] = RoomBaseLightAction.profile
+                active["roomBaseLightPlacementProfile"] = RoomBaseLightPlacement.profile
+            }
+            if operation == "set-room-ceiling-fill-brightness" {
+                let missingCeiling = try await attempt(operation: operation, markers: active, runtime: manifest)
+                XCTAssertEqual(missingCeiling.0, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+                XCTAssertEqual(missingCeiling.1, ["GET"])
+                active["roomCeilingFillProfile"] = RoomCeilingFill.profile
+            }
             let reply = try await attempt(operation: operation, markers: active, runtime: manifest)
-            XCTAssertEqual(reply.0, "AUTHORING_PROPOSAL_INVALID")
-            XCTAssertEqual(reply.1, ["GET", "POST"])
+            XCTAssertEqual(reply.0, "AUTHORING_PROPOSAL_INVALID", operation)
+            XCTAssertEqual(reply.1, ["GET", "POST"], operation)
         }
         let unknown = try await attempt(operation: "set-any-light-object", markers: admitted, runtime: manifest)
         XCTAssertEqual(unknown.1, ["GET"])
