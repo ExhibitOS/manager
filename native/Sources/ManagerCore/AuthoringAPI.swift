@@ -38,6 +38,11 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
     public var nativeTrackSpotAimProfile: String? = nil
+    public var nativeSpotBeamFitProfile: String? = nil
+
+    public var advertisesSpotBeamFit: Bool {
+        nativeSpotBeamFitProfile == "saved-head-spot-beam-fit-v1"
+    }
     public var nativeFrameImageFitProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
@@ -4523,6 +4528,7 @@ public actor AuthoringAPI {
         guard admitted,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session,
+              proposal["fitBeam"] == .null || (operation == "set-light-object" && session.advertisesSpotBeamFit),
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
               operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
               !supplementalFill || admitsRoomSupplementalCeilingFill else {

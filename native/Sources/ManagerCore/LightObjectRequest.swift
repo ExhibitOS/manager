@@ -1,6 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
 import Foundation
 
+public struct NativeSpotBeamFitEvidence: Sendable {
+    public enum Bounds: String, Sendable {
+        case displayPlane = "display-plane"
+        case sculptureContainmentEnvelope = "sculpture-containment-envelope"
+    }
+
+    public enum FloorSpill: String, Sendable {
+        case rangeExcluded = "range-excluded"
+        case positiveWitness = "positive-witness"
+        case unknown
+    }
+
+    public let placementId: String
+    public let bounds: Bounds
+    public let maxDistanceMeters: Double
+    public let maxPolarAngleRadians: Double
+    public let minImageIncidence: Double?
+    public let floorSpill: FloorSpill
+    let value: DocumentValue
+
+    fileprivate init(_ value: DocumentValue, placementId: String) throws {
+        guard case .object(let fields) = value,
+              Set(fields.keys) == ["placementId", "bounds", "maxDistanceMeters", "maxPolarAngleRadians", "minImageIncidence", "floorSpill"],
+              let id = value["placementId"].string, UUID(uuidString: id) == UUID(uuidString: placementId),
+              let bounds = value["bounds"].string.flatMap(Bounds.init(rawValue:)),
+              let distance = value["maxDistanceMeters"].double, distance > 0, distance <= 100_000,
+              let polar = value["maxPolarAngleRadians"].double, polar >= 0, polar < .pi / 2,
+              let spill = value["floorSpill"].string.flatMap(FloorSpill.init(rawValue:)) else {
+            throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED")
+        }
+        let incidence = value["minImageIncidence"].double
+        guard value["minImageIncidence"] == .null || incidence.map({ (0...1).contains($0) }) == true else {
+            throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED")
+        }
+        self.placementId = id; self.bounds = bounds
+        maxDistanceMeters = distance; maxPolarAngleRadians = polar
+        minImageIncidence = incidence; floorSpill = spill
+        self.value = value
+    }
+}
+
 /// A saved-head light-object proposal. The shared producer admits geometry;
 /// this consumer binds its reply to exactly one complete graph mutation.
 public struct LightObjectRequest: Sendable {
@@ -109,7 +150,7 @@ public struct LightObjectRequest: Sendable {
         }
         switch type {
         case "set-light-object":
-            guard Set(fields.keys).subtracting(["attachment"]) == ["type", "lightId", "light", "settings"],
+            guard Set(fields.keys).subtracting(["attachment", "fitBeam"]) == ["type", "lightId", "light", "settings"],
                   case .object(let light) = command["light"], light["id"] == nil,
                   case .object(let settings) = command["settings"], settings["lightId"] == nil,
                   command["light"]["roomId"] == original["roomId"],
@@ -133,6 +174,9 @@ public struct LightObjectRequest: Sendable {
                 guard command["light"]["intensity"] == original["intensity"] else { throw Self.invalid }
             }
             if let attachment = fields["attachment"], attachment != .null { try Self.checkAttachment(attachment) }
+            if let fit = fields["fitBeam"] {
+                try Self.checkFit(fit, light: command["light"], settings: command["settings"], draft: frame.draft)
+            }
         case "set-room-base-light-placement":
             guard Set(fields.keys) == ["type", "lightId", "basePlacement"],
                   let value = command["basePlacement"].string, let placement = RoomBaseLightPlacement(rawValue: value) else { throw Self.invalid }
@@ -177,7 +221,10 @@ public struct LightObjectRequest: Sendable {
     }
 
     public func checkedReply(_ reply: DocumentValue) throws -> LightObjectPreview {
-        guard case .object(let fields) = reply, Set(fields.keys) == Self.bindings.union(["candidate", "lightId"]),
+        let target = command["fitBeam"]["placementId"].string
+        var keys = Self.bindings.union(["candidate", "lightId"])
+        if target != nil { keys.insert("beamFit") }
+        guard case .object(let fields) = reply, Set(fields.keys) == keys,
               try JSONEncoder().encode(reply).count <= 1_100_000,
               Self.bindings.allSatisfy({ reply[$0] == value[$0] }),
               let id = reply["lightId"].string, Self.uuid(id) else { throw Self.changed }
@@ -186,7 +233,26 @@ public struct LightObjectRequest: Sendable {
         } else { guard id == sourceLightId else { throw Self.changed } }
         let expected = try expectedCandidate(lightId: id, reply: reply["candidate"])
         guard reply["candidate"] == expected else { throw Self.changed }
-        return LightObjectPreview(base: frame.draft, command: command, candidate: expected, lightId: id)
+        let fit = try target.map { try NativeSpotBeamFitEvidence(reply["beamFit"], placementId: $0) }
+        return LightObjectPreview(base: frame.draft, command: command, candidate: expected, lightId: id, beamFit: fit)
+    }
+
+    private static func checkFit(_ fit: DocumentValue, light: DocumentValue,
+                                 settings: DocumentValue, draft: NativeExhibitionDraft) throws {
+        guard case .object(let fields) = fit, Set(fields.keys) == ["placementId"],
+              let id = fit["placementId"].string, uuid(id), light["type"] == .string("spot") else { throw invalid }
+        let placements = draft.placements.filter { same($0["id"].string, id) }
+        guard placements.count == 1, placements[0]["roomId"] == light["roomId"] else { throw invalid }
+        let track = settings["trackAim"]["aim"]
+        if track != .null {
+            if track["kind"] == .string("point") { return }
+            guard track["kind"] == .string("placement-center"), same(track["placementId"].string, id) else { throw invalid }
+            return
+        }
+        let aim = settings["aim"]
+        if aim["kind"] == .string("point") { return }
+        guard aim == .null || aim["kind"] == .string("placement-center"),
+              same(light["targetPlacementId"].string, id) else { throw invalid }
     }
 
     private func expectedCandidate(lightId: String, reply: DocumentValue) throws -> DocumentValue {
@@ -200,6 +266,12 @@ public struct LightObjectRequest: Sendable {
             var row = command["light"]; row["id"] = original["id"]
             if command["settings"]["trackAim"] != .null {
                 try copySolvedTransform(from: reply, into: &row)
+            }
+            if command["fitBeam"] != .null {
+                let solved = reply["lights"].items?.filter { $0["id"] == original["id"] } ?? []
+                guard solved.count == 1, let width = solved[0]["beamAngle"].double,
+                      width > 0, width <= .pi / 2 else { throw Self.changed }
+                row["beamAngle"] = solved[0]["beamAngle"]
             }
             lights[index] = row; next["lights"] = .array(lights)
             let mounted: Bool
@@ -479,9 +551,12 @@ public struct LightObjectPreview: Sendable {
     public let command: DocumentValue
     public let candidate: DocumentValue
     public let lightId: String
+    public let beamFit: NativeSpotBeamFitEvidence?
 
-    fileprivate init(base: NativeExhibitionDraft, command: DocumentValue, candidate: DocumentValue, lightId: String) {
+    fileprivate init(base: NativeExhibitionDraft, command: DocumentValue, candidate: DocumentValue,
+                     lightId: String, beamFit: NativeSpotBeamFitEvidence?) {
         self.base = base; self.command = command; self.candidate = candidate; self.lightId = lightId
+        self.beamFit = beamFit
     }
     public func apply(to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
         guard draft == base else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
