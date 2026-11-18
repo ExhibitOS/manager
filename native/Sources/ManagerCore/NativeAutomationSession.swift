@@ -3176,6 +3176,8 @@ public actor NativeAutomationSession {
                     guard !current.dirty, current.pending == nil, let draft = current.draft else {
                         throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
                     }
+                    let (_, _, latest) = try await checked(request)
+                    guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
                     let directory = try profileIdentity()
                     let scope: DocumentValue = .object([
                         "workspaceId": .string(current.workspaceId), "tenantId": .string(current.tenantId),
@@ -3183,10 +3185,7 @@ public actor NativeAutomationSession {
                         "rights": command["rights"]
                     ])
                     let prepared = try NativeRoomAudioPreparation.prepare(snapshot, profile: profile, requestID: requestId, scope: scope)
-                    let (_, _, latest) = try await checked(request)
-                    guard try profileIdentity() == directory, try value(latest) == value(current) else {
-                        throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED")
-                    }
+                    guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
                     receipt = try await api.intakeRoomAudio(prepared.wav, requestId: requestId, rights: command["rights"], in: current)
                     guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
                     try prepared.record(receipt)

@@ -144,7 +144,6 @@ struct NativeRoomAudioPreparation {
             if renamex_np(staging.path, directory.path, UInt32(RENAME_EXCL)) != 0 && errno != EEXIST {
                 throw invalid()
             }
-            try synchronizeDirectory(profile)
         }
         guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR,
               info.st_mode & 0o777 == 0o700, info.st_uid == getuid() else { throw invalid() }
@@ -155,6 +154,7 @@ struct NativeRoomAudioPreparation {
         let wav = ImportFileSnapshot.preparedWAV(try ImportFileSnapshot.readBytes(
             directory.appendingPathComponent("prepared.wav"), limit: byteLimit))
         guard stored["wavSha256"] == .string(wav.sha256), isCanonicalWAV(wav.data) else { throw invalid() }
+        try synchronizeDirectory(profile)
         return Self(directory: directory, wav: wav)
     }
 
@@ -164,6 +164,7 @@ struct NativeRoomAudioPreparation {
         if lstat(url.path, &info) == 0 {
             let previous = try NativeRoomAudioReceipt(Self.readValue(url))
             guard previous.id == receipt.id, previous.mediaAsset == receipt.mediaAsset else { throw Self.invalid() }
+            try Self.synchronizeDirectory(directory)
             return
         }
         guard errno == ENOENT else { throw Self.invalid() }
