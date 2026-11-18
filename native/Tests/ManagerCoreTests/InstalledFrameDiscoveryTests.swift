@@ -6,6 +6,13 @@ import XCTest
 @MainActor
 final class InstalledFrameDiscoveryTests: XCTestCase {
     func testInstalledAndTenantFramesWithSharedBytesKeepSeparateIdentities() async throws {
+        for manifest in ["7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902",
+                         "222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7"] {
+            try await installedAndTenantFramesRemainDistinct(manifest: manifest)
+        }
+    }
+
+    private func installedAndTenantFramesRemainDistinct(manifest: String) async throws {
         let black = "4e670339-c7db-4d89-9430-94f24761b6b7"
         let installed = "af88109b-27e2-4d10-a08c-3ddc0224451a"
         let tenant = "66d45ba8-457e-4d23-999d-f242fc1c7590"
@@ -24,10 +31,15 @@ final class InstalledFrameDiscoveryTests: XCTestCase {
         }
         try InstalledFrameProtocol.configure(ids: ids, descriptors: descriptors, model: bytes)
         let api = try AuthoringAPI(port: 18091, tenantId: FrameFitSynthetic.owner,
-            nativeRuntimeManifestSHA256: "7e4baad682f01ae4896b051aa24b7fc93cc971fb57d85e689e570c5a808ca902",
+            nativeRuntimeManifestSHA256: manifest,
             protocolClasses: [InstalledFrameProtocol.self])
         _ = try await api.connect(LocalAuthoringSession(tenantId: FrameFitSynthetic.owner, principalId: FrameFitSynthetic.owner,
             origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+        if manifest == cleanManifest {
+            XCTAssertTrue(api.admitsWorkspaceStraightMiterFrameFit)
+            XCTAssertFalse(api.admitsFrameImageFitReconciliation)
+            XCTAssertFalse(api.admitsWorkspaceCeilingRail)
+        }
         let page = try await api.workspaceFurnishings()
         XCTAssertEqual(page.items.map(\.id), ids)
         XCTAssertNil(page.nextCursor)
@@ -46,6 +58,73 @@ final class InstalledFrameDiscoveryTests: XCTestCase {
         XCTAssertTrue(calls.allSatisfy { $0.httpMethod == "GET" })
         XCTAssertFalse(calls.contains { $0.url?.path.contains("furnishing-intakes") == true })
     }
+
+    private let cleanManifest = "222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7"
+    private let installed = "af88109b-27e2-4d10-a08c-3ddc0224451a"
+
+    private func selectedFixture(removedProfiles: [String] = [], substitutedID: String? = nil,
+                                 mismatchedSource: Bool = false, portalProfiles: Bool = false) throws {
+        let bytes = Data("Synthetic frame model".utf8), digest = nativeImportSHA256(bytes)
+        var descriptor = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(
+            FrameFitSynthetic.furnishing(id: substitutedID ?? installed, kind: "artwork-frame", profile: "straight-miter-ring-v1")))
+        descriptor["model"]["bytes"] = .integer(Int64(bytes.count)); descriptor["model"]["sha256"] = .string(digest)
+        descriptor["fit"]["sourceBytes"] = .integer(Int64(bytes.count))
+        descriptor["fit"]["sourceSha256"] = .string(mismatchedSource ? String(repeating: "f", count: 64) : digest)
+        try InstalledFrameProtocol.configure(ids: [installed], descriptors: [installed: descriptor], model: bytes,
+                                             removedProfiles: removedProfiles, portalProfiles: portalProfiles)
+    }
+
+    private func connected(manifest: String, tenant: String = FrameFitSynthetic.owner) async throws -> AuthoringAPI {
+        let api = try AuthoringAPI(port: 18091, tenantId: tenant, nativeRuntimeManifestSHA256: manifest,
+                                   protocolClasses: [InstalledFrameProtocol.self])
+        _ = try await api.connect(LocalAuthoringSession(tenantId: FrameFitSynthetic.owner, principalId: FrameFitSynthetic.owner,
+            origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+        return api
+    }
+
+    func testCleanDefaultFrameStillRequiresAdvertisedModelsAndReusableFit() async throws {
+        for profile in ["workspaceArtworkFrameModelsProfile", "workspaceFurnishingReusableFitProfile"] {
+            try selectedFixture(removedProfiles: [profile])
+            let api = try await connected(manifest: cleanManifest)
+            do { _ = try await api.workspaceFurnishing(installed, version: 1); XCTFail("Missing live capability admitted") }
+            catch { XCTAssertEqual((error as? AuthoringFailure)?.code, "FURNISHING_RESPONSE_INVALID") }
+            XCTAssertFalse(InstalledFrameProtocol.requests().contains { $0.url?.path.hasSuffix("/model") == true })
+        }
+    }
+
+    func testCleanDefaultFrameAdmissionDoesNotQualifyPortalRuntime() async throws {
+        try selectedFixture(portalProfiles: true)
+        let api = try await connected(manifest: cleanManifest)
+        XCTAssertTrue(api.admitsWorkspaceStraightMiterFrameFit)
+        XCTAssertFalse(api.workspacePortalFinishRuntimeQualified)
+        XCTAssertFalse(api.admitsWorkspacePortalFinish)
+        XCTAssertFalse(api.admitsWorkspaceModularPortalFit)
+        XCTAssertFalse(AuthoringAPI.supportsStraightMiterFrameRuntime(manifest: cleanManifest))
+    }
+
+    func testCleanDefaultFrameRejectsNamespaceSubstitutionAndChangedFitSource() async throws {
+        for changedSource in [false, true] {
+            try selectedFixture(substitutedID: changedSource ? nil : "66d45ba8-457e-4d23-999d-f242fc1c7590",
+                                mismatchedSource: changedSource)
+            let api = try await connected(manifest: cleanManifest)
+            do { _ = try await api.workspaceFurnishing(installed, version: 1); XCTFail("Changed binding admitted") }
+            catch { XCTAssertNotNil(error as? AuthoringFailure) }
+            XCTAssertFalse(InstalledFrameProtocol.requests().contains { $0.url?.path.hasSuffix("/model") == true })
+        }
+    }
+
+    func testUnknownRuntimeAndForeignTenantCannotUseInstalledProvider() async throws {
+        for foreignTenant in [false, true] {
+            try selectedFixture()
+            do {
+                let api = try await connected(manifest: foreignTenant ? cleanManifest : String(repeating: "f", count: 64),
+                    tenant: foreignTenant ? "99999999-9999-4999-8999-999999999999" : FrameFitSynthetic.owner)
+                _ = try await api.workspaceFurnishing(installed, version: 1)
+                XCTFail("Foreign scope admitted")
+            } catch { XCTAssertNotNil(error as? AuthoringFailure) }
+            XCTAssertFalse(InstalledFrameProtocol.requests().contains { $0.url?.path.contains("/workspace/furnishings") == true })
+        }
+    }
 }
 
 private final class InstalledFrameProtocol: URLProtocol, @unchecked Sendable {
@@ -53,8 +132,9 @@ private final class InstalledFrameProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var responses: [String: Data] = [:]
     nonisolated(unsafe) private static var calls: [URLRequest] = []
     nonisolated(unsafe) private static var model = Data()
-    static func configure(ids: [String], descriptors: [String: DocumentValue], model: Data) throws {
-        let session: [String: String] = ["tenantId": FrameFitSynthetic.owner, "userId": FrameFitSynthetic.owner,
+    static func configure(ids: [String], descriptors: [String: DocumentValue], model: Data,
+                          removedProfiles: [String] = [], portalProfiles: Bool = false) throws {
+        var session: [String: String] = ["tenantId": FrameFitSynthetic.owner, "userId": FrameFitSynthetic.owner,
             "role": "admin", "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z",
             "workspaceFurnishingProfile": "workspace-furnishing-intake-v1",
             "workspaceFurnishingStoolProfile": "workspace-furnishing-stool-v1",
@@ -62,6 +142,11 @@ private final class InstalledFrameProtocol: URLProtocol, @unchecked Sendable {
             "workspaceArtworkFrameProfile": "workspace-artwork-frame-v1",
             "workspaceArtworkFrameModelsProfile": "workspace-artwork-frame-models-v1",
             "workspaceFurnishingReusableFitProfile": "source-bound-fit-v1"]
+        for profile in removedProfiles { session.removeValue(forKey: profile) }
+        if portalProfiles {
+            session["workspacePortalFinishProfile"] = "workspace-portal-finish-v1"
+            session["workspacePortalModularFitProfile"] = WorkspaceFurnishingFitProfile.modularPortal.rawValue
+        }
         let prefix = "/api/v1/tenants/\(FrameFitSynthetic.owner)/workspace/furnishings"
         let items: [DocumentValue] = ids.map { .object(["id": .string($0), "version": .integer(1),
             "kind": .string("artwork-frame"), "name": .string("Synthetic"),
