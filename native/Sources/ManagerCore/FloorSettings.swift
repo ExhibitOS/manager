@@ -228,6 +228,12 @@ public struct FloorSettings: Equatable, Sendable {
             return SoundStatus(mode: .inactive, source: nil, material: nil, gain: nil)
         }
         let binding = try all(in: candidate).first { $0.target.key == target.key }
+        let resources = try optionalObject(candidate["extensions"])[footstepResources]
+        let families = (try? declaredSoundFamilies(resources)) ?? []
+        return effectiveSound(binding: binding, legacy: legacyFootstep(target: target, candidate: candidate), families: families)
+    }
+
+    private static func effectiveSound(binding: Self?, legacy: DocumentValue?, families: [String]) -> SoundStatus {
         let sound = binding?.value["sound"] ?? .null
         let material = binding?.preset.rawValue
         let gain = sound["gain"].double ?? 1
@@ -238,12 +244,9 @@ public struct FloorSettings: Equatable, Sendable {
             return SoundStatus(mode: .explicit, source: .publication, material: material, gain: gain)
         default: break
         }
-        let legacy = legacyFootstep(target: target, candidate: candidate)
         if let legacy, legacy["bank"].items != nil || legacy["assetId"].string != nil {
             return SoundStatus(mode: .legacy, source: .publication, material: legacy["material"].string, gain: gain)
         }
-        let resources = try optionalObject(candidate["extensions"])[footstepResources]
-        let families = (try? declaredSoundFamilies(resources)) ?? []
         if sound["mode"].string == "material-default", let material {
             return SoundStatus(mode: .materialDefault, source: families.contains(material) ? .builtin : .procedural,
                                material: material, gain: gain)
@@ -282,7 +285,25 @@ public struct FloorSettings: Equatable, Sendable {
         }
         let woodSound = defaults(.wood)[.sound]!
         let next = try binding.replacing(.sound, with: woodSound, candidate: draft.candidate)
-        try set(next, target: target, on: &draft, declareDefaultSound: true)
+        var proposed = draft
+        try set(next, target: target, on: &proposed, declareDefaultSound: true)
+        let extensions = try optionalObject(draft.candidate["extensions"])
+        let oldFamilies = try declaredSoundFamilies(extensions[footstepResources])
+        if !oldFamilies.contains(Preset.wood.rawValue) {
+            // The bank declaration applies to the whole exhibition. Refuse it
+            // if a different floor would begin using the wood recordings too.
+            let bindings = try all(in: draft.candidate)
+            let newFamilies = oldFamilies + [Preset.wood.rawValue]
+            for other in try targets(in: draft.candidate) where other.key != target.key && isActive(other, in: draft.candidate) {
+                let binding = bindings.first { $0.target.key == other.key }
+                let legacy = legacyFootstep(target: other, candidate: draft.candidate)
+                guard effectiveSound(binding: binding, legacy: legacy, families: oldFamilies) ==
+                        effectiveSound(binding: binding, legacy: legacy, families: newFamilies) else {
+                    throw AuthoringFailure("FLOOR_SOUND_CONFLICT")
+                }
+            }
+        }
+        draft = proposed
     }
 
     public static func set(_ settings: Self?, target: Target, on draft: inout NativeExhibitionDraft, declareDefaultSound: Bool = false) throws {

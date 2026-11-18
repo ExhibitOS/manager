@@ -6,16 +6,25 @@ import Foundation
 public enum ConcreteFootsteps {
     public static let experienceNamespace = "org.exhibitos.viewer/experience"
     public static let resourceNamespace = "org.exhibitos.viewer/footstep-resources"
-    // Reviewed v1 Entrance color map. Resolve the owner's current material ID
-    // through the selected surface's binding, rather than pinning a private ID.
-    static let entranceStoneColorSHA256 = "39dea103548edb8f2a733a1f077afa5fd1a294e2485730faa6ace1bf0cf673d2"
+    // Commit to the reviewed owner-local material version and color map.
+    private static let entranceStoneMaterial = "7e2f478b5dc0e5ddf310ac44a3e010a30985f4907b214ab208c8d91c0cf37657"
     private enum Material: String { case concrete, stone }
     public static func proposedCandidate(in draft: NativeExhibitionDraft, target: FloorSettings.Target, resourcesAvailable: Bool) throws -> DocumentValue {
         guard resourcesAvailable else { throw AuthoringFailure("FLOOR_AUDIO_RUNTIME_UNAVAILABLE") }
         return try proposedCandidate(in: draft, target: target, material: .concrete)
     }
 
+    static func entranceMaterialCommitment(id: String, version: Int, colorSHA256: String) throws -> String {
+        let fields = ["exhibitos-entrance-stone-material-v1", id, String(version), colorSHA256]
+        return nativeImportSHA256(try JSONEncoder().encode(fields))
+    }
+
     public static func proposedEntranceStoneCandidate(in draft: NativeExhibitionDraft, target: FloorSettings.Target) throws -> DocumentValue {
+        try proposedEntranceStoneCandidate(in: draft, target: target, expectedMaterial: entranceStoneMaterial)
+    }
+
+    static func proposedEntranceStoneCandidate(in draft: NativeExhibitionDraft, target: FloorSettings.Target,
+                                               expectedMaterial: String) throws -> DocumentValue {
         guard target.kind == .surface,
               let canonical = try FloorSettings.targets(in: draft.candidate).first(where: { $0.key == target.key }) else {
             throw AuthoringFailure("FLOOR_TARGET_INVALID")
@@ -30,7 +39,8 @@ public enum ConcreteFootsteps {
         let materials = workspace["materials"].items?.filter { $0["id"].string == materialId && $0["version"] == .integer(1) } ?? []
         guard materials.count == 1, let material = materials.first,
               material["kind"] == .string("floor"),
-              material["maps"]["color"]["sha256"] == .string(entranceStoneColorSHA256) else {
+              let color = material["maps"]["color"]["sha256"].string, nativeImportDigest(color),
+              try entranceMaterialCommitment(id: materialId, version: 1, colorSHA256: color) == expectedMaterial else {
             throw AuthoringFailure("FLOOR_TARGET_INVALID")
         }
         return try proposedCandidate(in: draft, target: canonical, material: .stone)

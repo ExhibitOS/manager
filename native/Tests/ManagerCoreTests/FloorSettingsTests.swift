@@ -141,17 +141,47 @@ final class FloorSettingsTests: XCTestCase {
         XCTAssertEqual(draft, before)
     }
 
+    func testQuietOakWriteRefusesToChangeAnotherFloorsEffectiveWoodSound() throws {
+        var (draft, target) = try fixture()
+        let room = try XCTUnwrap(draft.rooms[0]["id"].string)
+        let surface = try XCTUnwrap(draft.candidate["surfaces"].items?.first?["id"].string)
+        try draft.applyFloorAppearance(.wood, roomId: room, surfaceId: surface, defaults: NativePrivateFloorCatalog.defaults)
+        let other = FloorSettings.Target(kind: .surface, id: UUID().uuidString.lowercased())
+        var candidate = draft.candidate
+        candidate["surfaces"] = .array(try XCTUnwrap(candidate["surfaces"].items) + [
+            .object(["id": .string(other.id), "type": .string("floor"), "roomId": .string(room)])
+        ])
+        try draft.replaceCandidate(candidate)
+        let wood = try preset(.wood, draft: draft, target: other)
+        try draft.setFloor(wood, target: other)
+        XCTAssertEqual(try FloorSettings.soundStatus(target: other, candidate: draft.candidate).source, .procedural)
+        let before = draft
+        XCTAssertThrowsError(try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true))
+        XCTAssertEqual(draft, before)
+
+        try draft.setFloor(wood, target: other, declareDefaultSound: true)
+        let otherSound = try FloorSettings.soundStatus(target: other, candidate: draft.candidate)
+        XCTAssertEqual(otherSound.source, .builtin)
+        try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: true)
+        XCTAssertEqual(try FloorSettings.soundStatus(target: other, candidate: draft.candidate), otherSound)
+    }
+
     func testEntranceStoneOnlyChangesLegacyFootstepsAndDoesNotDeclareABank() throws {
         var (draft, target) = try fixture()
         let surface = try XCTUnwrap(draft.candidate["surfaces"].items?.first?["id"].string)
         let material = UUID().uuidString.lowercased()
+        let color = String(repeating: "a", count: 64)
+        let expectedMaterial = try ConcreteFootsteps.entranceMaterialCommitment(id: material, version: 1, colorSHA256: color)
+        let candidateForStone = { (draft: NativeExhibitionDraft) in
+            try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target, expectedMaterial: expectedMaterial)
+        }
         var candidate = draft.candidate
         candidate["extensions"][WorkspaceFloorMaterialBinding.namespace] = .object([
             "version": .integer(1),
             "bindings": .array([.object(["surfaceId": .string(surface), "materialId": .string(material),
                 "materialVersion": .integer(1), "repeatMeters": .vector([1, 1]), "rotation": .integer(0)])]),
             "materials": .array([.object(["id": .string(material), "version": .integer(1), "kind": .string("floor"),
-                "maps": .object(["color": .object(["sha256": .string(ConcreteFootsteps.entranceStoneColorSHA256)])])])])
+                "maps": .object(["color": .object(["sha256": .string(color)])])])])
         ])
         candidate["extensions"][ConcreteFootsteps.resourceNamespace] = .object([
             "version": .integer(1), "families": .array([.string("concrete"), .string("wood")])
@@ -168,13 +198,14 @@ final class FloorSettingsTests: XCTestCase {
         expected["extensions"][namespace]["footsteps"] = .array([
             .object(["surfaceId": .string(surface), "material": .string("stone")])
         ])
-        XCTAssertEqual(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target), expected)
+        XCTAssertEqual(try candidateForStone(draft), expected)
+        XCTAssertThrowsError(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
         let sound = try FloorSettings.soundStatus(target: target, candidate: expected)
         XCTAssertEqual(sound.mode, .legacy)
         XCTAssertEqual(sound.source, .procedural)
         XCTAssertEqual(sound.material, "stone")
         try draft.replaceCandidate(expected)
-        XCTAssertThrowsError(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+        XCTAssertThrowsError(try candidateForStone(draft))
         try draft.restoreEditHistory(before)
         XCTAssertEqual(draft.candidate, before.candidate)
         XCTAssertEqual(try FloorSettings.soundStatus(target: target, candidate: draft.candidate).mode, .fallback)
@@ -189,7 +220,7 @@ final class FloorSettingsTests: XCTestCase {
         ] {
             try draft.setFloor(floor.replacing(.sound, with: assignment, candidate: draft.candidate), target: target)
             let configured = draft
-            XCTAssertThrowsError(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+            XCTAssertThrowsError(try candidateForStone(draft))
             XCTAssertEqual(draft, configured)
         }
         try draft.restoreEditHistory(before)
@@ -199,7 +230,17 @@ final class FloorSettingsTests: XCTestCase {
         badBinding["materialVersion"] = .integer(2)
         other["extensions"][lookup]["bindings"] = .array([badBinding])
         try draft.replaceCandidate(other)
-        XCTAssertThrowsError(try ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))
+        XCTAssertThrowsError(try candidateForStone(draft))
+        var alternate = before.candidate
+        let otherMaterial = UUID().uuidString.lowercased()
+        var alternateBinding = try XCTUnwrap(alternate["extensions"][lookup]["bindings"].items?.first)
+        var alternateDescriptor = try XCTUnwrap(alternate["extensions"][lookup]["materials"].items?.first)
+        alternateBinding["materialId"] = .string(otherMaterial)
+        alternateDescriptor["id"] = .string(otherMaterial)
+        alternate["extensions"][lookup]["bindings"] = .array([alternateBinding])
+        alternate["extensions"][lookup]["materials"] = .array([alternateDescriptor])
+        try draft.replaceCandidate(alternate)
+        XCTAssertThrowsError(try candidateForStone(draft))
     }
 
     func testWholePresetWritesAppearanceAndSoundWithCanonicalReferenceAndNoop() throws {
