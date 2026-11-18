@@ -407,12 +407,16 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, sce
             APP.rename(previous)
         try:
             candidate.rename(APP)
-            if publication_root is not None:
-                publication_root.rmdir()  # Empty after the successful rename.
         except OSError:
             if previous is not None and not APP.exists():
                 previous.rename(APP)
             raise
+        if publication_root is not None:
+            try:
+                publication_root.rmdir()  # Empty after the successful rename.
+            except OSError:
+                raise ValidationError("The verified fixed bundle was published and its predecessor retained; "
+                                      f"only empty publication-directory cleanup failed: {publication_root}") from None
 
 
 def preflight(bundle, profile, pins):
