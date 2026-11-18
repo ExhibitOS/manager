@@ -25,7 +25,19 @@ final class NativeAutomationPlaqueWallTests: XCTestCase {
         var command: DocumentValue = .object(["type": .string("set-wall-finish"), "wall": wall])
         XCTAssertEqual(try NativeAutomationPlaqueWall.wall(command).value, command)
         command["wall"]["baseboardHeight"] = .number(0.01)
-        XCTAssertThrowsError(try NativeAutomationPlaqueWall.wall(command))
+        XCTAssertThrowsError(try NativeAutomationPlaqueWall.wall(command)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "WALL_FINISH_INVALID")
+        }
+        command["wall"] = wall
+        command["wall"]["baseboardHeight"] = .string("0.06")
+        XCTAssertThrowsError(try NativeAutomationPlaqueWall.wall(command)) {
+            XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_COMMAND_INVALID")
+        }
+        command["wall"] = wall
+        command["wall"]["extra"] = .bool(true)
+        XCTAssertThrowsError(try NativeAutomationPlaqueWall.wall(command)) {
+            XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_COMMAND_INVALID")
+        }
         command["wall"] = wall; command["unrelated"] = .bool(true)
         XCTAssertThrowsError(try NativeAutomationPlaqueWall.wall(command))
     }

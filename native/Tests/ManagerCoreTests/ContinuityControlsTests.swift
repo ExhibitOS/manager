@@ -140,6 +140,91 @@ final class ContinuityControlsTests: XCTestCase {
         XCTAssertThrowsError(try fields.command().proposedCandidate(in: draft, selectedSurfaceId: wall))
         XCTAssertEqual(draft.candidate, future)
     }
+    func testPlainBaseboardRoundTripPreservesAbsentFalseAndTrue() throws {
+        for flag: Bool? in [nil, false, true] {
+            var draft = try fixture()
+            let settings = try WallFinishSettings(surfaceId: wall, depth: 0.12, preset: "plain", trimWidth: 0.02,
+                baseboardHeight: 0.04, ceilingBand: false, plainBaseboard: flag)
+            let command = try WallFinishCommand(surfaceId: wall, settings: settings)
+            XCTAssertEqual(try NativeAutomationPlaqueWall.wall(command.value), command)
+            try draft.replaceCandidate(command.proposedCandidate(in: draft, selectedSurfaceId: wall))
+            let reopened = try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(draft))
+            XCTAssertEqual(try WallFinishSettings.read(in: reopened, surfaceId: wall), settings)
+            let form = try WallFinishFormBuffer(draft: reopened, surfaceId: wall)
+            XCTAssertEqual(try form.command(), command)
+            XCTAssertEqual(settings.value["plainBaseboard"], flag.map(DocumentValue.bool) ?? .null)
+        }
+    }
+
+    func testPlainBaseboardClosedSchemaAndPresetRestriction() throws {
+        XCTAssertThrowsError(try WallFinishSettings(surfaceId: wall, depth: 0.12, preset: "painted-edge", trimWidth: 0.02,
+            baseboardHeight: 0.04, ceilingBand: false, plainBaseboard: true))
+        let settings = try WallFinishSettings(surfaceId: wall, depth: 0.12, preset: "plain", trimWidth: 0.02,
+            baseboardHeight: 0.04, ceilingBand: false)
+        for invalid: DocumentValue in [.null, .string("true"), .integer(1)] {
+            var draft = try fixture(), row = settings.value, candidate = draft.candidate
+            row["plainBaseboard"] = invalid
+            candidate["extensions"][WallFinishSettings.namespace] = .object(["version": .integer(1), "walls": .array([row])])
+            try draft.replaceCandidate(candidate)
+            XCTAssertThrowsError(try WallFinishSettings.read(in: draft, surfaceId: wall))
+        }
+        var form = try WallFinishFormBuffer(draft: fixture(), surfaceId: wall)
+        form.enabled = true; form.plainBaseboard = true
+        XCTAssertEqual(try form.command().settings?.plainBaseboard, true)
+        form.plainBaseboard = false
+        XCTAssertNil(try form.command().settings?.plainBaseboard)
+        form.plainBaseboard = true; form.preset = "dark-edge"
+        XCTAssertNil(try form.command().settings?.plainBaseboard)
+    }
+
+    func testBaseboardDisappearanceRemovesOnlySelectedCollisionOverride() throws {
+        let namespace = "org.exhibitos.studio/furnishing-walking-collision"
+        let unrelated: DocumentValue = .object(["kind": .string("light"), "id": .string(light), "enabled": .bool(false)])
+        let selected: DocumentValue = .object(["kind": .string("baseboard"), "id": .string(wall.uppercased()), "enabled": .bool(true)])
+        let otherWall: DocumentValue = .object(["kind": .string("baseboard"), "id": .string("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), "enabled": .bool(false)])
+        for preset in ["plain", "painted-edge", "dark-edge"] {
+            for remove in [false, true] {
+                var draft = try fixture()
+                let prior = try WallFinishSettings(surfaceId: wall, depth: 0.12, preset: preset, trimWidth: 0.02,
+                    baseboardHeight: 0.04, ceilingBand: false, plainBaseboard: preset == "plain" ? true : nil)
+                try draft.replaceCandidate(WallFinishCommand(surfaceId: wall, settings: prior).proposedCandidate(in: draft, selectedSurfaceId: wall))
+                var candidate = draft.candidate
+                candidate["extensions"][namespace] = .object(["version": .integer(1), "overrides": .array([unrelated, selected, otherWall])])
+                try draft.replaceCandidate(candidate)
+                let off = try WallFinishSettings(surfaceId: wall, depth: 0.12, preset: "plain", trimWidth: 0.02,
+                    baseboardHeight: 0.04, ceilingBand: false, plainBaseboard: false)
+                let command = try WallFinishCommand(surfaceId: wall, settings: remove ? nil : off)
+                let next = try command.proposedCandidate(in: draft, selectedSurfaceId: wall)
+                XCTAssertEqual(next["extensions"][namespace], .object(["version": .integer(1), "overrides": .array([unrelated, otherWall])]))
+                XCTAssertEqual(next["lights"], candidate["lights"])
+                XCTAssertEqual(next["extensions"]["org.example/opaque"], candidate["extensions"]["org.example/opaque"])
+                var forged = next
+                forged["extensions"][namespace]["overrides"] = .array([otherWall])
+                XCTAssertThrowsError(try WallFinishPreview(candidate: forged, base: draft, command: command, selectedSurfaceId: wall))
+                candidate["extensions"][namespace]["overrides"] = .array([selected])
+                try draft.replaceCandidate(candidate)
+                XCTAssertEqual(try command.proposedCandidate(in: draft, selectedSurfaceId: wall)["extensions"][namespace], .null)
+            }
+        }
+    }
+
+    func testSwitchToEdgedFinishKeepsBaseboardCollisionTarget() throws {
+        var draft = try fixture()
+        let plain = try WallFinishSettings(surfaceId: wall, depth: 0.12, preset: "plain", trimWidth: 0.02,
+            baseboardHeight: 0.04, ceilingBand: false, plainBaseboard: true)
+        try draft.replaceCandidate(WallFinishCommand(surfaceId: wall, settings: plain).proposedCandidate(in: draft, selectedSurfaceId: wall))
+        let namespace = "org.exhibitos.studio/furnishing-walking-collision"
+        var candidate = draft.candidate
+        candidate["extensions"][namespace] = .object(["version": .integer(1), "overrides": .array([
+            .object(["kind": .string("baseboard"), "id": .string(wall), "enabled": .bool(false)])])])
+        try draft.replaceCandidate(candidate)
+        var form = try WallFinishFormBuffer(draft: draft, surfaceId: wall)
+        form.preset = "painted-edge"
+        let command = try form.command()
+        XCTAssertNil(command.settings?.plainBaseboard)
+        XCTAssertEqual(try command.proposedCandidate(in: draft, selectedSurfaceId: wall)["extensions"][namespace], candidate["extensions"][namespace])
+    }
+
     func testConcreteAtomicallyDeclaresFamilyWithoutChangingAppearanceOrOtherExperience() throws {
         let base = try fixture(); let target = FloorSettings.Target(kind: .surface, id: floor)
         let candidate = try ConcreteFootsteps.proposedCandidate(in: base, target: target, resourcesAvailable: true)

@@ -4275,10 +4275,19 @@ public actor AuthoringAPI {
         guard response.valid else { throw AuthoringFailure("DRAFT_INVALID") }
     }
 
+    private nonisolated static func supportsR285PlainBaseboardRuntime(manifest: String) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "f5f135851f2729bece3e7c89f3e1ea5c5d5d6580d85a399e078beb5827d2c13c"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
+            || supportsR285PlainBaseboardRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -4291,6 +4300,7 @@ public actor AuthoringAPI {
             || supportsR285InitialProductImageRuntime(manifest: manifest)
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || supportsR285SettledHayesRuntime(manifest: manifest)
+            || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
@@ -4357,6 +4367,7 @@ public actor AuthoringAPI {
         // Its debug admission is scoped to the ordinary catalogue and thumbnails.
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
+            || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
