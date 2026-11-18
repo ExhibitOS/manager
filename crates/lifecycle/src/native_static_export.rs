@@ -48,7 +48,8 @@ fn r285_saved_head_runtime_allowed(manifest: &str) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return [crate::native_payload::R285_PLAIN_BASEBOARD_TARGET.2,
         crate::native_payload::R285_UPPER_FRAMING_TARGET.2,
-        crate::native_payload::R285_ORDINARY_PUBLICATION_BUDGET_TARGET.2].contains(&manifest);
+        crate::native_payload::R285_ORDINARY_PUBLICATION_BUDGET_TARGET.2,
+        crate::native_payload::R201_ORDINARY_SUCCESSOR_TARGET.2].contains(&manifest);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = manifest; false }
 }
@@ -2635,6 +2636,18 @@ mod detail_tests {
             assert!(!saved_head_runtime_allowed(&target.to_uppercase()));
             assert!(!saved_head_runtime_allowed(&format!("0{}", &target[1..])));
         }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn r201_ordinary_successor_saved_head_export_is_ordinary_only_and_exact() {
+        let target = crate::native_payload::R201_ORDINARY_SUCCESSOR_TARGET.2;
+        assert!(saved_head_runtime_allowed(target));
+        assert!(!isolated_saved_head_runtime_allowed(target));
+        assert!(!owner_local_original_saved_head_runtime_allowed(target));
+        assert!(!saved_head_runtime_allowed(crate::native_payload::R285_APPROVED_RELEASE_TARGET.2));
+        assert!(!saved_head_runtime_allowed(&target.to_uppercase()));
+        assert!(!saved_head_runtime_allowed(&format!("0{}", &target[1..])));
     }
 
     #[cfg(all(feature="workspace-v5-owner-validation", debug_assertions, target_os="macos"))]
