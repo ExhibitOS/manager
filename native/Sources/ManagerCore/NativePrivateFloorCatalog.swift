@@ -30,7 +30,8 @@ public struct NativePrivateFloorCatalog: Equatable, Sendable {
                   "b751e43ed1968cd53aea2a9495a395d193b4d02ec48cd9e16ebae6806b4599b9",
                   "c9907e0733363fac0fa05848976913b5704d28ea8a7cb6bfcef343eb42af7031",
                   "cfe1faba63dc6d41e2451ad8bf8870d197a48e1b6d234850bdbad16c23083b59",
-                  "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec"].contains(manifestSHA256 ?? "")
+                  "6be2d5969462e4961e9ecbd3b6417936f2f075de1fbc3626d1b4f19cde7e65ec",
+                  "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874"].contains(manifestSHA256 ?? "")
     }
 
     public init(value: DocumentValue, tenantId: String) throws {
