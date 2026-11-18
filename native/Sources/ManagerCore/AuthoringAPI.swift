@@ -4293,6 +4293,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsR285UpperFramingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
+            || manifest == "ff09c9e7f7ca92575f4b307c59fa42418a4195c03319e5d2a6ff2754489d0cb6"
         #else
         false
         #endif

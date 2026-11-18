@@ -134,29 +134,37 @@ final class NativeSceneAdmissionTests: XCTestCase {
     }
 
     func testR285UpperFramingAdmissionIsExactAndDoesNotEnableOtherRuntimeFamilies() {
-        let target = "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
+        let targets = [
+            "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a",
+            "ff09c9e7f7ca92575f4b307c59fa42418a4195c03319e5d2a6ff2754489d0cb6"
+        ]
         let parent = "f5f135851f2729bece3e7c89f3e1ea5c5d5d6580d85a399e078beb5827d2c13c"
-        for manifest in [parent, target] {
+        for manifest in [parent] + targets {
             XCTAssertTrue(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
             XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
             XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
         }
-        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: target))
-        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: target))
-        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: target, ready: true))
-        XCTAssertNoThrow(try NativeAutomationSession.checkUpperFramingOutputOperation(
-            manifest: target, operation: "export-static-saved-head"))
-        for operation in ["private-exhibition-export-static", "export-static-native-original",
-                          "export-static-native-original-publication"] {
-            XCTAssertThrowsError(try NativeAutomationSession.checkUpperFramingOutputOperation(
-                manifest: target, operation: operation))
+        let excluded = ["private-exhibition-export-static", "export-static-native-original",
+                        "export-static-native-original-publication"]
+        for target in targets {
+            XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: target))
+            XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: target))
+            XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: target, ready: true))
+            XCTAssertNoThrow(try NativeAutomationSession.checkUpperFramingOutputOperation(
+                manifest: target, operation: "export-static-saved-head"))
+            for operation in excluded {
+                XCTAssertThrowsError(try NativeAutomationSession.checkUpperFramingOutputOperation(
+                    manifest: target, operation: operation))
+            }
+            for denied in ["0" + String(target.dropFirst()), target.uppercased()] {
+                XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: denied))
+                XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: denied))
+                XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: denied))
+            }
+        }
+        for operation in excluded {
             XCTAssertNoThrow(try NativeAutomationSession.checkUpperFramingOutputOperation(
                 manifest: parent, operation: operation))
-        }
-        for denied in ["0" + String(target.dropFirst()), target.uppercased()] {
-            XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: denied))
-            XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: denied))
-            XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: denied))
         }
     }
 
