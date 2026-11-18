@@ -55,11 +55,7 @@ public actor NativeAutomationSession {
     static func checkOrdinarySuccessorOperation(_ operation: String, manifest: String?) throws {
         guard AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest) else { return }
         switch operation {
-        case "read", "save", "reopen-saved", "room-audio-status",
-             "floor-sound-status", "floor-quiet-oak-footsteps-apply", "floor-entrance-stone-footsteps-apply",
-             "workspace-furnishing-list", "workspace-furnishing-read", "workspace-frame-lineage-status",
-             "workspace-frame-attach", "workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply",
-             "workspace-frame-image-fit-cancel", "saved-head-static-readiness", "export-oex", "export-static-saved-head":
+        case "read", "reopen-saved", "room-audio-status", "placement-voice-apply", "applied-draft-save-resume":
             break
         case "private-exhibition-export-static", "export-static":
             throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
@@ -68,6 +64,37 @@ public actor NativeAutomationSession {
         default:
             throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
         }
+    }
+
+    private static let voiceCorrectionCommitments: Set<String> = [
+        "4caaed7329895be2f8787f74286bb5f864a881850f17493f12de572811f16de8",
+        "e131140797be87a7fca96c19ff1a98de33a1a7a0d5748fceb9508e268100fa9d",
+    ]
+
+    static func voiceCorrectionCommitment(placementId: String, priorAudioId: String, audioId: String,
+                                         audioSHA256: String, transcript: String) throws -> String {
+        let transcriptDigest = nativeImportSHA256(Data(transcript.utf8))
+        let fields = ["exhibitos-r201-voice-correction-v1", placementId, "ko", priorAudioId, audioId, audioSHA256, transcriptDigest]
+        return nativeImportSHA256(try JSONEncoder().encode(fields))
+    }
+
+    /// This binary's exact ordinary lane changes only the reviewed bindings.
+    /// The existing #628 proposal and Save independently recheck live authority.
+    static func checkVoiceCorrection(_ command: DocumentValue, candidate: DocumentValue,
+                                     allowedCommitments: Set<String> = voiceCorrectionCommitments) throws {
+        let denied = AuthoringFailure("PLACEMENT_VOICE_INVALID")
+        guard let placementId = command["placementId"].string, let audioId = command["audioId"].string,
+              command["locale"] == .string("ko"), let transcript = command["transcript"].string,
+              let voices = candidate["extensions"][ConcreteFootsteps.experienceNamespace]["voices"].items,
+              let media = candidate["mediaAssets"].items else { throw denied }
+        let bindings = voices.filter { $0["placementId"] == .string(placementId) && $0["locale"] == .string("ko") }
+        let recordings = media.filter { $0["id"] == .string(audioId) }
+        guard bindings.count == 1, let prior = bindings.first, let priorAudioId = prior["assetId"].string,
+              prior["transcript"] == .string(transcript), recordings.count == 1, let recording = recordings.first,
+              recording["mime"] == .string("audio/wav"), command["expectedMediaAsset"] == recording,
+              let sha = recording["sha256"].string, nativeImportDigest(sha),
+              try allowedCommitments.contains(voiceCorrectionCommitment(placementId: placementId, priorAudioId: priorAudioId,
+                  audioId: audioId, audioSHA256: sha, transcript: transcript)) else { throw denied }
     }
 
     static func checkUpperFramingOutputOperation(manifest: String?, operation: String) throws {
@@ -228,7 +255,8 @@ public actor NativeAutomationSession {
                   url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
         }
         if let path = appliedDraftRecoveryPath {
-            guard existingWorkspaceV5 != nil, workspaceV5ValidationRuntime == nil,
+            guard !AuthoringAPI.supportsR201OrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
+                  existingWorkspaceV5 != nil, workspaceV5ValidationRuntime == nil,
                   workspaceV6ValidationRuntime == nil, workspaceV7ValidationRuntime == nil,
                   selectedOEXFormat == nil, let pin = inputs[path], nativeImportDigest(pin) else {
                 throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
@@ -2211,6 +2239,10 @@ public actor NativeAutomationSession {
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
         try Self.checkUpperFramingOutputOperation(manifest: runtimeManifest, operation: operation)
         try Self.checkOrdinarySuccessorOperation(operation, manifest: runtimeManifest)
+        if AuthoringAPI.supportsR201OrdinarySuccessor(manifest: runtimeManifest),
+           operation == "applied-draft-save-resume", request["command"] == .null {
+            throw BridgeFailure("APPLIED_DRAFT_SAME_SESSION_INTENT_UNAVAILABLE")
+        }
         let releaseSelection = try NativePublicationReleaseSelection.checked(in: request,
             runtimeAdmitted: AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: runtimeManifest))
         if installedAuthoringCLI {
@@ -3316,6 +3348,10 @@ public actor NativeAutomationSession {
         case "placement-voice-apply":
             guard existingWorkspaceV5 != nil, selectedOEXFormat == nil else {
                 throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+            if AuthoringAPI.supportsR201OrdinarySuccessor(manifest: runtimeManifest) {
+                guard let draft = current.draft else { throw AuthoringFailure("PLACEMENT_VOICE_INVALID") }
+                try Self.checkVoiceCorrection(request["command"], candidate: draft.candidate)
             }
             let preview = try await Self.preparePlacementVoiceApply(request, using: api, in: current)
             let (_, _, latest) = try await checked(request)

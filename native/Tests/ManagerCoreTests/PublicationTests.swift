@@ -2,7 +2,7 @@
 import XCTest
 @testable import ManagerCore
 final class PublicationTests: XCTestCase {
-    func testOrdinarySuccessorPreservesTheRetainedFramesAndRejectsSelectedDetail() throws {
+    func testOrdinarySuccessorVoiceScopeRejectsOtherEditsAndSelectedOutput() throws {
         let manifest = "ae894e6fe31a5e751406610e35e0e6a1e67033a9cf7527c588aaf26019b9564a"
         let predecessor = "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"
         #if DEBUG && os(macOS)
@@ -16,14 +16,13 @@ final class PublicationTests: XCTestCase {
         XCTAssertTrue(NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: manifest, ready: true))
         XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: manifest, ready: true))
         XCTAssertFalse(NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: manifest, ready: false))
-        for operation in ["read", "save", "reopen-saved", "floor-sound-status", "floor-quiet-oak-footsteps-apply",
-                          "floor-entrance-stone-footsteps-apply", "workspace-frame-attach", "workspace-frame-image-fit-prepare",
-                          "workspace-frame-image-fit-apply", "export-oex", "export-static-saved-head"] {
+        for operation in ["read", "reopen-saved", "room-audio-status", "placement-voice-apply", "applied-draft-save-resume"] {
             XCTAssertNoThrow(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest))
         }
-        for operation in ["private-exhibition-export-static", "export-static", "export-static-native-original",
-                          "export-static-native-original-publication", "room-audio-approve", "workspace-frame-detach",
-                          "workspace-furnishing-intake-create", "exhibition-new"] {
+        for operation in ["save", "export-oex", "export-static-saved-head", "private-exhibition-export-static", "export-static",
+                          "export-static-native-original", "export-static-native-original-publication", "room-audio-approve",
+                          "room-audio-intake", "room-audio-apply", "workspace-frame-attach", "workspace-frame-image-fit-apply",
+                          "floor-quiet-oak-footsteps-apply", "floor-entrance-stone-footsteps-apply", "exhibition-new"] {
             XCTAssertThrowsError(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest))
         }
         #endif
@@ -37,6 +36,39 @@ final class PublicationTests: XCTestCase {
         ])
         XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: request,
             runtimeAdmitted: AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest)))
+    }
+
+    func testVoiceCorrectionRequiresTheExactPriorBindingExistingWAVAndUnchangedScript() throws {
+        let place = "10000000-0000-4000-8000-000000000021"
+        let old = "10000000-0000-4000-8000-000000000022"
+        let correction = "10000000-0000-4000-8000-000000000023"
+        let sha = String(repeating: "a", count: 64)
+        let script = "Synthetic Korean narration"
+        let media: DocumentValue = .object(["id": .string(correction), "mime": .string("audio/wav"), "sha256": .string(sha)])
+        let binding: DocumentValue = .object(["placementId": .string(place), "assetId": .string(old),
+            "locale": .string("ko"), "transcript": .string(script)])
+        let candidate: DocumentValue = .object(["mediaAssets": .array([media]), "extensions": .object([
+            ConcreteFootsteps.experienceNamespace: .object(["voices": .array([binding])])
+        ])])
+        let command: DocumentValue = .object(["placementId": .string(place), "audioId": .string(correction),
+            "locale": .string("ko"), "transcript": .string(script), "expectedMediaAsset": media])
+        let pin = try NativeAutomationSession.voiceCorrectionCommitment(placementId: place, priorAudioId: old,
+            audioId: correction, audioSHA256: sha, transcript: script)
+        XCTAssertNoThrow(try NativeAutomationSession.checkVoiceCorrection(command, candidate: candidate, allowedCommitments: [pin]))
+        XCTAssertThrowsError(try NativeAutomationSession.checkVoiceCorrection(command, candidate: candidate))
+        for (key, wrong) in [
+            ("placementId", DocumentValue.string(old)), ("audioId", .string(old)), ("locale", .string("en")),
+            ("transcript", .string(script + " changed")), ("expectedMediaAsset", .null)
+        ] {
+            var changed = command
+            changed[key] = wrong
+            XCTAssertThrowsError(try NativeAutomationSession.checkVoiceCorrection(changed, candidate: candidate, allowedCommitments: [pin]))
+        }
+        var next = candidate
+        var edited = binding
+        edited["assetId"] = .string(correction)
+        next["extensions"][ConcreteFootsteps.experienceNamespace]["voices"] = .array([edited])
+        XCTAssertThrowsError(try NativeAutomationSession.checkVoiceCorrection(command, candidate: next, allowedCommitments: [pin]))
     }
 
     func testApprovedReleaseSelectionRequiresTheExactOriginalOperationAndAdmittedRuntime() throws {
