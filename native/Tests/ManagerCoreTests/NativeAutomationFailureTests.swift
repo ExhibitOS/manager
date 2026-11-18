@@ -4,6 +4,14 @@ import Darwin
 @testable import ManagerCore
 
 final class NativeThumbnailPageOutcomeTests: XCTestCase {
+    func testInstalledAudioPinRejectsNonAudioInputs() {
+        let hash = String(repeating: "a", count: 64)
+        XCTAssertTrue(NativeAutomationSession.installedRoomAudioPinAllowed(path: "/audio/recording.MP3", hash: hash))
+        XCTAssertTrue(NativeAutomationSession.installedRoomAudioPinAllowed(path: "/audio/recording.wav", hash: hash))
+        XCTAssertFalse(NativeAutomationSession.installedRoomAudioPinAllowed(path: "/audio/thumbnail.png", hash: hash))
+        XCTAssertFalse(NativeAutomationSession.installedRoomAudioPinAllowed(path: "/audio/recording.wav", hash: "wrong"))
+    }
+
     func testLegacyAndOptInAcceptance() throws {
         func acceptance(_ capabilities: [String], bounded: Bool = false) throws -> ViewportAcceptance {
             let encoded = try JSONSerialization.data(withJSONObject: [

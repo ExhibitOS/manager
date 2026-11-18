@@ -73,6 +73,7 @@ public actor NativeAutomationSession {
     private let installedExportRootIdentity: (dev_t, ino_t)?
     private let requiresReleaseImageRuntime: Bool
     private let inputs: [String: String]
+    private let installedAudioInputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
     private var context: Context?
     private var api: AuthoringAPI?
@@ -176,7 +177,7 @@ public actor NativeAutomationSession {
               FileManager.default.fileExists(atPath: outputRoot.path),
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
               !profile.path.hasPrefix(outputRoot.path + "/") else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
-        self.root = outputRoot; self.inputs = inputs; self.installedImageCLI = false
+        self.root = outputRoot; self.inputs = inputs; self.installedAudioInputs = [:]; self.installedImageCLI = false
         self.installedAuthoringCLI = false
         self.installedExportRootIdentity = nil
         self.requiresReleaseImageRuntime = false
@@ -223,10 +224,16 @@ public actor NativeAutomationSession {
     public init(installedAuthoringCLIHelper helper: URL, profile: URL, outputRoot: URL,
                 audioInputs: [String: String] = [:]) throws {
         guard audioInputs.count <= 1, audioInputs.allSatisfy({ path, hash in
-            path.hasPrefix("/") && URL(fileURLWithPath: path).path == path && nativeImportDigest(hash)
+            Self.installedRoomAudioPinAllowed(path: path, hash: hash)
         }) else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
         try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true,
                       exportRoot: outputRoot, authoring: true, audioInputs: audioInputs)
+    }
+
+    static func installedRoomAudioPinAllowed(path: String, hash: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        return path.hasPrefix("/") && url.path == path && ["mp3", "wav"].contains(url.pathExtension.lowercased())
+            && nativeImportDigest(hash)
     }
 
     private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?, authoring: Bool = false, audioInputs: [String: String] = [:]) throws {
@@ -240,7 +247,8 @@ public actor NativeAutomationSession {
         self.root = exportRoot ?? profile
         self.temporaryRoot = profile
         self.ports = [:]
-        self.inputs = audioInputs
+        self.inputs = [:]
+        self.installedAudioInputs = audioInputs
         self.installedAuthoringCLI = authoring
         self.installedImageCLI = exportRoot == nil
         self.installedExportRootIdentity = try exportRoot.map { try Self.exportRootIdentity($0, profile: profile) }
@@ -3170,7 +3178,8 @@ public actor NativeAutomationSession {
             guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             let receipt: NativeRoomAudioReceipt
             if operation == "room-audio-intake" {
-                guard let path = request["inputPath"].string, let hash = inputs[path],
+                guard let path = request["inputPath"].string,
+                      let hash = (installedAuthoringCLI ? installedAudioInputs : inputs)[path],
                       let requestId = command["requestId"].string else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
                 let url = URL(fileURLWithPath: path)
                 func readPinnedInput(allowMP3: Bool = false) async throws -> ImportFileSnapshot {

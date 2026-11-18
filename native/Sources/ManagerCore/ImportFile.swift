@@ -133,7 +133,10 @@ struct NativeRoomAudioPreparation {
             defer { try? FileManager.default.removeItem(at: staging) }
             let source = staging.appendingPathComponent("original.mp3")
             try write(original.data, to: source)
-            let wav = ImportFileSnapshot.preparedWAV(try decode(source))
+            let decoded: Data
+            do { decoded = try decode(source) }
+            catch is AuthoringFailure { throw AuthoringFailure("AUDIO_SOURCE_INVALID") }
+            let wav = ImportFileSnapshot.preparedWAV(decoded)
             try write(wav.data, to: staging.appendingPathComponent("prepared.wav"))
             let prepared: DocumentValue = .object(["binding": binding, "wavSha256": .string(wav.sha256)])
             try write(JSONEncoder().encode(prepared), to: staging.appendingPathComponent("preparation.json"))
@@ -225,7 +228,7 @@ struct NativeRoomAudioPreparation {
         guard fsync(fd) == 0 else { throw invalid() }
     }
 
-    private static func isCanonicalWAV(_ bytes: Data) -> Bool {
+    static func isCanonicalWAV(_ bytes: Data) -> Bool {
         guard bytes.count > 44, bytes.count <= byteLimit else { return false }
         func number(_ offset: Int, size: Int) -> Int {
             (0..<size).reduce(0) { $0 | (Int(bytes[offset + $1]) << ($1 * 8)) }

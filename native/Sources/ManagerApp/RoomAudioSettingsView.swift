@@ -144,6 +144,11 @@ struct RoomAudioSettingsView: View {
                             Task {
                                 audioReceipt = await model.intakeRoomAudio(audioFile, requestId: id, rights: rights,
                                                                           revision: audioTarget.revision)
+                                if audioReceipt == nil,
+                                   ["AUDIO_SOURCE_INVALID", "AUDIO_DECLARATION_INVALID"].contains(model.failure?.code ?? "") {
+                                    message = model.failure?.localizedDescription ?? ""
+                                    audioRequestId = nil
+                                }
                             }
                         }
                         .disabled(!model.canIntakeRoomAudio || audioTarget != target
