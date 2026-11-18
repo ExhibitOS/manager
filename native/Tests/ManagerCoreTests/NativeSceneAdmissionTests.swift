@@ -133,6 +133,24 @@ final class NativeSceneAdmissionTests: XCTestCase {
             "76200d7f27776a9e0060c1f071cc66deeffe5de271d92a02ef4048c56493bdbd"))
     }
 
+    func testR285UpperFramingAdmissionIsExactAndDoesNotEnableOtherRuntimeFamilies() {
+        let target = "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
+        let parent = "f5f135851f2729bece3e7c89f3e1ea5c5d5d6580d85a399e078beb5827d2c13c"
+        for manifest in [parent, target] {
+            XCTAssertTrue(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
+            XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+            XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        }
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: target))
+        XCTAssertFalse(AuthoringAPI.supportsWorkspaceFurnishingThumbnailRuntime(manifest: target))
+        XCTAssertFalse(AuthoringAPI.supportsGPUModelPreparationRuntime(manifestSHA256: target, ready: true))
+        for denied in ["0" + String(target.dropFirst()), target.uppercased()] {
+            XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: denied))
+            XCTAssertFalse(AuthoringAPI.supportsPinnedStartupDrain(manifest: denied))
+            XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: denied))
+        }
+    }
+
     func testDefault111OrdinaryEntryDoesNotEnableOptionalCatalogFamilies() {
         let runtime = "4b8a50b3b9debcafdc757048dd98a1a8997feaf894ead81543739d7bd1b85b84"
         XCTAssertTrue(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: runtime))

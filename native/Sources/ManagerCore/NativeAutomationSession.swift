@@ -1109,6 +1109,7 @@ public actor NativeAutomationSession {
         let publicationProfile = "bounded-local-v1"
         guard let owner = existingWorkspaceV5, let manifest = runtimeManifest, owner.manifestSHA256 == manifest,
               AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest), selectedOEXFormat == nil,
+              protected == nil || !AuthoringAPI.supportsR285UpperFramingRuntime(manifest: manifest),
               authoringSession?.nativePublicationProfile == publicationProfile,
               authoringSession?.userId == owner.principalId,
               current.workspaceId == owner.workspaceId, current.tenantId == owner.tenantId,

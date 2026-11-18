@@ -4290,11 +4290,20 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsR285UpperFramingRuntime(manifest: String) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsSavedHeadAuthoringRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == savedHeadModularRuntimeManifestPin || manifest == savedHeadMuseumCaptionManifestPin
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
+            || supportsR285UpperFramingRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -4308,6 +4317,7 @@ public actor AuthoringAPI {
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || supportsR285SettledHayesRuntime(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
+            || supportsR285UpperFramingRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)
@@ -4375,6 +4385,7 @@ public actor AuthoringAPI {
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
+            || supportsR285UpperFramingRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
