@@ -113,6 +113,50 @@ final class LightObjectRequestTests: XCTestCase {
         }
     }
 
+    func testBeamFitAcceptsOnlySelectedSpotWidthAndBoundedEvidence() throws {
+        var draft = try fixture()
+        let placement = UUID().uuidString.lowercased()
+        var initial = draft.candidate
+        initial["placements"] = .array([.object(["id": .string(placement), "roomId": draft.rooms[0]["id"]])])
+        try draft.replaceCandidate(initial)
+        let row = initial["lights"].items![0]
+        var settings = try NativeLightFixture.settings(in: draft, lightId: source)
+        let point: DocumentValue = .object(["kind": .string("point"), "position": .vector([0, 1.3, 2.6])])
+        settings["aim"] = point
+        let request = try makeRequest("set-light-object", draft, fields: [
+            "light": without(row, "id"), "settings": settings, "fitBeam": .object(["placementId": .string(placement)])
+        ])
+        var expected = changed(initial)
+        var lights = expected["lights"].items!
+        lights[0]["beamAngle"] = .number(0.65)
+        expected["lights"] = .array(lights)
+        var detailsRows = expected["extensions"][details]["lights"].items!
+        detailsRows[0]["aim"] = point
+        expected["extensions"][details]["lights"] = .array(detailsRows)
+        var result = reply(request, candidate: expected)
+        XCTAssertThrowsError(try request.checkedReply(result))
+        result["beamFit"] = .object(["placementId": .string(placement), "bounds": .string("display-plane"),
+            "maxDistanceMeters": .number(2.0), "maxPolarAngleRadians": .number(0.20),
+            "minImageIncidence": .number(0.9), "floorSpill": .string("unknown")])
+        XCTAssertEqual(try request.checkedReply(result).beamFit?.placementId, placement)
+        XCTAssertEqual(try request.checkedReply(result).candidate, expected)
+
+        var mutated = result
+        mutated["beamFit"]["maxPolarAngleRadians"] = .number(.pi / 2)
+        XCTAssertThrowsError(try request.checkedReply(mutated))
+        mutated = result
+        mutated["beamFit"]["placementId"] = .string(UUID().uuidString)
+        XCTAssertThrowsError(try request.checkedReply(mutated))
+        lights[1]["beamAngle"] = .number(0.4)
+        mutated = result
+        mutated["candidate"]["lights"] = .array(lights)
+        XCTAssertThrowsError(try request.checkedReply(mutated))
+        settings["aim"] = .object(["kind": .string("placement-center")])
+        XCTAssertThrowsError(try makeRequest("set-light-object", draft, fields: [
+            "light": without(row, "id"), "settings": settings, "fitBeam": .object(["placementId": .string(placement)])
+        ]))
+    }
+
     func testNativeTransportBindsOrdinaryACKWithoutInventingWebCapability() throws {
         let draft = try fixture(), ack = frame(draft)
         var document = NativeDocumentState(format: 1, revision: 1, workspaceId: UUID().uuidString.lowercased(),
