@@ -36,9 +36,12 @@ final class InstalledFrameDiscoveryTests: XCTestCase {
         _ = try await api.connect(LocalAuthoringSession(tenantId: FrameFitSynthetic.owner, principalId: FrameFitSynthetic.owner,
             origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
         if manifest == cleanManifest {
-            XCTAssertTrue(api.admitsWorkspaceStraightMiterFrameFit)
-            XCTAssertFalse(api.admitsFrameImageFitReconciliation)
-            XCTAssertFalse(api.admitsWorkspaceCeilingRail)
+            let admitsMiter = await api.admitsWorkspaceStraightMiterFrameFit
+            let admitsReconciliation = await api.admitsFrameImageFitReconciliation
+            let admitsRail = await api.admitsWorkspaceCeilingRail
+            XCTAssertTrue(admitsMiter)
+            XCTAssertFalse(admitsReconciliation)
+            XCTAssertFalse(admitsRail)
         }
         let page = try await api.workspaceFurnishings()
         XCTAssertEqual(page.items.map(\.id), ids)
@@ -95,10 +98,13 @@ final class InstalledFrameDiscoveryTests: XCTestCase {
     func testCleanDefaultFrameAdmissionDoesNotQualifyPortalRuntime() async throws {
         try selectedFixture(portalProfiles: true)
         let api = try await connected(manifest: cleanManifest)
-        XCTAssertTrue(api.admitsWorkspaceStraightMiterFrameFit)
+        let admitsMiter = await api.admitsWorkspaceStraightMiterFrameFit
+        let admitsPortal = await api.admitsWorkspacePortalFinish
+        let admitsModular = await api.admitsWorkspaceModularPortalFit
+        XCTAssertTrue(admitsMiter)
         XCTAssertFalse(api.workspacePortalFinishRuntimeQualified)
-        XCTAssertFalse(api.admitsWorkspacePortalFinish)
-        XCTAssertFalse(api.admitsWorkspaceModularPortalFit)
+        XCTAssertFalse(admitsPortal)
+        XCTAssertFalse(admitsModular)
         XCTAssertFalse(AuthoringAPI.supportsStraightMiterFrameRuntime(manifest: cleanManifest))
     }
 
