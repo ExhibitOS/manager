@@ -33,7 +33,11 @@ and signed file hashes, the accepted consumer release and rollback decision,
 and retained original GUI/helper/runtime inputs plus the build record.
 `return-check` verifies the fixed identity and normal owner return first.
 Retirement verifies the named predecessor's signature and retained resources,
-checks for open handles, and records the `PRUNED` receipt before scoped removal.
+checks for open handles, and records a pending `PRUNED` receipt outside the
+predecessor before scoped removal. The same attempt gets a separate failure
+or completed outcome with the observed volume readings. A retry must pass
+full validation again and keeps earlier attempt records. A partial candidate
+requires restoration from its retained approved inputs before retry.
 Without a plan, the existing predecessor retention behavior applies.
 
 ## Storage refusal before process startup
