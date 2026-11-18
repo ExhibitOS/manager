@@ -26,6 +26,16 @@ actual free-space loss exceeds that allocation. Logical APFS sizes are not
 capacity guarantees. This path does not launch an app, alter a profile, broaden
 runtime admission, or provide a general installer/storage-recovery mechanism.
 
+The owner may retire one explicitly released predecessor through
+`return-check --retirement-plan PATH --retirement-plan-sha SHA256`.
+The reviewed plan binds the returned replacement, eligible predecessor pins
+and signed file hashes, the accepted consumer release and rollback decision,
+and retained original GUI/helper/runtime inputs plus the build record.
+`return-check` verifies the fixed identity and normal owner return first.
+Retirement verifies the named predecessor's signature and retained resources,
+checks for open handles, and records the `PRUNED` receipt before scoped removal.
+Without a plan, the existing predecessor retention behavior applies.
+
 ## Storage refusal before process startup
 
 The native runtime checks its existing 3 GiB free-space floor before consuming a

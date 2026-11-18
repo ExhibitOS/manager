@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("launcher", Path(__file__).with_name("manager-validation-gui.py"))
@@ -29,6 +30,61 @@ class ManagerValidationGuiTests(unittest.TestCase):
             {"path": p.name, "bytes": p.stat().st_size, "sha256": launcher.sha(p)} for p in sorted(legal.iterdir())
         ]}))
         return legal, inventory
+
+    def test_retirement_removes_only_reviewed_candidate_after_rebuild_checks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            app = root / "fixed.app"
+            app.mkdir()
+            candidate = root / "retained-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.app"
+            kept = root / "retained-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.app"
+            kept.mkdir()
+            profile = root / "profile"
+            profile.mkdir()
+            gui, helper, runtime = (root / name for name in ("gui", "helper", "runtime"))
+            gui.write_bytes(b"unsigned gui")
+            helper.write_bytes(b"unsigned helper")
+            runtime.mkdir()
+            (runtime / "manifest.json").write_bytes(b"runtime manifest")
+            for name in (launcher.GUI, launcher.HELPER):
+                (candidate / name).parent.mkdir(parents=True)
+                (candidate / name).write_bytes(b"signed specimen")
+            (candidate / launcher.INFO).write_bytes(b"info")
+            shutil.copytree(runtime, candidate / launcher.MANIFEST.parent)
+            plan_path, proof_path, release_path = (root / name for name in ("plan.json", "producer.json", "consumer.json"))
+            proof_path.write_text("reviewed producer fixture")
+            release_path.write_text("accepted return fixture")
+            pins = dict(unsignedGUI=launcher.sha(gui), unsignedHelper=launcher.sha(helper),
+                        runtimeManifest=launcher.sha(runtime / "manifest.json"))
+            replacement = dict(app=str(app), profile=str(profile), pins=pins, pid=1234, owner="Native")
+            plan = dict(candidate=str(candidate), candidatePins=pins, replacement=replacement,
+                candidateSigned={key: launcher.sha(candidate / name) for key, name in
+                                 (("gui", launcher.GUI), ("helper", launcher.HELPER), ("info", launcher.INFO))},
+                rebuild=dict(gui=str(gui), helper=str(helper), runtime=str(runtime), buildRecord=str(proof_path),
+                             buildRecordSha256=launcher.sha(proof_path)),
+                consumerRelease=dict(path=str(release_path), sha256=launcher.sha(release_path)))
+            plan_path.write_text(json.dumps(plan))
+            returned = {**replacement, "returnVerified": True}
+            with patch.object(launcher, "APP", app), patch.object(launcher, "verify_bundle"), \
+                 patch.object(launcher, "pids", return_value=set()), \
+                 patch.object(launcher, "launch_services_has_app", return_value=False), \
+                 patch.object(launcher.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, b"", b"")):
+                with self.assertRaisesRegex(launcher.ValidationError, "returned replacement"):
+                    launcher.retire_approved_bundle(plan_path, launcher.sha(plan_path), profile,
+                                                    {**returned, "pid": 4321})
+                (runtime / "foreign").touch()
+                with self.assertRaisesRegex(launcher.ValidationError, "exact equivalent"):
+                    launcher.retire_approved_bundle(plan_path, launcher.sha(plan_path), profile, returned)
+                self.assertTrue(candidate.exists())
+                self.assertFalse(candidate.with_suffix(".PRUNED.json").exists())
+                (runtime / "foreign").unlink()
+                (candidate / launcher.MANIFEST.parent).chmod(0o555)
+                runtime.chmod(0o555)
+                outcome = launcher.retire_approved_bundle(plan_path, launcher.sha(plan_path), profile, returned)
+            self.assertFalse(outcome["existsAfter"])
+            self.assertTrue(candidate.with_suffix(".PRUNED.json").is_file())
+            self.assertFalse(candidate.exists())
+            self.assertTrue(app.exists() and kept.exists() and runtime.exists() and profile.exists())
 
     def test_return_check_requires_matching_receipt_and_both_free_profile_leases(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(launcher, "preflight"), \
@@ -322,7 +378,8 @@ class InternalPublicationTests(unittest.TestCase):
                 return ""
             with patch.object(launcher, "APP", app), patch.object(launcher, "output", side_effect=run), \
                  patch.object(launcher, "verify_signature"), patch.object(launcher, "pids", return_value=set()), \
-                 patch.object(launcher, "launch_services_has_app", return_value=False):
+                 patch.object(launcher, "launch_services_has_app", return_value=False), \
+                 patch.object(launcher.shutil, "disk_usage", return_value=SimpleNamespace(free=12 << 30)):
                 launcher.prepare(profile, old_pins, gui, old_helper, runtime)
                 before = launcher.bundle_inventory(app)
                 with patch.object(launcher, "clone_publication", side_effect=launcher.ValidationError("retain signed stage")):

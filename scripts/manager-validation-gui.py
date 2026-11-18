@@ -244,6 +244,114 @@ def bundle_inventory(bundle):
     return rows
 
 
+def retire_approved_bundle(plan_path, plan_sha, profile, replacement):
+    """Retire one explicitly released predecessor after a verified return."""
+    require(shutil.rmtree.avoids_symlink_attacks, "Safe directory removal is unavailable.")
+    require(plan_path.is_absolute() and plan_path.resolve(strict=True) == plan_path,
+            "Use a canonical retirement plan.")
+    with os.fdopen(os.open(plan_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as plan_file:
+        require(stat.S_ISREG(os.fstat(plan_file.fileno()).st_mode), "Use a regular retirement plan.")
+        raw = plan_file.read(16385)
+    require(len(raw) <= 16384 and hashlib.sha256(raw).hexdigest() == plan_sha,
+            "The reviewed retirement plan has changed.")
+    plan = json.loads(raw)
+    require(isinstance(plan, dict) and set(plan) == {
+        "candidate", "candidatePins", "candidateSigned", "rebuild", "replacement", "consumerRelease"
+    }, "The retirement plan has unexpected fields.")
+    require(plan["replacement"] == {key: replacement[key] for key in ("app", "profile", "pins", "pid", "owner")}
+            and replacement["returnVerified"] is True, "The plan does not match the returned replacement.")
+
+    require(isinstance(plan["candidate"], str), "Name one retired candidate.")
+    candidate = Path(plan["candidate"])
+    require(candidate.parent == APP.parent and re.fullmatch(
+        r"retained-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\.app", candidate.name)
+            and candidate.resolve(strict=True) == candidate and candidate.stat().st_uid == os.geteuid(),
+            "Select one owned retained validation app in the fixed directory.")
+    pins = plan["candidatePins"]
+    require(isinstance(pins, dict) and set(pins) - {"legalInventory"} == {
+        "unsignedGUI", "unsignedHelper", "runtimeManifest"
+    } and all(isinstance(pin, str) and re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins.values()),
+            "The retired candidate needs its own exact build pins.")
+    verify_bundle(candidate, profile, pins)
+    signed = {"gui": sha(candidate / GUI), "helper": sha(candidate / HELPER), "info": sha(candidate / INFO)}
+    require(plan["candidateSigned"] == signed, "The retired candidate signature inputs have changed.")
+
+    def preserved_path(raw_path):
+        require(isinstance(raw_path, str), "Use a canonical retained input path.")
+        path = Path(raw_path)
+        require(path.is_absolute() and path.resolve(strict=True) == path and not path.is_relative_to(candidate),
+                "Rebuild evidence and inputs must be retained outside the retiring app.")
+        return path
+
+    rebuild = plan["rebuild"]
+    rebuild_keys = {"gui", "helper", "runtime", "buildRecord", "buildRecordSha256"}
+    if "legalInventory" in pins:
+        rebuild_keys |= {"legal", "legalInventory"}
+    require(isinstance(rebuild, dict) and set(rebuild) == rebuild_keys,
+            "Provide exact original build inputs and their reviewed build record.")
+    build_record = preserved_path(rebuild["buildRecord"])
+    gui, helper, runtime = (preserved_path(rebuild[key]) for key in ("gui", "helper", "runtime"))
+    require(build_record.is_file() and sha(build_record) == rebuild["buildRecordSha256"]
+            and gui.is_file() and sha(gui) == pins["unsignedGUI"]
+            and helper.is_file() and sha(helper) == pins["unsignedHelper"]
+            and runtime.is_dir() and sha(runtime / "manifest.json") == pins["runtimeManifest"],
+            "Retained build inputs do not match the candidate pins.")
+    if "legalInventory" in pins:
+        legal = preserved_path(rebuild["legal"])
+        retained_inventory = preserved_path(rebuild["legalInventory"])
+        _, files = read_legal_inventory(retained_inventory, pins["legalInventory"])
+        verify_legal_resources(legal, files)
+    release = plan["consumerRelease"]
+    require(isinstance(release, dict) and set(release) == {"path", "sha256"},
+            "Supply the accepted consumer release and rollback disposition.")
+    release_path = preserved_path(release["path"])
+    require(release_path.is_file() and sha(release_path) == release["sha256"],
+            "Accepted consumer release evidence has changed.")
+
+    rows = bundle_inventory(candidate)
+    candidate_runtime = candidate / MANIFEST.parent
+    runtime_rows = {path.relative_to(MANIFEST.parent): row for path, row in rows.items()
+                    if path.is_relative_to(MANIFEST.parent) and path != MANIFEST.parent}
+    require(bundle_inventory(runtime) == runtime_rows,
+            "Retained runtime is not an exact equivalent of the retiring app's resources.")
+    require(not pids() and not pids(HELPER) and not launch_services_has_app(strict=True),
+            "The replacement GUI or helper is active.")
+    handles = subprocess.run(["/usr/sbin/lsof", "-Fn", "+D", str(candidate)], capture_output=True)
+    require(handles.returncode == 1 and not handles.stdout and not handles.stderr,
+            "The retiring bundle has open handles or could not be checked.")
+
+    before = shutil.disk_usage(APP.parent).free
+    receipt = candidate.with_suffix(".PRUNED.json")
+    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as stored:
+        json.dump({"status": "PRUNED", "path": str(candidate), "candidatePins": pins,
+                   "candidateSigned": signed, "rebuild": rebuild, "consumerRelease": release,
+                   "replacement": plan["replacement"], "planSha256": plan_sha,
+                   "logicalBytes": sum(row[2] for row in rows.values() if row[0] == "file"),
+                   "externalFreeBefore": before}, stored)
+        stored.write("\n")
+        stored.flush()
+        os.fsync(stored.fileno())
+    directory_fd = os.open(APP.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+    dirs = [candidate] + [candidate / path for path, row in rows.items() if row[0] == "directory"]
+    try:
+        for path in dirs:
+            info = path.lstat()
+            require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid(),
+                    "The retiring app's directory identity changed.")
+            path.chmod(stat.S_IMODE(info.st_mode) | stat.S_IWUSR, follow_symlinks=False)
+        shutil.rmtree(candidate)
+        require(not candidate.exists(), "The selected bundle still exists after retirement.")
+    except (OSError, ValidationError):
+        raise ValidationError(f"Retirement did not complete; inspect {candidate} and {receipt} before retrying.") from None
+    return {"path": str(candidate), "receipt": str(receipt), "existsAfter": False,
+            "observedExternalFreeBefore": before, "observedExternalFreeAfter": shutil.disk_usage(APP.parent).free}
+
+
 def clone_file(source, destination):
     # cp -c can silently fall back to copyfile. Call clonefile directly instead.
     try:
@@ -565,6 +673,8 @@ def main():
     parser.add_argument("--pid", type=int)
     parser.add_argument("--owner")
     parser.add_argument("--launch-receipt", type=Path)
+    parser.add_argument("--retirement-plan", type=Path, help="Return-check only: reviewed single predecessor retirement.")
+    parser.add_argument("--retirement-plan-sha")
     parser.add_argument("--request", type=Path)
     parser.add_argument("--scene-capture-cli", action="store_true")
     parser.add_argument("--staging-root", type=Path, help="Prepare only: private assembly storage; same-runtime clone publication.")
@@ -580,6 +690,11 @@ def main():
                 "A named owner is accepted only on launch.")
         require((args.launch_receipt is not None) == (args.action == "return-check"),
                 "Only return-check requires --launch-receipt.")
+        require((args.retirement_plan is None) == (args.retirement_plan_sha is None),
+                "Supply the retirement plan and its reviewed SHA-256 together.")
+        require(args.retirement_plan is None or (args.action == "return-check"
+                and re.fullmatch(r"[0-9a-f]{64}", args.retirement_plan_sha)),
+                "A retirement plan is allowed only during return-check.")
         check_fixed_path(args.app)
         pins = dict(unsignedGUI=args.gui_sha, unsignedHelper=args.helper_sha, runtimeManifest=args.runtime_manifest_sha)
         require(all(re.fullmatch(r"[0-9a-f]{64}", pin) for pin in pins.values()),
@@ -618,6 +733,9 @@ def main():
                     result["owner"] = args.owner
             elif args.action == "return-check":
                 result = check_return(args.app, args.profile, pins, args.launch_receipt)
+                if args.retirement_plan is not None:
+                    result["retirement"] = retire_approved_bundle(args.retirement_plan, args.retirement_plan_sha,
+                                                                  args.profile, result)
             else:
                 preflight(args.app, args.profile, pins)
             if args.action == "attach":
