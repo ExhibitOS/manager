@@ -5,6 +5,17 @@ use std::path::Path;
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() >= 4 && a[1] == "--profile" {
+        #[cfg(all(debug_assertions, feature = "workspace-v5-owner-validation", target_os = "macos"))]
+        if a[3] == "rebind-r178-workspace" && a.len() == 10
+            && matches!(a[7].as_str(), "--resume" | "--rollback")
+            && a[8] == "--apps-closed" && a[9] == "--host-writers-stopped"
+        {
+            emit(exhibitos_lifecycle::native_personal::rebind_r178_workspace(
+                Path::new(&a[2]), Path::new(&a[4]), Path::new(&a[5]),
+                Path::new(&a[6]), a[7] == "--rollback",
+            ));
+            return;
+        }
         if a[3] == "checkpoint-host" && a.len() == 8 {
             emit(profile_backup::checkpoint_host(
                 Path::new(&a[2]),

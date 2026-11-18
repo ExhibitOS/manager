@@ -17,6 +17,12 @@ use std::sync::Arc;
 #[path = "native_personal_checkpoint_guard.rs"]
 mod guard_diagnostic;
 
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+#[path = "native_personal_rebind.rs"]
+mod rebind;
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+pub use rebind::rebind_r178_workspace;
+
 const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4";
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
 #[cfg(feature = "workspace-v5-owner-validation")]

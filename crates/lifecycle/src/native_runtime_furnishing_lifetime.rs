@@ -39,7 +39,7 @@ impl WriterLifetime {
         Self::acquire_with_creation(root, true)
     }
 
-    pub(super) fn acquire_existing(root: &Path) -> Result<Self> {
+    pub(crate) fn acquire_existing(root: &Path) -> Result<Self> {
         Self::acquire_with_creation(root, false)
     }
 
