@@ -4438,7 +4438,7 @@ public actor NativeAutomationSession {
                 if releaseSelection != nil { keys.insert("releaseSelection") }
                 let command = try NativeAutomationArtworkRules.command(request, keys: keys)
                 originalImage = try hasImage ? NativePublicationOriginalImage(command["originalImage"]) : nil
-                try releaseSelection?.checkSource(etag: etag, originalImage: originalImage)
+                try releaseSelection?.checkSource(etag: etag, originalImage: originalImage, manifest: runtimeManifest)
                 guard existingWorkspaceV5 != nil, selectedOEXFormat == nil, current.pending == nil,
                       fields["inputPath"] == nil, command["etag"] == .string(etag),
                       authoringSession?.nativePublicationProfile == "bounded-local-v1" else {

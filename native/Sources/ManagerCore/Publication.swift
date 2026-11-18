@@ -172,10 +172,14 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
         return nativeImportSHA256(try JSONEncoder().encode(fields))
     }
 
-    func checkSource(etag: String, originalImage: NativePublicationOriginalImage?) throws {
-        guard let originalImage,
-              try sourceCommitment(etag: etag, originalImage: originalImage) ==
-                "ddb95832da31069ef10596050f71079f14d19595c63f3a700ae5f269a22c3879" else {
+    func checkSource(etag: String, originalImage: NativePublicationOriginalImage?, manifest: String?) throws {
+        guard AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest), let originalImage else {
+            throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
+        }
+        let expected = manifest == AuthoringAPI.r203CorrectedReleaseManifest
+            ? "8e8ffefe244e22179f5aa307bfa7f66fbb7924f1f62d439a48f721f4bd818c98"
+            : "ddb95832da31069ef10596050f71079f14d19595c63f3a700ae5f269a22c3879"
+        guard try sourceCommitment(etag: etag, originalImage: originalImage) == expected else {
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
     }

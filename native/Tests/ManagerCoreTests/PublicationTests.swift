@@ -116,6 +116,40 @@ final class PublicationTests: XCTestCase {
         XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: true))
     }
 
+    func testCorrectedReleaseKeepsTheExistingSelectorAndOnlySelectedExport() throws {
+        let manifest = AuthoringAPI.r203CorrectedReleaseManifest
+        let selection = NativePublicationReleaseSelection.r125ApprovedR201
+        func request(_ operation: String, selected: Bool) -> DocumentValue {
+            let fields: [String: DocumentValue] = selected ? ["releaseSelection": .string(selection.rawValue)] : [:]
+            return .object(["operation": .string(operation), "command": .object(fields)])
+        }
+        #if DEBUG && os(macOS)
+        let admitted = AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest)
+        XCTAssertTrue(admitted)
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest))
+        XCTAssertEqual(try NativePublicationReleaseSelection.checked(
+            in: request("export-static-native-original", selected: true), runtimeAdmitted: admitted), selection)
+        for operation in ["save", "placement-voice-apply", "export-oex", "export-static-saved-head",
+                          "private-exhibition-export-static", "export-static-native-original-publication"] {
+            XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+                in: request(operation, selected: false), runtimeAdmitted: admitted))
+        }
+        XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+            in: request("export-static-native-original", selected: false), runtimeAdmitted: admitted))
+        #endif
+        for denied in [nil, manifest.uppercased(), "a" + String(manifest.dropFirst())] {
+            XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: denied))
+        }
+        let image = try NativePublicationOriginalImage(.object([
+            "artworkId": .string("10000000-0000-4000-8000-000000000016"), "artworkRevision": .integer(1),
+            "importJobId": .string("10000000-0000-4000-8000-000000000017")
+        ]))
+        XCTAssertThrowsError(try selection.checkSource(etag: "synthetic", originalImage: image, manifest: manifest))
+    }
+
     func testApprovedReleaseSelectionBindsTheCurrentHeadAndOriginalImageOnTheWire() throws {
         let selection = NativePublicationReleaseSelection.r125ApprovedR201
         let etag = "\"studio-r1-" + String(repeating: "a", count: 64) + "\""
@@ -138,8 +172,10 @@ final class PublicationTests: XCTestCase {
             let changedImage = try NativePublicationOriginalImage(other)
             XCTAssertNotEqual(try selection.sourceCommitment(etag: etag, originalImage: changedImage), commit)
         }
-        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: image))
-        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: nil))
+        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: image,
+            manifest: AuthoringAPI.r125ApprovedReleaseManifest))
+        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: nil,
+            manifest: AuthoringAPI.r125ApprovedReleaseManifest))
 
         func wire(_ selection: NativePublicationReleaseSelection?) throws -> DocumentValue {
             let input = NativePublicationPrepareRequest(requestId: requestID, originalImage: image, releaseSelection: selection)

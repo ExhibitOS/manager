@@ -2315,7 +2315,7 @@ public actor AuthoringAPI {
         }
         if let releaseSelection {
             guard nativeSession, !authenticationBusy else { throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE") }
-            try releaseSelection.checkSource(etag: etag, originalImage: originalImage)
+            try releaseSelection.checkSource(etag: etag, originalImage: originalImage, manifest: nativeRuntimeManifestSHA256)
         }
         let input = NativePublicationPrepareRequest(requestId: try identifier(requestId),
             originalImage: originalImage, releaseSelection: releaseSelection)
@@ -4297,9 +4297,12 @@ public actor AuthoringAPI {
         #endif
     }
 
+    static let r125ApprovedReleaseManifest = "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"
+    static let r203CorrectedReleaseManifest = "db1551e8799b68896a243d818e3d418fdee997ce847c1b4d3c3e2a39d720a607"
+
     nonisolated static func supportsR125ApprovedReleaseRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        manifest == "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"
+        manifest == r125ApprovedReleaseManifest || manifest == r203CorrectedReleaseManifest
         #else
         false
         #endif
