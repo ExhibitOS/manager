@@ -3363,6 +3363,7 @@ public actor AuthoringAPI {
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || supportsR285SettledHayesRuntime(manifest: manifest)
+            || supportsR201OrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4304,6 +4305,14 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsR201OrdinarySuccessor(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "ae894e6fe31a5e751406610e35e0e6a1e67033a9cf7527c588aaf26019b9564a"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsR285UpperFramingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
@@ -4319,6 +4328,7 @@ public actor AuthoringAPI {
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsR285UpperFramingRuntime(manifest: manifest)
+            || supportsR201OrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4349,6 +4359,7 @@ public actor AuthoringAPI {
             || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
             || manifest == "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"
+            || supportsR201OrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4405,6 +4416,7 @@ public actor AuthoringAPI {
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
+            || supportsR201OrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif

@@ -2,6 +2,43 @@
 import XCTest
 @testable import ManagerCore
 final class PublicationTests: XCTestCase {
+    func testOrdinarySuccessorPreservesTheRetainedFramesAndRejectsSelectedDetail() throws {
+        let manifest = "ae894e6fe31a5e751406610e35e0e6a1e67033a9cf7527c588aaf26019b9564a"
+        let predecessor = "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        // v11 is required to retain the existing ceiling rail rows while editing frames.
+        XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
+        XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: manifest, ready: true))
+        XCTAssertTrue(NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: manifest, ready: true))
+        XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: manifest, ready: true))
+        XCTAssertFalse(NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: manifest, ready: false))
+        for operation in ["read", "save", "reopen-saved", "floor-sound-status", "floor-quiet-oak-footsteps-apply",
+                          "floor-entrance-stone-footsteps-apply", "workspace-frame-attach", "workspace-frame-image-fit-prepare",
+                          "workspace-frame-image-fit-apply", "export-oex", "export-static-saved-head"] {
+            XCTAssertNoThrow(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest))
+        }
+        for operation in ["private-exhibition-export-static", "export-static", "export-static-native-original",
+                          "export-static-native-original-publication", "room-audio-approve", "workspace-frame-detach",
+                          "workspace-furnishing-intake-create", "exhibition-new"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest))
+        }
+        #endif
+        XCTAssertFalse(AuthoringAPI.supportsR201OrdinarySuccessor(manifest: predecessor))
+        XCTAssertFalse(AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest.uppercased()))
+        XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
+        XCTAssertFalse(NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: predecessor, ready: true))
+        let request: DocumentValue = .object([
+            "operation": .string("export-static-native-original"),
+            "command": .object(["releaseSelection": .string("r125-approved-r201-v1")]),
+        ])
+        XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: request,
+            runtimeAdmitted: AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest)))
+    }
+
     func testApprovedReleaseSelectionRequiresTheExactOriginalOperationAndAdmittedRuntime() throws {
         let selection = NativePublicationReleaseSelection.r125ApprovedR201
         func request(_ operation: String, selection: DocumentValue?) -> DocumentValue {

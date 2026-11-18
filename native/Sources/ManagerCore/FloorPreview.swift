@@ -17,6 +17,11 @@ public enum NativeFloorAudioRuntime {
         return manifestSHA256 == qualifiedManifestSHA256 || manifestSHA256 == personalManifestSHA256
             || manifestSHA256 == selectedPersonalManifestSHA256
     }
+
+    public static func supportsQuietOak(manifestSHA256: String?, ready: Bool) -> Bool {
+        supports(manifestSHA256: manifestSHA256, ready: ready)
+            || (ready && AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifestSHA256))
+    }
 }
 
 /// Only exact qualified floor-containing runtimes are admitted here. This
@@ -27,7 +32,8 @@ public enum NativeFloorRuntime {
             || manifestSHA256 == NativeFloorAudioRuntime.personalManifestSHA256
             || manifestSHA256 == NativeFloorAudioRuntime.selectedPersonalManifestSHA256
             || manifestSHA256 == "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"
-            || manifestSHA256 == "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d")
+            || manifestSHA256 == "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d"
+            || AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifestSHA256))
     }
 }
 

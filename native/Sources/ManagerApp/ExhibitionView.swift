@@ -776,6 +776,7 @@ final class ExhibitionModel: ObservableObject {
     private var floorPreviewHostEpoch: String?
     @Published private(set) var floorRuntimeAvailable = false
     @Published private(set) var floorAudioRuntimeAvailable = false
+    @Published private(set) var floorQuietOakRuntimeAvailable = false
     @Published private(set) var privateFloorRuntimeAvailable = false
     @Published private(set) var privateFloorCatalog: NativePrivateFloorCatalog?
     @Published private(set) var privateFloorImage: NSImage?
@@ -2778,8 +2779,10 @@ final class ExhibitionModel: ObservableObject {
         let available = privateFloor || NativeFloorRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
         if floorRuntimeAvailable != available { floorRuntimeAvailable = available }
         let audioAvailable = NativeFloorAudioRuntime.supports(manifestSHA256: configuration?.manifestSha256, ready: ready)
-        if floorAudioRuntimeAvailable != audioAvailable {
+        let quietOakAvailable = NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: configuration?.manifestSha256, ready: ready)
+        if floorAudioRuntimeAvailable != audioAvailable || floorQuietOakRuntimeAvailable != quietOakAvailable {
             floorAudioRuntimeAvailable = audioAvailable
+            floorQuietOakRuntimeAvailable = quietOakAvailable
             floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
         }
         if !floorRuntimeAvailable { floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil }
@@ -2842,7 +2845,7 @@ final class ExhibitionModel: ObservableObject {
             try draft.replaceCandidate(ConcreteFootsteps.proposedCandidate(in: draft, target: target, resourcesAvailable: floorAudioRuntimeAvailable))
         case .quietOak:
             guard state?.dirty == false else { throw AuthoringFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
-            try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: floorAudioRuntimeAvailable)
+            try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: floorQuietOakRuntimeAvailable)
         case .entranceStone:
             guard state?.dirty == false else { throw AuthoringFailure("EXHIBITION_EXPORT_SAVE_REQUIRED") }
             try draft.replaceCandidate(ConcreteFootsteps.proposedEntranceStoneCandidate(in: draft, target: target))

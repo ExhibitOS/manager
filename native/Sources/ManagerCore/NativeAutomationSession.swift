@@ -52,6 +52,24 @@ public actor NativeAutomationSession {
         }
     }
 
+    static func checkOrdinarySuccessorOperation(_ operation: String, manifest: String?) throws {
+        guard AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest) else { return }
+        switch operation {
+        case "read", "save", "reopen-saved", "room-audio-status",
+             "floor-sound-status", "floor-quiet-oak-footsteps-apply", "floor-entrance-stone-footsteps-apply",
+             "workspace-furnishing-list", "workspace-furnishing-read", "workspace-frame-lineage-status",
+             "workspace-frame-attach", "workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply",
+             "workspace-frame-image-fit-cancel", "saved-head-static-readiness", "export-oex", "export-static-saved-head":
+            break
+        case "private-exhibition-export-static", "export-static":
+            throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
+        case "export-static-native-original", "export-static-native-original-publication":
+            throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+        default:
+            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
+    }
+
     static func checkUpperFramingOutputOperation(manifest: String?, operation: String) throws {
         guard let manifest, AuthoringAPI.supportsR285UpperFramingRuntime(manifest: manifest) else { return }
         // Refuse before protected or original export can freeze a publication.
@@ -456,6 +474,11 @@ public actor NativeAutomationSession {
         let admitsLargeModels = await api.admitsLargeModelPreparation
         let admitsInfoStandPreparation = await api.admitsWorkspaceInfoStandPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
+        if AuthoringAPI.supportsR201OrdinarySuccessor(manifest: config.manifestSha256) {
+            guard admitsSavedHeadAuthoring, session.nativePublicationProfile == "bounded-local-v1" else {
+                throw AuthoringFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
+            }
+        }
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
@@ -1048,7 +1071,7 @@ public actor NativeAutomationSession {
         if requireRecordedWood {
             let status = try await bridge.nativeStatus(context)
             let manifest = status.configuration?.manifestSha256
-            let available = manifest == runtimeManifest && NativeFloorAudioRuntime.supports(
+            let available = manifest == runtimeManifest && NativeFloorAudioRuntime.supportsQuietOak(
                 manifestSHA256: manifest, ready: status.runtime?.readiness.ready == true)
             try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: available)
         } else {
@@ -2187,6 +2210,7 @@ public actor NativeAutomationSession {
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
         try Self.checkUpperFramingOutputOperation(manifest: runtimeManifest, operation: operation)
+        try Self.checkOrdinarySuccessorOperation(operation, manifest: runtimeManifest)
         let releaseSelection = try NativePublicationReleaseSelection.checked(in: request,
             runtimeAdmitted: AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: runtimeManifest))
         if installedAuthoringCLI {

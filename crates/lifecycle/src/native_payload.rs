@@ -830,6 +830,13 @@ pub(crate) const R285_APPROVED_RELEASE_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const R201_ORDINARY_SUCCESSOR_TARGET: RuntimeTuple = (
+    "957ab9ba70f474fcc52c73ba26ff15f2ac116820",
+    "89fc7783b62dade00aa970f28e7028a63af2c50658a779ab1f5907376e52a338",
+    "ae894e6fe31a5e751406610e35e0e6a1e67033a9cf7527c588aaf26019b9564a",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const R285_NATIVE_DETAIL_CONTEXT_TARGET: RuntimeTuple = (
     "1d289b5f20c8b4eda0258a57b17b175031c7c2a6",
     "df1a584a8a2573e84d6a8f0e9b8ac8293eaa08d9cdfcec284d1aa5201daebfba",
@@ -856,7 +863,8 @@ fn r285_greek_thumbnail_trace_runtime_pair(pair: (&str, &str)) -> Option<(Runtim
         (R285_POINT_VOICE_TARGET, R285_PLAIN_BASEBOARD_TARGET),
         (R285_PLAIN_BASEBOARD_TARGET, R285_UPPER_FRAMING_TARGET),
         (R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET),
-        (R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET)]
+        (R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET),
+        (R285_APPROVED_RELEASE_TARGET, R201_ORDINARY_SUCCESSOR_TARGET)]
         .into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -875,7 +883,7 @@ fn r285_bench_after_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
     return [R285_BENCH_AFTER_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_V2_TARGET,
         R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET,
         R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET, R285_POINT_VOICE_TARGET, R285_PLAIN_BASEBOARD_TARGET,
-        R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET].contains(&tuple);
+        R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET, R201_ORDINARY_SUCCESSOR_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -895,7 +903,7 @@ pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)
     { [R285_HAYES_PREOPEN_TERMINAL_TARGET, R285_GREEK_THUMBNAIL_TARGET, R285_BENCH_AFTER_TERMINAL_TARGET,
         R285_GREEK_THUMBNAIL_V2_TARGET, R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET,
         R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET, R285_POINT_VOICE_TARGET, R285_PLAIN_BASEBOARD_TARGET,
-        R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET].contains(&tuple) }
+        R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET, R201_ORDINARY_SUCCESSOR_TARGET].contains(&tuple) }
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2069,6 +2077,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || R285_UPPER_FRAMING_TARGET.2 == manifest
         || R285_ORDINARY_PUBLICATION_BUDGET_TARGET.2 == manifest
         || R285_APPROVED_RELEASE_TARGET.2 == manifest
+        || R201_ORDINARY_SUCCESSOR_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -4129,6 +4138,40 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(target.static_detail_export_resources(false).is_err());
         assert!(Payload::open_workspace_v5_validation(&target_root, true).is_err());
         assert!(Payload::open_fresh_workspace_v7_validation(&target_root).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn r201_ordinary_successor_only_admits_the_directed_pair() {
+        let source = R285_APPROVED_RELEASE_TARGET;
+        let target = R201_ORDINARY_SUCCESSOR_TARGET;
+        let alternate = R285_ORDINARY_PUBLICATION_BUDGET_TARGET;
+        assert_eq!(FurnishingTransition::from_manifests((source.2, target.2)),
+            Some(FurnishingTransition::SameCatalog {
+                source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052,
+            }));
+        for pair in [(target.2, source.2), (source.2, source.2), (target.2, target.2), (alternate.2, target.2)] {
+            assert!(!saved_workspace_transition_supported(pair));
+        }
+        for mixed in [(alternate.0, target.1, target.2), (target.0, source.1, target.2),
+            (target.0, target.1, source.2)] {
+            assert!(!combined_thumbnail_ordinary_host_matches(mixed));
+        }
+        assert!(saved_workspace_transition_target(target.2));
+        assert!(combined_thumbnail_ordinary_host_matches(target));
+        assert!(!combined_thumbnail_fresh_host_matches(target));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed b109 and ordinary successor runtimes; read-only payload openers"]
+    fn r201_ordinary_successor_retains_ledger_without_detail_capability() {
+        let source = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R201_SELECTED_PREDECESSOR").unwrap());
+        let target = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R201_ORDINARY_SUCCESSOR").unwrap());
+        assert_r285_transition_runtime_ordinary_scope(&source, &target,
+            R285_APPROVED_RELEASE_TARGET, R201_ORDINARY_SUCCESSOR_TARGET);
+        let prior = Payload::open_workspace_v5_validation(&source, false).unwrap();
+        assert!(prior.static_detail_export_resources(true).is_ok());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
