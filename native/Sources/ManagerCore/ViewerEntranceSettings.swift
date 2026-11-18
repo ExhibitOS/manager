@@ -68,6 +68,10 @@ public struct ViewerEntranceSettings: Equatable, Sendable {
     public init(draft: NativeExhibitionDraft) throws {
         let extensions = try Self.extensions(in: draft.candidate)
         guard let value = extensions[Self.namespace] else { self.init(); return }
+        try self.init(value: value, in: draft)
+    }
+
+    init(value: DocumentValue, in draft: NativeExhibitionDraft) throws {
         guard case .object(let fields) = value else { throw Self.invalid() }
         var keys: Set<String> = ["version", "artist", "introduction", "imageAlt", "mobilePosition"]
         if fields["imageAssetId"] != nil { keys.insert("imageAssetId") }
@@ -94,6 +98,28 @@ public struct ViewerEntranceSettings: Equatable, Sendable {
         self.init(artist: artist, introduction: introduction, imageAssetId: fields["imageAssetId"]?.string, imageAlt: imageAlt, mobilePosition: position, presentation: presentation)
         if let raw = fields["design"] { design = try CoverEntryDesign(raw: raw) }
         try validate(in: draft.candidate)
+    }
+
+    /// Bind the existing primary image to both the saved draft and the current
+    /// approved CMS snapshot before either typed producer is applied.
+    static func applyingAutomationCover(_ value: DocumentValue, title: String, imageSha256: String,
+                                        approved: DocumentValue, to draft: NativeExhibitionDraft) throws -> NativeExhibitionDraft {
+        let settings = try Self(value: value, in: draft)
+        guard nativeImportDigest(imageSha256), let id = settings.imageAssetId,
+              let savedArtwork = matchingImage(id, in: draft.candidate),
+              let revision = savedArtwork["revisionId"].string, UUID(uuidString: revision) != nil,
+              approved["revisionId"] == .string(revision),
+              approved["primaryAssetId"].string?.lowercased() == id.lowercased(),
+              savedArtwork["rights"] == approved["rights"], approved["rights"]["permissions"]["display"] == .bool(true),
+              let savedAsset = savedArtwork["assets"].items?.first(where: { $0["id"].string?.lowercased() == id.lowercased() }),
+              savedAsset["sha256"] == .string(imageSha256),
+              approved["assets"].items?.filter({ $0["id"].string?.lowercased() == id.lowercased() }) == [savedAsset] else {
+            throw invalid()
+        }
+        var next = draft
+        if title != draft.title { try next.rename(title) }
+        try next.setViewerEntrance(settings)
+        return next
     }
 
     private static func invalid() -> AuthoringFailure { AuthoringFailure("VIEWER_ENTRANCE_INVALID") }

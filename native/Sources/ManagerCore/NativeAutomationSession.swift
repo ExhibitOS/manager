@@ -3246,6 +3246,33 @@ public actor NativeAutomationSession {
             } else {
                 result = .object(["changed": .bool(false), "document": try value(current)])
             }
+        case "cover-entry-apply":
+            try checkedRevision(request, current)
+            let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId",
+                "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "title", "entrance", "artworkId", "imageSha256"])
+            guard Set(fields.keys) == keys, existingWorkspaceV5 != nil, selectedOEXFormat == nil,
+                  !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag,
+                  command["etag"] == .string(etag), let title = command["title"].string,
+                  let artworkId = command["artworkId"].string, UUID(uuidString: artworkId) != nil,
+                  let imageSha256 = command["imageSha256"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            try await checkSavedEditPolicy(current, api: api, unsupportedCode: "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE",
+                                           ordinaryOnly: true)
+            let saved = try await api.exhibition(draft.id)
+            guard saved.draft == draft, saved.etag == etag else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let artwork = try await api.studioArtwork(artworkId)
+            let updated = try ViewerEntranceSettings.applyingAutomationCover(command["entrance"], title: title,
+                imageSha256: imageSha256, approved: artwork.artwork, to: draft)
+            try saved.requireSameComparison(await api.exhibition(draft.id))
+            let (_, _, latest) = try await checked(request)
+            guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            if updated == draft {
+                result = try value(current)
+            } else {
+                var next = current
+                next.draft = updated
+                result = try value(await bridge.saveDocumentState(context, state: next))
+            }
         case "placed-exit-door-depth-apply":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "correction"])
