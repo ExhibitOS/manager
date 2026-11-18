@@ -12,7 +12,14 @@ final class PublicationTests: XCTestCase {
         let exact = request("export-static-native-original", selection: .string(selection.rawValue))
         XCTAssertEqual(try NativePublicationReleaseSelection.checked(in: exact, runtimeAdmitted: true), selection)
         XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: exact, runtimeAdmitted: false))
-        for manifest in [nil,
+        let admitted = "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: admitted))
+        XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: admitted))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: admitted))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: admitted))
+        #endif
+        for manifest in [nil, admitted.uppercased(), "0" + String(admitted.dropFirst()),
                          "ff09c9e7f7ca92575f4b307c59fa42418a4195c03319e5d2a6ff2754489d0cb6",
                          "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"] {
             XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
@@ -25,6 +32,15 @@ final class PublicationTests: XCTestCase {
                           "private-exhibition-export-static", "artwork-original-image-static-approve"] {
             XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
                 in: request(operation, selection: .string(selection.rawValue)), runtimeAdmitted: true))
+        }
+        for operation in ["export-static", "export-static-saved-head", "export-static-native-original-publication",
+                          "private-exhibition-export-static", "save", "room-audio-approve", "export-oex"] {
+            XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+                in: request(operation, selection: nil), runtimeAdmitted: true))
+        }
+        for operation in ["read", "room-audio-status"] {
+            XCTAssertNil(try NativePublicationReleaseSelection.checked(
+                in: request(operation, selection: nil), runtimeAdmitted: true))
         }
         let noSelection = request("export-static-native-original", selection: nil)
         XCTAssertNil(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: false))

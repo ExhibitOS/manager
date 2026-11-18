@@ -154,11 +154,12 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
         }
         if runtimeAdmitted {
             switch operation {
-            case "private-exhibition-export-static":
+            case "private-exhibition-export-static", "export-static", "export-static-saved-head":
                 throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
-            case "export-static-native-original", "export-static-native-original-publication":
+            case "read", "room-audio-status":
+                break
+            default:
                 throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
-            default: break
             }
         }
         return nil

@@ -4296,13 +4296,9 @@ public actor AuthoringAPI {
         #endif
     }
 
-    // Exact local validation admission remains empty until the selected release runtime is sealed and reviewed.
-    private static let r125ApprovedReleaseRuntimeManifest: String? = nil
-
     nonisolated static func supportsR125ApprovedReleaseRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        guard let pin = r125ApprovedReleaseRuntimeManifest else { return false }
-        return manifest == pin
+        manifest == "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"
         #else
         false
         #endif
@@ -4337,6 +4333,7 @@ public actor AuthoringAPI {
             || supportsR285SettledHayesRuntime(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsR285UpperFramingRuntime(manifest: manifest)
+            || supportsR125ApprovedReleaseRuntime(manifest: manifest)
             || manifest == savedHeadPreparedSignAudioManifestPin || manifest == placedExitDoorRuntimePin
             || supportsDefaultSeatRuntime(manifest: manifest)
             || supportsCarriedRestoreBenchRuntime(manifest: manifest)

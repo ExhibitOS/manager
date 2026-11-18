@@ -161,6 +161,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
@@ -458,6 +459,8 @@ public actor NativeAutomationSession {
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
+        let admitsApprovedRelease = AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: config.manifestSha256)
+            && session.nativePublicationProfile == "bounded-local-v1"
         let admitsPreparedBudget = Self.admitsPreparedBudgetReadback(manifest: config.manifestSha256,
             publicationProfile: session.nativePublicationProfile)
         let admitsDefaultSeats = await api.admitsWorkspaceDefaultSeatProposal
@@ -475,7 +478,7 @@ public actor NativeAutomationSession {
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
-                || admitsPreparedBudget || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
+                || admitsPreparedBudget || admitsApprovedRelease || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
