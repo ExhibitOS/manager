@@ -53,10 +53,20 @@ public actor NativeAutomationSession {
     }
 
     static func checkOrdinarySuccessorOperation(_ operation: String, manifest: String?) throws {
-        guard AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest) else { return }
+        let voiceCorrection = AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest)
+        let floorAndFrames = AuthoringAPI.supportsR203OrdinarySuccessor(manifest: manifest)
+        guard voiceCorrection || floorAndFrames else { return }
         switch operation {
-        case "read", "reopen-saved", "room-audio-status", "placement-voice-apply", "applied-draft-save-resume":
-            break
+        case "read", "reopen-saved":
+            return
+        case "room-audio-status", "placement-voice-apply", "applied-draft-save-resume":
+            guard voiceCorrection else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
+        case "save", "floor-sound-status", "floor-quiet-oak-footsteps-apply",
+             "workspace-furnishing-list", "workspace-furnishing-read", "workspace-frame-lineage-status",
+             "workspace-frame-attach", "workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply",
+             "workspace-frame-image-fit-cancel", "saved-head-static-readiness", "export-oex",
+             "export-static-saved-head":
+            guard floorAndFrames else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         case "private-exhibition-export-static", "export-static":
             throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
         case "export-static-native-original", "export-static-native-original-publication":
@@ -256,6 +266,7 @@ public actor NativeAutomationSession {
         }
         if let path = appliedDraftRecoveryPath {
             guard !AuthoringAPI.supportsR201OrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
+                  !AuthoringAPI.supportsR203OrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
                   existingWorkspaceV5 != nil, workspaceV5ValidationRuntime == nil,
                   workspaceV6ValidationRuntime == nil, workspaceV7ValidationRuntime == nil,
                   selectedOEXFormat == nil, let pin = inputs[path], nativeImportDigest(pin) else {
@@ -502,7 +513,8 @@ public actor NativeAutomationSession {
         let admitsLargeModels = await api.admitsLargeModelPreparation
         let admitsInfoStandPreparation = await api.admitsWorkspaceInfoStandPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
-        if AuthoringAPI.supportsR201OrdinarySuccessor(manifest: config.manifestSha256) {
+        if AuthoringAPI.supportsR201OrdinarySuccessor(manifest: config.manifestSha256)
+            || AuthoringAPI.supportsR203OrdinarySuccessor(manifest: config.manifestSha256) {
             guard admitsSavedHeadAuthoring, session.nativePublicationProfile == "bounded-local-v1" else {
                 throw AuthoringFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
             }

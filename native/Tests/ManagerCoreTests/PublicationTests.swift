@@ -2,6 +2,40 @@
 import XCTest
 @testable import ManagerCore
 final class PublicationTests: XCTestCase {
+    func testR203OrdinarySuccessorKeepsVoiceAndSelectedExportSeparateFromFloorAndFrames() throws {
+        let manifest = "efd30f7b66ee0babed897af289eecc2df6a1a16275ce4373ec69db8516180e29"
+        let predecessor = AuthoringAPI.r203CorrectedReleaseManifest
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(AuthoringAPI.supportsR203OrdinarySuccessor(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
+        XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: manifest, ready: true))
+        XCTAssertTrue(NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: manifest, ready: true))
+        XCTAssertFalse(NativeFloorAudioRuntime.supportsQuietOak(manifestSHA256: manifest, ready: false))
+        XCTAssertFalse(NativeFloorAudioRuntime.supports(manifestSHA256: manifest, ready: true))
+        for operation in ["read", "save", "reopen-saved", "floor-sound-status", "floor-quiet-oak-footsteps-apply",
+                          "workspace-furnishing-list", "workspace-furnishing-read", "workspace-frame-lineage-status",
+                          "workspace-frame-attach", "workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply",
+                          "workspace-frame-image-fit-cancel", "saved-head-static-readiness", "export-oex", "export-static-saved-head"] {
+            XCTAssertNoThrow(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest), operation)
+        }
+        for operation in ["placement-voice-apply", "applied-draft-save-resume", "room-audio-approve", "exhibition-new",
+                          "floor-appearance-apply", "floor-entrance-stone-footsteps-apply", "workspace-frame-detach",
+                          "workspace-frame-lineage-prepare", "workspace-furnishing-update", "workspace-material-list",
+                          "private-exhibition-export-static", "export-static", "export-static-native-original",
+                          "export-static-native-original-publication"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest), operation)
+        }
+        #endif
+        XCTAssertFalse(AuthoringAPI.supportsR203OrdinarySuccessor(manifest: predecessor))
+        XCTAssertFalse(AuthoringAPI.supportsR203OrdinarySuccessor(manifest: manifest.uppercased()))
+        XCTAssertFalse(AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: manifest))
+    }
+
     func testOrdinarySuccessorVoiceScopeRejectsOtherEditsAndSelectedOutput() throws {
         let manifest = "ae894e6fe31a5e751406610e35e0e6a1e67033a9cf7527c588aaf26019b9564a"
         let predecessor = "b109a50804cd358951f44a1f0bb0ec78ea11c15bc67bb3e2f8f7404701e66739"

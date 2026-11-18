@@ -3364,6 +3364,7 @@ public actor AuthoringAPI {
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || supportsR285SettledHayesRuntime(manifest: manifest)
             || supportsR201OrdinarySuccessor(manifest: manifest)
+            || supportsR203OrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4316,6 +4317,14 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsR203OrdinarySuccessor(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "efd30f7b66ee0babed897af289eecc2df6a1a16275ce4373ec69db8516180e29"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsR285UpperFramingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
@@ -4332,6 +4341,7 @@ public actor AuthoringAPI {
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsR285UpperFramingRuntime(manifest: manifest)
             || supportsR201OrdinarySuccessor(manifest: manifest)
+            || supportsR203OrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4363,6 +4373,7 @@ public actor AuthoringAPI {
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
             || manifest == "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"
             || supportsR201OrdinarySuccessor(manifest: manifest)
+            || supportsR203OrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4420,6 +4431,7 @@ public actor AuthoringAPI {
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
             || supportsR201OrdinarySuccessor(manifest: manifest)
+            || supportsR203OrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
