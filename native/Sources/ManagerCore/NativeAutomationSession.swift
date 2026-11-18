@@ -73,6 +73,7 @@ public actor NativeAutomationSession {
     private let installedExportRootIdentity: (dev_t, ino_t)?
     private let requiresReleaseImageRuntime: Bool
     private let inputs: [String: String]
+    private let installedAudioInputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
     private var context: Context?
     private var api: AuthoringAPI?
@@ -176,7 +177,7 @@ public actor NativeAutomationSession {
               FileManager.default.fileExists(atPath: outputRoot.path),
               outputRoot.resolvingSymlinksInPath().path == outputRoot.path,
               !profile.path.hasPrefix(outputRoot.path + "/") else { throw BridgeFailure("AUTOMATION_PATH_INVALID") }
-        self.root = outputRoot; self.inputs = inputs; self.installedImageCLI = false
+        self.root = outputRoot; self.inputs = inputs; self.installedAudioInputs = [:]; self.installedImageCLI = false
         self.installedAuthoringCLI = false
         self.installedExportRootIdentity = nil
         self.requiresReleaseImageRuntime = false
@@ -220,11 +221,22 @@ public actor NativeAutomationSession {
         try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot)
     }
 
-    public init(installedAuthoringCLIHelper helper: URL, profile: URL, outputRoot: URL) throws {
-        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot, authoring: true)
+    public init(installedAuthoringCLIHelper helper: URL, profile: URL, outputRoot: URL,
+                audioInputs: [String: String] = [:]) throws {
+        guard audioInputs.count <= 1, audioInputs.allSatisfy({ path, hash in
+            Self.installedRoomAudioPinAllowed(path: path, hash: hash)
+        }) else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true,
+                      exportRoot: outputRoot, authoring: true, audioInputs: audioInputs)
     }
 
-    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?, authoring: Bool = false) throws {
+    static func installedRoomAudioPinAllowed(path: String, hash: String) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        return path.hasPrefix("/") && url.path == path && ["mp3", "wav"].contains(url.pathExtension.lowercased())
+            && nativeImportDigest(hash)
+    }
+
+    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?, authoring: Bool = false, audioInputs: [String: String] = [:]) throws {
         var metadata = stat()
         if lstat(profile.path, &metadata) != 0 && errno == ENOENT {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
@@ -236,6 +248,7 @@ public actor NativeAutomationSession {
         self.temporaryRoot = profile
         self.ports = [:]
         self.inputs = [:]
+        self.installedAudioInputs = audioInputs
         self.installedAuthoringCLI = authoring
         self.installedImageCLI = exportRoot == nil
         self.installedExportRootIdentity = try exportRoot.map { try Self.exportRootIdentity($0, profile: profile) }
@@ -2144,7 +2157,7 @@ public actor NativeAutomationSession {
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
         if installedAuthoringCLI {
-            let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
+            let allowed: Set<String> = ["room-audio-intake", "room-audio-status", "room-audio-approve", "workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
         } else if installedExportRootIdentity != nil {
             try Self.checkInstalledExportRequest(operation, fields: Set(fields.keys))
@@ -3216,13 +3229,47 @@ public actor NativeAutomationSession {
             guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             let receipt: NativeRoomAudioReceipt
             if operation == "room-audio-intake" {
-                guard let path = request["inputPath"].string, let hash = inputs[path],
+                guard let path = request["inputPath"].string,
+                      let hash = (installedAuthoringCLI ? installedAudioInputs : inputs)[path],
                       let requestId = command["requestId"].string else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
                 let url = URL(fileURLWithPath: path)
-                guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
-                let snapshot = try await ImportFileSnapshot.load(url, byteLimit: 12_582_912, allowWAV: true)
-                guard snapshot.sha256 == hash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
-                receipt = try await api.intakeRoomAudio(snapshot, requestId: requestId, rights: command["rights"], in: current)
+                func readPinnedInput(allowMP3: Bool = false) async throws -> ImportFileSnapshot {
+                    guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
+                    let snapshot = try await ImportFileSnapshot.load(url, byteLimit: NativeRoomAudioPreparation.byteLimit,
+                                                                     allowWAV: true, allowMP3: allowMP3)
+                    guard snapshot.sha256 == hash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
+                    return snapshot
+                }
+                if url.pathExtension.lowercased() == "mp3" {
+                    guard !current.dirty, current.pending == nil, let draft = current.draft else {
+                        throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+                    }
+                    let directory = try profileIdentity()
+                    let scope: DocumentValue = .object([
+                        "workspaceId": .string(current.workspaceId), "tenantId": .string(current.tenantId),
+                        "principalId": .string(current.principalId), "exhibitionId": .string(draft.id),
+                        "rights": command["rights"]
+                    ])
+                    let prepared: NativeRoomAudioPreparation
+                    if let retained = try NativeRoomAudioPreparation.resume(profile: profile, requestID: requestId,
+                                                                            scope: scope, originalHash: hash) {
+                        prepared = retained
+                    } else {
+                        let snapshot = try await readPinnedInput(allowMP3: true)
+                        let (_, _, latest) = try await checked(request)
+                        guard try profileIdentity() == directory, try value(latest) == value(current) else {
+                            throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED")
+                        }
+                        prepared = try NativeRoomAudioPreparation.prepare(snapshot, profile: profile, requestID: requestId, scope: scope)
+                    }
+                    guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+                    receipt = try await api.intakeRoomAudio(prepared.wav, requestId: requestId, rights: command["rights"], in: current)
+                    guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+                    try prepared.record(receipt)
+                } else {
+                    let snapshot = try await readPinnedInput()
+                    receipt = try await api.intakeRoomAudio(snapshot, requestId: requestId, rights: command["rights"], in: current)
+                }
             } else {
                 guard let audioId = command["audioId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
                 if operation == "room-audio-approve" {
