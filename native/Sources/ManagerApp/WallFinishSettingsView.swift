@@ -25,7 +25,12 @@ struct WallFinishSettingsView: View {
                         }
                         TextField("벽 마감 깊이 · 0.02–0.2 m", text: field(\.depth, fallback: ""))
                         TextField("테두리 폭 · 0.02–0.08 m", text: field(\.trimWidth, fallback: ""))
+                        if fields.preset == "plain" {
+                            Toggle("걸레받이 표시", isOn: field(\.plainBaseboard, fallback: false))
+                                .toggleStyle(.checkbox)
+                        }
                         TextField("걸레받이 높이 · 0.04–0.15 m", text: field(\.baseboardHeight, fallback: ""))
+                            .disabled(fields.preset == "plain" && !fields.plainBaseboard)
                         Toggle("천장 가장자리 마감", isOn: field(\.ceilingBand, fallback: true))
                     }.textFieldStyle(.roundedBorder).disabled(!ready || !model.canEditWallFinish)
                 }

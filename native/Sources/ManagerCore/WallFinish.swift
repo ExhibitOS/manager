@@ -8,24 +8,34 @@ public struct WallFinishSettings: Equatable, Sendable {
     public let surfaceId: String
     public let depth: Double, preset: String, trimWidth: Double, baseboardHeight: Double
     public let ceilingBand: Bool
-    public init(surfaceId: String, depth: Double, preset: String, trimWidth: Double, baseboardHeight: Double, ceilingBand: Bool) throws {
+    public let plainBaseboard: Bool?
+    public init(surfaceId: String, depth: Double, preset: String, trimWidth: Double, baseboardHeight: Double, ceilingBand: Bool, plainBaseboard: Bool? = nil) throws {
         guard UUID(uuidString: surfaceId) != nil, depth.isFinite, (0.02...0.2).contains(depth),
               ["plain", "painted-edge", "dark-edge"].contains(preset), trimWidth.isFinite, (0.02...0.08).contains(trimWidth),
-              baseboardHeight.isFinite, (0.04...0.15).contains(baseboardHeight) else { throw Self.invalid() }
+              baseboardHeight.isFinite, (0.04...0.15).contains(baseboardHeight),
+              plainBaseboard != true || preset == "plain" else { throw Self.invalid() }
         self.surfaceId = surfaceId; self.depth = depth; self.preset = preset; self.trimWidth = trimWidth
         self.baseboardHeight = baseboardHeight; self.ceilingBand = ceilingBand
+        self.plainBaseboard = plainBaseboard
     }
     static func invalid() -> AuthoringFailure { AuthoringFailure("WALL_FINISH_INVALID") }
     public var value: DocumentValue {
-        .object(["surfaceId": .string(surfaceId), "depth": .number(depth), "preset": .string(preset),
-                 "trimWidth": .number(trimWidth), "baseboardHeight": .number(baseboardHeight), "ceilingBand": .bool(ceilingBand)])
+        var fields: [String: DocumentValue] = ["surfaceId": .string(surfaceId), "depth": .number(depth), "preset": .string(preset),
+                 "trimWidth": .number(trimWidth), "baseboardHeight": .number(baseboardHeight), "ceilingBand": .bool(ceilingBand)]
+        if let plainBaseboard { fields["plainBaseboard"] = .bool(plainBaseboard) }
+        return .object(fields)
     }
-    private init(_ value: DocumentValue) throws {
-        guard case .object(let fields) = value, Set(fields.keys) == ["surfaceId", "depth", "preset", "trimWidth", "baseboardHeight", "ceilingBand"],
+    init(_ value: DocumentValue, malformed: any Error = WallFinishSettings.invalid()) throws {
+        guard case .object(let fields) = value, Set(fields.keys).subtracting(["plainBaseboard"]) == ["surfaceId", "depth", "preset", "trimWidth", "baseboardHeight", "ceilingBand"],
               let id = value["surfaceId"].string, let depth = value["depth"].double, let preset = value["preset"].string,
               let trim = value["trimWidth"].double, let base = value["baseboardHeight"].double,
-              case .bool(let band) = value["ceilingBand"] else { throw Self.invalid() }
-        try self.init(surfaceId: id, depth: depth, preset: preset, trimWidth: trim, baseboardHeight: base, ceilingBand: band)
+              case .bool(let band) = value["ceilingBand"] else { throw malformed }
+        let plainBaseboard: Bool?
+        if let flag = fields["plainBaseboard"] {
+            guard case .bool(let enabled) = flag else { throw malformed }
+            plainBaseboard = enabled
+        } else { plainBaseboard = nil }
+        try self.init(surfaceId: id, depth: depth, preset: preset, trimWidth: trim, baseboardHeight: base, ceilingBand: band, plainBaseboard: plainBaseboard)
     }
     static func rows(in draft: NativeExhibitionDraft) throws -> [DocumentValue] {
         let value = draft.candidate["extensions"][namespace]
@@ -60,6 +70,7 @@ public struct WallFinishCommand: Equatable, Sendable {
               let surface = draft.candidate["surfaces"].items?.first(where: { $0["id"].string == surfaceId && $0["type"].string == "wall" }),
               draft.rooms.contains(where: { $0["id"] == surface["roomId"] }) else { throw WallFinishSettings.invalid() }
         var rows = try WallFinishSettings.rows(in: draft)
+        let prior = try WallFinishSettings.read(in: draft, surfaceId: surfaceId)
         let index = rows.firstIndex { $0["surfaceId"].string?.lowercased() == surfaceId.lowercased() }
         if let settings { if let index { rows[index] = settings.value } else { rows.append(settings.value) } }
         else { guard let index else { throw WallFinishSettings.invalid() }; rows.remove(at: index) }
@@ -69,6 +80,11 @@ public struct WallFinishCommand: Equatable, Sendable {
         if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
         guard case .object = candidate["extensions"] else { throw WallFinishSettings.invalid() }
         candidate["extensions"][WallFinishSettings.namespace] = value
+        let hadBaseboard = prior.map { $0.preset != "plain" || $0.plainBaseboard == true } ?? false
+        let hasBaseboard = settings.map { $0.preset != "plain" || $0.plainBaseboard == true } ?? false
+        if hadBaseboard && !hasBaseboard {
+            candidate = try FurnishingWalkingCollisionEvaluation.removingBaseboardOverride(surfaceId: surfaceId, from: candidate)
+        }
         let template = "org.exhibitos.studio/template"
         if candidate["extensions"][template] != .null {
             guard case .object = candidate["extensions"][template], case .bool = candidate["extensions"][template]["modified"] else { throw WallFinishSettings.invalid() }
@@ -82,10 +98,13 @@ public struct WallFinishCommand: Equatable, Sendable {
 public struct WallFinishFormBuffer: Equatable, Sendable {
     public let surfaceId: String
     public var enabled: Bool, ceilingBand: Bool
+    public var plainBaseboard: Bool
+    private let declaredPlainBaseboard: Bool?
     public var depth: String, preset: String, trimWidth: String, baseboardHeight: String
     public init(draft: NativeExhibitionDraft, surfaceId: String) throws {
         let settings = try WallFinishSettings.read(in: draft, surfaceId: surfaceId)
         self.surfaceId = surfaceId; enabled = settings != nil; ceilingBand = settings?.ceilingBand ?? true
+        plainBaseboard = settings?.plainBaseboard ?? false; declaredPlainBaseboard = settings?.plainBaseboard
         depth = String(settings?.depth ?? 0.12); preset = settings?.preset ?? "plain"
         trimWidth = String(settings?.trimWidth ?? 0.04); baseboardHeight = String(settings?.baseboardHeight ?? 0.1)
         guard draft.candidate["surfaces"].items?.contains(where: { $0["id"].string == surfaceId && $0["type"].string == "wall" }) == true else { throw WallFinishSettings.invalid() }
@@ -95,8 +114,12 @@ public struct WallFinishFormBuffer: Equatable, Sendable {
         func number(_ text: String) throws -> Double {
             guard let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), value.isFinite else { throw WallFinishSettings.invalid() }; return value
         }
+        let flag: Bool? = preset == "plain"
+            ? (plainBaseboard ? true : declaredPlainBaseboard.map { _ in false })
+            : (declaredPlainBaseboard == false ? false : nil)
         return try .init(surfaceId: surfaceId, settings: .init(surfaceId: surfaceId, depth: number(depth), preset: preset,
-            trimWidth: number(trimWidth), baseboardHeight: number(baseboardHeight), ceilingBand: ceilingBand))
+            trimWidth: number(trimWidth), baseboardHeight: number(baseboardHeight), ceilingBand: ceilingBand,
+            plainBaseboard: flag))
     }
 }
 

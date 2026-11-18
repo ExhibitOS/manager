@@ -348,3 +348,6 @@ impl LifecycleService {
 #[cfg(debug_assertions)]
 #[path = "native_personal_checkpoint.rs"]
 pub(crate) mod physical_checkpoint;
+
+#[cfg(all(debug_assertions, feature = "workspace-v5-owner-validation", target_os = "macos"))]
+pub use physical_checkpoint::rebind_r178_workspace;
