@@ -18,6 +18,36 @@ final class ViewerEntranceSettingsTests: XCTestCase {
         return draft
     }
 
+    func testAutomationCoverBindsCurrentApprovedImageAndChangesOnlyTitleAndEntrance() throws {
+        var draft = try imageDraft()
+        let hash = String(repeating: "a", count: 64)
+        var candidate = draft.candidate
+        var approved = draft.artworks[0]
+        approved["revisionId"] = .string(UUID().uuidString)
+        approved["rights"]["permissions"] = .object(["display": .bool(true)])
+        var assets = approved["assets"].items!
+        assets[0]["sha256"] = .string(hash)
+        approved["assets"] = .array(assets)
+        candidate["artworks"] = .array([approved])
+        candidate["extensions"] = .object(["org.example/kept": .integer(27)])
+        try draft.replaceCandidate(candidate)
+        let cover: DocumentValue = .object(["version": .integer(1), "artist": .string("작가"),
+            "introduction": .string("전시 소개"), "imageAssetId": .string(imageID),
+            "imageAlt": .string("작품"), "mobilePosition": .string("top")])
+        let next = try ViewerEntranceSettings.applyingAutomationCover(cover, title: "새 제목",
+            imageSha256: hash, approved: approved, to: draft)
+        var expected = candidate
+        expected["title"] = .string("새 제목")
+        expected["extensions"][ViewerEntranceSettings.namespace] = cover
+        XCTAssertEqual(next.candidate, expected)
+        XCTAssertThrowsError(try ViewerEntranceSettings.applyingAutomationCover(cover, title: "새 제목",
+            imageSha256: String(repeating: "b", count: 64), approved: approved, to: draft))
+        var stale = approved
+        stale["revisionId"] = .string(UUID().uuidString)
+        XCTAssertThrowsError(try ViewerEntranceSettings.applyingAutomationCover(cover, title: "새 제목",
+            imageSha256: hash, approved: stale, to: draft))
+    }
+
     func testDefaultRoundTripAndEditPreserveOpaqueDocumentAndTitlePath() throws {
         var draft = try imageDraft()
         var candidate = draft.candidate
