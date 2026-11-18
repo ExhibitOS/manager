@@ -21,14 +21,10 @@ enum NativeAutomationPlaqueWall {
 
     static func wall(_ value: DocumentValue) throws -> WallFinishCommand {
         guard case .object(let fields) = value, Set(fields.keys) == ["type", "wall"],
-              value["type"] == .string("set-wall-finish"), case .object(let wall) = value["wall"],
-              Set(wall.keys) == ["surfaceId", "depth", "preset", "trimWidth", "baseboardHeight", "ceilingBand"],
-              let id = value["wall"]["surfaceId"].string, let depth = value["wall"]["depth"].double,
-              let preset = value["wall"]["preset"].string, let trim = value["wall"]["trimWidth"].double,
-              let base = value["wall"]["baseboardHeight"].double, case .bool(let band) = value["wall"]["ceilingBand"] else {
+              value["type"] == .string("set-wall-finish") else {
             throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
         }
-        return try WallFinishCommand(surfaceId: id, settings: WallFinishSettings(surfaceId: id, depth: depth,
-            preset: preset, trimWidth: trim, baseboardHeight: base, ceilingBand: band))
+        let settings = try WallFinishSettings(value["wall"])
+        return try WallFinishCommand(surfaceId: settings.surfaceId, settings: settings)
     }
 }

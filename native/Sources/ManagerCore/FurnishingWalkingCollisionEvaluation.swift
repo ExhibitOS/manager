@@ -114,6 +114,20 @@ struct FurnishingWalkingCollisionEvaluation {
     }
 
     static func invalid() -> AuthoringFailure { AuthoringFailure("FURNISHING_WALKING_COLLISION_INVALID") }
+
+    /// A wall finish edit may remove only the selected wall's vanished target.
+    static func removingBaseboardOverride(surfaceId: String, from candidate: DocumentValue) throws -> DocumentValue {
+        guard let id = UUID(uuidString: surfaceId) else { throw invalid() }
+        let overrides = try authored(in: candidate)
+        let rows = overrides.filter { $0.target.kind != .baseboard || $0.target.id != id }.map(\.value)
+        guard rows.count != overrides.count else { return candidate }
+        var extensions = try extensions(in: candidate)
+        if rows.isEmpty { extensions.removeValue(forKey: namespace) }
+        else { extensions[namespace] = .object(["version": .integer(1), "overrides": .array(rows)]) }
+        var next = candidate
+        next["extensions"] = .object(extensions)
+        return next
+    }
 }
 
 struct FurnishingWalkingCollisionProposal: Encodable {
