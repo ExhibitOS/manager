@@ -33,6 +33,19 @@ final class NativeICCPreparationTests: XCTestCase {
         let first = try await NativePreparedJPEG.prepare(original: input, operationID: "same-operation", generation: "generation-1", isCurrent: { true }, allowICC: true)
         let second = try await NativePreparedJPEG.prepare(original: input, operationID: "same-operation", generation: "generation-1", isCurrent: { true }, allowICC: true)
         XCTAssertEqual(first.derived, second.derived); XCTAssertEqual(first.png, second.png); XCTAssertEqual(input.data, bytes)
+        for manifest in ["222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7",
+                         String(repeating: "f", count: 64)] {
+            let admitted = NativeJPEGImportRuntime.supportsICC(manifestSHA256: manifest, ready: true)
+            do {
+                let prepared = try await NativePreparedJPEG.prepare(original: input, operationID: "same-operation",
+                    generation: "generation-1", isCurrent: { true }, allowICC: admitted)
+                XCTAssertTrue(admitted)
+                XCTAssertEqual(prepared.derived, first.derived)
+                XCTAssertEqual(prepared.png, first.png)
+            } catch NativeImagePreparation.Failure.unsupportedJPEG {
+                XCTAssertFalse(admitted)
+            }
+        }
         XCTAssertEqual(first.derived.recipe.colourMeaning, "srgb")
         let decodedSource = try XCTUnwrap(CGImageSourceCreateWithData(bytes as CFData, nil))
         let sourceImage = try XCTUnwrap(CGImageSourceCreateImageAtIndex(decodedSource, 0, nil))
