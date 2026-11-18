@@ -105,6 +105,11 @@ final class LightObjectRequestTests: XCTestCase {
         mutated = result
         mutated["beamFit"]["placementId"] = .string(UUID().uuidString)
         XCTAssertThrowsError(try request.checkedReply(mutated))
+        mutated = result
+        mutated["beamFit"]["minImageIncidence"] = .null
+        XCTAssertThrowsError(try request.checkedReply(mutated))
+        mutated["beamFit"]["bounds"] = .string("sculpture-containment-envelope")
+        XCTAssertEqual(try request.checkedReply(mutated).beamFit?.bounds, .sculptureContainmentEnvelope)
         lights[1]["beamAngle"] = .number(0.4)
         mutated = result
         mutated["candidate"]["lights"] = .array(lights)

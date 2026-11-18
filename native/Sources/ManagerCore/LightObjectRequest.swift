@@ -32,7 +32,8 @@ public struct NativeSpotBeamFitEvidence: Sendable {
             throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED")
         }
         let incidence = value["minImageIncidence"].double
-        guard value["minImageIncidence"] == .null || incidence.map({ (0...1).contains($0) }) == true else {
+        guard bounds == .displayPlane ? incidence.map({ (0...1).contains($0) }) == true
+            : value["minImageIncidence"] == .null else {
             throw AuthoringFailure("VIEWPORT_DOCUMENT_CHANGED")
         }
         self.placementId = id; self.bounds = bounds
@@ -242,7 +243,8 @@ public struct LightObjectRequest: Sendable {
         guard case .object(let fields) = fit, Set(fields.keys) == ["placementId"],
               let id = fit["placementId"].string, uuid(id), light["type"] == .string("spot") else { throw invalid }
         let placements = draft.placements.filter { same($0["id"].string, id) }
-        guard placements.count == 1, placements[0]["roomId"] == light["roomId"] else { throw invalid }
+        guard placements.count == 1, let room = light["roomId"].string,
+              same(placements[0]["roomId"].string, room) else { throw invalid }
         let track = settings["trackAim"]["aim"]
         if track != .null {
             if track["kind"] == .string("point") { return }
