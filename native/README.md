@@ -1636,6 +1636,12 @@ and a command `etag`. Intake requires `inputPath` pinned in configuration
 `inputs`, plus a stable command `requestId` and explicit `rights` (current
 `display` and `export` permissions). It registers immutable WAV metadata and
 uploads the exact bytes to the existing server validator; it never approves.
+For a pinned MP3 input, the SDK uses macOS Core Audio to prepare PCM16 WAV
+at the original sample rate and channel count. It preserves the original,
+prepared WAV and request binding in the private profile before upload.
+On retry, keep the same configured path and original hash even if the source
+file has moved. The SDK can resume from the retained files and rejects a
+checkpoint with a different original hash, owner, exhibition or rights.
 The file limit is 12 MiB and the existing server PCM16 WAV/60-second validation
 remains authoritative. Status takes `audioId`. Approval takes `audioId`,
 `revision: 1` and the exact reviewed `mediaAsset` from intake/status, checks the
@@ -1647,6 +1653,13 @@ historical SDK response replay and recheck the current head/record on retry;
 the existing exact-envelope request-ID fence still rejects changed requests.
 Existing server ownership,
 CSRF, session and Save constraints remain authoritative.
+
+The installed `--authoring-cli` accepts the same intake, status and approval
+operations. For intake add `--audio-input ABSOLUTE_PATH --audio-sha256 SHA256`
+to the existing profile and output-root arguments and send the matching
+`inputPath` in the request. The Manager room audio inspector also accepts MP3
+and WAV. Select the file, enter rights, and use the separate approval button
+for the returned audio item. Assignment and exhibition Save remain separate.
 
 ### Workspace furnishing registration (source integration)
 

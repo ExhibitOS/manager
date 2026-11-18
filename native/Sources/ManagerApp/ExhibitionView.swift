@@ -1475,6 +1475,43 @@ final class ExhibitionModel: ObservableObject {
             viewportController.editingContextActive && state?.etag != nil && api != nil
     }
 
+    private var audioCustodyProfile: URL?
+    var canIntakeRoomAudio: Bool { canEditRoomAudio && audioCustodyProfile != nil }
+
+    func intakeRoomAudio(_ file: ImportFileSnapshot, requestId: String, rights: ArtworkMetadata.Rights,
+                         revision: UInt64) async -> NativeRoomAudioReceipt? {
+        guard canIntakeRoomAudio, let profile = audioCustodyProfile else { return nil }
+        var receipt: NativeRoomAudioReceipt?
+        await work {
+            guard let api, let state, state.revision == revision else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let result = try await api.intakeLocalRoomAudio(file, profile: profile, requestId: requestId,
+                                                            rights: rights, in: state)
+            guard self.api === api, self.state?.revision == revision, self.state?.etag == state.etag else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            receipt = result
+        }
+        return receipt
+    }
+
+    func approveRoomAudio(_ reviewed: NativeRoomAudioReceipt, revision: UInt64) async -> Bool {
+        guard canIntakeRoomAudio else { return false }
+        var approved = false
+        await work {
+            guard let api, let state, state.revision == revision else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            _ = try await api.approveRoomAudio(reviewed.id, expectedMedia: reviewed.mediaAsset, in: state)
+            guard self.api === api, self.state?.revision == revision, self.state?.etag == state.etag else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            approved = true
+        }
+        return approved
+    }
+
     func roomAudioTracks() async throws -> [ApprovedRoomAudioTrack] {
         guard canEditRoomAudio, let api, let state else { throw AuthoringFailure("ROOM_AUDIO_SAVE_REQUIRED") }
         return try await api.roomAudioTracks(in: state)
@@ -1653,7 +1690,7 @@ final class ExhibitionModel: ObservableObject {
             && state?.tenantId.lowercased() == session.tenantId.lowercased()
             && state?.principalId.lowercased() == session.userId.lowercased()
     }
-    func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, selectedBoundedPolicy: Bool = false, ordinaryBoundedRuntime: Bool = false, boundedRuntimeQualified: Bool = false, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState, readThumbnailCheckpoint: (() async throws -> NativeFurnishingThumbnailState)? = nil, writeThumbnailCheckpoint: ((NativeFurnishingThumbnailState) async throws -> NativeFurnishingThumbnailState)? = nil) async {
+    func connect(api: AuthoringAPI, session: AuthoringSession, credentials: LocalAuthoringSession, selectedBoundedPolicy: Bool = false, ordinaryBoundedRuntime: Bool = false, boundedRuntimeQualified: Bool = false, audioCustodyProfile: URL? = nil, read: @escaping () async throws -> NativeDocumentState, write: @escaping (NativeDocumentState) async throws -> NativeDocumentState, readThumbnailCheckpoint: (() async throws -> NativeFurnishingThumbnailState)? = nil, writeThumbnailCheckpoint: ((NativeFurnishingThumbnailState) async throws -> NativeFurnishingThumbnailState)? = nil) async {
         // Explicit reconnect during a preview has a separate acknowledgement
         // boundary. Never run the ordinary access-change reset on this path.
         if entrancePreviewActive {
@@ -1681,6 +1718,7 @@ final class ExhibitionModel: ObservableObject {
         self.selectedBoundedPolicy = selectedBoundedPolicy
         self.ordinaryBoundedRuntime = ordinaryBoundedRuntime && !selectedBoundedPolicy
         self.boundedRuntimeQualified = boundedRuntimeQualified
+        self.audioCustodyProfile = audioCustodyProfile
         boundedPolicyPending = (selectedBoundedPolicy || self.ordinaryBoundedRuntime) && state?.etag != nil
         if !selectedBoundedPolicy && !self.ordinaryBoundedRuntime { boundedReadOnly = false }
         // Capability is tied to the current runtime; fail closed until its
