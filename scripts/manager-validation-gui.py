@@ -266,6 +266,7 @@ def clone_bundle(source, destination):
         target = destination / path.relative_to(source)
         if path.is_symlink():
             target.symlink_to(os.readlink(path))
+            shutil.copystat(path, target, follow_symlinks=False)
         elif path.is_dir():
             target.mkdir(mode=0o700)
             directories.append((path, target))
@@ -322,7 +323,7 @@ def clone_publication(candidate, destination, profile, pins):
             "Destination headroom or declared allocation changed during publication; retain the current bundle.")
 
 
-def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, scene_capture_cli=False, staging_root=None):
+def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, scene_capture_cli=False, staging_root=None, staged_app=None):
     pinned_legal = "legalInventory" in pins
     require((legal is not None) == pinned_legal and (inventory is not None) == pinned_legal,
             "Legal resources, inventory and its reviewed SHA-256 must be supplied together.")
@@ -347,6 +348,7 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, sce
     if legal is not None:
         inventory_bytes, legal_files = read_legal_inventory(inventory, pins["legalInventory"])
         verify_legal_resources(legal, legal_files, inventory=inventory)
+    require(staged_app is None or staging_root is not None, "Reusing a staged app requires its private staging root.")
     if staging_root is not None:
         require(staging_root.is_absolute() and staging_root.resolve(strict=True) == staging_root
                 and staging_root.is_dir() and staging_root.stat().st_uid == os.getuid()
@@ -360,35 +362,48 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, sce
                 "Insufficient staging space above the retained 6 GiB assembly floor.")
     producer = Path(__file__).resolve().with_name("package-native-preview.py")
     with ExitStack() as temporary_stack:
-        # Explicit job staging is retained for qualification/reproduction, also
-        # on failure. Its sealed runtime directories may intentionally be 0555.
-        scratch = Path(tempfile.mkdtemp(prefix=".build-", dir=staging_root)) if staging_root is not None else Path(
-            temporary_stack.enter_context(tempfile.TemporaryDirectory(prefix=".build-", dir=APP.parent)))
         publication_root = None
-        candidate = scratch / APP.name
-        output("/usr/bin/python3", "-I", "-B", str(producer), "--app", str(candidate),
-               "--swift-executable", str(gui), "--rust-helper", str(helper),
-               "--validation-profile", str(scratch / "uncreated-profile"), "--runtime-payload", str(runtime))
-        if legal is not None:
-            for name in legal_files:
-                target = candidate / LEGAL / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(legal / name, target, follow_symlinks=False)
-            verify_legal_resources(candidate / LEGAL, legal_files)
-            (candidate / LEGAL_INVENTORY).write_bytes(inventory_bytes)
-        info_path = candidate / INFO
-        info = plistlib.loads(info_path.read_bytes())
-        info.update(CFBundleIdentifier=BUNDLE_ID, CFBundleName="ExhibitOS Manager Validation",
-                    CFBundleDisplayName="ExhibitOS Manager Validation", ExhibitOSValidationProfile=str(profile),
-                    CFBundleExecutable=GUI.name, ExhibitOSValidationInputs=pins)
-        if scene_capture_cli:
-            info["ExhibitOSValidationSceneCaptureCLI"] = pins["unsignedGUI"]
-        info_path.write_bytes(plistlib.dumps(info))
-        require(sha(candidate / GUI) == pins["unsignedGUI"] and sha(candidate / HELPER) == pins["unsignedHelper"],
-                "Assembled executable hashes differ from the reviewed build.")
-        (candidate / GUI).chmod(0o755)
-        output(CODESIGN, "--force", "--sign", CERT, str(candidate / HELPER))
-        output(CODESIGN, "--force", "--sign", CERT, str(candidate))
+        if staged_app is not None:
+            require(staged_app.is_absolute() and staged_app.resolve(strict=True) == staged_app
+                    and staged_app.is_dir() and staged_app.name == APP.name
+                    and staged_app.parent.parent == staging_root
+                    and staged_app.parent.name.startswith(".build-")
+                    and staged_app.parent.stat().st_uid == os.getuid()
+                    and stat.S_IMODE(staged_app.parent.stat().st_mode) == 0o700,
+                    "Reuse only the canonical signed app in its private internal build directory.")
+            require(not scene_capture_cli or plistlib.loads((staged_app / INFO).read_bytes())
+                    .get("ExhibitOSValidationSceneCaptureCLI") == pins["unsignedGUI"],
+                    "The retained stage lacks the reviewed scene-capture admission.")
+            candidate = staged_app
+        else:
+            # Explicit job staging is retained for qualification/reproduction, also
+            # on failure. Its sealed runtime directories may intentionally be 0555.
+            scratch = Path(tempfile.mkdtemp(prefix=".build-", dir=staging_root)) if staging_root is not None else Path(
+                temporary_stack.enter_context(tempfile.TemporaryDirectory(prefix=".build-", dir=APP.parent)))
+            candidate = scratch / APP.name
+            output("/usr/bin/python3", "-I", "-B", str(producer), "--app", str(candidate),
+                   "--swift-executable", str(gui), "--rust-helper", str(helper),
+                   "--validation-profile", str(scratch / "uncreated-profile"), "--runtime-payload", str(runtime))
+            if legal is not None:
+                for name in legal_files:
+                    target = candidate / LEGAL / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(legal / name, target, follow_symlinks=False)
+                verify_legal_resources(candidate / LEGAL, legal_files)
+                (candidate / LEGAL_INVENTORY).write_bytes(inventory_bytes)
+            info_path = candidate / INFO
+            info = plistlib.loads(info_path.read_bytes())
+            info.update(CFBundleIdentifier=BUNDLE_ID, CFBundleName="ExhibitOS Manager Validation",
+                        CFBundleDisplayName="ExhibitOS Manager Validation", ExhibitOSValidationProfile=str(profile),
+                        CFBundleExecutable=GUI.name, ExhibitOSValidationInputs=pins)
+            if scene_capture_cli:
+                info["ExhibitOSValidationSceneCaptureCLI"] = pins["unsignedGUI"]
+            info_path.write_bytes(plistlib.dumps(info))
+            require(sha(candidate / GUI) == pins["unsignedGUI"] and sha(candidate / HELPER) == pins["unsignedHelper"],
+                    "Assembled executable hashes differ from the reviewed build.")
+            (candidate / GUI).chmod(0o755)
+            output(CODESIGN, "--force", "--sign", CERT, str(candidate / HELPER))
+            output(CODESIGN, "--force", "--sign", CERT, str(candidate))
         verify_bundle(candidate, profile, pins)
         if staging_root is not None:
             require(shutil.disk_usage(staging_root).free >= 6 * 1024 ** 3,
@@ -553,9 +568,12 @@ def main():
     parser.add_argument("--request", type=Path)
     parser.add_argument("--scene-capture-cli", action="store_true")
     parser.add_argument("--staging-root", type=Path, help="Prepare only: private assembly storage; same-runtime clone publication.")
+    parser.add_argument("--staged-app", type=Path, help="Prepare only: reuse the signed app already retained in that staging root.")
     args = parser.parse_args()
     try:
         require(args.staging_root is None or args.action == "prepare", "--staging-root is prepare-only.")
+        require(args.staged_app is None or (args.action == "prepare" and args.staging_root is not None),
+                "--staged-app requires prepare and its --staging-root.")
         require(not args.scene_capture_cli or args.action == "prepare", "--scene-capture-cli is a reviewed prepare-only admission.")
         require((args.request is not None) == (args.action == "capture"), "Only capture requires --request.")
         require(args.owner is None or (args.action == "launch" and valid_owner(args.owner)),
@@ -590,7 +608,7 @@ def main():
                 require(args.profile.resolve(strict=True) == args.profile and args.profile.is_dir(),
                         "Use the canonical existing validation profile.")
                 prepare(args.profile, pins, args.gui, args.helper, args.runtime, *legal_paths,
-                        scene_capture_cli=args.scene_capture_cli, staging_root=args.staging_root)
+                        scene_capture_cli=args.scene_capture_cli, staging_root=args.staging_root, staged_app=args.staged_app)
             result = dict(app=str(APP), bundleId=BUNDLE_ID, profile=str(args.profile), pins=pins)
             if args.action == "capture":
                 result = capture(args.app, args.profile, pins, args.request)

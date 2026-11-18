@@ -239,7 +239,9 @@ class InternalPublicationTests(unittest.TestCase):
                     (launcher.INFO, plistlib.dumps({"ExhibitOSValidationInputs": selected}))]:
                 path = bundle / relative; path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data); path.chmod(0o500 if relative in (launcher.GUI, launcher.HELPER) else 0o444)
-            (bundle / "Contents/Resources/native-runtime/alias").symlink_to("payload")
+            alias = bundle / "Contents/Resources/native-runtime/alias"
+            alias.symlink_to("payload")
+            os.chmod(alias, 0o700, follow_symlinks=False)
         return app, candidate, profile, pins
 
     def test_real_clone_and_atomic_replacement_preserve_fixed_and_match_signed_stage(self):
@@ -299,7 +301,7 @@ class InternalPublicationTests(unittest.TestCase):
                 copy.assert_not_called()
             self.assertEqual(launcher.bundle_inventory(app), before)
 
-    def test_internal_prepare_publishes_at_fixed_path_and_retains_old_bundle(self):
+    def test_internal_prepare_reuses_verified_stage_and_retains_old_bundle(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve(); app, profile, runtime, staging = (root / name for name in ("fixed.app", "profile", "runtime", "staging"))
             for path in (profile, runtime, staging): path.mkdir(mode=0o700)
@@ -323,14 +325,31 @@ class InternalPublicationTests(unittest.TestCase):
                  patch.object(launcher, "launch_services_has_app", return_value=False):
                 launcher.prepare(profile, old_pins, gui, old_helper, runtime)
                 before = launcher.bundle_inventory(app)
-                launcher.prepare(profile, pins, gui, helper, runtime, staging_root=staging)
+                with patch.object(launcher, "clone_publication", side_effect=launcher.ValidationError("retain signed stage")):
+                    with self.assertRaisesRegex(launcher.ValidationError, "retain signed stage"):
+                        launcher.prepare(profile, pins, gui, helper, runtime, staging_root=staging)
+                self.assertEqual(launcher.bundle_inventory(app), before)
+                stage, = staging.iterdir(); staged_app = stage / app.name
+                original_info = (staged_app / launcher.INFO).read_bytes()
+                for field, value in [("ExhibitOSValidationProfile", "/foreign-profile"),
+                        ("ExhibitOSValidationInputs", dict(pins, unsignedHelper="e" * 64))]:
+                    bad = plistlib.loads(original_info); bad[field] = value
+                    (staged_app / launcher.INFO).write_bytes(plistlib.dumps(bad))
+                    with patch.object(launcher, "clone_publication") as clone:
+                        with self.assertRaises(launcher.ValidationError):
+                            launcher.prepare(profile, pins, gui, helper, runtime, staging_root=staging, staged_app=staged_app)
+                        clone.assert_not_called()
+                    (staged_app / launcher.INFO).write_bytes(original_info)
+                with patch.object(launcher, "output", side_effect=AssertionError("No reassembly or signing allowed")):
+                    launcher.prepare(profile, pins, gui, helper, runtime, staging_root=staging, staged_app=staged_app)
                 launcher.verify_bundle(app, profile, pins)
             retained, = root.glob("retained-*.app")
             self.assertEqual(launcher.bundle_inventory(retained), before)
             self.assertEqual((app / launcher.HELPER).read_bytes(), helper.read_bytes())
             stage, = staging.iterdir()
             self.assertEqual(launcher.bundle_inventory(stage / app.name), launcher.bundle_inventory(app))
-            self.assertEqual(list(root.glob(".publish-*")), [])
+            refused, = root.glob(".publish-*")
+            self.assertEqual(list(refused.iterdir()), [])
 
     def test_staging_floor_and_redirect_refuse_before_assembly(self):
         for mutation in ("floor", "redirect", "permissions"):
@@ -352,6 +371,29 @@ class InternalPublicationTests(unittest.TestCase):
                     with self.assertRaises(launcher.ValidationError):
                         launcher.prepare(profile, pins, gui, helper, runtime, staging_root=staging)
                     run.assert_not_called()
+                self.assertEqual(launcher.bundle_inventory(app), before)
+
+    def test_reused_stage_refuses_redirect_wrong_parent_and_name(self):
+        for mutation in ("redirect", "parent", "name"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve(); app, candidate, profile, _ = self.fixture(root)
+                before = launcher.bundle_inventory(app)
+                gui, helper, runtime = candidate / launcher.GUI, candidate / launcher.HELPER, candidate / launcher.MANIFEST.parent
+                pins = dict(unsignedGUI=launcher.sha(gui), unsignedHelper=launcher.sha(helper), runtimeManifest=launcher.sha(runtime / "manifest.json"))
+                staging = root / "staging"; staging.mkdir(mode=0o700)
+                build = staging / ".build-fixture"; build.mkdir(mode=0o700)
+                staged = build / app.name; shutil.copytree(candidate, staged)
+                if mutation == "redirect":
+                    link = build / "linked.app"; link.symlink_to(staged); staged = link
+                elif mutation == "parent": staging = root
+                elif mutation == "name": staged = build / "other.app"; staged.mkdir()
+                with patch.object(launcher, "APP", app), patch.object(launcher, "pids", return_value=set()), \
+                     patch.object(launcher, "launch_services_has_app", return_value=False), \
+                     patch.object(launcher, "verify_bundle", side_effect=launcher.ValidationError("old pins")), \
+                     patch.object(launcher, "clone_publication") as clone, patch.object(launcher, "output") as run:
+                    with self.assertRaises(launcher.ValidationError):
+                        launcher.prepare(profile, pins, gui, helper, runtime, staging_root=staging, staged_app=staged)
+                    run.assert_not_called(); clone.assert_not_called()
                 self.assertEqual(launcher.bundle_inventory(app), before)
 
     def test_escaping_symlink_refuses_inventory(self):
