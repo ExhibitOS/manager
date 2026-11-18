@@ -584,6 +584,7 @@ final class LightObjectRequestTests: XCTestCase {
     }
     private func legacyPointAndSupplementalFill() throws -> NativeExhibitionDraft {
         var draft = try NativeExhibitionDraft.new(), candidate = draft.candidate
+        if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
         let room = draft.rooms[0], roomId = room["id"]
         let point: DocumentValue = .object(["id": .string(source), "roomId": roomId, "type": .string("point"),
             "unit": .string("candela"), "intensity": .number(16), "color": .vector([1, 1, 1]),
