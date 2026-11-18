@@ -7893,38 +7893,38 @@ impl Payload {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_preview_trace_supported(&self) -> bool {
-        [R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET]
+        [R285_GREEK_THUMBNAIL_TRACE_TARGET, R285_GREEK_THUMBNAIL_TRACE_ABORT_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET, R285_POINT_VOICE_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
             || self.thumbnail_preview_overlap_runtime()
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_preview_overlap_runtime(&self) -> bool {
-        [R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET]
+        [R285_GREEK_THUMBNAIL_PREVIEW_OVERLAP_TARGET, R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET, R285_POINT_VOICE_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn thumbnail_allowance_runtime(&self) -> bool {
-        [R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET]
+        [R285_GREEK_THUMBNAIL_ALLOWANCE_TARGET, R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET, R285_POINT_VOICE_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn frame_v11_runtime(&self) -> bool {
-        [R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET]
+        [R285_FRAME_V11_TARGET, R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET, R285_POINT_VOICE_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn frame_fit_v11_runtime(&self) -> bool {
-        [R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET]
+        [R285_FRAME_FIT_V11_TARGET, R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET, R285_POINT_VOICE_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn finished_hayes_original_runtime(&self) -> bool {
-        [R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET]
+        [R285_FINISHED_HAYES_ORIGINAL_TARGET, R285_DETAIL_DIAGNOSTICS_TARGET, R285_NATIVE_DETAIL_CONTEXT_TARGET, R285_POINT_VOICE_TARGET]
             .contains(&(self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str()))
     }
 
