@@ -25,14 +25,14 @@ public struct WallFinishSettings: Equatable, Sendable {
         if let plainBaseboard { fields["plainBaseboard"] = .bool(plainBaseboard) }
         return .object(fields)
     }
-    init(_ value: DocumentValue) throws {
+    init(_ value: DocumentValue, malformed: any Error = WallFinishSettings.invalid()) throws {
         guard case .object(let fields) = value, Set(fields.keys).subtracting(["plainBaseboard"]) == ["surfaceId", "depth", "preset", "trimWidth", "baseboardHeight", "ceilingBand"],
               let id = value["surfaceId"].string, let depth = value["depth"].double, let preset = value["preset"].string,
               let trim = value["trimWidth"].double, let base = value["baseboardHeight"].double,
-              case .bool(let band) = value["ceilingBand"] else { throw Self.invalid() }
+              case .bool(let band) = value["ceilingBand"] else { throw malformed }
         let plainBaseboard: Bool?
         if let flag = fields["plainBaseboard"] {
-            guard case .bool(let enabled) = flag else { throw Self.invalid() }
+            guard case .bool(let enabled) = flag else { throw malformed }
             plainBaseboard = enabled
         } else { plainBaseboard = nil }
         try self.init(surfaceId: id, depth: depth, preset: preset, trimWidth: trim, baseboardHeight: base, ceilingBand: band, plainBaseboard: plainBaseboard)

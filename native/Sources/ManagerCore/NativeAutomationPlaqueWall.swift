@@ -24,7 +24,7 @@ enum NativeAutomationPlaqueWall {
               value["type"] == .string("set-wall-finish") else {
             throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
         }
-        let settings = try WallFinishSettings(value["wall"])
+        let settings = try WallFinishSettings(value["wall"], malformed: BridgeFailure("AUTOMATION_COMMAND_INVALID"))
         return try WallFinishCommand(surfaceId: settings.surfaceId, settings: settings)
     }
 }
