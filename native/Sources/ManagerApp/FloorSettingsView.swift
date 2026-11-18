@@ -10,6 +10,7 @@ struct FloorSettingsView: View {
     let select: (String) -> Void
     let customized: Set<FloorSettings.Field>
     let currentValues: [FloorSettings.Field: DocumentValue]
+    let soundStatus: FloorSettings.SoundStatus?
     let dirty: Bool
     let canApply: Bool
     let audioResourcesAvailable: Bool
@@ -45,19 +46,31 @@ struct FloorSettingsView: View {
         }
         if field == .repeatMeters, let values = value.items { return values.compactMap(\.double).map { String($0) }.joined(separator: " × ") + " m" }
         if field == .sound {
-            let gain = value["gain"].double.map { " · 크기 " + String($0) } ?? ""
-            switch value["mode"].string {
-            case "none": return "소리 없음" + gain
-            case "explicit": return "WAV \(value["assetIds"].items?.count ?? 0)개" + gain
-            case "material-default": return preset.map { presetName($0) + " 기본 소리" + gain } ?? "재질 기본 소리" + gain
-            default:
-                let family = value["material"].string ?? ""
-                let name = ["wood": "목재", "stone": "석재", "concrete": "콘크리트", "carpet": "카펫", "metal": "금속"][family] ?? "기존"
-                return name + " 발소리" + (value["assetId"].string == nil ? "" : " · 선택한 녹음")
-            }
+            return preset.map { presetName($0) + " 기본 소리" } ?? "재질 기본 소리"
         }
         return value.string ?? value.double.map { String($0) } ?? "기존 값"
     }
+    private var currentSound: String {
+        guard let soundStatus else { return "발소리 설정 확인 불가" }
+        let level = soundStatus.gain == 0 && soundStatus.mode != .none ? " · 음량 0" : ""
+        switch soundStatus.mode {
+        case .inactive: return "이 바닥에는 적용되지 않음"
+        case .none: return "발소리 없음"
+        case .explicit: return "직접 선택한 WAV" + level
+        case .legacy:
+            switch soundStatus.source {
+            case .publication: return "기존에 지정한 녹음" + level
+            case .builtin: return "기존 재질의 기본 녹음"
+            default: return "기존 재질 · 합성 발소리"
+            }
+        case .materialDefault:
+            let material = soundStatus.material.flatMap(FloorSettings.Preset.init(rawValue:)).map(presetName)
+            let name = material.map { $0 + " 기본 소리" } ?? "재질 기본 소리"
+            return name + (soundStatus.source == .builtin ? " · 녹음" : " · 합성") + level
+        case .fallback: return "콘크리트 기본 발소리 · 합성"
+        }
+    }
+
     private func number(_ label: String, _ key: FloorFormBuffer.Numeric) -> some View {
         TextField(label, text: Binding(get: { buffer.numbers[key] ?? "" }, set: { buffer.numbers[key] = $0 }))
     }
@@ -71,6 +84,7 @@ struct FloorSettingsView: View {
                     ForEach(targets, id: \.key) { Text($0.name).tag($0.key) }
                 }.disabled(dirty)
                 if inactive { Text("이 공간에 직접 만든 바닥이 있어 공간 기본 바닥 설정은 보관만 됩니다.").font(.caption).foregroundStyle(.secondary) }
+                LabeledContent("현재 발소리", value: currentSound)
                 ForEach(FloorSettings.Preset.allCases, id: \.self) { value in
                     Button { preset = value } label: {
                         HStack(spacing: 10) {
@@ -92,7 +106,7 @@ struct FloorSettingsView: View {
                 GroupBox("적용 전 변경 확인") {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(FloorSettings.Field.allCases.filter { scope.contains($0) }, id: \.self) { field in
-                            Text(Self.name(field) + ": " + describe(currentValues[field], field: field, preset: buffer.settings?.preset)
+                            Text(Self.name(field) + ": " + (field == .sound ? currentSound : describe(currentValues[field], field: field, preset: buffer.settings?.preset))
                                 + " → " + describe(FloorSettings.defaults(preset)[field], field: field, preset: preset))
                                 .font(.caption).fixedSize(horizontal: false, vertical: true)
                         }

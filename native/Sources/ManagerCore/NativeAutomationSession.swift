@@ -7,7 +7,7 @@ import Darwin
 /// used by ManagerApp. Each installed CLI admits only its scoped commands.
 public actor NativeAutomationSession {
     private static let freshResponseOperations: Set<String> = [
-        "room-audio-intake", "room-audio-status", "room-audio-approve",
+        "room-audio-intake", "room-audio-status", "room-audio-approve", "floor-sound-status",
         "workspace-bench-visual-check", "workspace-bench-model-forward-check", "viewer-budget-inspect", "applied-draft-save-resume",
         "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image",
         "saved-head-static-readiness", "private-exhibition-export-static", "private-exhibition-read", "private-exhibition-reopen", "thumbnail-status", "required-model-original-status", "required-model-original-discover", "finished-hayes-original-status", "finished-hayes-original-discover",
@@ -1019,6 +1019,30 @@ public actor NativeAutomationSession {
         try SurfaceMaterialTextureRequest.requireEditingPolicy(policy, document: state)
         return policy
     }
+    private func applyQuietOakFootsteps(_ request: DocumentValue, context: Context, api: AuthoringAPI,
+                                        current: NativeDocumentState) async throws -> DocumentValue {
+        try checkedRevision(request, current)
+        guard selectedOEXFormat == nil, var draft = current.draft, let etag = current.etag else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        let command = try NativeAutomationArtworkRules.command(request, keys: ["target", "etag"])
+        guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+        let target = try FloorSettings.target(command["target"])
+        let policy = try await checkSavedSurfacePolicy(current, api: api)
+        guard policy.revision == current.revision else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+        let status = try await bridge.nativeStatus(context)
+        let manifest = status.configuration?.manifestSha256
+        let available = manifest == runtimeManifest && NativeFloorAudioRuntime.supports(
+            manifestSHA256: manifest, ready: status.runtime?.readiness.ready == true)
+        try draft.applyQuietOakFootsteps(target: target, resourcesAvailable: available)
+        let (_, _, refreshed) = try await checked(request)
+        try Task.checkCancellation()
+        guard try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+        var next = current
+        next.draft = draft
+        return .object(["document": try value(await bridge.saveDocumentState(context, state: next))])
+    }
+
     private func write(_ object: DocumentValue, to path: String) throws -> DocumentValue {
         let url = try output(path), bytes = try JSONEncoder().encode(object)
         if let expected = installedExportRootIdentity {
@@ -2216,7 +2240,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
             }
         }
-        if ["artwork-placement-move", "artwork-interpretation-set", "procedural-frame-set"].contains(operation) {
+        if ["artwork-placement-move", "artwork-interpretation-set", "procedural-frame-set", "floor-sound-status", "floor-quiet-oak-footsteps-apply"].contains(operation) {
             let expected: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == expected else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
         }
@@ -3314,6 +3338,16 @@ public actor NativeAutomationSession {
             var next = current
             next.draft = carried
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "floor-sound-status":
+            try checkedRevision(request, current)
+            guard selectedOEXFormat == nil, let draft = current.draft else {
+                throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+            }
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["target"])
+            let target = try FloorSettings.target(command["target"])
+            result = try FloorSettings.soundStatus(target: target, candidate: draft.candidate).value
+        case "floor-quiet-oak-footsteps-apply":
+            result = try await applyQuietOakFootsteps(request, context: context, api: api, current: current)
         case "floor-appearance-apply":
             try checkedRevision(request, current)
             let policy = try await checkSavedSurfacePolicy(current, api: api)

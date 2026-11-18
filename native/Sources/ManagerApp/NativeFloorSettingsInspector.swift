@@ -18,17 +18,18 @@ struct NativeFloorSettingsInspector: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if model.floor.concreteFootstepsRequested {
-                Text("선택한 바닥의 콘크리트 발소리를 미리 확인하고 있습니다. 바닥 외관·다른 소리는 유지합니다.")
+            if let selection = model.floor.recordedFootsteps {
+                let name = selection == .quietOak ? "목재 발소리" : "콘크리트 발소리"
+                Text("선택한 바닥의 " + name + " 적용 전 확인입니다. 바닥 외관과 다른 소리는 유지합니다.")
                 Text("관람객의 소리 끄기·음량 설정이 우선합니다. 여기서는 소리를 자동 재생하지 않습니다.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("콘크리트 발소리 미리보기") { model.previewFloor() }.disabled(!ready || !model.canEditFloor)
-                Button("콘크리트 발소리 적용") { Task { await model.applyFloor() } }.disabled(!ready || !model.canApplyFloor)
+                Button(name + " 미리보기") { model.previewFloor() }.disabled(!ready || !model.canEditFloor)
+                Button(name + " 적용") { Task { await model.applyFloor() } }.disabled(!ready || !model.canApplyFloor)
                 Button("발소리 입력 취소") { model.discardFloor() }.disabled(model.busy || model.pending || model.architectureApplying)
                 if !model.floorStatus.isEmpty { Text(model.floorStatus).font(.callout).foregroundStyle(.secondary) }
             } else {
             FloorSettingsView(buffer: $model.floor, targets: targets, targetKey: model.floorTargetKey,
-                select: model.selectFloor, customized: model.floorCustomized, currentValues: model.floorCurrentValues,
+                select: model.selectFloor, customized: model.floorCustomized, currentValues: model.floorCurrentValues, soundStatus: model.floorSoundStatus,
                 dirty: model.floorDirty, canApply: ready && model.canApplyFloor, audioResourcesAvailable: model.floorAudioRuntimeAvailable, images: model.floorImages,
                 preview: model.previewFloor, canReset: model.floorCanReset, editable: ready && model.canEditFloor,
                 inactive: model.floorTarget.flatMap { target in model.draft.map { !FloorSettings.isActive(target, in: $0.candidate) } } ?? false,
@@ -50,8 +51,11 @@ struct NativeFloorSettingsInspector: View {
             } else if model.privateFloorLoadFailed {
                 Button("헤링본 재질 목록 다시 확인") { Task { await model.loadPrivateFloorCatalog() } }
             }
-            Button("승인된 콘크리트 발소리 입력") { model.stageConcreteFootsteps() }
-                .disabled(!ready || !model.canStageConcreteFootsteps)
+            if ready && model.canStageRecordedFootsteps(.quietOak) {
+                Button("승인된 목재 발소리 입력") { model.stageRecordedFootsteps(.quietOak) }
+            }
+            Button("승인된 콘크리트 발소리 입력") { model.stageRecordedFootsteps(.concrete) }
+                .disabled(!ready || !model.canStageRecordedFootsteps(.concrete))
             Text("선택한 바닥의 발소리를 승인된 녹음으로 바꿉니다. 바닥 외관은 유지합니다. 바닥 재질의 소리 설정이 있으면 변경할 수 없습니다.")
                 .font(.caption).foregroundStyle(.secondary)
             }

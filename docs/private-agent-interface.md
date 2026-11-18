@@ -137,6 +137,20 @@ Operations:
   one-shot selected-save handshake, authentic import receipt and ordinary
   editing transition as draft.9. The returned `receipt.path` holds the actual
   import `idMap` and `assetAliases`.
+- `floor-sound-status` reads the current draft at the supplied
+  `expectedRevision` and `expectedEditVersion`. Pass `command.target` as
+  `{"kind":"surface","surfaceId":"…"}` or `{"kind":"room-base","roomId":"…"}`.
+  It returns the floor `mode` (`material-default`, `explicit`, `none`, `legacy`,
+  `fallback` or `inactive`), and when applicable the `source` (`builtin`,
+  `publication` or `procedural`), `material` and `gain`. This describes draft
+  metadata before room and visitor controls. It starts no audio and writes no
+  document state.
+- `floor-quiet-oak-footsteps-apply` stages only the approved wood sound for an
+  existing QuietOak v1 floor on the current saved head. Pass `command.target`
+  as a typed surface and `command.etag` as the saved ETag. The command requires
+  the matching revision and edit version, a ready qualified audio runtime and
+  no existing floor or legacy footstep assignment. The response contains
+  `document`. Use ordinary Save separately.
 - `floor-appearance-apply` accepts `roomId` and `surfaceId` in `command` plus
   exactly one selection. Use `preset` (`wood`, `marble`, `tile` or `carpet`)
   for the existing presets. Use `catalog: {"id":"quiet-oak-herringbone","version":1}`
