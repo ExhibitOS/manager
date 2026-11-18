@@ -3169,9 +3169,30 @@ public actor NativeAutomationSession {
                       let requestId = command["requestId"].string else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
                 let url = URL(fileURLWithPath: path)
                 guard url.resolvingSymlinksInPath() == url else { throw BridgeFailure("AUTOMATION_INPUT_INVALID") }
-                let snapshot = try await ImportFileSnapshot.load(url, byteLimit: 12_582_912, allowWAV: true)
+                let snapshot = try await ImportFileSnapshot.load(url, byteLimit: NativeRoomAudioPreparation.byteLimit,
+                                                                 allowWAV: true, allowMP3: true)
                 guard snapshot.sha256 == hash else { throw BridgeFailure("AUTOMATION_INPUT_CHANGED") }
-                receipt = try await api.intakeRoomAudio(snapshot, requestId: requestId, rights: command["rights"], in: current)
+                if snapshot.mime == "audio/mpeg" {
+                    guard !current.dirty, current.pending == nil, let draft = current.draft else {
+                        throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+                    }
+                    let directory = try profileIdentity()
+                    let scope: DocumentValue = .object([
+                        "workspaceId": .string(current.workspaceId), "tenantId": .string(current.tenantId),
+                        "principalId": .string(current.principalId), "exhibitionId": .string(draft.id),
+                        "rights": command["rights"]
+                    ])
+                    let prepared = try NativeRoomAudioPreparation.prepare(snapshot, profile: profile, requestID: requestId, scope: scope)
+                    let (_, _, latest) = try await checked(request)
+                    guard try profileIdentity() == directory, try value(latest) == value(current) else {
+                        throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED")
+                    }
+                    receipt = try await api.intakeRoomAudio(prepared.wav, requestId: requestId, rights: command["rights"], in: current)
+                    guard try profileIdentity() == directory else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
+                    try prepared.record(receipt)
+                } else {
+                    receipt = try await api.intakeRoomAudio(snapshot, requestId: requestId, rights: command["rights"], in: current)
+                }
             } else {
                 guard let audioId = command["audioId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
                 if operation == "room-audio-approve" {
