@@ -297,8 +297,9 @@ public struct LightObjectRequest: Sendable {
               fields["basePlacement"] == nil, fields["ceilingFill"] == nil else { return nil }
         let lights = base["lights"].items ?? []
         let candidates = bindings.filter { row in
-            row["purpose"] == RoomCeilingFill.supplementalPurpose
-                && lights.contains(where: { same($0["id"].string, row["lightId"].string) && same($0["roomId"].string, roomId) })
+            guard let candidateId = row["lightId"].string else { return false }
+            return row["purpose"] == RoomCeilingFill.supplementalPurpose
+                && lights.contains(where: { same($0["id"].string, candidateId) && same($0["roomId"].string, roomId) })
         }
         guard candidates.count <= 1 else { throw invalid }
         guard let row = candidates.first else { return nil }
