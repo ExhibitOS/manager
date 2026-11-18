@@ -3038,9 +3038,10 @@ final class ExhibitionModel: ObservableObject {
         let binding = NativeTrackSpotAim.binding(in: draft, lightId: selectedLightId)
         guard binding["aim"]["kind"] == .string("placement-center"),
               let target = binding["aim"]["placementId"].string,
-              let placement = draft.placements.first(where: { $0["id"].string?.lowercased() == target.lowercased() }) else { return false }
+              let placement = draft.placements.first(where: { $0["id"].string?.lowercased() == target.lowercased() }),
+              let revision = placement["artworkRevisionId"].string?.lowercased() else { return false }
         return draft.artworks.contains {
-            $0["revisionId"] == placement["artworkRevisionId"] && $0["artworkType"] == .string("image")
+            $0["revisionId"].string?.lowercased() == revision && $0["artworkType"] == .string("image")
         }
     }
 
