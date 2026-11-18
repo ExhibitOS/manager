@@ -62,6 +62,30 @@ final class RoomAudioAdmissionAPITests: XCTestCase {
         XCTAssertThrowsError(try NativeAutomationSession.replayResponse(for: "room-audio-apply",
             prior: (bytes, cached), matching: Data("changed request".utf8)))
     }
+    func testApprovedPlacementVoiceUsesOnlyClosedProposalAndLeavesSaveSeparate() async throws {
+        var state = try fixture(), draft = try XCTUnwrap(state.draft)
+        let artwork: DocumentValue = .object(["kind": .string("artwork"), "artworkType": .string("image"),
+            "revisionId": .string(FrameFitSynthetic.artwork), "primaryAssetId": .string(FrameFitSynthetic.asset),
+            "dimensions": .object(["width": .number(1), "height": .number(1)]),
+            "assets": .array([.object(["id": .string(FrameFitSynthetic.asset), "mime": .string("image/png")])])])
+        try draft.addApprovedArtwork(artwork, roomId: draft.rooms[0]["id"].string!, placementId: FrameFitSynthetic.placement,
+                                     transform: NativeExhibitionDraft.identity)
+        state.draft = draft; state.savedEditVersion = draft.document["editVersion"].integer
+        let api = try await connected(state, mode: "voice")
+        let audio = try await api.roomAudioStatus("44444444-4444-4444-8444-444444444444", in: state)
+        let binding = try NativePlacementVoice(placementId: FrameFitSynthetic.placement, locale: "ko", transcript: "Synthetic narration", approvedAudio: audio)
+        let preview = try await binding.prepare(using: api, in: state)
+        XCTAssertTrue(preview.changed)
+        let posts = RoomAudioAPIProtocol.calls().filter { $0.httpMethod != "GET" }
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertTrue(posts[0].url!.path.hasSuffix("/native-authoring-proposal"))
+        XCTAssertEqual(posts[0].httpMethod, "POST")
+        XCTAssertEqual(posts[0].value(forHTTPHeaderField: "If-Match"), state.etag)
+        XCTAssertEqual(posts[0].value(forHTTPHeaderField: "x-csrf-token"), "synthetic-csrf")
+        XCTAssertNil(state.pending)
+        XCTAssertEqual(state.draft, draft)
+    }
+
     private func audioFile() -> ImportFileSnapshot {
         ImportFileSnapshot(name: "synthetic.wav", mime: "audio/wav", sha256: "85759b3811ff7dc47b03792ac85317be51431a3f9e01dcafce317ed736a391b0", data: Data(repeating: 0, count: 44))
     }
@@ -129,8 +153,9 @@ private final class RoomAudioAPIProtocol: URLProtocol, @unchecked Sendable {
     static func configure(_ state: NativeDocumentState, mode: String) throws {
         let draft = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state.draft!))
         let id = state.draft!.id, prefix = "/api/v1/tenants/\(state.tenantId)/studio/exhibitions/\(id)"
-        let session: [String: Any] = ["tenantId": state.tenantId, "userId": state.principalId, "role": "admin",
+        var session: [String: Any] = ["tenantId": state.tenantId, "userId": state.principalId, "role": "admin",
             "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z"]
+        if mode == "voice" { session["nativeAuthoringProposalProfile"] = "saved-head-v1" }
         var policy: [String: Any] = ["exhibitionId": id, "revision": 1, "etag": state.etag!,
             "boundedReadOnly": mode == "read-only", "boundedProfile": mode != "ordinary",
             "boundedEditRequired": mode == "bounded-required"]
@@ -146,7 +171,7 @@ private final class RoomAudioAPIProtocol: URLProtocol, @unchecked Sendable {
         let values = try ["/api/v1/auth/session": JSONSerialization.data(withJSONObject: session),
             prefix: JSONSerialization.data(withJSONObject: saved),
             prefix + "/native-viewport-policy": JSONSerialization.data(withJSONObject: policy)]
-        lock.lock(); defer { lock.unlock() }; requests = []; responses = values; Self.mode = mode; audioState = "validated"
+        lock.lock(); defer { lock.unlock() }; requests = []; responses = values; Self.mode = mode; audioState = mode == "voice" ? "approved" : "validated"
     }
     static func calls() -> [URLRequest] { lock.lock(); defer { lock.unlock() }; return requests }
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -177,8 +202,34 @@ private final class RoomAudioAPIProtocol: URLProtocol, @unchecked Sendable {
             if reject { payload = ["code": "AUDIO_INVALID"] } else { payload = audio }
             data = try! JSONSerialization.data(withJSONObject: payload)
         }
+        if path.hasSuffix("/native-authoring-proposal"), Self.mode == "voice" {
+            var payload = request.httpBody ?? Data()
+            if payload.isEmpty, let stream = request.httpBodyStream {
+                stream.open(); defer { stream.close() }; var buffer = [UInt8](repeating: 0, count: 4096)
+                while true { let n = stream.read(&buffer, maxLength: buffer.count); if n <= 0 { break }; payload.append(contentsOf: buffer.prefix(n)) }
+            }
+            let body = try! JSONSerialization.jsonObject(with: payload) as! [String: Any]
+            let command = body["request"] as! [String: Any]
+            let savedPath = String(path.dropLast("/native-authoring-proposal".count))
+            let saved = try! JSONSerialization.jsonObject(with: Self.responses[savedPath]!) as! [String: Any]
+            let draft = saved["draft"] as! [String: Any]
+            var candidate = draft["candidate"] as! [String: Any]
+            let media: [String: Any] = ["id": audioId, "path": "media/\(audioId)/audio.wav", "mime": "audio/wav", "bytes": 44,
+                "sha256": "85759b3811ff7dc47b03792ac85317be51431a3f9e01dcafce317ed736a391b0",
+                "rights": ["creditLine": "Synthetic WAV", "permissions": ["display": true, "export": true]]]
+            candidate["mediaAssets"] = [media]
+            var extensions = candidate["extensions"] as? [String: Any] ?? [:]
+            extensions[ConcreteFootsteps.experienceNamespace] = ["version": 1, "footsteps": [], "annotations": [], "rooms": [], "translations": [],
+                "voices": [["placementId": FrameFitSynthetic.placement, "assetId": audioId, "locale": "ko", "transcript": "Synthetic narration"]]]
+            candidate["extensions"] = extensions
+            var reply = command.filter { ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"].contains($0.key) }
+            reply["candidate"] = candidate; reply["placementId"] = FrameFitSynthetic.placement
+            data = try! JSONSerialization.data(withJSONObject: reply)
+        }
         Self.lock.unlock()
         var headers = ["Content-Type": "application/json"]
+        if path.hasSuffix("/native-authoring-proposal") { headers["ETag"] = request.value(forHTTPHeaderField: "If-Match") }
+
         if let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let etag = body["etag"] as? String {
             headers["ETag"] = etag
         }

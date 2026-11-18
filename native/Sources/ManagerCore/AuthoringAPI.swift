@@ -4509,6 +4509,7 @@ public actor AuthoringAPI {
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
+        let placementVoice = operation == "set-placement-voice"
         let lightObject = LightObjectAuthoring.commands.contains(operation)
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let supplementalFill = operation == NativeAutomationScene.supplementalCeilingFillCommand
@@ -4529,7 +4530,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
+              (placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }
