@@ -147,6 +147,8 @@ public struct BridgeFailure: Error, LocalizedError, Sendable {
         case "NATIVE_STATIC_EXPORT_UNAVAILABLE": "이 앱에는 정적 전시 저장 도구가 없습니다. 검증된 최신 앱을 설치하세요."
         case "NATIVE_STATIC_STOP_PENDING": "전시 파일 저장을 정지하고 있습니다. 완료될 때까지 앱을 열어 두세요."
         case "NATIVE_STATIC_EXPORT_FAILED", "NATIVE_STATIC_EXPORT_INVALID": "전시 파일을 완성하지 못했습니다. 기존 파일을 보관하고 새 폴더에 다시 저장하세요."
+        case "NATIVE_STATIC_VIEWER_RECEIPT_INVALID": "완료 기록과 내보낸 전시 파일이 일치하지 않습니다. 저장 폴더를 확인하세요."
+        case "NATIVE_STATIC_VIEWER_UNAVAILABLE": "내보낸 전시를 열 수 없습니다. 잠시 후 다시 시도하세요."
         case "PROFILE_BUSY", "MANAGER_PROFILE_BUSY": "다른 Manager가 열려 있습니다. 해당 앱을 닫은 뒤 다시 확인하세요."
         case "NATIVE_HELPER_MISSING": "앱의 실행 파일을 찾을 수 없습니다. 앱을 다시 설치하세요."
         case "NATIVE_RUNTIME_PAYLOAD_INVALID": "로컬 제작 실행 패키지가 없거나 올바르지 않습니다. 제작 데이터와 백업을 삭제하지 말고 검증된 Manager 앱을 다시 설치하세요."
@@ -307,6 +309,12 @@ public actor NativeBridge {
     }
     public func staticExportStatus(_ context: Context) throws -> NativeStaticExportStatus? {
         try request("static_export_status", fields: ["selection_token": context.selectionToken])
+    }
+    public func openStaticViewer(_ context: Context, jobId: String) throws -> NativeStaticViewerEntry {
+        try request("static_viewer_open", fields: ["selection_token": context.selectionToken, "static_viewer_id": jobId])
+    }
+    public func closeStaticViewer(_ context: Context, viewerId: String) throws {
+        let _: DocumentValue = try request("static_viewer_close", fields: ["selection_token": context.selectionToken, "static_viewer_id": viewerId])
     }
     public func startStaticExport(_ context: Context, publicationId: String, output: URL, privateEditor: Bool = false, nativeOriginalDetail: Bool = false,
                                   outputParentIdentity: (dev_t, ino_t)? = nil) throws -> NativeStaticExportStatus {
