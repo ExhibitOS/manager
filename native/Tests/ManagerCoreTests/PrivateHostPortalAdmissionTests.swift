@@ -23,11 +23,12 @@ final class PrivateHostPortalAdmissionTests: XCTestCase {
         XCTAssertTrue(furnishing); XCTAssertTrue(portal); XCTAssertTrue(fit)
     }
     func testDefault121OrdinarySpecimensRequireTheExactRuntimeAndLiveReusableFit() async throws {
-        let manifest = "766bf3bfdf71ff8843e94c15d778e49f8eb73bd0b41a35bf82dcb72d18dbc301"
+        let manifest = "7875816a0d59f73db6cc1cac1f046a147a677cdee1527e18b120d9f1ff9119a6"
         let cases: [(manifest: String, reusable: String?, admitted: Bool)] = [
             (manifest, "source-bound-fit-v1", true),
             (manifest, nil, false),
             (manifest.uppercased(), "source-bound-fit-v1", false),
+            ("766bf3bfdf71ff8843e94c15d778e49f8eb73bd0b41a35bf82dcb72d18dbc301", "source-bound-fit-v1", false),
             ("216e5562c7a702399006efb46f86ff1826b73d92dbdb46d3fd79b337d1c1c532", "source-bound-fit-v1", false),
         ]
         for (runtime, reusable, admitted) in cases {

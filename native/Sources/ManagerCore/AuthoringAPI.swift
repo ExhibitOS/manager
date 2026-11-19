@@ -3341,7 +3341,7 @@ public actor AuthoringAPI {
     }
     nonisolated static func supportsOrdinaryDefaultFurnishings121(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        manifest == "766bf3bfdf71ff8843e94c15d778e49f8eb73bd0b41a35bf82dcb72d18dbc301"
+        manifest == "7875816a0d59f73db6cc1cac1f046a147a677cdee1527e18b120d9f1ff9119a6"
         #else
         false
         #endif

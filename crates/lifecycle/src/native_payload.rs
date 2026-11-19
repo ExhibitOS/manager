@@ -985,9 +985,9 @@ pub(crate) fn r285_closing_articulation_clean_transition(pair: (&str, &str)) -> 
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const DEFAULT_FURNISHINGS_121_ORDINARY_TARGET: RuntimeTuple = (
-    "265cda45e1ebca74d820f17c2e0bfd122cc6ec27",
-    "f75074a8d112a011a09583ee08ee0a00441713573378c823566012a69c256355",
-    "766bf3bfdf71ff8843e94c15d778e49f8eb73bd0b41a35bf82dcb72d18dbc301",
+    "5e87559db9f72cb996ab8bcc61ec1e2f11d06e4e",
+    "2f46771d890371cf80034b78ce6ad99c77bf4b60d5b23cc1472d2367b8279f1d",
+    "7875816a0d59f73db6cc1cac1f046a147a677cdee1527e18b120d9f1ff9119a6",
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
