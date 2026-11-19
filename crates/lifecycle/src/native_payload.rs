@@ -991,6 +991,13 @@ pub(crate) const DEFAULT_FURNISHINGS_121_ORDINARY_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const FIXTURE_FIRST_121_ORDINARY_TARGET: RuntimeTuple = (
+    "282d38eddb4b28953186e08cbad237788fa39130",
+    "35cd0311c3ae9359058a723521144116876d45080fdb63018e542b3a197fd05f",
+    "fbbb3a8736fbfce90845e167074b1ce0752e9d886093b21ed01f7ce2994603ac",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     RECTANGLE_FIXED64_TARGET,
     FIXED64_PUBLICATION_REPAIR_TARGET,
@@ -1000,6 +1007,7 @@ const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     BENCH_BASECOLOR_PREPARATION_TARGET,
     ROOM_CEILING_FILL_TARGET,
     DEFAULT_FURNISHINGS_121_ORDINARY_TARGET,
+    FIXTURE_FIRST_121_ORDINARY_TARGET,
 ];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ROOM_CEILING_FILL_TARGET: RuntimeTuple = (
@@ -1127,7 +1135,8 @@ pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)
     if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET,
         ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET,
         R285_ROOM_FILL_EXIT_TARGET, R285_SUPPLEMENTAL_FILL_TARGET, R285_INITIAL_PRODUCT_IMAGE_TARGET,
-        R285_CLOSING_ARTICULATION_TARGET, DEFAULT_FURNISHINGS_121_ORDINARY_TARGET].contains(&tuple) { return true; }
+        R285_CLOSING_ARTICULATION_TARGET, DEFAULT_FURNISHINGS_121_ORDINARY_TARGET,
+        FIXTURE_FIRST_121_ORDINARY_TARGET].contains(&tuple) { return true; }
     if r285_hayes_preopen_terminal_host_matches(tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
@@ -3238,9 +3247,25 @@ pub(crate) mod normal_oex_release_declaration_tests {
     #[ignore = "requires the exact sealed ordinary 1.21 package; read-only payload openers"]
     fn default121_ordinary_furnishings_admit_exact_fresh_reopen_and_saved_head() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_DEFAULT121_ORDINARY_RUNTIME").unwrap());
-        let target = DEFAULT_FURNISHINGS_121_ORDINARY_TARGET;
-        let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
-        let fresh = Payload::open_fresh_workspace_v7_validation(&root).unwrap();
+        check_default121_ordinary_furnishings(&root, DEFAULT_FURNISHINGS_121_ORDINARY_TARGET);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the sealed ordinary fixture-first 1.21 package; read-only payload openers"]
+    fn fixture_first_121_admits_exact_fresh_reopen_and_saved_head() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FIXTURE_FIRST_121_RUNTIME").unwrap());
+        check_default121_ordinary_furnishings(&root, FIXTURE_FIRST_121_ORDINARY_TARGET);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn check_default121_ordinary_furnishings(root: &Path, target: RuntimeTuple) {
+        let ordinary = Payload::open_workspace_v5_validation(root, false).unwrap();
+        let fresh = Payload::open_fresh_workspace_v7_validation(root).unwrap();
+        for payload in [&ordinary, &fresh] {
+            payload.recheck().unwrap();
+            assert_eq!((payload.manifest.source_commit.as_str(), payload.producer_sha256(), payload.manifest_sha256.as_str()), target);
+        }
         let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
         let ledger = fresh.workspace_furnishing_ledger(catalog).unwrap();
         assert_eq!(ordinary.context().manifest_sha256, target.2);
@@ -3252,8 +3277,8 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(fresh.workspace_import_version().is_none());
         assert!(!ordinary.fresh_catalog52_constructor());
         assert!(!ordinary.current_rail_payload());
-        assert!(Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).is_err());
-        assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
+        assert!(Payload::open_workspace_import_validation(root, WorkspaceImport::V7, true).is_err());
+        assert!(Payload::open_workspace_v5_validation(root, true).is_err());
         assert!(!saved_workspace_transition_target(target.2));
         assert!(FurnishingTransition::from_manifests((target.2, target.2)).is_none());
         assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));

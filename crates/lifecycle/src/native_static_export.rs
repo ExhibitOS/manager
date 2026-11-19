@@ -47,7 +47,8 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
 }
 fn default_furnishings_121_saved_head_runtime_allowed(manifest: &str) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return manifest == crate::native_payload::DEFAULT_FURNISHINGS_121_ORDINARY_TARGET.2;
+    return [crate::native_payload::DEFAULT_FURNISHINGS_121_ORDINARY_TARGET.2,
+        crate::native_payload::FIXTURE_FIRST_121_ORDINARY_TARGET.2].contains(&manifest);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = manifest; false }
 }

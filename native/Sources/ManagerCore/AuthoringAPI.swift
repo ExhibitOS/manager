@@ -685,6 +685,7 @@ public actor AuthoringAPI {
             || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified || defaultFurnishings121
+            || Self.supportsOrdinaryFixtureFirst121(manifest: manifest)
             || Self.supportsDefault119CleanFurnishingRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
@@ -1161,6 +1162,7 @@ public actor AuthoringAPI {
     var admitsRoomSupplementalCeilingFill: Bool {
         nativeSession && !authenticationBusy
             && (Self.supportsR285SupplementalFillRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsOrdinaryFixtureFirst121(manifest: nativeRuntimeManifestSHA256)
                 || Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
                 || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
@@ -3353,6 +3355,14 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsOrdinaryFixtureFirst121(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "fbbb3a8736fbfce90845e167074b1ce0752e9d886093b21ed01f7ce2994603ac"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsDefault119CleanFurnishingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7"
@@ -4465,6 +4475,7 @@ public actor AuthoringAPI {
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
             || supportsOrdinaryDefaultFurnishings121(manifest: manifest)
+            || supportsOrdinaryFixtureFirst121(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsR285UpperFramingRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
