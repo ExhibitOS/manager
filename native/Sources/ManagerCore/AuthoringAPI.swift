@@ -677,6 +677,7 @@ public actor AuthoringAPI {
         workspacePortalFinishRuntimeQualified = portalQualified || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
+            || Self.supportsR209CaptionStandsOrdinarySuccessor(manifest: manifest)
             || Self.supportsDefault119CleanFurnishingRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
@@ -3366,6 +3367,7 @@ public actor AuthoringAPI {
             || supportsR201OrdinarySuccessor(manifest: manifest)
             || supportsR203OrdinarySuccessor(manifest: manifest)
             || supportsR209WheatOrdinarySuccessor(manifest: manifest)
+            || supportsR209CaptionStandsOrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4354,6 +4356,16 @@ public actor AuthoringAPI {
         #endif
     }
 
+    static let r209CaptionStandsOrdinaryManifest = "1c9cac161d1e9c17e9b132c5e95d88e6023749f6f15ced57fc2919be058acee5"
+
+    nonisolated static func supportsR209CaptionStandsOrdinarySuccessor(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == r209CaptionStandsOrdinaryManifest
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsR285UpperFramingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
@@ -4405,6 +4417,7 @@ public actor AuthoringAPI {
             || supportsR201OrdinarySuccessor(manifest: manifest)
             || supportsR203OrdinarySuccessor(manifest: manifest)
             || supportsR209WheatOrdinarySuccessor(manifest: manifest)
+            || supportsR209CaptionStandsOrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4464,6 +4477,7 @@ public actor AuthoringAPI {
             || supportsR201OrdinarySuccessor(manifest: manifest)
             || supportsR203OrdinarySuccessor(manifest: manifest)
             || supportsR209WheatOrdinarySuccessor(manifest: manifest)
+            || supportsR209CaptionStandsOrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif

@@ -53,6 +53,18 @@ public actor NativeAutomationSession {
     }
 
     static func checkOrdinarySuccessorOperation(_ operation: String, manifest: String?) throws {
+        if AuthoringAPI.supportsR209CaptionStandsOrdinarySuccessor(manifest: manifest) {
+            switch operation {
+            case "read", "reopen-saved", "save", "workspace-furnishing-list", "workspace-furnishing-read",
+                 "workspace-furnishing-model-check", "workspace-furnishing-place",
+                 "saved-head-static-readiness", "export-static-saved-head":
+                return
+            case "export-static-native-original", "export-static-native-original-publication":
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            default:
+                throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+        }
         if AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: manifest) {
             switch operation {
             case "read", "reopen-saved", "save", "workspace-furnishing-list", "workspace-furnishing-read",
@@ -241,6 +253,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsR209CaptionStandsOrdinarySuccessor(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
@@ -293,6 +306,7 @@ public actor NativeAutomationSession {
             guard !AuthoringAPI.supportsR201OrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
                   !AuthoringAPI.supportsR203OrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
                   !AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
+                  !AuthoringAPI.supportsR209CaptionStandsOrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
                   existingWorkspaceV5 != nil, workspaceV5ValidationRuntime == nil,
                   workspaceV6ValidationRuntime == nil, workspaceV7ValidationRuntime == nil,
                   selectedOEXFormat == nil, let pin = inputs[path], nativeImportDigest(pin) else {
@@ -544,6 +558,12 @@ public actor NativeAutomationSession {
             || AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: config.manifestSha256) {
             guard admitsSavedHeadAuthoring, session.nativePublicationProfile == "bounded-local-v1" else {
                 throw AuthoringFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
+            }
+        }
+        if AuthoringAPI.supportsR209CaptionStandsOrdinarySuccessor(manifest: config.manifestSha256) {
+            guard admitsSavedHeadAuthoring, session.nativePublicationProfile == "bounded-local-v1",
+                  await api.admitsWorkspaceCeilingRail else {
+                throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
             }
         }
         if AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: config.manifestSha256) {
@@ -2928,6 +2948,10 @@ public actor NativeAutomationSession {
             let command = DocumentValue.object(fields)
             let placement = try JSONDecoder().decode(WorkspaceFurnishingPlacement.self, from: JSONEncoder().encode(command))
             guard try value(placement) == command else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            if AuthoringAPI.supportsR209CaptionStandsOrdinarySuccessor(manifest: runtimeManifest) {
+                try NativeAutomationCaptionStands.checkPlacement(placement, model: expectedModelSHA256, intake: infoStandIntakeId)
+                try NativeAutomationCaptionStands.checkSource(current)
+            }
             if let draft = try await api.prepareWorkspaceFurnishingPlacement(placement, in: current,
                 expectedModelSHA256: expectedModelSHA256, infoStandIntakeId: infoStandIntakeId) {
                 var next = current
@@ -4313,6 +4337,9 @@ public actor NativeAutomationSession {
         case "applied-draft-save-resume":
             result = try await resumeAppliedDraftSave(request, id: id, context: context, api: api, current: current)
         case "save":
+            if AuthoringAPI.supportsR209CaptionStandsOrdinarySuccessor(manifest: runtimeManifest) {
+                try NativeAutomationCaptionStands.checkSave(current)
+            }
             guard let draft = current.draft else { throw BridgeFailure("EXHIBITION_REQUIRED") }
             if firstArchitectureEntry {
                 guard current.etag == nil, current.savedEditVersion == nil, draft == firstArchitectureStaged else {
@@ -4435,6 +4462,9 @@ public actor NativeAutomationSession {
                 runtimeSupported: AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest),
                 publicationProfile: authoringSession?.nativePublicationProfile, policy: policy)
         case "export-static-saved-head":
+            if AuthoringAPI.supportsR209CaptionStandsOrdinarySuccessor(manifest: runtimeManifest) {
+                try NativeAutomationCaptionStands.checkOutput(current)
+            }
             result = try value(await exportSavedHead(request, id: id, context: context, current: current, api: api))
         case "export-static-native-original-publication":
             try checkedRevision(request, current)
