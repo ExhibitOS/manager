@@ -914,6 +914,13 @@ pub(crate) const R209_CAPTION_STANDS_ORDINARY_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const R210_CAPTION_STANDS_SELECTED_TARGET: RuntimeTuple = (
+    "97cfd01de5b6d99911f1b7ec063abf293fd915cc",
+    "bf687458322bf50d3d70e99ed9ec29c08ebc35316cebe87f51fc92c947f2b39e",
+    "86796846d9f8c082746370b7e9cfe25fce002dc79fe21d45f80e165807ccf61b",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const R285_NATIVE_DETAIL_CONTEXT_TARGET: RuntimeTuple = (
     "1d289b5f20c8b4eda0258a57b17b175031c7c2a6",
     "df1a584a8a2573e84d6a8f0e9b8ac8293eaa08d9cdfcec284d1aa5201daebfba",
@@ -952,7 +959,8 @@ fn r285_greek_thumbnail_trace_runtime_pair(pair: (&str, &str)) -> Option<(Runtim
         (R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_GREEK_SPOT_RELEASE_TARGET),
         (R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET),
         (R209_TRANSITION_SPOTS_RELEASE_TARGET, R209_GREEK_CURRENT_RELEASE_TARGET),
-        (R209_GREEK_CURRENT_RELEASE_TARGET, R209_CAPTION_STANDS_ORDINARY_TARGET)]
+        (R209_GREEK_CURRENT_RELEASE_TARGET, R209_CAPTION_STANDS_ORDINARY_TARGET),
+        (R209_CAPTION_STANDS_ORDINARY_TARGET, R210_CAPTION_STANDS_SELECTED_TARGET)]
         .into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -974,7 +982,8 @@ fn r285_bench_after_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
         R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET, R201_ORDINARY_SUCCESSOR_TARGET, R203_CORRECTED_RELEASE_TARGET,
         R203_ORDINARY_SUCCESSOR_TARGET, R209_BRASS_RELEASE_TARGET, R209_FLOOR_RELEASE_TARGET,
         R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET,
-        R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET, R209_GREEK_CURRENT_RELEASE_TARGET, R209_CAPTION_STANDS_ORDINARY_TARGET].contains(&tuple);
+        R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET, R209_GREEK_CURRENT_RELEASE_TARGET,
+        R209_CAPTION_STANDS_ORDINARY_TARGET, R210_CAPTION_STANDS_SELECTED_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -997,7 +1006,8 @@ pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)
         R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET, R201_ORDINARY_SUCCESSOR_TARGET, R203_CORRECTED_RELEASE_TARGET,
         R203_ORDINARY_SUCCESSOR_TARGET, R209_BRASS_RELEASE_TARGET, R209_FLOOR_RELEASE_TARGET,
         R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET,
-        R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET, R209_GREEK_CURRENT_RELEASE_TARGET, R209_CAPTION_STANDS_ORDINARY_TARGET].contains(&tuple) }
+        R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET, R209_GREEK_CURRENT_RELEASE_TARGET,
+        R209_CAPTION_STANDS_ORDINARY_TARGET, R210_CAPTION_STANDS_SELECTED_TARGET].contains(&tuple) }
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2183,6 +2193,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || R209_TRANSITION_SPOTS_RELEASE_TARGET.2 == manifest
         || R209_GREEK_CURRENT_RELEASE_TARGET.2 == manifest
         || R209_CAPTION_STANDS_ORDINARY_TARGET.2 == manifest
+        || R210_CAPTION_STANDS_SELECTED_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -4464,6 +4475,44 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(ordinary.static_export_resources(true).is_ok());
         assert!(ordinary.static_detail_export_resources(true).is_err());
         assert!(ordinary.static_detail_export_resources(false).is_err());
+        assert!(Payload::open_workspace_v5_validation(&target, true).is_err());
+        assert!(Payload::open_fresh_workspace_v7_validation(&target).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn r210_caption_stands_only_admit_selected_successor_from_ordinary() {
+        let source = R209_CAPTION_STANDS_ORDINARY_TARGET;
+        let target = R210_CAPTION_STANDS_SELECTED_TARGET;
+        assert_eq!(FurnishingTransition::from_manifests((source.2, target.2)),
+            Some(FurnishingTransition::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 }));
+        for pair in [(target.2, source.2), (target.2, target.2), (R209_GREEK_CURRENT_RELEASE_TARGET.2, target.2)] {
+            assert!(!saved_workspace_transition_supported(pair));
+        }
+        assert!(combined_thumbnail_ordinary_host_matches(target));
+        assert!(!combined_thumbnail_ordinary_host_matches((target.0, source.1, target.2)));
+        assert!(!combined_thumbnail_fresh_host_matches(target));
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(source.2));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed ordinary and selected r210 caption-stand packages"]
+    fn r210_caption_stands_preserve_catalog_and_admit_selected_detail_only() {
+        let source = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R209_CAPTION_STANDS").unwrap());
+        let target = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R210_SELECTED_CAPTION_STANDS").unwrap());
+        let ordinary = Payload::open_workspace_v5_validation(&source, false).unwrap();
+        let selected = Payload::open_workspace_v5_validation(&target, false).unwrap();
+        let transition = Payload::open_saved_workspace_transition(&target).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!(ordinary.context().manifest_sha256, R209_CAPTION_STANDS_ORDINARY_TARGET.2);
+        assert_eq!(selected.context().manifest_sha256, R210_CAPTION_STANDS_SELECTED_TARGET.2);
+        assert_eq!(transition.context().manifest_sha256, R210_CAPTION_STANDS_SELECTED_TARGET.2);
+        assert_eq!(ordinary.workspace_furnishing_ledger(catalog).unwrap(), selected.workspace_furnishing_ledger(catalog).unwrap());
+        assert!(ordinary.static_detail_export_resources(true).is_err());
+        assert!(selected.static_detail_export_resources(true).is_ok());
+        assert!(selected.static_detail_export_resources(false).is_err());
         assert!(Payload::open_workspace_v5_validation(&target, true).is_err());
         assert!(Payload::open_fresh_workspace_v7_validation(&target).is_err());
     }
@@ -9332,6 +9381,7 @@ impl Payload {
                     || R209_GREEK_SPOT_RELEASE_TARGET == provenance
                     || R209_TRANSITION_SPOTS_RELEASE_TARGET == provenance
                     || R209_GREEK_CURRENT_RELEASE_TARGET == provenance
+                    || R210_CAPTION_STANDS_SELECTED_TARGET == provenance
                     || furnishing_thumbnail_host_matches(provenance)
                     || current_image_thumbnail_host_matches(provenance)
                     || gpu_model_host_matches(provenance)))
