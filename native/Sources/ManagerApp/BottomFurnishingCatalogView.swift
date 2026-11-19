@@ -108,6 +108,7 @@ struct BottomFurnishingCatalogView: View {
     @State private var loadedScope: LoadScope?
     @State private var loading = false
     @State private var status: String?
+    @State private var showingDefaultUpdate = false
 
     private struct LoadScope: Equatable {
         let access: UUID
@@ -201,6 +202,12 @@ struct BottomFurnishingCatalogView: View {
                     }
                 } label: { Label("비품 목록 새로 고침", systemImage: "arrow.clockwise").labelStyle(.iconOnly) }
                     .disabled(!ready || loading || model.busy || (!loadScope.available && !sharedAvailable))
+                if model.defaultCatalogueUpdateAvailable {
+                    Button("기본 에셋 업데이트", systemImage: "arrow.down.circle") {
+                        showingDefaultUpdate = true
+                    }
+                    .disabled(!ready || loading || model.busy)
+                }
                 Button("비품 추가", systemImage: "plus") { onAdd(category.intakeKind) }
                     .disabled(!canAdd)
                     .help(category == .lighting ? "기본 조명은 선택한 조명에 연결할 수 있습니다." : "작업 공간에 비품 등록")
@@ -249,6 +256,11 @@ struct BottomFurnishingCatalogView: View {
             }
         }
         .sheet(item: $thumbnailReview) { FurnishingThumbnailReviewView(model: $0) }
+        .sheet(isPresented: $showingDefaultUpdate) {
+            DefaultCatalogueUpdateView(model: model, access: model.viewportAccessID) {
+                await load(loadScope, reveal: nil)
+            }
+        }
         .controlSize(.small)
         .padding(8)
         .background(Color(nsColor: .controlBackgroundColor))

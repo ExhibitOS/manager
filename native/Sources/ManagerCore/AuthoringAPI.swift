@@ -53,6 +53,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeOriginalImageCoarseProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
+    public var defaultCatalogueUpdateProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
     public var workspaceFurnishingRoomVisualProfile: String? = nil
     public var workspaceArtworkFrameProfile: String? = nil
@@ -3662,6 +3663,33 @@ public actor AuthoringAPI {
         }
         guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return page
+    }
+
+    public var admitsDefaultCatalogueUpdate: Bool {
+        admitsWorkspaceFurnishings && session?.defaultCatalogueUpdateProfile == DefaultCatalogueUpdateCheck.capability
+    }
+
+    public func checkDefaultCatalogueUpdate() async throws -> DefaultCatalogueUpdateCheck {
+        guard admitsDefaultCatalogueUpdate else { throw AuthoringFailure("DEFAULT_CATALOGUE_UNAVAILABLE") }
+        let path = try workspaceFurnishingPath("default-catalogue/check")
+        let result: DefaultCatalogueUpdateCheck = try await request(path, method: "POST", body: Data("{}".utf8), timeout: 60)
+        return try result.checked()
+    }
+
+    public func installDefaultCatalogueUpdate(_ check: DefaultCatalogueUpdateCheck) async throws -> DefaultCatalogueUpdateReceipt {
+        guard admitsDefaultCatalogueUpdate, let plan = try check.checked().update else {
+            throw AuthoringFailure("DEFAULT_CATALOGUE_UNAVAILABLE")
+        }
+        struct Input: Encodable {
+            let activeManifestSha256: String
+            let candidateManifestSha256: String
+            let planSha256: String
+        }
+        let input = Input(activeManifestSha256: check.active.manifestSha256,
+                          candidateManifestSha256: plan.manifestSha256, planSha256: plan.planSha256)
+        let path = try workspaceFurnishingPath("default-catalogue/install")
+        let receipt: DefaultCatalogueUpdateReceipt = try await request(path, method: "POST", body: encoded(input), timeout: 180)
+        return try receipt.checked(previous: check.active, plan: plan)
     }
 
     public func workspaceFurnishings(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingSummary> {

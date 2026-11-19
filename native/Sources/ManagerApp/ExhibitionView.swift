@@ -2240,6 +2240,11 @@ final class ExhibitionModel: ObservableObject {
         guard let state else { return nil }
         return try? await api.workspaceBenchSeatPolicy(in: state).etag
     }
+    var defaultCatalogueUpdateAvailable: Bool {
+        workspaceFurnishingIntakeAvailable
+            && session?.defaultCatalogueUpdateProfile == DefaultCatalogueUpdateCheck.capability
+    }
+
     func withWorkspaceFurnishingAccess<T>(_ access: UUID, _ body: (AuthoringAPI) async throws -> T) async throws -> T {
         guard workspaceFurnishingIntakeAvailable, access == viewportAccessID, !busy, !entrancePreviewActive, !infoStandPreviewing,
               !placingArtwork, !architectureApplying, !pending, let api else {
