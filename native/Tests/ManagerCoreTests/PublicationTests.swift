@@ -204,6 +204,7 @@ final class PublicationTests: XCTestCase {
     func testR209SelectedSuccessorsOnlyAdmitTheExistingSelectedCommand() throws {
         try checkSelectedSuccessor(manifest: AuthoringAPI.r209FloorReleaseManifest)
         try checkSelectedSuccessor(manifest: AuthoringAPI.r209PointReleaseManifest)
+        try checkSelectedSuccessor(manifest: AuthoringAPI.r209ArtworkSpotsReleaseManifest)
     }
 
     private func checkSelectedSuccessor(manifest: String) throws {
@@ -245,6 +246,8 @@ final class PublicationTests: XCTestCase {
                                          nextManifest: AuthoringAPI.r209FloorReleaseManifest)
         try checkSelectedSuccessorReplay(previousManifest: AuthoringAPI.r209FloorReleaseManifest,
                                          nextManifest: AuthoringAPI.r209PointReleaseManifest)
+        try checkSelectedSuccessorReplay(previousManifest: AuthoringAPI.r209PointReleaseManifest,
+                                         nextManifest: AuthoringAPI.r209ArtworkSpotsReleaseManifest)
     }
 
     private func checkSelectedSuccessorReplay(previousManifest: String, nextManifest: String) throws {

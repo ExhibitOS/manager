@@ -506,11 +506,11 @@ pub(crate) fn transition_source_ledger(payload: &crate::native_payload::Payload,
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if proof.is_none()
-        && pair == (crate::native_payload::R209_POINT_RELEASE_TARGET.2,
-                    crate::native_payload::R209_WHEAT_ORDINARY_TARGET.2)
-    {
-        // Round the post-point cold inventory up to the next MiB.
+    if proof.is_none() && [
+        (crate::native_payload::R209_POINT_RELEASE_TARGET.2, crate::native_payload::R209_WHEAT_ORDINARY_TARGET.2),
+        (crate::native_payload::R209_WHEAT_ORDINARY_TARGET.2, crate::native_payload::R209_ARTWORK_SPOTS_RELEASE_TARGET.2),
+    ].contains(&pair) {
+        // Both measured cold inventories round up to the same MiB.
         return MAX_BYTES + 1287 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3427,16 +3427,20 @@ mod tests {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     #[test]
-    fn r209_wheat_ordinary_checkpoint_capacity_is_directional() {
-        let source = crate::native_payload::R209_POINT_RELEASE_TARGET.2;
-        let target = crate::native_payload::R209_WHEAT_ORDINARY_TARGET.2;
-        let observed = 3_496_259_728u64;
-        let cap = checkpoint_inventory_limit((source, target), None);
-        assert_eq!(cap, 3_497_000_960);
-        assert!((observed..observed + 1024 * 1024).contains(&cap));
-        for pair in [(target, source), (target, target), (source, source),
-            (crate::native_payload::R209_FLOOR_RELEASE_TARGET.2, target)] {
-            assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+    fn r209_wheat_and_artwork_spots_checkpoint_capacity_is_directional() {
+        use crate::native_payload::{R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_FLOOR_RELEASE_TARGET,
+            R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET};
+        for (previous, source, target, observed) in [
+            (R209_FLOOR_RELEASE_TARGET, R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, 3_496_259_728u64),
+            (R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET, 3_496_098_780u64),
+        ] {
+            let (source, target) = (source.2, target.2);
+            let cap = checkpoint_inventory_limit((source, target), None);
+            assert_eq!(cap, 3_497_000_960);
+            assert!((observed..observed + 1024 * 1024).contains(&cap));
+            for pair in [(target, source), (target, target), (source, source), (previous.2, target)] {
+                assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+            }
         }
     }
 

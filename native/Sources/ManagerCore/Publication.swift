@@ -197,6 +197,9 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
         case AuthoringAPI.r209PointReleaseManifest:
             expected = "63aae926e1239256b0b1f67ffd277cc8f7dd75c43cd37578547500f44201f29f"
             commitmentManifest = manifest
+        case AuthoringAPI.r209ArtworkSpotsReleaseManifest:
+            expected = "18d09042e0f2579902683c823944ee42d54b25586d89230b271e60aa47c2803a"
+            commitmentManifest = manifest
         default:
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
