@@ -22,7 +22,7 @@ enum NativePrivateHostArchitecture {
     private static func fields(_ value: DocumentValue, _ expected: Set<String>) throws {
         guard case .object(let fields) = value, Set(fields.keys) == expected else { throw invalid() }
     }
-    private static func unique(_ id: String, candidate: DocumentValue) -> Bool {
+    static func unique(_ id: String, candidate: DocumentValue) -> Bool {
         guard case .object(let fields) = candidate else { return false }
         guard candidate["id"].string?.lowercased() != id, candidate["revisionId"].string?.lowercased() != id else { return false }
         return !fields.values.contains { value in
@@ -34,7 +34,7 @@ enum NativePrivateHostArchitecture {
         guard matches.count == 1 else { throw invalid() }
         return matches[0]
     }
-    private static func markTemplate(_ candidate: inout DocumentValue) throws {
+    static func markTemplate(_ candidate: inout DocumentValue) throws {
         let key = "org.exhibitos.studio/template"
         if candidate["extensions"][key] != .null {
             guard case .object = candidate["extensions"][key],

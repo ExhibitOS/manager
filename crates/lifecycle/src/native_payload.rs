@@ -898,6 +898,13 @@ pub(crate) fn r285_closing_articulation_clean_transition(pair: (&str, &str)) -> 
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET: RuntimeTuple = (
+    "a0c4825f85da9e2c4fd29720f3ed37a6a5ef0e51",
+    "eccb5129791bd0bcf527a3aa29c05740874344137784da1b704347ec739be310",
+    "803ce4960489551e1a2ac9c84ca7f3a804c2f5e0324e719a590661c457ff2918",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     RECTANGLE_FIXED64_TARGET,
     FIXED64_PUBLICATION_REPAIR_TARGET,
@@ -906,6 +913,7 @@ const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     INSTALLED_CATALOG_ORIGIN_TARGET,
     BENCH_BASECOLOR_PREPARATION_TARGET,
     ROOM_CEILING_FILL_TARGET,
+    PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET,
 ];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ROOM_CEILING_FILL_TARGET: RuntimeTuple = (
@@ -1033,7 +1041,7 @@ pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)
     if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET,
         ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET,
         R285_ROOM_FILL_EXIT_TARGET, R285_SUPPLEMENTAL_FILL_TARGET, R285_INITIAL_PRODUCT_IMAGE_TARGET,
-        R285_CLOSING_ARTICULATION_TARGET].contains(&tuple) { return true; }
+        R285_CLOSING_ARTICULATION_TARGET, PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET].contains(&tuple) { return true; }
     if r285_hayes_preopen_terminal_host_matches(tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
@@ -3127,6 +3135,41 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(!fresh.normal_oex_selected_input().unwrap());
         assert_eq!(fresh.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).unwrap().lines().count(), 47);
         assert_eq!(Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).err().unwrap().code, "NATIVE_RUNTIME_UNQUALIFIED");
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed partial-wall portal 1.21 package; read-only payload openers"]
+    fn partial_wall_portal121_admits_exact_fresh_reopen_and_saved_head() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_PARTIAL_WALL_PORTAL121_RUNTIME").unwrap());
+        let target = PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET;
+        let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let fresh = Payload::open_fresh_workspace_v7_validation(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        let ledger = fresh.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ordinary.context().manifest_sha256, target.2);
+        assert_eq!(ordinary.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(ordinary.workspace_furnishing_ledger(catalog).unwrap(), ledger);
+        assert_eq!(ledger.lines().count(), 47);
+        assert_eq!(digest(ledger.as_bytes()), "7f824bace4e88291111abe0032644712f08718f85573d21e6fb271098e7871e5");
+        assert!(fresh.fresh_catalog52_constructor());
+        assert!(fresh.workspace_import_version().is_none());
+        assert!(!ordinary.fresh_catalog52_constructor());
+        assert!(!ordinary.current_rail_payload());
+        assert!(Payload::open_workspace_import_validation(&root, WorkspaceImport::V7, true).is_err());
+        assert!(Payload::open_workspace_v5_validation(&root, true).is_err());
+        assert!(!saved_workspace_transition_target(target.2));
+        assert!(FurnishingTransition::from_manifests((target.2, target.2)).is_none());
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
+        assert!(ordinary.static_export_resources(true).is_ok());
+        assert!(ordinary.static_detail_export_resources(true).is_err());
+
+        let mut invalid = fresh;
+        invalid.manifest.files.retain(|row| row.path != CURRENT_IMAGE_THUMBNAIL_SCHEMA.0);
+        assert!(invalid.workspace_furnishing_ledger(catalog).is_err());
+        invalid.manifest.producer_sha256 = "f".repeat(64);
+        assert!(!invalid.fresh_catalog52_constructor());
+        assert!(!combined_thumbnail_ordinary_host_matches((target.0, &invalid.manifest.producer_sha256, target.2)));
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

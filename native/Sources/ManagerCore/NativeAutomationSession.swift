@@ -148,6 +148,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
@@ -442,6 +443,8 @@ public actor NativeAutomationSession {
         let admitsLargeModels = await api.admitsLargeModelPreparation
         let admitsInfoStandPreparation = await api.admitsWorkspaceInfoStandPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
+        let admitsPartialWallPortal = AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: config.manifestSha256)
+            ? await api.admitsWorkspacePortalFinish : false
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
@@ -461,7 +464,7 @@ public actor NativeAutomationSession {
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
-                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
+                || admitsPartialWallPortal || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
                 || admitsPreparedBudget || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
@@ -2682,6 +2685,41 @@ public actor NativeAutomationSession {
             result = try await executeFurnishingThumbnail(operation, request: request, api: api, current: current)
         case "workspace-furnishing-thumbnail-render":
             result = try await furnishingThumbnail(request, context: context, api: api, current: current)
+        case "workspace-door-pair-create":
+            let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId",
+                                     "principalId", "expectedRevision", "expectedEditVersion", "command"]
+            guard Set(fields.keys) == keys, let owner = existingWorkspaceV5, owner.manifestSHA256 == runtimeManifest,
+                  selectedOEXFormat == nil, current.workspaceId == owner.workspaceId, current.tenantId == owner.tenantId,
+                  current.principalId == owner.principalId, authoringSession?.userId == owner.principalId,
+                  await api.admitsNativeDoorPairProposal else {
+                throw BridgeFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+            }
+            try checkedRevision(request, current)
+            guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag else {
+                throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+            }
+            let policy = try await api.nativeViewportPolicy(draft.id)
+            let saved = try await api.exhibition(draft.id)
+            guard policy.etag == etag, policy.revision == saved.revision, policy.exhibitionId == draft.id,
+                  policy.confirmsOrdinaryDraft, saved.etag == etag, saved.draft == draft else {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let proposal = try NativeDoorPairProposal(command: request["command"], draft: draft,
+                tenantId: current.tenantId, principalId: current.principalId, requestId: id)
+            let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
+                etag: etag, proposal: proposal.value)
+            let accepted = try proposal.checkedReply(reply)
+            try saved.requireSameComparison(await api.exhibition(draft.id))
+            let latestPolicy = try await api.nativeViewportPolicy(draft.id)
+            let (_, _, refreshed) = try await checked(request)
+            try Task.checkCancellation()
+            guard latestPolicy.etag == etag, latestPolicy.revision == saved.revision, latestPolicy.exhibitionId == draft.id,
+                  latestPolicy.confirmsOrdinaryDraft, try value(refreshed) == value(current) else {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            var next = current
+            next.draft = accepted.draft
+            result = .object(["openingIds": accepted.openingIds, "document": try value(await bridge.saveDocumentState(context, state: next))])
         case "workspace-ceiling-rail-insert":
             let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                      "expectedRevision", "expectedEditVersion", "command"]
