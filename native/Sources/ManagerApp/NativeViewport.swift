@@ -1523,7 +1523,7 @@ struct NativeViewportArea: View {
                     HStack {
                         Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
                         roomAddControls
-                        Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
+                        lightAdditionControls
                     }.disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                     Text("숫자 입력은 이 Mac에 보관한 뒤 3D에 반영됩니다. 3D 변경도 이 Mac에 보관하며, 전시 저장과 공개는 별도로 진행합니다.").foregroundStyle(.secondary)
                 }
@@ -1534,6 +1534,29 @@ struct NativeViewportArea: View {
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }
         }
     }
+    @ViewBuilder private var lightAdditionControls: some View {
+        if model.fixtureFirstAuthoringAvailable {
+            Menu("조명 기구 배치") {
+                ForEach([NativeLightFixture.spotCan, .disc, .panel], id: \.self) { fixture in
+                    Button(fixture.title) { Task { await model.placeFixtureFirstLight(fixture) } }
+                }
+                if !model.fixtureFirstCatalogue.isEmpty {
+                    Section("카탈로그") {
+                        ForEach(Array(model.fixtureFirstCatalogue.enumerated()), id: \.offset) { _, row in
+                            if let id = row["catalogId"].string, let title = row["name"].string {
+                                Button(title) { Task { await model.placeFixtureFirstLight(.none, catalogueId: id) } }
+                            }
+                        }
+                    }
+                }
+            }
+            .disabled(!model.canPlaceFixtureFirstLight)
+            .task(id: controller.connected) { await model.loadSharedFurnishingCatalog() }
+        } else {
+            Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
+        }
+    }
+
     @ViewBuilder private var roomAddControls: some View {
         Button("공간 추가") {
             let action: NativeGeometryAction = model.canUseRoomBaseLight
@@ -1578,7 +1601,7 @@ struct NativeViewportArea: View {
         let selectionBlocked = !ready || !editable || model.entrancePreviewActive || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing || model.placingArtwork
         let workspaceFurnishings = model.workspaceFurnishingIntakeAvailable
         let workspaceMaterialMultimap = model.workspaceMaterialMultimapAvailable
-        return NativeViewport(credentials: credentials, privateFloor: model.privateFloorRuntimeAvailable, workspaceMaterials: model.workspaceMaterialPreviewAvailable, workspaceMaterialMultimap: workspaceMaterialMultimap, workspaceFurnishings: workspaceFurnishings, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !ready || !editable || model.entrancePreviewActive || model.busy || model.pending || model.viewportFormDirty || model.positionDirty || model.wallFinishPreviewing || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing, interactionDisabled: selectionBlocked || NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: model.boundedPlacementCapability != nil, acknowledged: model.boundedPlacementReady), selectionDisabled: selectionBlocked, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
+        return NativeViewport(credentials: credentials, privateFloor: model.privateFloorRuntimeAvailable, workspaceMaterials: model.workspaceMaterialPreviewAvailable, workspaceMaterialMultimap: workspaceMaterialMultimap, workspaceFurnishings: workspaceFurnishings, draft: draft, selection: model.viewportSelection, presentation: model.viewportPresentation, mode: model.viewportMode, view: model.viewportView, cameraSequence: model.viewportCameraSequence, transparent: model.viewportTransparent, disabled: !ready || !editable || model.entrancePreviewActive || model.workBlocksViewportFrame || model.pending || model.viewportFormDirty || model.positionDirty || model.wallFinishPreviewing || model.surfaceMaterialPreviewing || model.lightPreviewing || model.benchPreviewing || model.plaquePreviewing || model.furnishingPreviewing || model.spaceLightingPreviewing || model.infoStandPreviewing, interactionDisabled: selectionBlocked || NativeViewportAccess.boundedInteractionBlocked(boundedAdmission: model.boundedPlacementCapability != nil, acknowledged: model.boundedPlacementReady), selectionDisabled: selectionBlocked, boundedEdit: model.boundedPlacementCapability, acceptBoundedAck: { model.acceptBoundedPlacementFrame($0, $1) }, controller: controller, onSelect: { if controller.editingContextActive { model.selectViewport($0) } }, onCandidate: { candidate, base in let context = controller.editingContextGeneration; Task { guard controller.editingContextActive, controller.editingContextGeneration == context else { return }; await model.acceptViewportCandidate(candidate, base: base) } }, onPlacementTarget: { model.receivePlacementTarget($0) }, onPlacementCancel: { model.placementCancelled($0) })
             .id(rendererIdentity(credentials) + String(model.privateFloorRuntimeAvailable) + String(model.workspaceMaterialPreviewAvailable) + String(workspaceMaterialMultimap) + String(workspaceFurnishings))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .allowsHitTesting(ready && !model.architectureDirty && !model.architectureApplying && !model.placementApplying)
@@ -1646,7 +1669,7 @@ struct NativeViewportArea: View {
                 Menu {
                     Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
                     roomAddControls
-                    Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
+                    lightAdditionControls
                     Button("벤치 추가") { model.beginBench() }.disabled(!model.canAddBench)
                     Button("명판 추가") { model.beginPlaque() }.disabled(!model.canAddPlaque)
                 } label: { Label("추가", systemImage: "plus") }

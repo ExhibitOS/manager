@@ -680,7 +680,13 @@ final class ExhibitionModel: ObservableObject {
     private var boundedProfileKnown: Bool?
     private var boundedPolicyGeneration = UUID()
     @Published private(set) var reusablePublicationId: String?
-    @Published private(set) var busy = false
+    enum WorkViewport {
+        case blocked
+        case preserveAcknowledgedFrame
+    }
+    @Published private var workViewport: WorkViewport?
+    var busy: Bool { workViewport != nil }
+    var workBlocksViewportFrame: Bool { workViewport == .blocked }
     @Published private(set) var failure: AuthoringFailure?
     @Published private(set) var notice = ""
     @Published private(set) var exporting = false
@@ -1290,6 +1296,51 @@ final class ExhibitionModel: ObservableObject {
     private var lightObjectAuthorityAvailable: Bool {
         lightObjectProposalAvailable && viewportController.editingContextActive && viewportController.connected
             && state?.dirty == false && state?.etag != nil
+    }
+    var fixtureFirstAuthoringAvailable: Bool {
+        lightObjectProposalAvailable && session?.advertisesFixtureFirstAuthoring == true
+    }
+    var fixtureFirstCatalogue: [DocumentValue] {
+        guard sharedFurnishingCatalogReady, sharedFurnishingCatalogAccessID == viewportAccessID else { return [] }
+        return sharedFurnishingCatalog.filter { row in
+            guard let id = row["catalogId"].string else { return false }
+            return LightObjectAuthoring.guidedFixtureCatalogueIDs.contains(id)
+        }
+    }
+    var canPlaceFixtureFirstLight: Bool {
+        fixtureFirstAuthoringAvailable && lightObjectAuthorityAvailable && lightObjectContext()
+            && !lightDirty && !lightPreviewing && !roomId.isEmpty && !entrancePreviewActive
+    }
+    func placeFixtureFirstLight(_ fixture: NativeLightFixture, catalogueId: String? = nil) async {
+        guard canPlaceFixtureFirstLight, let api, let current = state, let base = current.draft, let etag = current.etag else { return }
+        if let catalogueId, !fixtureFirstCatalogue.contains(where: { $0["catalogId"] == .string(catalogueId) }) { return }
+        let access = viewportAccessID, context = viewportController.editingContextGeneration, room = roomId
+        let selection = viewportSelection
+        // Keep the frame used by this proposal while the normal busy gates still block editing.
+        await work(viewport: .preserveAcknowledgedFrame) {
+            let frame = try viewportController.nativeLightObjectFrame(in: current)
+            guard await api.admitsNativeFixtureFirstAuthoring else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+            let saved = try await api.exhibition(base.id)
+            guard saved.draft == base, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+            let command = try LightObjectRequest.fixtureAddition(roomId: room, fixture: fixture, catalogueId: catalogueId, in: base)
+            let request = try LightObjectRequest(command: command, frame: frame)
+            let preview = try await api.prepareNativeLightObject(request, in: current, saved: saved)
+            let policy = try await publishedEditingAccess(base.id, api: api, expected: saved)
+            guard !policy.immutable, self.api === api, fixtureFirstAuthoringAvailable, viewportAccessID == access,
+                  state?.revision == current.revision, state?.etag == etag, draft == base, roomId == room,
+                  viewportSelection == selection,
+                  viewportController.confirmsNativeLightObjectFrame(frame, in: current, context: context) else {
+                throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+            }
+            var next = current
+            next.draft = try preview.apply(to: base)
+            try Task.checkCancellation()
+            try await persist(next)
+            selectedLightId = preview.lightId
+            viewportSelection = ViewportSelection(kind: "light", id: preview.lightId)
+            syncFields()
+            notice = "기구와 조명을 배치했습니다. 전시를 저장한 뒤 조준과 빔을 조정할 수 있습니다."
+        }
     }
     var canPreviewLightObjectAction: Bool {
         lightObjectAuthorityAvailable && canPreviewLightContext && !lightDirty && !lightPreviewing && !selectedLightId.isEmpty
@@ -2194,8 +2245,8 @@ final class ExhibitionModel: ObservableObject {
               !placingArtwork, !architectureApplying, !pending, let api else {
             throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE")
         }
-        busy = true
-        defer { busy = false }
+        workViewport = .blocked
+        defer { workViewport = nil }
         guard await api.admitsWorkspaceFurnishings else { throw AuthoringFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
         let result = try await body(api)
         guard access == viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
@@ -2304,8 +2355,8 @@ final class ExhibitionModel: ObservableObject {
               !placingArtwork, !architectureApplying, !pending, let api else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
-        busy = true
-        defer { busy = false }
+        workViewport = .blocked
+        defer { workViewport = nil }
         guard await api.admitsWorkspaceMaterials else { throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE") }
         let result = try await body(api)
         guard access == viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
@@ -2328,7 +2379,8 @@ final class ExhibitionModel: ObservableObject {
             return true
         }
     }
-    private func work(allowViewingPlanInput: Bool = false, allowViewingPointInput: Bool = false, allowInfoStandPreview: Bool = false, _ body: () async throws -> Void) async {
+    func work(allowViewingPlanInput: Bool = false, allowViewingPointInput: Bool = false, allowInfoStandPreview: Bool = false,
+              viewport: WorkViewport = .blocked, _ body: () async throws -> Void) async {
         guard !entrancePreviewActive, !busy, !placingArtwork, api != nil, session != nil,
               allowInfoStandPreview || !infoStandPreviewing else { return }
         guard allowViewingPointInput || viewingPointInput == nil else {
@@ -2339,8 +2391,8 @@ final class ExhibitionModel: ObservableObject {
             notice = "관람 계획 입력을 확인하고 적용하거나 취소한 뒤 진행하세요."
             return
         }
-        busy = true; failure = nil; notice = ""
-        defer { busy = false }
+        workViewport = viewport; failure = nil; notice = ""
+        defer { workViewport = nil }
         do { try await body() }
         catch { failure = error as? AuthoringFailure ?? AuthoringFailure((error as? BridgeFailure)?.code ?? "CONNECTION_FAILED") }
     }

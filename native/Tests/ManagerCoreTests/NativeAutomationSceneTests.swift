@@ -169,6 +169,15 @@ final class NativeAutomationSceneTests: XCTestCase {
             "roomId": draft.rooms[0]["id"], "baseLightId": .string(light), "lightId": .string(nextId)])
         let request = try NativeAutomationScene.supplementalCeilingFillRequest(input, frame: frame(draft))
         XCTAssertEqual(request.value["baseLightId"], .string(light))
+        let operation = try XCTUnwrap(request.value["type"].string)
+        XCTAssertNoThrow(try AuthoringAPI.checkLightCreationProposal(operation, fixtureFirst: true, supplementalFill: true))
+        XCTAssertThrowsError(try AuthoringAPI.checkLightCreationProposal("add-light", fixtureFirst: true, supplementalFill: true))
+        XCTAssertThrowsError(try AuthoringAPI.checkLightCreationProposal(operation, fixtureFirst: true, supplementalFill: false))
+        XCTAssertThrowsError(try AuthoringAPI.checkLightCreationProposal(LightObjectAuthoring.addWithFixture,
+            fixtureFirst: false, supplementalFill: true))
+        var malformed = input
+        malformed["baseLightId"] = .string("invalid")
+        XCTAssertThrowsError(try NativeAutomationScene.supplementalCeilingFillRequest(malformed, frame: frame(draft)))
         let preview = try request.checkedReply(reply(request))
         let applied = try preview.apply(to: draft)
         let lights = try XCTUnwrap(applied.candidate["lights"].items)
