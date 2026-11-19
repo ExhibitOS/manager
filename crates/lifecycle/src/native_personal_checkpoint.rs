@@ -2351,13 +2351,9 @@ impl InstallationController {
         target.recheck()?;
         self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny,
             Some(RetainedSavedHeadCheck::Sealed { target_manifest: Some(&manifest) }), |service, profile, document, key| {
-                let (journal, current) = self.document_unlocked(service)?;
+                let journal = super::installations::native_document::document_filename(&service.root);
                 let bytes = installation_backup::source_bytes(profile, &journal, MAX_MANIFEST as u64, true)?;
-                if digest(&bytes) != OFFICIAL_ROOM_LIGHTING_JOURNAL
-                    || saved_document_digest(&current)? != saved_document_digest(document)?
-                {
-                    return Err(invalid());
-                }
+                if digest(&bytes) != OFFICIAL_ROOM_LIGHTING_JOURNAL { return Err(invalid()); }
                 service.recover_local_personal_runtime_transition(staging, key, true, TransitionRetention::None,
                     Some(document), Some((&manifest, qualified_receipt_sha256)))
             })

@@ -205,6 +205,10 @@ fn matches_applied_draft_transition(current: &DocumentState, state: &DocumentSta
     true
 }
 
+pub(crate) fn document_filename(runtime_root: &Path) -> String {
+    format!("native-document-{}.json", digest(runtime_root.as_os_str().as_encoded_bytes()))
+}
+
 impl InstallationController {
     pub(super) fn document_unlocked(&self, service: &LifecycleService) -> Result<(String, DocumentState)> {
         let profile = self
@@ -212,10 +216,7 @@ impl InstallationController {
             .as_ref()
             .ok_or_else(|| err("NATIVE_MANAGED_PROFILE_REQUIRED"))?;
         let (workspace_id, tenant_id, principal_id) = service.personal_identity()?;
-        let file = format!(
-            "native-document-{}.json",
-            digest(service.root.as_os_str().as_encoded_bytes())
-        );
+        let file = document_filename(&service.root);
         let default = DocumentState {
             format: 1,
             revision: 0,
