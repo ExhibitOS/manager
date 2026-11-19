@@ -507,6 +507,14 @@ pub(crate) fn transition_source_ledger(payload: &crate::native_payload::Payload,
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none()
+        && pair == (crate::native_payload::R203_ORDINARY_SUCCESSOR_TARGET.2,
+                    crate::native_payload::R209_BRASS_RELEASE_TARGET.2)
+    {
+        // Keep the entire cold inventory, including the completed ordinary r209 output.
+        return MAX_BYTES + 768 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none()
         && pair == (crate::native_payload::R203_CORRECTED_RELEASE_TARGET.2,
                     crate::native_payload::R203_ORDINARY_SUCCESSOR_TARGET.2)
     {
@@ -3308,6 +3316,39 @@ mod tests {
         let observed = 2_579_358_392;
         file.set_len(observed).unwrap();
         let prior_limit = checkpoint_inventory_limit((earlier, source), None);
+        assert_eq!(inventory_with_limit(&root, false, prior_limit).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[blob].bytes, observed);
+        file.set_len(limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn r209_brass_release_bounds_only_the_complete_directed_checkpoint() {
+        let prior = crate::native_payload::R203_CORRECTED_RELEASE_TARGET.2;
+        let source = crate::native_payload::R203_ORDINARY_SUCCESSOR_TARGET.2;
+        let target = crate::native_payload::R209_BRASS_RELEASE_TARGET.2;
+        let limit = checkpoint_inventory_limit((source, target), None);
+        assert_eq!(limit, 2_952_790_016);
+        assert_eq!(checkpoint_inventory_limit((prior, source), None), 2_617_245_696);
+        for denied in [(target, source), (source, source), (target, target), (prior, target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap()
+            .join(format!("r209-brass-release-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let blob = Path::new("blobs/ordinary-and-selected-publications");
+        let file = private_options().open(root.join(blob)).unwrap();
+        let observed = 2_946_789_173;
+        file.set_len(observed).unwrap();
+        let prior_limit = checkpoint_inventory_limit((prior, source), None);
         assert_eq!(inventory_with_limit(&root, false, prior_limit).unwrap_err().code, invalid().code);
         assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[blob].bytes, observed);
         file.set_len(limit + 1).unwrap();

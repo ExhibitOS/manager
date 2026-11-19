@@ -176,9 +176,17 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
         guard AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest), let originalImage else {
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
-        let expected = manifest == AuthoringAPI.r203CorrectedReleaseManifest
-            ? "8e8ffefe244e22179f5aa307bfa7f66fbb7924f1f62d439a48f721f4bd818c98"
-            : "ddb95832da31069ef10596050f71079f14d19595c63f3a700ae5f269a22c3879"
+        let expected: String
+        switch manifest {
+        case AuthoringAPI.r125ApprovedReleaseManifest:
+            expected = "ddb95832da31069ef10596050f71079f14d19595c63f3a700ae5f269a22c3879"
+        case AuthoringAPI.r203CorrectedReleaseManifest:
+            expected = "8e8ffefe244e22179f5aa307bfa7f66fbb7924f1f62d439a48f721f4bd818c98"
+        case AuthoringAPI.r209BrassReleaseManifest:
+            expected = "2a16a4f466922235e911040a84579d2e4198b861eadd5784b79a753bd022bfb1"
+        default:
+            throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
+        }
         guard try sourceCommitment(etag: etag, originalImage: originalImage) == expected else {
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
