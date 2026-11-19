@@ -50,6 +50,7 @@ enum BundledWorkspaceFurnishings {
         "portal-pale-mineral": .portalFinish, "portal-warm-oak": .portalFinish
     ]
     private static let manifests = [
+        36360: (version: "1.21.0", digest: "f248b227b60ec97c8c951c56fc56a998aa1b0eb485106a04a0d7ccd6f31d517b"),
         29400: (version: "1.20.0", digest: "4bcb9616719bedaa2f3436630f9c499c2e2dad7538150b862fc7de84b43db147"),
         27317: (version: "1.19.0", digest: "138b8307dba70f382f886c5c37b6396f1327b0b7311a202ec5d6932185743b08"),
         25957: (version: "1.18.0", digest: "83d9d1913850c310e63a1d5a77297ca8944da1fc9720cf017e3a9dad361b7e5a"),
@@ -69,7 +70,7 @@ enum BundledWorkspaceFurnishings {
     ]
     private static func supportedItems(version: String) -> [String: WorkspaceFurnishingKind] {
         switch version {
-        case "1.20.0": return supportedItems(version: "1.19.0")
+        case "1.20.0", "1.21.0": return supportedItems(version: "1.19.0")
         case "1.19.0":
             var items = supportedItems(version: "1.18.0")
             items[sculptureRoomOakBench] = .bench
@@ -135,7 +136,7 @@ enum BundledWorkspaceFurnishings {
         let manifestURL = root.appendingPathComponent("assets/furnishings/default-manifest.json")
         guard root.resolvingSymlinksInPath() == root, manifestURL.resolvingSymlinksInPath() == manifestURL,
               manifestURL.path.hasPrefix(root.path + "/") else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
-        let data = try bounded(manifestURL, sizes: Set(manifests.keys), maximum: 29_400)
+        let data = try bounded(manifestURL, sizes: Set(manifests.keys), maximum: 36_360)
         guard let pin = manifests[data.count], digest(data) == pin.digest else { throw AuthoringFailure("FURNISHING_CATALOG_INVALID") }
         let manifest = try JSONDecoder().decode(Manifest.self, from: data)
         let supported = supportedItems(version: pin.version)
