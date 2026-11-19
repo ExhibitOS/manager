@@ -69,12 +69,55 @@ public struct LightObjectRequest: Sendable {
                         "light": .object(fields), "settings": settings, "attachment": attachment])
     }
 
+    public static func fixtureAddition(roomId: String, fixture: NativeLightFixture,
+                                       catalogueId: String? = nil, in draft: NativeExhibitionDraft) throws -> DocumentValue {
+        guard let room = draft.rooms.first(where: { same($0["id"].string, roomId) }),
+              let height = room["dimensions"]["height"].double, height.isFinite, height > 0 else { throw invalid }
+        let type: NativeLightType
+        switch fixture {
+        case .spotCan: type = .spot
+        case .disc: type = .point
+        case .panel: type = .area
+        case .none:
+            guard let catalogueId, LightObjectAuthoring.fixtureCatalogueIDs.contains(catalogueId),
+                  catalogueId != NativeTrackSpotAim.catalogue else { throw AuthoringFailure("LIGHT_FIXTURE_REQUIRED") }
+            type = .spot
+        }
+        let position = [0, min(3, height * 0.75), 0]
+        let transform: DocumentValue = .object([
+            "position": .vector(position), "rotation": .vector([0, 0, 0, 1]), "scale": .vector([1, 1, 1])
+        ])
+        var light: [String: DocumentValue] = ["roomId": .string(roomId), "type": .string(type.rawValue),
+            "transform": transform, "color": .vector([1, 1, 1]), "intensity": .integer(100),
+            "unit": .string(type.unit), "castsShadow": .bool(false)]
+        if type == .spot { light["beamAngle"] = .number(.pi / 4) }
+        if type == .area { light["dimensions"] = .object(["width": .integer(1), "height": .integer(1)]) }
+        var settings: [String: DocumentValue] = ["fixture": .string(fixture.rawValue)]
+        if type == .spot { settings["aim"] = .object(["kind": .string("point"), "position": .vector([0, 0, 0])]) }
+        var fields: [String: DocumentValue] = ["type": .string(LightObjectAuthoring.addWithFixture),
+            "light": .object(light), "settings": .object(settings)]
+        if let catalogueId {
+            guard fixture == .none else { throw invalid }
+            let pose = try FurnishingPose(position: position, yaw: 0, scale: 1)
+            fields["visual"] = .object(["catalogId": .string(catalogueId), "catalogVersion": .integer(1), "pose": pose.value])
+        }
+        return .object(fields)
+    }
+
     public init(command: DocumentValue, frame: ViewportFrame) throws {
         guard !frame.disabled, frame.sequence > 0,
               [frame.epoch, frame.tenantId, frame.principalId].allSatisfy({ Self.uuid($0) }),
               case .object(let fields) = command,
-              let type = command["type"].string, LightObjectAuthoring.commands.contains(type),
-              let id = command["lightId"].string, Self.uuid(id),
+              let type = command["type"].string, LightObjectAuthoring.commands.contains(type) else { throw Self.invalid }
+        if type == LightObjectAuthoring.addWithFixture {
+            try Self.checkFixtureAddition(fields, frame: frame)
+            self.frame = frame
+            self.command = command
+            self.sourceLightId = ""
+            self.value = try Self.wire(fields, frame: frame)
+            return
+        }
+        guard let id = command["lightId"].string, Self.uuid(id),
               let lights = frame.draft.candidate["lights"].items,
               lights.filter({ Self.same($0["id"].string, id) }).count == 1,
               let original = lights.first(where: { Self.same($0["id"].string, id) }),
@@ -144,18 +187,7 @@ public struct LightObjectRequest: Sendable {
         case "set-light-fixture":
             guard Set(fields.keys) == ["type", "lightId", "visual"] else { throw Self.invalid }
             if command["visual"] != .null {
-                guard case .object(let visual) = command["visual"],
-                      let catalog = command["visual"]["catalogId"].string,
-                      command["visual"]["catalogVersion"] == .integer(1), original["type"] == .string("spot"),
-                      try SharedFurnishingCatalog.descriptor(catalog)["hostKinds"].items == [.string("light")] else { throw Self.invalid }
-                if catalog == NativeTrackSpotAim.catalogue {
-                    guard Set(visual.keys) == ["catalogId", "catalogVersion", "pose", "trackAim"],
-                          command["visual"]["pose"] == NativeTrackSpotAim.pose else { throw Self.invalid }
-                    try NativeTrackSpotAim.check(command["visual"]["trackAim"])
-                } else {
-                    guard Set(visual.keys) == ["catalogId", "catalogVersion", "pose"] else { throw Self.invalid }
-                    _ = try FurnishingPose(command["visual"]["pose"])
-                }
+                try Self.checkVisual(command["visual"], light: original)
             }
         case "duplicate-light-object", "remove-light-object":
             guard Set(fields.keys) == ["type", "lightId"] else { throw Self.invalid }
@@ -166,6 +198,11 @@ public struct LightObjectRequest: Sendable {
             } else { try Self.noForeignReference(frame.draft.candidate, id: actualId) }
         default: throw Self.invalid
         }
+        self.frame = frame; self.command = command; self.sourceLightId = actualId
+        self.value = try Self.wire(fields, frame: frame)
+    }
+
+    private static func wire(_ fields: [String: DocumentValue], frame: ViewportFrame) throws -> DocumentValue {
         var wire: [String: DocumentValue] = ["version": .integer(1), "epoch": .string(frame.epoch),
             "sequence": .integer(Int64(frame.sequence)), "tenantId": .string(frame.tenantId),
             "principalId": .string(frame.principalId), "requestId": .string(UUID().uuidString.lowercased())]
@@ -173,7 +210,46 @@ public struct LightObjectRequest: Sendable {
         wire.merge(fields) { _, new in new }
         let value = DocumentValue.object(wire)
         guard try JSONEncoder().encode(value).count <= 65_536 else { throw Self.invalid }
-        self.frame = frame; self.command = command; self.sourceLightId = actualId; self.value = value
+        return value
+    }
+
+    private static func checkVisual(_ value: DocumentValue, light: DocumentValue) throws {
+        guard case .object(let fields) = value, let catalog = value["catalogId"].string,
+              value["catalogVersion"] == .integer(1), light["type"] == .string("spot"),
+              try SharedFurnishingCatalog.descriptor(catalog)["hostKinds"].items == [.string("light")] else { throw invalid }
+        if catalog == NativeTrackSpotAim.catalogue {
+            guard Set(fields.keys) == ["catalogId", "catalogVersion", "pose", "trackAim"],
+                  value["pose"] == NativeTrackSpotAim.pose else { throw invalid }
+            try NativeTrackSpotAim.check(value["trackAim"])
+        } else {
+            guard Set(fields.keys) == ["catalogId", "catalogVersion", "pose"] else { throw invalid }
+            _ = try FurnishingPose(value["pose"])
+        }
+    }
+
+    private static func checkFixtureAddition(_ fields: [String: DocumentValue], frame: ViewportFrame) throws {
+        guard Set(fields.keys).subtracting(["attachment", "visual"]) == ["type", "light", "settings"],
+              let light = fields["light"], let settings = fields["settings"],
+              case .object(let detail) = settings,
+              Set(detail.keys).isSubset(of: ["fixture", "aim", "penumbra", "range", "temperatureKelvin"]),
+              let type = light["type"].string.flatMap(NativeLightType.init(rawValue:)),
+              let fixture = settings["fixture"].string.flatMap(NativeLightFixture.init(rawValue:)),
+              light["castsShadow"] != .bool(true) || [.spot, .directional].contains(type) else { throw invalid }
+        try checkLight(light, in: frame.draft)
+        try checkSettings(settings)
+        if let visual = fields["visual"] {
+            guard fixture == .none, let catalog = visual["catalogId"].string,
+                  LightObjectAuthoring.fixtureCatalogueIDs.contains(catalog) else {
+                throw AuthoringFailure("LIGHT_FIXTURE_REQUIRED")
+            }
+            try checkVisual(visual, light: light)
+        } else if fixture == .none || !fixture.supports(type) {
+            throw AuthoringFailure("LIGHT_FIXTURE_REQUIRED")
+        }
+        if let attachment = fields["attachment"] {
+            guard (fields["visual"]?["trackAim"] ?? .null) == .null else { throw invalid }
+            try checkAttachment(attachment)
+        }
     }
 
     public func checkedReply(_ reply: DocumentValue) throws -> LightObjectPreview {
@@ -181,7 +257,7 @@ public struct LightObjectRequest: Sendable {
               try JSONEncoder().encode(reply).count <= 1_100_000,
               Self.bindings.allSatisfy({ reply[$0] == value[$0] }),
               let id = reply["lightId"].string, Self.uuid(id) else { throw Self.changed }
-        if command["type"] == .string("duplicate-light-object") {
+        if command["type"] == .string("duplicate-light-object") || command["type"] == .string(LightObjectAuthoring.addWithFixture) {
             guard !Self.references(frame.draft.candidate, id: id) else { throw Self.changed }
         } else { guard id == sourceLightId else { throw Self.changed } }
         let expected = try expectedCandidate(lightId: id, reply: reply["candidate"])
@@ -189,7 +265,36 @@ public struct LightObjectRequest: Sendable {
         return LightObjectPreview(base: frame.draft, command: command, candidate: expected, lightId: id)
     }
 
+    private func addingFixture(lightId: String, reply: DocumentValue) throws -> DocumentValue {
+        var candidate = frame.draft.candidate
+        guard var lights = candidate["lights"].items else { throw Self.changed }
+        var light = command["light"]; light["id"] = .string(lightId)
+        lights.append(light)
+        candidate["lights"] = .array(lights)
+        var settings = command["settings"]; settings["lightId"] = .string(lightId)
+        try Self.upsert(settings, id: lightId, namespace: Self.details, in: &candidate)
+        if command["attachment"] != .null {
+            var attachment = command["attachment"]; attachment["lightId"] = .string(lightId)
+            try Self.upsert(attachment, id: lightId, namespace: Self.attachments, in: &candidate)
+        }
+        if command["visual"] != .null {
+            var draft = frame.draft
+            try draft.replaceCandidate(candidate)
+            let temporaryFrame = ViewportFrame(epoch: frame.epoch, sequence: frame.sequence, tenantId: frame.tenantId,
+                principalId: frame.principalId, draft: draft, selection: frame.selection, mode: frame.mode,
+                view: frame.view, disabled: false, workspaceId: frame.workspaceId, baseETag: frame.baseETag)
+            let visual = try Self(command: .object(["type": .string("set-light-fixture"),
+                "lightId": .string(lightId), "visual": command["visual"]]), frame: temporaryFrame)
+            candidate = try visual.expectedCandidate(lightId: lightId, reply: reply)
+        }
+        if case .object = candidate["extensions"][Self.template] { candidate["extensions"][Self.template]["modified"] = .bool(true) }
+        return candidate
+    }
+
     private func expectedCandidate(lightId: String, reply: DocumentValue) throws -> DocumentValue {
+        if command["type"] == .string(LightObjectAuthoring.addWithFixture) {
+            return try addingFixture(lightId: lightId, reply: reply)
+        }
         let base = frame.draft.candidate
         var next = base
         guard var lights = base["lights"].items,

@@ -71,6 +71,42 @@ final class LightObjectRequestTests: XCTestCase {
         var result = candidate; result["extensions"] = without(result["extensions"], key); return result
     }
 
+    func testFixtureFirstAdditionChecksOneLightAndCompleteFixtureGraph() throws {
+        let base = try fixture(visual: false)
+        let roomId = try XCTUnwrap(base.rooms.first?["id"].string)
+        let bound = frame(base)
+        for catalog in [nil, "museum-track-spot"] as [String?] {
+            let command = try LightObjectRequest.fixtureAddition(roomId: roomId, fixture: catalog == nil ? .spotCan : .none,
+                                                                catalogueId: catalog, in: base)
+            let request = try LightObjectRequest(command: command, frame: bound)
+            XCTAssertEqual(command["settings"]["aim"]["kind"], .string("point"))
+            var expected = changed(base.candidate)
+            var newLight = command["light"]; newLight["id"] = .string(clone)
+            expected["lights"] = .array(try XCTUnwrap(base.candidate["lights"].items) + [newLight])
+            var setting = command["settings"]; setting["lightId"] = .string(clone); setting["fixture"] = .string("spot-can")
+            expected["extensions"][details]["lights"] = .array(try XCTUnwrap(base.candidate["extensions"][details]["lights"].items) + [setting])
+            if let catalog {
+                let binding: DocumentValue = .object(["hostKind": .string("light"), "hostId": .string(clone),
+                    "assetId": .string(asset), "pose": command["visual"]["pose"]])
+                expected["extensions"][visuals] = .object(["version": .integer(1),
+                    "assets": .array([try SharedFurnishingCatalog.asset(catalogId: catalog, id: asset)]),
+                    "bindings": .array([binding])])
+                let orphan = droppingExtension(expected, visuals)
+                XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: orphan, lightId: clone)))
+            }
+            let checked = try request.checkedReply(reply(request, candidate: expected, lightId: clone))
+            XCTAssertEqual(checked.lightId, clone)
+            XCTAssertEqual(try checked.apply(to: base).candidate, expected)
+            XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: expected, lightId: source)))
+            var altered = expected; altered["title"] = .string("Unrelated edit")
+            XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: altered, lightId: clone)))
+            var bare = without(command, "visual"); bare["settings"]["fixture"] = .string("none")
+            XCTAssertThrowsError(try LightObjectRequest(command: bare, frame: bound)) {
+                XCTAssertEqual(($0 as? AuthoringFailure)?.code, "LIGHT_FIXTURE_REQUIRED")
+            }
+        }
+    }
+
     func testNativeTransportBindsOrdinaryACKWithoutInventingWebCapability() throws {
         let draft = try fixture(), ack = frame(draft)
         var document = NativeDocumentState(format: 1, revision: 1, workspaceId: UUID().uuidString.lowercased(),

@@ -38,6 +38,10 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeDoorPairAuthoringProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
+    public var nativeFixtureFirstAuthoringProfile: String? = nil
+    public var advertisesFixtureFirstAuthoring: Bool {
+        nativeFixtureFirstAuthoringProfile == LightObjectAuthoring.fixtureFirstProfile
+    }
     public var nativeTrackSpotAimProfile: String? = nil
     public var nativeFrameImageFitProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
@@ -270,6 +274,8 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FURNISHING_FIELDS_INVALID": return "받침의 위치·회전·비례 크기를 확인하세요. 위치는 미터, 회전은 −180–180도, 비율은 0.1–4입니다. 입력과 기존 전시는 유지됩니다."
         case "FURNISHING_INVALID", "FURNISHING_CATALOG_INVALID": return "현재 지원하는 받침 정보를 확인하지 못했습니다. 기존 받침과 입력은 유지됩니다."
         case "FURNISHING_PREVIEW_FAILED": return "받침을 미리 보지 못했습니다. 받침 전체가 공간 안에 들어가는 위치와 크기를 확인하세요. 기존 전시와 입력은 유지됩니다."
+        case "LIGHT_FIXTURE_REQUIRED": return "이 조명에 적합한 기구를 선택하세요. 기존 조명은 기구를 연결해 복구하거나 조명과 기구를 함께 삭제할 수 있습니다."
+        case "LIGHT_FIXTURE_SOURCE_UNAVAILABLE": return "이 기구의 모델 또는 사용 권한을 확인할 수 없습니다. 카탈로그에서 다른 기구를 선택하세요."
         case "LIGHT_FIELDS_INVALID": return "조명 입력을 확인하세요. 밝기는 0–1000000, 선형 RGB는 0–1, 빔 전체각은 0보다 크고 90도 이하, 면광원 크기는 0.01–100m입니다. 입력과 기존 설정은 유지됩니다."
         case "LIGHT_SELECTION_CHANGED": return "선택한 조명을 다시 확인하세요. 현재 입력과 저장된 설정은 유지됩니다."
         case "LIGHT_PREVIEW_FAILED": return "조명 미리보기를 확인하지 못했습니다. 조명이 속한 공간 안의 위치와 입력, 로컬 제작 연결을 확인하세요. 입력과 저장된 설정은 유지됩니다."
@@ -4513,6 +4519,10 @@ public actor AuthoringAPI {
             && session?.nativeLightObjectAuthoringProposalProfile == LightObjectAuthoring.profile
     }
 
+    public var admitsNativeFixtureFirstAuthoring: Bool {
+        admitsNativeLightObjectAuthoringProposal && session?.advertisesFixtureFirstAuthoring == true
+    }
+
     public var admitsNativeTrackSpotAim: Bool {
         admitsNativeLightObjectAuthoringProposal && session?.nativeTrackSpotAimProfile == NativeTrackSpotAim.profile
     }
@@ -4550,7 +4560,11 @@ public actor AuthoringAPI {
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
+        if admitsNativeFixtureFirstAuthoring && (operation == "add-light" || supplementalFill) {
+            throw AuthoringFailure("LIGHT_FIXTURE_REQUIRED", status: 422)
+        }
         guard admitted,
+              operation != LightObjectAuthoring.addWithFixture || admitsNativeFixtureFirstAuthoring,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session,
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
