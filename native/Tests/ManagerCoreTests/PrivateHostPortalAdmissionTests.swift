@@ -49,6 +49,14 @@ final class PrivateHostPortalAdmissionTests: XCTestCase {
     }
 
     #if DEBUG && os(macOS)
+    func testOrdinaryCeilingRailInsertionAdmitsTheExactCurrentCatalogue() {
+        let manifest = "67613da677830cdc9f177cfee6ed650df8f3037f86be745c36f32b1eac3052e8"
+        XCTAssertTrue(NativeAutomationSession.admitsOrdinaryCeilingRailInsertionRuntime(manifest: manifest))
+        XCTAssertTrue(NativeAutomationSession.admitsOrdinaryCeilingRailInsertionRuntime(manifest: AuthoringAPI.r285ClosingArticulationRuntime))
+        XCTAssertFalse(NativeAutomationSession.admitsOrdinaryCeilingRailInsertionRuntime(manifest: current))
+        XCTAssertFalse(NativeAutomationSession.admitsOrdinaryCeilingRailInsertionRuntime(manifest: nil))
+    }
+
     func testCurrentDefaultCatalogueRequiresItsExactManifestAndLiveHosts() async throws {
         let manifest = "67613da677830cdc9f177cfee6ed650df8f3037f86be745c36f32b1eac3052e8"
         let qualified = try await connect(manifest: manifest, reusable: "source-bound-fit-v1", catalogue: true)

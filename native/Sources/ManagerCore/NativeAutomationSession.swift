@@ -18,6 +18,11 @@ public actor NativeAutomationSession {
         "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
     ]
 
+    static func admitsOrdinaryCeilingRailInsertionRuntime(manifest: String?) -> Bool {
+        AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: manifest)
+            || AuthoringAPI.supportsCurrentDefaultCatalogueRuntime(manifest: manifest)
+    }
+
     static func replayResponse(for operation: String, prior: (Data, DocumentValue)?, matching request: Data) throws -> DocumentValue? {
         guard !freshResponseOperations.contains(operation), let prior else { return nil }
         guard prior.0 == request else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
@@ -2724,7 +2729,7 @@ public actor NativeAutomationSession {
             let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                      "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == keys, existingWorkspaceV5 != nil, selectedOEXFormat == nil,
-                  AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: runtimeManifest),
+                  Self.admitsOrdinaryCeilingRailInsertionRuntime(manifest: runtimeManifest),
                   await api.admitsWorkspaceCeilingRail else { throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "roomId", "furnishingId", "modelSha256", "attachments"])
