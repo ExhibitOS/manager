@@ -118,7 +118,8 @@ final class NativeAutomationFailureTests: XCTestCase {
             XCTAssertEqual(details.first?["ceilingFill"]["mode"], .string("default"))
         }
         let unchanged = try NativeAutomationSession.emptyExhibitionDraft(request, in: state, roomBaseLight: true)
-        XCTAssertEqual(unchanged.candidate["lights"][0]["type"], .string("point"))
+        let legacyLights = try XCTUnwrap(unchanged.candidate["lights"].items)
+        XCTAssertEqual(legacyLights.map { $0["type"] }, [.string("point")])
     }
     func testInstalledReopenUsesVerifiedConfigurationAndRefusesScopeOrPortDrift() throws {
         let tenant = "10000000-0000-4000-8000-000000000001", manifest = String(repeating: "a", count: 64)
