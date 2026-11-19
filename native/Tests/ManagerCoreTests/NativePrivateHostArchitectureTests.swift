@@ -84,6 +84,49 @@ final class NativePrivateHostArchitectureTests: XCTestCase {
         XCTAssertEqual(current.document["editVersion"].integer, base.document["editVersion"].integer! + 7)
         XCTAssertEqual(try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(current)), current)
     }
+
+    func testNativeDoorPairProposalStagesOnlyTwoReciprocalOpenings() throws {
+        let firstRoom = uuid(), secondRoom = uuid(), first = uuid(), second = uuid()
+        let firstSurfaces = (0..<6).map { _ in uuid() }, secondSurfaces = (0..<6).map { _ in uuid() }
+        var draft = try NativeExhibitionDraft.new()
+        draft = try NativePrivateHostArchitecture.applying(room(firstRoom), to: draft)
+        draft = try NativePrivateHostArchitecture.applying(room(secondRoom, position: [0,0,8]), to: draft)
+        draft = try NativePrivateHostArchitecture.applying(cube(firstRoom, firstSurfaces), to: draft)
+        draft = try NativePrivateHostArchitecture.applying(cube(secondRoom, secondSurfaces), to: draft)
+        let dims: DocumentValue = .object(["width": .number(2.4), "height": .integer(3)])
+        func side(_ wall: String) -> DocumentValue {
+            .object(["surfaceId": .string(wall), "offset": .vector([0,-0.5])])
+        }
+        let proposal = try NativeDoorPairProposal(command: .object([
+            "dimensions": dims, "first": side(firstSurfaces[1]), "second": side(secondSurfaces[0])
+        ]), draft: draft, tenantId: uuid(), principalId: uuid(), requestId: uuid())
+        func opening(_ id: String, _ wall: String, _ peer: String) -> DocumentValue {
+            .object(["id": .string(id), "type": .string("door"), "surfaceId": .string(wall),
+                     "dimensions": dims, "offset": .vector([0,-0.5]), "connectsToOpeningId": .string(peer)])
+        }
+        let ids = [DocumentValue.string(first), .string(second)]
+        var candidate = draft.candidate
+        candidate["openings"] = .array([opening(first, firstSurfaces[1], second), opening(second, secondSurfaces[0], first)])
+        var reply = proposal.value
+        guard case .object(var fields) = reply else { return XCTFail("Expected a proposal object") }
+        for key in ["type", "dimensions", "first", "second"] { fields.removeValue(forKey: key) }
+        fields["candidate"] = candidate
+        fields["openingIds"] = .array(ids)
+        reply = .object(fields)
+        let accepted = try proposal.checkedReply(reply)
+        XCTAssertEqual(accepted.openingIds, .array(ids))
+        XCTAssertEqual(accepted.draft.candidate, candidate)
+        XCTAssertEqual(accepted.draft.document["editVersion"].integer, draft.document["editVersion"].integer! + 1)
+        var changed = reply
+        changed["candidate"]["title"] = .string("Unexpected replacement")
+        XCTAssertThrowsError(try proposal.checkedReply(changed))
+        changed = reply
+        changed["openingIds"] = .array(Array(ids.reversed()))
+        XCTAssertThrowsError(try proposal.checkedReply(changed))
+        changed = reply
+        changed["requestId"] = .string(uuid())
+        XCTAssertThrowsError(try proposal.checkedReply(changed))
+    }
     func testRoomUpdatePreservesUnknownFieldsAndRejectsInvalidInput() throws {
         var base = try NativeExhibitionDraft.new(), candidate = base.candidate
         var original = base.rooms[0]; original["extensions"] = .object(["retained": .bool(true)])

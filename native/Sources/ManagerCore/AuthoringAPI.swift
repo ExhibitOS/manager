@@ -35,6 +35,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeAuthoringProposalProfile: String? = nil
     public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
+    public var nativeDoorPairAuthoringProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
     public var nativeTrackSpotAimProfile: String? = nil
@@ -4437,6 +4438,12 @@ public actor AuthoringAPI {
             && session?.nativeFixtureAuthoringProposalProfile == "saved-head-fixture-v1"
     }
 
+    var admitsNativeDoorPairProposal: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && session?.nativeDoorPairAuthoringProfile == NativeDoorPairProposal.profile
+    }
+
     public var admitsFrameImageFitReconciliation: Bool {
         admitsWorkspaceArtworkFrames && nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
             && session?.nativeAuthoringProposalProfile == "saved-head-v1"
@@ -4527,7 +4534,8 @@ public actor AuthoringAPI {
         let scene = supplementalFill || ["set-pedestal", "add-light", "set-light-details"].contains(operation)
         let frameImageFit = operation == "reconcile-frame-image-fit"
         let budgetPolicy = operation == "set-viewer-budget-policy"
-        let admitted = budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let doorPair = operation == NativeDoorPairProposal.command
+        let admitted = doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
@@ -4541,7 +4549,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
+              (doorPair || placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }
