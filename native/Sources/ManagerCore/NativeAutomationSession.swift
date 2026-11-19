@@ -148,6 +148,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
@@ -442,6 +443,8 @@ public actor NativeAutomationSession {
         let admitsLargeModels = await api.admitsLargeModelPreparation
         let admitsInfoStandPreparation = await api.admitsWorkspaceInfoStandPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
+        let admitsPartialWallPortal = AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: config.manifestSha256)
+            ? await api.admitsWorkspacePortalFinish : false
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
         let admitsNativePublication = AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: config.manifestSha256)
             && session.nativePublicationProfile == "bounded-local-v1"
@@ -461,7 +464,7 @@ public actor NativeAutomationSession {
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
-                || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
+                || admitsPartialWallPortal || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
                 || admitsPreparedBudget || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }

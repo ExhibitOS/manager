@@ -32,6 +32,21 @@ final class PrivateHostPortalAdmissionTests: XCTestCase {
         let admitted = await unknown.admitsWorkspacePortalFinish
         XCTAssertFalse(admitted)
     }
+
+    func testExactPartialWallPortalRuntimeRequiresTheReusableFitProfile() async throws {
+        let partial = "803ce4960489551e1a2ac9c84ca7f3a804c2f5e0324e719a590661c457ff2918"
+        let qualified = try await connect(manifest: partial, reusable: "source-bound-fit-v1")
+        let furnishing = await qualified.admitsWorkspaceFurnishings
+        let portal = await qualified.admitsWorkspacePortalFinish
+        let fit = await qualified.admitsWorkspaceRectangularPortalFit
+        XCTAssertTrue(furnishing)
+        XCTAssertTrue(portal)
+        XCTAssertTrue(fit)
+
+        let missing = try await connect(manifest: partial, reusable: nil)
+        let denied = await missing.admitsWorkspaceRectangularPortalFit
+        XCTAssertFalse(denied)
+    }
 }
 private final class PortalAdmissionProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()

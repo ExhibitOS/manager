@@ -668,9 +668,10 @@ public actor AuthoringAPI {
         #endif
         workspaceFramePreparationRuntimeQualified = framePreparationQualified
         workspaceInfoStandPreparationRuntimeQualified = Self.supportsInfoStandPreparationRuntime(manifest: manifest)
-        workspacePortalFinishRuntimeQualified = portalQualified || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
+        let partialWallPortal = Self.supportsOrdinaryPartialWallPortal(manifest: manifest)
+        workspacePortalFinishRuntimeQualified = portalQualified || partialWallPortal || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
-        workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
+        workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified || partialWallPortal
             || Self.supportsDefault119CleanFurnishingRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
@@ -3325,6 +3326,14 @@ public actor AuthoringAPI {
         guard (1...2_147_483_647).contains(version) else { throw AuthoringFailure("MATERIAL_DECLARATION") }
         return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version), catalogRead: catalogRead)
     }
+    nonisolated static func supportsOrdinaryPartialWallPortal(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "803ce4960489551e1a2ac9c84ca7f3a804c2f5e0324e719a590661c457ff2918"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsDefault119CleanFurnishingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7"
@@ -3463,7 +3472,8 @@ public actor AuthoringAPI {
 
     public var admitsWorkspaceModularPortalFit: Bool {
         admitsWorkspacePortalFinish
-            && (Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && (Self.supportsOrdinaryPartialWallPortal(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
                 || Self.supportsStraightMiterFrameRuntime(manifest: nativeRuntimeManifestSHA256 ?? ""))
             && session?.workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
             && session?.workspacePortalModularFitProfile == WorkspaceFurnishingFitProfile.modularPortal.rawValue
@@ -4368,6 +4378,7 @@ public actor AuthoringAPI {
         // Its debug admission is scoped to the ordinary catalogue and thumbnails.
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
+            || supportsOrdinaryPartialWallPortal(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
