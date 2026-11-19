@@ -4036,6 +4036,24 @@ public actor AuthoringAPI {
         try await prepareWorkspaceCeilingRailInsertion([attachment], furnishingId: furnishingId, expectedModelSHA256: nil, in: document)
     }
 
+    public func verifyOrdinaryCeilingRailFit(_ attachment: WorkspaceCeilingRailAttachment,
+                                             furnishingId: String, in document: NativeDocumentState) async throws {
+        guard !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+        }
+        let held = generation
+        let saved = try await exhibition(draft.id)
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard saved.draft == draft, saved.etag == etag, policy.revision == saved.revision, policy.etag == etag,
+              policy.confirmsOrdinaryDraft, generation == held else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let candidate = try await prepareWorkspaceCeilingRail(attachment, furnishingId: furnishingId, in: document)
+        try await validateNativeViewportEdit(candidate ?? draft, etag: etag)
+        try saved.requireSameComparison(await exhibition(draft.id))
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+    }
+
     func prepareWorkspaceCeilingRailInsertion(_ attachments: [WorkspaceCeilingRailAttachment], furnishingId: String,
                                               expectedModelSHA256: String?, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
         guard admitsWorkspaceCeilingRail, document.pending == nil, document.tenantId == tenant,

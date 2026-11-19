@@ -57,6 +57,18 @@ struct WorkspaceFurnishingIntakeView: View {
     @State private var placementId = UUID().uuidString.lowercased()
     @State private var placementStaged = false
     @State private var seatPolicyETag: String?
+    private enum PlacementCheck: Equatable {
+        case ceiling(WorkspaceCeilingRailAttachment, furnishingId: String)
+        case portal(openingId: String, furnishingId: String)
+    }
+    private struct CheckedPlacement {
+        let placement: PlacementCheck
+        let revision: UInt64
+        let etag: String
+        let message: String
+        let eligible: Bool
+    }
+    @State private var checkedPlacement: CheckedPlacement?
     private var busy: Bool { busyActivity != nil }
 
     init(model: ExhibitionModel, access: UUID, initialKind: WorkspaceFurnishingKind? = nil,
@@ -408,6 +420,73 @@ struct WorkspaceFurnishingIntakeView: View {
         }
     }
 
+    private var supportsPlacementCheck: Bool { model.currentCataloguePlacementCheckAvailable }
+
+    private var ceilingAttachment: WorkspaceCeilingRailAttachment? {
+        guard !ceilingSurface.isEmpty, let u = Double(ceilingU), let v = Double(ceilingV),
+              let angle = Double(yaw), let gap = Double(ceilingGap),
+              [u, v, angle, gap].allSatisfy(\.isFinite) else { return nil }
+        return WorkspaceCeilingRailAttachment(placementId: placementId, surfaceId: ceilingSurface,
+            anchor: [u, v], yaw: angle * .pi / 180, gap: gap)
+    }
+
+    private func result(for placement: PlacementCheck?) -> CheckedPlacement? {
+        guard let checkedPlacement, checkedPlacement.placement == placement,
+              checkedPlacement.revision == model.state?.revision, checkedPlacement.etag == model.state?.etag,
+              !model.dirty, access == model.viewportAccessID else { return nil }
+        return checkedPlacement
+    }
+
+    @ViewBuilder
+    private func placementCheck(_ placement: PlacementCheck?, enabled: Bool, prompt: String) -> some View {
+        if supportsPlacementCheck {
+            if let checked = result(for: placement) {
+                Text(checked.message).foregroundStyle(checked.eligible ? Color.secondary : Color.primary)
+            } else if !enabled {
+                Text("제작 서비스 연결과 전시 편집 상태를 확인하세요.").foregroundStyle(.secondary)
+            } else if model.dirty || model.state?.etag == nil {
+                Text("전시를 저장하면 현재 위치의 배치 가능 여부를 확인할 수 있습니다.").foregroundStyle(.secondary)
+            } else if placement == nil {
+                Text(prompt).foregroundStyle(.secondary)
+            }
+            Button("배치 가능 여부 확인") {
+                guard let placement else { return }
+                Task { await checkPlacement(placement) }
+            }.disabled(!enabled || model.dirty || model.state?.etag == nil || placement == nil)
+        }
+    }
+
+    private func checkPlacement(_ placement: PlacementCheck) async {
+        await perform("현재 위치의 배치 가능 여부를 확인하고 있습니다…") {
+            guard let document = model.state, !model.dirty, let etag = document.etag else { return }
+            let outcome: (Bool, String)
+            do {
+                try await model.withWorkspaceFurnishingAccess(access) { api in
+                    switch placement {
+                    case .ceiling(let attachment, let furnishingId):
+                        try await api.verifyOrdinaryCeilingRailFit(attachment, furnishingId: furnishingId, in: document)
+                    case .portal(let openingId, let furnishingId):
+                        _ = try await api.prepareWorkspacePortalFinish(openingId: openingId, furnishingId: furnishingId, in: document)
+                    }
+                }
+                outcome = (true, "선택한 위치에 배치할 수 있습니다.")
+            } catch let failure as AuthoringFailure {
+                try Task.checkCancellation()
+                if failure.code == "CEILING_RAIL_INVALID" {
+                    outcome = (false, "이 위치에는 레일을 배치할 수 없습니다. 같은 공간의 천장과 가로·세로 위치, 방향, 간격을 확인하세요.")
+                } else if failure.code == "PORTAL_SIZE_UNSUPPORTED" || failure.code == "PORTAL_WALL_DEPTH_UNSUPPORTED" {
+                    outcome = (false, "선택한 마감이 문에 맞지 않습니다. 문 크기, 벽 두께와 연결된 출입구를 확인하세요.")
+                } else {
+                    outcome = (false, failure.errorDescription ?? "선택한 위치와 비품 등록 상태를 다시 확인하세요.")
+                }
+            }
+            guard access == model.viewportAccessID, model.state?.revision == document.revision,
+                  model.state?.etag == etag, !model.dirty else { return }
+            checkedPlacement = .init(placement: placement, revision: document.revision, etag: etag,
+                                     message: outcome.1, eligible: outcome.0)
+        }
+    }
+
     private var ceilingRailSection: some View {
         Section("천장 레일 배치") {
             if let draft = model.draft {
@@ -427,21 +506,22 @@ struct WorkspaceFurnishingIntakeView: View {
                 }
                 TextField("방향 (°)", text: $yaw)
                 TextField("천장 간격 (m)", text: $ceilingGap)
-                Button("천장에 레일 배치") { Task { await placeCeilingRail() } }
-                    .disabled(ceilingSurface.isEmpty || !model.workspaceCeilingRailAvailable)
+                if let target {
+                    let check = ceilingAttachment.map { PlacementCheck.ceiling($0, furnishingId: target.id) }
+                    placementCheck(check, enabled: model.workspaceCeilingRailAvailable,
+                                   prompt: "대상 천장과 유효한 위치·방향·간격을 입력하세요.")
+                    Button("천장에 레일 배치") { Task { await placeCeilingRail() } }
+                        .disabled(ceilingSurface.isEmpty || !model.workspaceCeilingRailAvailable || result(for: check)?.eligible == false)
+                }
             }
         }
     }
 
     private func placeCeilingRail() async {
         await perform {
-            guard let target, target.kind == .ceilingRail,
-                  let u = Double(ceilingU), let v = Double(ceilingV), let angle = Double(yaw),
-                  let gap = Double(ceilingGap), [u, v, angle, gap].allSatisfy(\.isFinite) else {
+            guard let target, target.kind == .ceilingRail, let attachment = ceilingAttachment else {
                 throw AuthoringFailure("CEILING_RAIL_INVALID")
             }
-            let attachment = WorkspaceCeilingRailAttachment(placementId: placementId, surfaceId: ceilingSurface,
-                anchor: [u, v], yaw: angle * .pi / 180, gap: gap)
             if try await model.placeWorkspaceCeilingRail(attachment, furnishingId: target.id, access: access) {
                 self.target = nil
                 placementStaged = true
@@ -466,10 +546,12 @@ struct WorkspaceFurnishingIntakeView: View {
                     }
                 }
                 if let target, target.kind == .portalFinish {
+                    let check = portalOpening.isEmpty ? nil : PlacementCheck.portal(openingId: portalOpening, furnishingId: target.id)
+                    placementCheck(check, enabled: model.workspacePortalFinishAvailable, prompt: "마감을 연결할 저장된 문을 선택하세요.")
                     Button("문에 마감 연결") {
                         let opening = portalOpening
                         Task { await applyPortal(openingId: opening, furnishingId: target.id) }
-                    }.disabled(portalOpening.isEmpty || !model.canEditWorkspacePortalFinish)
+                    }.disabled(portalOpening.isEmpty || !model.canEditWorkspacePortalFinish || result(for: check)?.eligible == false)
                 }
                 if WorkspacePortalFinish.hasAttachment(openingId: portalOpening, in: draft) {
                     Button("문에서 마감 해제") {
