@@ -1215,9 +1215,9 @@ const CURRENT_DEFAULT_CATALOGUE_LINE_LEDGER_SHA256: &str = "e7981de4097237f7c6a6
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CURRENT_DEFAULT_CATALOGUE_PAIR: (RuntimeTuple, (u64, &str)) = (
     (
-        "fd4ea70754066f0b3374d0008270f68fa2a424ff",
-        "519e014642ce92d849e90da42b7d3a8208e7c2a6dea1fbb27a52e36774659b1f",
-        "67613da677830cdc9f177cfee6ed650df8f3037f86be745c36f32b1eac3052e8",
+        "5d855b82ef42f52141c660d2fc06d38ee6348f55",
+        "032a055494daa91e44e5d33c96c28877b9801fbef16433b0f9eebf8f4f590e6f",
+        "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98",
     ),
     (17916, "554f75d274f6f7ba7534fb0063e72d792d77beaba6e8fa21a8d8e2d731787a2a"),
 );

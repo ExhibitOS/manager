@@ -3354,7 +3354,7 @@ public actor AuthoringAPI {
 
     nonisolated static func supportsCurrentDefaultCatalogueRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        manifest == "67613da677830cdc9f177cfee6ed650df8f3037f86be745c36f32b1eac3052e8"
+        manifest == "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98"
         #else
         return false
         #endif
