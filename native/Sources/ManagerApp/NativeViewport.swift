@@ -1523,7 +1523,7 @@ struct NativeViewportArea: View {
                     HStack {
                         Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
                         roomAddControls
-                        Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
+                        lightAdditionControls
                     }.disabled(model.entrancePreviewActive || !controller.connected || model.busy || model.pending || model.formDirty || model.positionDirty || model.architectureDirty || model.architectureApplying || model.placingArtwork)
                     Text("숫자 입력은 이 Mac에 보관한 뒤 3D에 반영됩니다. 3D 변경도 이 Mac에 보관하며, 전시 저장과 공개는 별도로 진행합니다.").foregroundStyle(.secondary)
                 }
@@ -1534,6 +1534,29 @@ struct NativeViewportArea: View {
             } else { Text("전시를 열고 로컬 제작을 시작하면 3D를 볼 수 있습니다.").foregroundStyle(.secondary) }
         }
     }
+    @ViewBuilder private var lightAdditionControls: some View {
+        if model.fixtureFirstAuthoringAvailable {
+            Menu("조명 기구 배치") {
+                ForEach([NativeLightFixture.spotCan, .disc, .panel], id: \.self) { fixture in
+                    Button(fixture.title) { Task { await model.placeFixtureFirstLight(fixture) } }
+                }
+                if !model.fixtureFirstCatalogue.isEmpty {
+                    Section("카탈로그") {
+                        ForEach(Array(model.fixtureFirstCatalogue.enumerated()), id: \.offset) { _, row in
+                            if let id = row["catalogId"].string, let title = row["name"].string {
+                                Button(title) { Task { await model.placeFixtureFirstLight(.none, catalogueId: id) } }
+                            }
+                        }
+                    }
+                }
+            }
+            .disabled(!model.canPlaceFixtureFirstLight)
+            .task(id: controller.connected) { await model.loadSharedFurnishingCatalog() }
+        } else {
+            Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
+        }
+    }
+
     @ViewBuilder private var roomAddControls: some View {
         Button("공간 추가") {
             let action: NativeGeometryAction = model.canUseRoomBaseLight
@@ -1646,7 +1669,7 @@ struct NativeViewportArea: View {
                 Menu {
                     Button("벽과 바닥 만들기") { Task { await controller.perform(.whiteCube(roomId: model.roomId), model: model) } }
                     roomAddControls
-                    Button("조명 추가") { Task { await controller.perform(.addLight(roomId: model.roomId), model: model) } }
+                    lightAdditionControls
                     Button("벤치 추가") { model.beginBench() }.disabled(!model.canAddBench)
                     Button("명판 추가") { model.beginPlaque() }.disabled(!model.canAddPlaque)
                 } label: { Label("추가", systemImage: "plus") }

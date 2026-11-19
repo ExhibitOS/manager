@@ -273,11 +273,16 @@ struct SelectedLightInspector: View {
                                 }.textFieldStyle(.roundedBorder).padding(.top, 6)
                             }.disabled(!ready || !model.canPreviewLightObjectAction)
                             VStack(alignment: .leading, spacing: 8) {
-                                Button("기구를 숨기고 빛만 유지") { Task { await model.previewLightObjectAction("set-light-fixture") } }
+                                if !model.fixtureFirstAuthoringAvailable {
+                                    Button("기구를 숨기고 빛만 유지") { Task { await model.previewLightObjectAction("set-light-fixture") } }
+                                }
                                 Button("조명 복제 미리보기") { Task { await model.previewLightObjectAction("duplicate-light-object") } }
                                 Button("조명 삭제 미리보기", role: .destructive) { Task { await model.previewLightObjectAction("remove-light-object") } }
                             }.disabled(!ready || !model.canPreviewLightObjectAction)
-                            Text("기구 숨기기는 빛을 유지합니다. 복제·삭제는 기구와 부착 정보를 함께 처리하며, 미리보기 후 조명 적용을 선택하세요.").font(.caption).foregroundStyle(.secondary)
+                            Text(model.fixtureFirstAuthoringAvailable
+                                 ? "기구를 바꾸려면 적합한 기구를 선택하세요. 삭제할 때는 조명과 기구가 함께 제거됩니다."
+                                 : "기구 숨기기는 빛을 유지합니다. 복제·삭제는 기구와 부착 정보를 함께 처리하며, 미리보기 후 조명 적용을 선택하세요.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         if model.lightDirty && !model.lightPreviewing { Text("미리보기 후 적용하세요. 적용 전 입력은 아직 보관되지 않았습니다.").font(.caption).foregroundStyle(.secondary) }
                     }

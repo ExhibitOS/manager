@@ -1293,6 +1293,47 @@ final class ExhibitionModel: ObservableObject {
         lightObjectProposalAvailable && viewportController.editingContextActive && viewportController.connected
             && state?.dirty == false && state?.etag != nil
     }
+    var fixtureFirstAuthoringAvailable: Bool {
+        lightObjectProposalAvailable && session?.advertisesFixtureFirstAuthoring == true
+    }
+    var fixtureFirstCatalogue: [DocumentValue] {
+        guard sharedFurnishingCatalogReady, sharedFurnishingCatalogAccessID == viewportAccessID else { return [] }
+        return sharedFurnishingCatalog.filter { row in
+            guard let id = row["catalogId"].string else { return false }
+            return LightObjectAuthoring.fixtureCatalogueIDs.contains(id) && id != NativeTrackSpotAim.catalogue
+        }
+    }
+    var canPlaceFixtureFirstLight: Bool {
+        fixtureFirstAuthoringAvailable && lightObjectAuthorityAvailable && lightObjectContext()
+            && !lightDirty && !lightPreviewing && !roomId.isEmpty && !entrancePreviewActive
+    }
+    func placeFixtureFirstLight(_ fixture: NativeLightFixture, catalogueId: String? = nil) async {
+        guard canPlaceFixtureFirstLight, let api, let current = state, let base = current.draft, let etag = current.etag else { return }
+        if let catalogueId, !fixtureFirstCatalogue.contains(where: { $0["catalogId"] == .string(catalogueId) }) { return }
+        let access = viewportAccessID, context = viewportController.editingContextGeneration, room = roomId
+        await work {
+            guard await api.admitsNativeFixtureFirstAuthoring else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+            let saved = try await api.exhibition(base.id)
+            guard saved.draft == base, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+            let frame = try viewportController.nativeLightObjectFrame(in: current)
+            let command = try LightObjectRequest.fixtureAddition(roomId: room, fixture: fixture, catalogueId: catalogueId, in: base)
+            let request = try LightObjectRequest(command: command, frame: frame)
+            let preview = try await api.prepareNativeLightObject(request, in: current, saved: saved)
+            let policy = try await publishedEditingAccess(base.id, api: api, expected: saved)
+            guard !policy.immutable, self.api === api, fixtureFirstAuthoringAvailable, viewportAccessID == access,
+                  state?.revision == current.revision, state?.etag == etag, draft == base, roomId == room,
+                  viewportController.confirmsNativeLightObjectFrame(frame, in: current, context: context) else {
+                throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+            }
+            var next = current
+            next.draft = try preview.apply(to: base)
+            try await persist(next)
+            selectedLightId = preview.lightId
+            viewportSelection = ViewportSelection(kind: "light", id: preview.lightId)
+            syncFields()
+            notice = "기구와 조명을 배치했습니다. 전시를 저장한 뒤 조준과 빔을 조정할 수 있습니다."
+        }
+    }
     var canPreviewLightObjectAction: Bool {
         lightObjectAuthorityAvailable && canPreviewLightContext && !lightDirty && !lightPreviewing && !selectedLightId.isEmpty
     }
