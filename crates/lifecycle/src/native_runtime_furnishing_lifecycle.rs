@@ -193,6 +193,12 @@ impl Binding {
         let current_catalogue = self.catalog == 57 && self.restore.is_none()
             && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
             && crate::native_payload::current_default_catalogue_host_matches(tuple);
+        let official_lighting = self.restore.is_none()
+            && crate::native_payload::official_room_lighting_catalog(tuple).is_some_and(|catalog|
+                catalog.version() == self.catalog
+                && (self.admission_kind == Admission::CleanReopen
+                    || (self.catalog == 57 && self.phase == Phase::Active
+                        && self.admission_kind == Admission::FreshEmpty)));
         let current_rail = self.catalog == 53 && self.restore.is_none()
             && self.admission_kind == Admission::CleanReopen
             && crate::native_payload::current_rail_host_matches(tuple);
@@ -219,7 +225,7 @@ impl Binding {
         };
         if self.version != 1
             || (private_codec.is_some() && !private_exb)
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail || private_exb || current_rail || current_catalogue
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail || private_exb || current_rail || current_catalogue || official_lighting
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
@@ -428,7 +434,7 @@ impl Binding {
                 Ok(None)
             } else { Err(err(ERROR)) };
         }
-        if transition.is_prepared_viewer_budget_refresh()
+        if transition == FurnishingTransition::OfficialRoomLighting || transition.is_prepared_viewer_budget_refresh()
             || crate::native_payload::r285_bench_after_terminal_transition((transition.source().2, transition.target().2))
             || crate::native_payload::r285_greek_thumbnail_v2_transition((transition.source().2, transition.target().2))
             || crate::native_payload::r285_greek_thumbnail_trace_transition((transition.source().2, transition.target().2))

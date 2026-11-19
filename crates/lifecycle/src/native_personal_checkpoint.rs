@@ -26,9 +26,9 @@ pub use rebind::rebind_r178_workspace;
 const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4";
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
-const OFFICIAL_ROOM_LIGHTING_SOURCE: &str = "86796846d9f8c082746370b7e9cfe25fce002dc79fe21d45f80e165807ccf61b";
-#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
 const OFFICIAL_ROOM_LIGHTING_JOURNAL: &str = "c13f3e2f6e5de1d66c00037c876a2a3e7614e02fe78350167e14f689e1b2f5aa";
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+const OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES: u64 = 4512 * 1024 * 1024;
 #[cfg(feature = "workspace-v5-owner-validation")]
 use crate::native_payload::{
     CATALOG40_FRAME_TRANSITION, CATALOG40_TANGENT_TRANSITION, FurnishingTransition,
@@ -198,7 +198,7 @@ fn check_saved_transition_document(
     // Library-only 049 still seals the exact scoped Native document digest.
     // It needs no fabricated exhibition head; every other pair keeps its guards.
     if gpu_empty_document(pair, document, owner) { return Ok(()); }
-    if FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || step.is_combined_thumbnail_runtime_refresh())
+    if FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. } | FurnishingTransition::OfficialRoomLighting) || step.is_combined_thumbnail_runtime_refresh())
         && (document.pending.is_some() || document.saved_edit_version.is_none()
             || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != document.saved_edit_version)
     { return Err(err("NATIVE_PHYSICAL_CHECKPOINT_SAVED_DOCUMENT_REQUIRED")); }
@@ -252,7 +252,7 @@ fn catalog45_activation_saved_document(
         && !crate::native_payload::catalog45_clean_exit_handoff(pair)
         && !crate::native_payload::catalog45_restored_backed_handoff(pair)
         && !crate::native_payload::catalog45_adoption_handoff(pair)
-        && !FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || step.is_combined_thumbnail_runtime_refresh() || step.is_current52_interrupted_recovery())
+        && !FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. } | FurnishingTransition::OfficialRoomLighting) || step.is_combined_thumbnail_runtime_refresh() || step.is_current52_interrupted_recovery())
     {
         return Ok(false);
     }
@@ -504,11 +504,16 @@ pub(crate) fn transition_source_ledger(payload: &crate::native_payload::Payload,
         FurnishingTransition::Upgrade51 { .. } => payload.catalog51_upgrade_source_ledger(),
         FurnishingTransition::Upgrade52 { .. } => payload.catalog52_upgrade_source_ledger(),
         FurnishingTransition::Upgrade49 { .. } => payload.catalog49_upgrade_source_ledger(),
+        FurnishingTransition::OfficialRoomLighting => payload.official_room_lighting_source_ledger(),
         _ => payload.workspace_furnishing_ledger(transition.target_catalog()),
     }
 }
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting) {
+        return OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES;
+    }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
@@ -1408,9 +1413,8 @@ impl LifecycleService {
                 let (trial, transition) = furnishing.ok_or_else(invalid)?;
                 let saved = document.ok_or_else(invalid)?;
                 let record = installation_backup::source_bytes(&self.root, RECORD, 4096, true)?;
-                if checkpoint.old_manifest != OFFICIAL_ROOM_LIGHTING_SOURCE
+                if transition != FurnishingTransition::OfficialRoomLighting
                     || checkpoint.new_manifest != target_manifest
-                    || transition.source_catalog().version() != 52 || transition.target_catalog().version() != 57
                     || !checkpoint.trial || checkpoint.restore.is_some() || checkpoint.drained_failure.is_some()
                     || !saved_workspace_host
                 {
@@ -1518,7 +1522,7 @@ impl LifecycleService {
             if (crate::native_payload::catalog45_clean_exit_handoff(pair)
                 || crate::native_payload::catalog45_restored_backed_handoff(pair)
                 || crate::native_payload::catalog45_adoption_handoff(pair)
-                || FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. }) || step.is_combined_thumbnail_runtime_refresh() || step.is_current52_interrupted_recovery()))
+                || FurnishingTransition::from_manifests(pair).is_some_and(|step| matches!(step, FurnishingTransition::Upgrade49 { .. } | FurnishingTransition::Upgrade50 { .. } | FurnishingTransition::Upgrade51 { .. } | FurnishingTransition::Upgrade52 { .. } | FurnishingTransition::OfficialRoomLighting) || step.is_combined_thumbnail_runtime_refresh() || step.is_current52_interrupted_recovery()))
                 && !catalog45_activation_saved_document(
                     pair, false, false, checkpoint.saved_document_sha256.as_deref(), document.ok_or_else(invalid)?,
                 )?
@@ -1961,6 +1965,28 @@ enum RetainedSavedHeadCheck<'a> {
     Sealed { target_manifest: Option<&'a str> },
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+fn check_official_room_lighting_head(
+    service: &LifecycleService,
+    profile: &Path,
+    document: &super::installations::native_document::DocumentState,
+) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(profile).map_err(|_| invalid())?;
+    if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != crate::native_payload::OFFICIAL_ROOM_LIGHTING_PROFILE_ID
+        || service.root != profile.join("local-runtime")
+        || document.revision != 588 || document.pending.is_some() || document.saved_edit_version != Some(268)
+        || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != Some(268)
+        || document.etag.as_deref() != Some("\"studio-r210-96c2458fcc2351d4fb8b161b51f4889853120edd94193c5733e3a4dcf1484907\"")
+    {
+        return Err(invalid());
+    }
+    let journal = super::installations::native_document::document_filename(&service.root);
+    let bytes = installation_backup::source_bytes(profile, &journal, MAX_MANIFEST as u64, true)?;
+    if digest(&bytes) != OFFICIAL_ROOM_LIGHTING_JOURNAL { return Err(invalid()); }
+    Ok(())
+}
+
 impl InstallationController {
     fn with_transition_key<T>(
         &self,
@@ -2108,6 +2134,9 @@ impl InstallationController {
             if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
                 return Err(invalid());
             }
+            if FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting) {
+                check_official_room_lighting_head(service, profile, document)?;
+            }
             let owner = service.personal_identity()?;
             if let Some(saved) = retained_saved_head {
                 check_retained_saved_head(pair, document, saved, (&owner.0, &owner.1, &owner.2))?;
@@ -2217,7 +2246,14 @@ impl InstallationController {
             #[cfg(not(feature = "workspace-v5-owner-validation"))]
             { Current52PngRetention::Deny }
         }, saved_workspace_host.then_some(RetainedSavedHeadCheck::Sealed { target_manifest: Some(&target_manifest) }),
-        |service, _, document, key| {
+        |service, profile, document, key| {
+            #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+            if target.official_room_lighting_catalog() == Some(crate::native_payload::WorkspaceFurnishingCatalog::DefaultCatalogue057) {
+                if !saved_workspace_host { return Err(invalid()); }
+                check_official_room_lighting_head(service, profile, document)?;
+            }
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", target_os = "macos")))]
+            let _ = profile;
             #[cfg(feature = "workspace-v5-owner-validation")]
             if target.catalog45_recovery_validation() {
                 let checkpoint = self.catalog45_activation_checkpoint(service, document, &target, staging, key)?;
@@ -2344,16 +2380,14 @@ impl InstallationController {
         saved_workspace_host: bool,
     ) -> Result<()> {
         let manifest = target.context().manifest_sha256;
-        let transition = FurnishingTransition::from_manifests((OFFICIAL_ROOM_LIGHTING_SOURCE, &manifest)).ok_or_else(invalid)?;
-        if !saved_workspace_host || transition.target_catalog().version() != 57 || !hash_valid(qualified_receipt_sha256) {
+        let transition = FurnishingTransition::from_manifests((crate::native_payload::OFFICIAL_ROOM_LIGHTING_SOURCE.2, &manifest));
+        if !saved_workspace_host || transition != Some(FurnishingTransition::OfficialRoomLighting) || !hash_valid(qualified_receipt_sha256) {
             return Err(invalid());
         }
         target.recheck()?;
         self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny,
             Some(RetainedSavedHeadCheck::Sealed { target_manifest: Some(&manifest) }), |service, profile, document, key| {
-                let journal = super::installations::native_document::document_filename(&service.root);
-                let bytes = installation_backup::source_bytes(profile, &journal, MAX_MANIFEST as u64, true)?;
-                if digest(&bytes) != OFFICIAL_ROOM_LIGHTING_JOURNAL { return Err(invalid()); }
+                check_official_room_lighting_head(service, profile, document)?;
                 service.recover_local_personal_runtime_transition(staging, key, true, TransitionRetention::None,
                     Some(document), Some((&manifest, qualified_receipt_sha256)))
             })

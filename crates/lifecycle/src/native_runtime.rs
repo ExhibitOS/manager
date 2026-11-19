@@ -1839,16 +1839,25 @@ impl Session {
     fn workspace_furnishing_start(&self, prior: Option<&Binding>) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
-        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057
-            && (self.normal_oex_selected || self.transition_fence.is_some()
-                || prior.is_some_and(|binding| binding.phase != Phase::Clean || binding.restore.is_some()
-                    || !binding.matches_catalog_tuple(57, (
-                        &self.payload.context().source_commit,
-                        self.payload.producer_sha256(),
-                        &self.payload.context().manifest_sha256,
-                    ))))
-        {
-            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057 {
+            let occupied = self.payload.official_room_lighting_catalog() == Some(catalog);
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            let occupied_trial = occupied && self.transition_fence.is_some()
+                && self.furnishing_transition_trial.as_ref().is_some_and(|(_, step)|
+                    *step == FurnishingTransition::OfficialRoomLighting);
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+            let occupied_trial = false;
+            if self.normal_oex_selected || (self.transition_fence.is_some() && !occupied_trial)
+                || (!occupied_trial && (occupied && prior.is_none()
+                    || prior.is_some_and(|binding| binding.phase != Phase::Clean || binding.restore.is_some()
+                        || !binding.matches_catalog_tuple(57, (
+                            &self.payload.context().source_commit,
+                            self.payload.producer_sha256(),
+                            &self.payload.context().manifest_sha256,
+                        )))))
+            {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
         }
         if catalog == WorkspaceFurnishingCatalog::CurrentRail053 {
             self.check_native_observation_fence()?;
@@ -2215,6 +2224,34 @@ impl Session {
 
     fn verify_workspace_furnishing_ledger(&mut self) -> Result<()> {
         self.verify_furnishing_ledger_before(Instant::now() + Duration::from_secs(60))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn migrate_official_room_lighting_checkpoint(&mut self) -> Result<()> {
+        let refused = || err("FURNISHING_RECOVERY_UNAVAILABLE");
+        let (trial, transition) = self.furnishing_transition_trial.as_ref().ok_or_else(refused)?;
+        let binding = self.active_furnishing_binding().ok_or_else(refused)?;
+        if *transition != FurnishingTransition::OfficialRoomLighting || self.transition_fence.is_none()
+            || binding.phase != Phase::Active || binding.admission_kind != Admission::CleanReopen
+            || binding.generation != trial.generation || binding.restore.is_some()
+            || !binding.matches_catalog_tuple(57, transition.target())
+            || self.postgres.is_none() || self.node.is_some() || self.auxiliary.is_some()
+        {
+            return Err(refused());
+        }
+        self.check_native_observation_fence()?;
+        if self.furnishing_writer_lifetime.as_ref().ok_or_else(refused)?.identity()? != binding.physical {
+            return Err(refused());
+        }
+        let sql = self.payload.official_room_lighting_migration()?;
+        let source = self.payload.official_room_lighting_source_ledger()?;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        if self.query_database_before("exhibitos", "SELECT name,sha256 FROM public.schema_migrations ORDER BY name", deadline)? != source {
+            return Err(refused());
+        }
+        self.query_database_mode("exhibitos", &sql, deadline, true)?;
+        self.verify_furnishing_ledger_before(deadline)?;
+        self.check_native_observation_fence()
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -3175,6 +3212,12 @@ const { isDeepStrictEqual } = require('node:util');
             let retained_hayes_trial = self.retained_hayes_trial.is_some();
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
             let retained_hayes_trial = false;
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if self.furnishing_transition_trial.as_ref().is_some_and(|(_, step)|
+                *step == FurnishingTransition::OfficialRoomLighting)
+            {
+                self.migrate_official_room_lighting_checkpoint()?;
+            }
             if retained_hayes_trial {
                 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
                 self.check_hayes_preopen_parent()?;
@@ -3666,6 +3709,18 @@ const { isDeepStrictEqual } = require('node:util');
         observe_phase: Option<&mut dyn FnMut(Context)>,
     ) -> Result<Context> {
         let services = matches!(mode, StartMode::Services);
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if self.payload.official_room_lighting_catalog() == Some(WorkspaceFurnishingCatalog::DefaultCatalogue057) {
+            use std::os::unix::fs::MetadataExt;
+            let refused = || err("NATIVE_RUNTIME_UNQUALIFIED");
+            let profile = self.service.root.parent().ok_or_else(refused)?;
+            let metadata = fs::symlink_metadata(profile).map_err(|_| refused())?;
+            if !services || !metadata.is_dir() || self.service.root != profile.join("local-runtime")
+                || (metadata.dev(), metadata.ino()) != crate::native_payload::OFFICIAL_ROOM_LIGHTING_PROFILE_ID
+            {
+                return Err(refused());
+            }
+        }
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         if !matches!(self.hayes_bootstrap, HayesBootstrap::Disabled)
             && !(services && matches!(self.hayes_bootstrap, HayesBootstrap::Armed(_)))

@@ -1213,6 +1213,37 @@ const CURRENT_DEFAULT_CATALOGUE_METADATA: &str = "platform/apps/api/trust/defaul
 const CURRENT_DEFAULT_CATALOGUE_LINE_LEDGER_SHA256: &str = "e7981de4097237f7c6a6aa17d0b1b7b4c43008b9e9c6db8ac39b3d925437fc37";
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const OFFICIAL_ROOM_LIGHTING_SOURCE: RuntimeTuple = (
+    "97cfd01de5b6d99911f1b7ec063abf293fd915cc",
+    "bf687458322bf50d3d70e99ed9ec29c08ebc35316cebe87f51fc92c947f2b39e",
+    "86796846d9f8c082746370b7e9cfe25fce002dc79fe21d45f80e165807ccf61b",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const OFFICIAL_ROOM_LIGHTING_TARGET: RuntimeTuple = (
+    "1342467f3563d264219f4d5ca83462c18915c58c",
+    "a8ed539017902afe8a6d4da9226cbcad3d4eaa7b8d510c8deed662a50bc0c9f8",
+    "495cb1d9bb395c805b64e5572a9e1647e67b18c4e53f1668f658ce41f0ce2818",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const OFFICIAL_ROOM_LIGHTING_PROFILE_ID: (u64, u64) = (16777244, 42815025);
+const OFFICIAL_ROOM_LIGHTING_SQL: (&str, u64, &str) = (
+    "platform/scripts/occupied-room-lighting-migration.sql", 2159,
+    "2cb4ab0744c5b88f308edaacd2c37fcb090b873ced6cd33d05884903773faefe",
+);
+const OFFICIAL_ROOM_LIGHTING_SOURCE_LEDGER: &str = "a4361050fb4fa6c3b741aefbe788179719ffb7615234e43eaab58e6b9d35aaa1";
+const OFFICIAL_ROOM_LIGHTING_TARGET_LEDGER: &str = "883c741f7bbcbe730b1d7a9b7b241e9b93f1d9508cd466e4e8aad1f169368f6c";
+
+pub(crate) fn official_room_lighting_catalog(tuple: (&str, &str, &str)) -> Option<WorkspaceFurnishingCatalog> {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    {
+        if tuple == OFFICIAL_ROOM_LIGHTING_SOURCE { return Some(WorkspaceFurnishingCatalog::CombinedThumbnails052); }
+        if tuple == OFFICIAL_ROOM_LIGHTING_TARGET { return Some(WorkspaceFurnishingCatalog::DefaultCatalogue057); }
+    }
+    let _ = tuple;
+    None
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CURRENT_DEFAULT_CATALOGUE_PAIR: (RuntimeTuple, (u64, &str)) = (
     (
         "5d855b82ef42f52141c660d2fc06d38ee6348f55",
@@ -2012,6 +2043,7 @@ pub(crate) fn catalog45_startup_recovery(pair: (&str, &str)) -> Option<Catalog45
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
+    if manifest == OFFICIAL_ROOM_LIGHTING_TARGET.2 { return true; }
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
         || CATALOG39_UPGRADE_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_EXB_TARGET.is_some_and(|target| target.2 == manifest)
@@ -2112,6 +2144,7 @@ pub(crate) enum FurnishingTransition {
     Upgrade50 { source: RuntimeTuple, target: RuntimeTuple },
     Upgrade51 { source: RuntimeTuple, target: RuntimeTuple },
     Upgrade52 { source: RuntimeTuple, target: RuntimeTuple },
+    OfficialRoomLighting,
     Recover45 { source: RuntimeTuple, target: RuntimeTuple },
     SameCatalog { source: RuntimeTuple, target: RuntimeTuple, catalog: WorkspaceFurnishingCatalog },
 }
@@ -2193,6 +2226,9 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair == (OFFICIAL_ROOM_LIGHTING_SOURCE.2, OFFICIAL_ROOM_LIGHTING_TARGET.2) {
+            return Some(Self::OfficialRoomLighting);
+        }
         if let Some((source, target)) = r285_greek_thumbnail_trace_runtime_pair(pair) {
             return Some(Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
         }
@@ -2526,6 +2562,7 @@ impl FurnishingTransition {
 
     pub(crate) fn source_catalog(self) -> WorkspaceFurnishingCatalog {
         match self {
+            Self::OfficialRoomLighting => WorkspaceFurnishingCatalog::CombinedThumbnails052,
             Self::Upgrade39(_) => WorkspaceFurnishingCatalog::MaterialPublication039,
             Self::Upgrade52 { .. } => WorkspaceFurnishingCatalog::CurrentImageThumbnail051,
             Self::Upgrade44 { .. } => WorkspaceFurnishingCatalog::HayesRelease044,
@@ -2538,6 +2575,7 @@ impl FurnishingTransition {
 
     pub(crate) fn target_catalog(self) -> WorkspaceFurnishingCatalog {
         match self {
+            Self::OfficialRoomLighting => WorkspaceFurnishingCatalog::DefaultCatalogue057,
             Self::Upgrade40(_) => WorkspaceFurnishingCatalog::HayesRelease044,
             Self::Upgrade44 { .. } => WorkspaceFurnishingCatalog::RequiredModelPreparation045,
             Self::Upgrade49 { .. } => WorkspaceFurnishingCatalog::GpuModelPreparation049,
@@ -2552,6 +2590,7 @@ impl FurnishingTransition {
 
     pub(crate) fn source(self) -> (&'static str, &'static str, &'static str) {
         match self {
+            Self::OfficialRoomLighting => OFFICIAL_ROOM_LIGHTING_SOURCE,
             Self::White => CATALOG40_FRAME_SOURCE,
             Self::Tangent => CATALOG40_FRAME_TARGET,
             Self::Upgrade39(_) => CATALOG39_UPGRADE_SOURCE,
@@ -2564,6 +2603,7 @@ impl FurnishingTransition {
 
     pub(crate) fn target(self) -> (&'static str, &'static str, &'static str) {
         match self {
+            Self::OfficialRoomLighting => OFFICIAL_ROOM_LIGHTING_TARGET,
             Self::White => CATALOG40_FRAME_TARGET,
             Self::Tangent => CATALOG40_TANGENT_TARGET,
             Self::Upgrade39(target) => target.0,
@@ -3052,6 +3092,29 @@ pub(crate) mod normal_oex_release_declaration_tests {
         payload.workspace_v5_validation = false;
         payload.manifest_sha256 = COMBINED_THUMBNAIL_TARGET.2.into();
         assert!(payload.workspace_furnishing_catalog().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact independently reviewed occupied 052 and 057 packages"]
+    fn official_room_lighting_only_appends_057_to_the_occupied_pair() {
+        let source_root = std::env::var_os("EXHIBITOS_TEST_OCCUPIED_052").unwrap();
+        let target_root = std::env::var_os("EXHIBITOS_TEST_OCCUPIED_057").unwrap();
+        let source = Payload::open_saved_workspace_transition(Path::new(&source_root)).unwrap();
+        let target = Payload::open_saved_workspace_transition(Path::new(&target_root)).unwrap();
+        let pair = (source.manifest_sha256.as_str(), target.manifest_sha256.as_str());
+        assert_eq!(FurnishingTransition::from_manifests(pair), Some(FurnishingTransition::OfficialRoomLighting));
+        assert!(FurnishingTransition::from_manifests((pair.1, pair.0)).is_none());
+        assert!(FurnishingTransition::from_manifests((pair.0, CURRENT_DEFAULT_CATALOGUE_PAIR.0.2)).is_none());
+        assert!(!target.current_default_catalogue_runtime());
+        assert!(!target.normal_oex_selected_input().unwrap());
+        let ledger = source.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).unwrap();
+        assert_eq!(ledger.lines().count(), 49);
+        assert_eq!(target.official_room_lighting_source_ledger().unwrap(), ledger);
+        let migrated = target.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::DefaultCatalogue057).unwrap();
+        assert_eq!(migrated.lines().count(), 50);
+        assert_eq!(digest(migrated.as_bytes()), OFFICIAL_ROOM_LIGHTING_TARGET_LEDGER);
+        assert_eq!(digest(target.official_room_lighting_migration().unwrap().as_bytes()), OFFICIAL_ROOM_LIGHTING_SQL.2);
     }
 
     #[test]
@@ -7340,6 +7403,11 @@ impl Payload {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
+        if let Some(catalog) = payload.official_room_lighting_catalog() {
+            if payload.workspace_furnishing_catalog()? != Some(catalog) { return Err(invalid()); }
+            payload.workspace_furnishing_ledger(catalog)?;
+            return Ok(payload);
+        }
         let context = payload.context();
         if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&(
             &*context.source_commit, payload.producer_sha256(), &*context.manifest_sha256
@@ -7426,6 +7494,40 @@ impl Payload {
         self.manifest.mode == "local-validation" && current_default_catalogue_host_matches((
             &self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256,
         ))
+    }
+
+    pub(crate) fn official_room_lighting_catalog(&self) -> Option<WorkspaceFurnishingCatalog> {
+        if self.manifest.mode != "local-validation" { return None; }
+        official_room_lighting_catalog((&self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn official_room_lighting_migration(&self) -> Result<String> {
+        if self.official_room_lighting_catalog() != Some(WorkspaceFurnishingCatalog::DefaultCatalogue057) {
+            return Err(invalid());
+        }
+        self.recheck()?;
+        let (path, bytes, sha256) = OFFICIAL_ROOM_LIGHTING_SQL;
+        let mut sql = Vec::with_capacity(bytes as usize);
+        fs::File::open(self.root.join(path)).map_err(|_| invalid())?
+            .take(bytes + 1).read_to_end(&mut sql).map_err(|_| invalid())?;
+        if sql.len() as u64 != bytes || digest(&sql) != sha256 { return Err(invalid()); }
+        String::from_utf8(sql).map_err(|_| invalid())
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn official_room_lighting_source_ledger(&self) -> Result<String> {
+        if self.official_room_lighting_catalog() != Some(WorkspaceFurnishingCatalog::DefaultCatalogue057) {
+            return Err(invalid());
+        }
+        let target = self.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::DefaultCatalogue057)?;
+        let (source, appended) = target.rsplit_once('\n').ok_or_else(invalid)?;
+        if appended != format!("057_default_catalogue.sql|{}", CURRENT_DEFAULT_CATALOGUE_SCHEMA.2)
+            || digest(source.as_bytes()) != OFFICIAL_ROOM_LIGHTING_SOURCE_LEDGER
+        {
+            return Err(invalid());
+        }
+        Ok(source.into())
     }
 
     fn current_default_catalogue_inputs_match(&self) -> bool {
@@ -7693,6 +7795,21 @@ impl Payload {
     }
 
     pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
+        if let Some(catalog) = self.official_room_lighting_catalog() {
+            if self.workspace_v5_validation || self.workspace_import.is_some() {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+            if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057 {
+                let (path, bytes, sha256) = OFFICIAL_ROOM_LIGHTING_SQL;
+                if !self.current_default_catalogue_inputs_match() || !self.manifest.files.iter().any(|file|
+                    file.path == path && file.link.is_none() && file.executable == Some(false)
+                    && file.bytes == Some(bytes) && file.sha256.as_deref() == Some(sha256))
+                {
+                    return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+                }
+            }
+            return Ok(Some(catalog));
+        }
         if self.current_default_catalogue_runtime() {
             if self.workspace_v5_validation || self.workspace_import.is_some() || !self.current_default_catalogue_inputs_match() {
                 return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
@@ -8145,6 +8262,8 @@ impl Payload {
     }
 
     pub(crate) fn workspace_furnishing_ledger(&self, catalog: WorkspaceFurnishingCatalog) -> Result<String> {
+        let official = self.official_room_lighting_catalog();
+        if official.is_some_and(|expected| expected != catalog) { return Err(invalid()); }
         let directories = [
             ("migrations", 1..=25),
             ("native-oex-normal", 26..=32),
@@ -8156,7 +8275,8 @@ impl Payload {
             && bench_basecolor_preparation_host_matches((
                 &self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256,
             ));
-        let bench_after_terminal = catalog == WorkspaceFurnishingCatalog::CombinedThumbnails052 && self.bench_after_terminal();
+        let bench_after_terminal = official.is_some()
+            || catalog == WorkspaceFurnishingCatalog::CombinedThumbnails052 && self.bench_after_terminal();
         let mut rows = std::collections::BTreeMap::new();
         for file in &self.manifest.files {
             let Some((directory, name)) = file.path.strip_prefix("platform/database/").and_then(|path| path.split_once('/')) else {
@@ -8171,7 +8291,7 @@ impl Payload {
                 && name.split_once('_').and_then(|(n, _)| n.parse::<u32>().ok()).is_some_and(|n| n > 45)
                 && file.path != CURRENT_IMAGE_THUMBNAIL_SCHEMA.0 && file.path != FURNISHING_THUMBNAIL_SCHEMA.0
                 && !(bench_basecolor && file.path == BENCH_BASECOLOR_PREPARATION_SCHEMA.0)
-                && !(self.hayes_preopen_terminal() && file.path == HAYES_PREOPEN_TERMINAL_SCHEMA.0)
+                && !((official.is_some() || self.hayes_preopen_terminal()) && file.path == HAYES_PREOPEN_TERMINAL_SCHEMA.0)
                 && !(bench_after_terminal && file.path == BENCH_AFTER_TERMINAL_SCHEMA.0)
             { return Err(invalid()); }
             if catalog == WorkspaceFurnishingCatalog::CurrentImageThumbnail051
@@ -8283,7 +8403,8 @@ impl Payload {
                 53
             } else if file.path.starts_with("platform/database/native-hayes-preopen-terminal/") {
                 let (path, bytes, hash) = HAYES_PREOPEN_TERMINAL_SCHEMA;
-                if !self.hayes_preopen_terminal() || catalog != WorkspaceFurnishingCatalog::CombinedThumbnails052
+                if (official.is_none()
+                    && (!self.hayes_preopen_terminal() || catalog != WorkspaceFurnishingCatalog::CombinedThumbnails052))
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 54
@@ -8295,7 +8416,8 @@ impl Payload {
                 55
             } else if directory == "native-default-catalogue" {
                 let (path, bytes, hash) = CURRENT_DEFAULT_CATALOGUE_SCHEMA;
-                if catalog != WorkspaceFurnishingCatalog::DefaultCatalogue057 || !self.current_default_catalogue_runtime()
+                if catalog != WorkspaceFurnishingCatalog::DefaultCatalogue057
+                    || (official.is_none() && !self.current_default_catalogue_runtime())
                     || file.path != path || file.link.is_some() || file.executable != Some(false)
                     || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 {
@@ -8346,6 +8468,8 @@ impl Payload {
         }
         // These isolated catalogs append one migration to 045.
         let count = match catalog {
+            WorkspaceFurnishingCatalog::CombinedThumbnails052 if official.is_some() => 49,
+            WorkspaceFurnishingCatalog::DefaultCatalogue057 if official.is_some() => 50,
             WorkspaceFurnishingCatalog::CombinedThumbnails052 if bench_after_terminal => 49,
             WorkspaceFurnishingCatalog::CombinedThumbnails052 if bench_basecolor || self.hayes_preopen_terminal() => 48,
             WorkspaceFurnishingCatalog::CombinedThumbnails052 => 47,
@@ -8357,11 +8481,13 @@ impl Payload {
         };
         if rows.len() != count as usize { return Err(invalid()); }
         let ledger = rows.into_values().collect::<Vec<_>>().join("\n");
-        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057
-            && digest(ledger.as_bytes()) != CURRENT_DEFAULT_CATALOGUE_LINE_LEDGER_SHA256
-        {
-            return Err(invalid());
-        }
+        let expected_digest = match (official, catalog) {
+            (Some(WorkspaceFurnishingCatalog::CombinedThumbnails052), _) => Some(OFFICIAL_ROOM_LIGHTING_SOURCE_LEDGER),
+            (Some(WorkspaceFurnishingCatalog::DefaultCatalogue057), _) => Some(OFFICIAL_ROOM_LIGHTING_TARGET_LEDGER),
+            (_, WorkspaceFurnishingCatalog::DefaultCatalogue057) => Some(CURRENT_DEFAULT_CATALOGUE_LINE_LEDGER_SHA256),
+            _ => None,
+        };
+        if expected_digest.is_some_and(|expected| digest(ledger.as_bytes()) != expected) { return Err(invalid()); }
         Ok(ledger)
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
