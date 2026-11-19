@@ -75,6 +75,10 @@ final class LightObjectRequestTests: XCTestCase {
         let base = try fixture(visual: false)
         let roomId = try XCTUnwrap(base.rooms.first?["id"].string)
         let bound = frame(base)
+        for special in ["museum-track-spot-fixed-64p1", "museum-wallwasher-rear-relief", NativeTrackSpotAim.catalogue] {
+            XCTAssertThrowsError(try LightObjectRequest.fixtureAddition(roomId: roomId, fixture: .none,
+                                                                        catalogueId: special, in: base))
+        }
         for catalog in [nil, "museum-track-spot"] as [String?] {
             let command = try LightObjectRequest.fixtureAddition(roomId: roomId, fixture: catalog == nil ? .spotCan : .none,
                                                                 catalogueId: catalog, in: base)
@@ -86,6 +90,8 @@ final class LightObjectRequestTests: XCTestCase {
             var setting = command["settings"]; setting["lightId"] = .string(clone); setting["fixture"] = .string("spot-can")
             expected["extensions"][details]["lights"] = .array(try XCTUnwrap(base.candidate["extensions"][details]["lights"].items) + [setting])
             if let catalog {
+                XCTAssertEqual(command["visual"]["pose"]["position"], .vector([0, 0.15, 0.0755]))
+                XCTAssertNotEqual(command["visual"]["pose"]["position"], command["light"]["transform"]["position"])
                 let binding: DocumentValue = .object(["hostKind": .string("light"), "hostId": .string(clone),
                     "assetId": .string(asset), "pose": command["visual"]["pose"]])
                 expected["extensions"][visuals] = .object(["version": .integer(1),

@@ -1300,7 +1300,7 @@ final class ExhibitionModel: ObservableObject {
         guard sharedFurnishingCatalogReady, sharedFurnishingCatalogAccessID == viewportAccessID else { return [] }
         return sharedFurnishingCatalog.filter { row in
             guard let id = row["catalogId"].string else { return false }
-            return LightObjectAuthoring.fixtureCatalogueIDs.contains(id) && id != NativeTrackSpotAim.catalogue
+            return LightObjectAuthoring.guidedFixtureCatalogueIDs.contains(id)
         }
     }
     var canPlaceFixtureFirstLight: Bool {
