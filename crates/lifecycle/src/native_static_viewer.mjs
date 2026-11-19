@@ -35,7 +35,8 @@ try {
         indexSha256: receipt.indexSha256, publicationId: receipt.publicationId,
         revisionSha256: receipt.revisionSha256,
     }, {cancelled: () => stopped});
-    if (stopped || !source.entries.has('index.html')) throw Error('viewer');
+    // Earlier bundled readers expose only the restricted index/data fetcher.
+    if (stopped || typeof source.read !== 'function' || !source.entries.has('index.html')) throw Error('viewer');
     let host;
     const cookie = 'exhibitos_preview=' + secret;
     server = createServer({headersTimeout: 5000, requestTimeout: 10000}, async (request, response) => {
