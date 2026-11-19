@@ -704,6 +704,13 @@ impl Host {
                                     )?;
                                 }
                                 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+                                LocalPersonalTransition::RecoverCommitted { staging, key_file, qualified_receipt_sha256 } => {
+                                    let target = Payload::open(&resources)?;
+                                    controller.recover_committed_official_room_lighting(
+                                        &token, &target, &staging, &key_file, &qualified_receipt_sha256, saved_workspace_host,
+                                    )?;
+                                }
+                                #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
                                 LocalPersonalTransition::InspectPreReadyGuard { staging, key_file, failed_generation, recovery_receipt_sha256 } => {
                                     let target = Payload::open_saved_workspace_transition(&resources)?;
                                     let receipt = controller.inspect_pre_ready_guard(
@@ -1146,10 +1153,17 @@ impl Host {
             });
             #[cfg(not(target_os = "macos"))]
             let guard_diagnostic = false;
-            if (transition_entry || guard_diagnostic) && !self.workspace_v5_maintenance_only {
+            #[cfg(target_os = "macos")]
+            let committed_recovery = matches!(&request.command, UiCommand::NativeMaintenance {
+                maintenance: Input::LocalPersonalTransition { transition: LocalPersonalTransition::RecoverCommitted { .. }, .. },
+                ..
+            });
+            #[cfg(not(target_os = "macos"))]
+            let committed_recovery = false;
+            if (transition_entry || guard_diagnostic || committed_recovery) && !self.workspace_v5_maintenance_only {
                 return Err(err("NATIVE_PROTOCOL_INVALID"));
             }
-            if self.workspace_v5_maintenance_only && !guard_diagnostic && !matches!(
+            if self.workspace_v5_maintenance_only && !guard_diagnostic && !committed_recovery && !matches!(
                 &request.command,
                 UiCommand::Context | UiCommand::NativeStatus { .. } |
                 UiCommand::NativeMaintenance { maintenance: Input::CreateKey { .. }, .. } |

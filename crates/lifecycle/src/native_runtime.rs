@@ -1114,6 +1114,29 @@ impl FurnishingTransitionTrial {
         Ok(guard)
     }
 
+    /// Receipt recovery must prove the same trial actually consumed this
+    /// source and committed a stopped target before exposing the beforeimage.
+    pub(crate) fn check_committed_recovery(
+        &self,
+        root: &Path,
+        guard: &FurnishingTransitionWriterGuard,
+        transition: FurnishingTransition,
+    ) -> Result<()> {
+        let reject = || err(furnishing_lifecycle::ERROR);
+        self.check_recovery_root(root, guard, transition, None)?;
+        check_cold_checkpoint_root(root)?;
+        let observed = current_run(root)?.ok_or_else(reject)?;
+        let target = observed.furnishing.as_ref().ok_or_else(reject)?;
+        let (_, prior) = self.recoverable_source_completion(root, transition)?;
+        if observed.id != self.generation || target.phase != Phase::Clean
+            || prior.consumed_by.as_deref() != Some(self.generation.as_str())
+        {
+            return Err(reject());
+        }
+        unconsumed_furnishing_completion(root, target)?;
+        Ok(())
+    }
+
     pub(crate) fn check_recovery_root(
         &self,
         root: &Path,

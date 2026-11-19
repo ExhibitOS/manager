@@ -25,6 +25,10 @@ pub use rebind::rebind_r178_workspace;
 
 const OLD_MANIFEST: &str = "253de8963ec9f0e0a2884a27d8e756b453cf61899e38c31571d9993a7d6ecff4";
 const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2cdb47222f4032";
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+const OFFICIAL_ROOM_LIGHTING_SOURCE: &str = "86796846d9f8c082746370b7e9cfe25fce002dc79fe21d45f80e165807ccf61b";
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+const OFFICIAL_ROOM_LIGHTING_JOURNAL: &str = "c13f3e2f6e5de1d66c00037c876a2a3e7614e02fe78350167e14f689e1b2f5aa";
 #[cfg(feature = "workspace-v5-owner-validation")]
 use crate::native_payload::{
     CATALOG40_FRAME_TRANSITION, CATALOG40_TANGENT_TRANSITION, FurnishingTransition,
@@ -840,6 +844,24 @@ struct Bindings {
     new_record: Vec<u8>,
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+fn check_committed_checkpoint_bindings(
+    binding: &Bindings,
+    record: &[u8],
+    environment: &[u8],
+    sealed_document_sha256: Option<&str>,
+    document: &super::installations::native_document::DocumentState,
+) -> Result<()> {
+    if record != binding.new_record || environment != binding.new_env.0
+        || document.pending.is_some() || document.etag.is_none() || document.saved_edit_version.is_none()
+        || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != document.saved_edit_version
+        || sealed_document_sha256 != Some(saved_document_digest(document)?.as_str())
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn bindings(checkpoint: &Checkpoint) -> Result<Bindings> {
     if !admitted_pair(&checkpoint.old_manifest, &checkpoint.new_manifest) {
         return Err(invalid());
@@ -1339,14 +1361,20 @@ impl LifecycleService {
         saved_workspace_host: bool,
         retained: TransitionRetention<'_>,
         document: Option<&crate::installations::native_document::DocumentState>,
+        committed: Option<(&str, &str)>,
     ) -> Result<()> {
         let guard = self.lock()?;
         self.check_prepare_guard(&guard)?;
         let mut pending = read_pending(&self.root)?;
-        let mut envelope = pending
-            .strip_prefix(PENDING_PREFIX)
-            .ok_or_else(invalid)?
-            .to_vec();
+        let mut envelope = if let Some((_, qualified_digest)) = committed {
+            if !hash_valid(qualified_digest) { return Err(invalid()); }
+            let qualified = format!("native-personal-transition-qualified-{qualified_digest}.gcm");
+            let bytes = installation_backup::source_bytes(&self.root, &qualified, ENVELOPE_LIMIT as u64, true)?;
+            if digest(&bytes) != qualified_digest { return Err(invalid()); }
+            bytes
+        } else {
+            pending.strip_prefix(PENDING_PREFIX).ok_or_else(invalid)?.to_vec()
+        };
         let mut checkpoint = self.transition_checkpoint(&envelope, key)?;
         checkpoint.check_host(saved_workspace_host)?;
         checkpoint.check_retained(retained)?;
@@ -1374,6 +1402,41 @@ impl LifecycleService {
         let binding = bindings(&checkpoint)?;
         verify_beforeimage(&checkpoint, ENVIRONMENT, &binding.old_env.0)?;
         verify_beforeimage(&checkpoint, RECORD, &binding.old_record)?;
+        if let Some((target_manifest, _)) = committed {
+            #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+            {
+                let (trial, transition) = furnishing.ok_or_else(invalid)?;
+                let saved = document.ok_or_else(invalid)?;
+                let record = installation_backup::source_bytes(&self.root, RECORD, 4096, true)?;
+                if checkpoint.old_manifest != OFFICIAL_ROOM_LIGHTING_SOURCE
+                    || checkpoint.new_manifest != target_manifest
+                    || transition.source_catalog().version() != 52 || transition.target_catalog().version() != 57
+                    || !checkpoint.trial || checkpoint.restore.is_some() || checkpoint.drained_failure.is_some()
+                    || !saved_workspace_host
+                {
+                    return Err(invalid());
+                }
+                check_committed_checkpoint_bindings(&binding, &record, &pending,
+                    checkpoint.saved_document_sha256.as_deref(), saved)?;
+                trial.check_committed_recovery(&self.root, writer.as_ref().ok_or_else(invalid)?, transition)?;
+                let retained_content = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
+                let live = inventory_with_limit(&self.root, false, checkpoint.inventory_limit())?;
+                if live.iter().filter(|(path, _)| retained_content(path))
+                    .ne(checkpoint.files.iter().filter(|(path, _)| retained_content(path)))
+                {
+                    return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
+                }
+                // The operation and writer locks stay held. A crash after
+                // rearming resumes through the existing pending recovery.
+                publish_pending(&self.root, &envelope)?;
+                pending = read_pending(&self.root)?;
+                if pending.strip_prefix(PENDING_PREFIX) != Some(envelope.as_slice()) {
+                    return Err(invalid());
+                }
+            }
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", target_os = "macos")))]
+            { let _ = target_manifest; return Err(invalid()); }
+        }
         if checkpoint.trial {
             let record = installation_backup::source_bytes(&self.root, RECORD, 4096, true)?;
             if record != binding.old_record && record != binding.new_record {
@@ -2266,8 +2329,38 @@ impl InstallationController {
     ) -> Result<()> {
         self.with_transition_key(token, key_path, staging, retained, Current52PngRetention::Sealed,
             saved_workspace_host.then_some(RetainedSavedHeadCheck::Sealed { target_manifest: None }), |service, _, document, key| {
-            service.recover_local_personal_runtime_transition(staging, key, saved_workspace_host, retained, Some(document))
+            service.recover_local_personal_runtime_transition(staging, key, saved_workspace_host, retained, Some(document), None)
         })
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+    pub(crate) fn recover_committed_official_room_lighting(
+        &self,
+        token: &str,
+        target: &Payload,
+        staging: &Path,
+        key_path: &Path,
+        qualified_receipt_sha256: &str,
+        saved_workspace_host: bool,
+    ) -> Result<()> {
+        let manifest = target.context().manifest_sha256;
+        let transition = FurnishingTransition::from_manifests((OFFICIAL_ROOM_LIGHTING_SOURCE, &manifest)).ok_or_else(invalid)?;
+        if !saved_workspace_host || transition.target_catalog().version() != 57 || !hash_valid(qualified_receipt_sha256) {
+            return Err(invalid());
+        }
+        target.recheck()?;
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny,
+            Some(RetainedSavedHeadCheck::Sealed { target_manifest: Some(&manifest) }), |service, profile, document, key| {
+                let (journal, current) = self.document_unlocked(service)?;
+                let bytes = installation_backup::source_bytes(profile, &journal, MAX_MANIFEST as u64, true)?;
+                if digest(&bytes) != OFFICIAL_ROOM_LIGHTING_JOURNAL
+                    || saved_document_digest(&current)? != saved_document_digest(document)?
+                {
+                    return Err(invalid());
+                }
+                service.recover_local_personal_runtime_transition(staging, key, true, TransitionRetention::None,
+                    Some(document), Some((&manifest, qualified_receipt_sha256)))
+            })
     }
 
 }
@@ -2275,6 +2368,35 @@ impl InstallationController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+    #[test]
+    fn qualified_checkpoint_requires_both_committed_bindings_and_the_same_saved_document() {
+        let binding = Bindings {
+            old_env: Bytes(b"source env".to_vec()), old_record: b"source record".to_vec(),
+            new_env: Bytes(b"target env".to_vec()), new_record: b"target record".to_vec(),
+        };
+        let mut document: crate::installations::native_document::DocumentState = serde_json::from_value(serde_json::json!({
+            "format": 1, "revision": 7,
+            "workspaceId": "10000000-0000-4000-8000-000000000001",
+            "tenantId": "10000000-0000-4000-8000-000000000002",
+            "principalId": "10000000-0000-4000-8000-000000000003",
+            "draft": {"editVersion": 4}, "etag": "\"studio-r3-0123456789abcdef\"",
+            "savedEditVersion": 4, "pending": null,
+        })).unwrap();
+        let digest = saved_document_digest(&document).unwrap();
+        let observed = Some(digest.as_str());
+        assert!(check_committed_checkpoint_bindings(&binding, &binding.new_record, &binding.new_env.0, observed, &document).is_ok());
+        assert!(check_committed_checkpoint_bindings(&binding, &binding.old_record, &binding.new_env.0, observed, &document).is_err());
+        assert!(check_committed_checkpoint_bindings(&binding, &binding.new_record, &binding.old_env.0, observed, &document).is_err());
+        assert!(check_committed_checkpoint_bindings(&binding, &binding.new_record, &binding.new_env.0, None, &document).is_err());
+        document.revision += 1;
+        assert!(check_committed_checkpoint_bindings(&binding, &binding.new_record, &binding.new_env.0, observed, &document).is_err());
+        document.revision -= 1;
+        document.principal_id = document.workspace_id.clone();
+        assert!(check_committed_checkpoint_bindings(&binding, &binding.new_record, &binding.new_env.0, observed, &document).is_err());
+    }
+
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     fn gpu_library_empty_document() -> crate::installations::native_document::DocumentState {
