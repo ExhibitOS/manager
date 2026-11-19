@@ -171,8 +171,12 @@ final class PublicationTests: XCTestCase {
         XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: true))
     }
 
-    func testFloorReleaseOnlyAdmitsTheExistingSelectedCommand() throws {
-        let manifest = AuthoringAPI.r209FloorReleaseManifest
+    func testR209SelectedSuccessorsOnlyAdmitTheExistingSelectedCommand() throws {
+        try checkSelectedSuccessor(manifest: AuthoringAPI.r209FloorReleaseManifest)
+        try checkSelectedSuccessor(manifest: AuthoringAPI.r209PointReleaseManifest)
+    }
+
+    private func checkSelectedSuccessor(manifest: String) throws {
         let selection = NativePublicationReleaseSelection.r125ApprovedR201
         let admitted = AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest)
         let selected: DocumentValue = .object(["operation": .string("export-static-native-original"),
@@ -193,7 +197,7 @@ final class PublicationTests: XCTestCase {
         #endif
         XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
         XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
-        for invalid in [nil, manifest.uppercased(), "0" + manifest.dropFirst()] {
+        for invalid in [nil, manifest.uppercased(), "f" + manifest.dropFirst()] {
             XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: invalid))
         }
         let image = try NativePublicationOriginalImage(.object([
@@ -206,7 +210,14 @@ final class PublicationTests: XCTestCase {
         XCTAssertThrowsError(try selection.checkSource(etag: "synthetic", originalImage: nil, manifest: manifest))
     }
 
-    func testSameHeadFloorIntentRejectsCompletedBrassRequestAndKeepsItsReceipt() throws {
+    func testSameHeadSelectedSuccessorsRejectCompletedPredecessorRequestAndKeepItsReceipt() throws {
+        try checkSelectedSuccessorReplay(previousManifest: AuthoringAPI.r209BrassReleaseManifest,
+                                         nextManifest: AuthoringAPI.r209FloorReleaseManifest)
+        try checkSelectedSuccessorReplay(previousManifest: AuthoringAPI.r209FloorReleaseManifest,
+                                         nextManifest: AuthoringAPI.r209PointReleaseManifest)
+    }
+
+    private func checkSelectedSuccessorReplay(previousManifest: String, nextManifest: String) throws {
         let owner = UUID().uuidString.lowercased()
         let draft = try NativeExhibitionDraft.new(title: "Saved source")
         let etag = "\"studio-r209-" + String(repeating: "a", count: 64) + "\""
@@ -216,19 +227,19 @@ final class PublicationTests: XCTestCase {
             pending: nil, completed: nil)
         let request = UUID().uuidString.lowercased()
         let digest = String(repeating: "b", count: 64)
-        let brass = try state.nativeOriginalIntent(in: source, runtimeManifest: AuthoringAPI.r209BrassReleaseManifest,
+        let prior = try state.nativeOriginalIntent(in: source, runtimeManifest: previousManifest,
             requestId: request, requestSHA256: digest)
-        try state.stageNativeOriginal(brass)
+        try state.stageNativeOriginal(prior)
         let publicationID = UUID().uuidString.lowercased()
         let published = NativePublication(publicationId: publicationID, publicUrl: "/p/" + publicationID,
             revisionSha256: String(repeating: "c", count: 64), publishedAt: "2026-11-19T00:00:00Z", status: "published")
         state.pending = nil
-        state.completed = NativePublicationCompleted(pending: brass, publication: published)
-        try state.claimNativeOriginalExport(brass)
+        state.completed = NativePublicationCompleted(pending: prior, publication: published)
+        try state.claimNativeOriginalExport(prior)
         let retained = state
-        let replay = try state.nativeOriginalIntent(in: source, runtimeManifest: AuthoringAPI.r209FloorReleaseManifest,
+        let replay = try state.nativeOriginalIntent(in: source, runtimeManifest: nextManifest,
             requestId: request, requestSHA256: digest)
-        XCTAssertNotEqual(brass.planBindingSha256, replay.planBindingSha256)
+        XCTAssertNotEqual(prior.planBindingSha256, replay.planBindingSha256)
         XCTAssertThrowsError(try XCTUnwrap(state.completed).refuseNativeOriginalExportReplay(replay)) { error in
             XCTAssertEqual((error as? AuthoringFailure)?.code, "PUBLICATION_PLAN_CHANGED")
         }
@@ -236,7 +247,7 @@ final class PublicationTests: XCTestCase {
             XCTAssertEqual((error as? AuthoringFailure)?.code, "PUBLICATION_PLAN_CHANGED")
         }
         XCTAssertEqual(state, retained)
-        let fresh = try state.nativeOriginalIntent(in: source, runtimeManifest: AuthoringAPI.r209FloorReleaseManifest,
+        let fresh = try state.nativeOriginalIntent(in: source, runtimeManifest: nextManifest,
             requestId: UUID().uuidString.lowercased(), requestSHA256: digest)
         try state.stageNativeOriginal(fresh)
         XCTAssertEqual(state.pending, fresh)

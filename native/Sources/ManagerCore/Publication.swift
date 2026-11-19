@@ -180,19 +180,26 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
         let expected: String
+        let commitmentManifest: String?
         switch manifest {
         case AuthoringAPI.r125ApprovedReleaseManifest:
             expected = "ddb95832da31069ef10596050f71079f14d19595c63f3a700ae5f269a22c3879"
+            commitmentManifest = nil
         case AuthoringAPI.r203CorrectedReleaseManifest:
             expected = "8e8ffefe244e22179f5aa307bfa7f66fbb7924f1f62d439a48f721f4bd818c98"
+            commitmentManifest = nil
         case AuthoringAPI.r209BrassReleaseManifest:
             expected = "2a16a4f466922235e911040a84579d2e4198b861eadd5784b79a753bd022bfb1"
+            commitmentManifest = nil
         case AuthoringAPI.r209FloorReleaseManifest:
             expected = "58a665cc19c88e08b0536a513b9141224ff53fe2585204992d495b297b0bf69a"
+            commitmentManifest = manifest
+        case AuthoringAPI.r209PointReleaseManifest:
+            expected = "63aae926e1239256b0b1f67ffd277cc8f7dd75c43cd37578547500f44201f29f"
+            commitmentManifest = manifest
         default:
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
-        let commitmentManifest = manifest == AuthoringAPI.r209FloorReleaseManifest ? manifest : nil
         guard try sourceCommitment(etag: etag, originalImage: originalImage, runtimeManifest: commitmentManifest) == expected else {
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
