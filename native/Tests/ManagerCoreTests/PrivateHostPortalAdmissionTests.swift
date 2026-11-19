@@ -22,6 +22,26 @@ final class PrivateHostPortalAdmissionTests: XCTestCase {
         let fit = await api.admitsWorkspaceRectangularPortalFit
         XCTAssertTrue(furnishing); XCTAssertTrue(portal); XCTAssertTrue(fit)
     }
+    func testDefault121OrdinarySpecimensRequireTheExactRuntimeAndLiveReusableFit() async throws {
+        let manifest = "766bf3bfdf71ff8843e94c15d778e49f8eb73bd0b41a35bf82dcb72d18dbc301"
+        let cases: [(manifest: String, reusable: String?, admitted: Bool)] = [
+            (manifest, "source-bound-fit-v1", true),
+            (manifest, nil, false),
+            (manifest.uppercased(), "source-bound-fit-v1", false),
+            ("216e5562c7a702399006efb46f86ff1826b73d92dbdb46d3fd79b337d1c1c532", "source-bound-fit-v1", false),
+        ]
+        for (runtime, reusable, admitted) in cases {
+            let api = try await connect(manifest: runtime, reusable: reusable)
+            let rail = await api.admitsWorkspaceCeilingRail
+            let portal = await api.admitsWorkspaceModularPortalFit
+            XCTAssertEqual(rail, admitted)
+            XCTAssertEqual(portal, admitted)
+        }
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
+    }
+
     func testMissingWrongProfileOrUnknownRuntimeDoesNotGainFitAdmission() async throws {
         for profile in [nil, "unqualified"] {
             let api = try await connect(manifest: current, reusable: profile)
@@ -48,7 +68,9 @@ private final class PortalAdmissionProtocol: URLProtocol, @unchecked Sendable {
             "workspaceFurnishingRoomVisualProfile": "workspace-furnishing-room-visual-v1",
             "workspaceArtworkFrameProfile": "workspace-artwork-frame-v1",
             "workspaceArtworkFrameModelsProfile": "workspace-artwork-frame-models-v1",
-            "workspacePortalFinishProfile": "workspace-portal-finish-v1", "workspacePortalRectangularFitProfile": "rectangular-portal-v1"]
+            "workspacePortalFinishProfile": "workspace-portal-finish-v1",
+            "workspacePortalRectangularFitProfile": "rectangular-portal-v1",
+            "workspacePortalModularFitProfile": "modular-portal-v1", "workspaceCeilingRailProfile": "workspace-ceiling-rail-v1"]
         if let profile { body["workspaceFurnishingReusableFitProfile"] = profile }
         let data = try! JSONSerialization.data(withJSONObject: body)
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,

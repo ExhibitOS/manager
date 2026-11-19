@@ -674,9 +674,11 @@ public actor AuthoringAPI {
         #endif
         workspaceFramePreparationRuntimeQualified = framePreparationQualified
         workspaceInfoStandPreparationRuntimeQualified = Self.supportsInfoStandPreparationRuntime(manifest: manifest)
-        workspacePortalFinishRuntimeQualified = portalQualified || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
+        let defaultFurnishings121 = Self.supportsOrdinaryDefaultFurnishings121(manifest: manifest)
+        workspacePortalFinishRuntimeQualified = portalQualified || defaultFurnishings121
+            || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
-        workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified
+        workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified || defaultFurnishings121
             || Self.supportsDefault119CleanFurnishingRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
@@ -3337,6 +3339,14 @@ public actor AuthoringAPI {
         guard (1...2_147_483_647).contains(version) else { throw AuthoringFailure("MATERIAL_DECLARATION") }
         return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version), catalogRead: catalogRead)
     }
+    nonisolated static func supportsOrdinaryDefaultFurnishings121(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "766bf3bfdf71ff8843e94c15d778e49f8eb73bd0b41a35bf82dcb72d18dbc301"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsDefault119CleanFurnishingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7"
@@ -3361,6 +3371,7 @@ public actor AuthoringAPI {
             || manifest == "7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29"
             || manifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1"
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
+            || supportsOrdinaryDefaultFurnishings121(manifest: manifest)
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || supportsR285SettledHayesRuntime(manifest: manifest)
             || supportsR201OrdinarySuccessor(manifest: manifest)
@@ -3478,7 +3489,8 @@ public actor AuthoringAPI {
 
     public var admitsWorkspaceModularPortalFit: Bool {
         admitsWorkspacePortalFinish
-            && (Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+            && (Self.supportsOrdinaryDefaultFurnishings121(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsSavedHeadAuthoringRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
                 || Self.supportsStraightMiterFrameRuntime(manifest: nativeRuntimeManifestSHA256 ?? ""))
             && session?.workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
             && session?.workspacePortalModularFitProfile == WorkspaceFurnishingFitProfile.modularPortal.rawValue
@@ -4446,6 +4458,7 @@ public actor AuthoringAPI {
         // Its debug admission is scoped to the ordinary catalogue and thumbnails.
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
+            || supportsOrdinaryDefaultFurnishings121(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsR285UpperFramingRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)

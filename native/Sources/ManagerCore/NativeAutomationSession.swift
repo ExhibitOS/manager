@@ -241,6 +241,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsOrdinaryDefaultFurnishings121(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
@@ -2840,7 +2841,8 @@ public actor NativeAutomationSession {
             let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                      "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == keys, existingWorkspaceV5 != nil, selectedOEXFormat == nil,
-                  AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: runtimeManifest),
+                  (AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: runtimeManifest)
+                   || AuthoringAPI.supportsOrdinaryDefaultFurnishings121(manifest: runtimeManifest)),
                   await api.admitsWorkspaceCeilingRail else { throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "roomId", "furnishingId", "modelSha256", "attachments"])
