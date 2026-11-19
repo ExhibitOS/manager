@@ -12,6 +12,9 @@ public enum LightObjectAuthoring {
         "museum-track-spot", "museum-track-spot-fixed-64p1", "recessed-downlight",
         "museum-wallwasher", "museum-wallwasher-rear-relief", "museum-track-spot-articulated"
     ]
+    // The generic chooser has no explicit rail or special-host binding.
+    public static let guidedFixtureCatalogueIDs = ["museum-track-spot", "recessed-downlight", "museum-wallwasher"]
+
     public static let commands: Set<String> = [
         "set-light-object", "set-room-base-light-placement", "set-room-ceiling-fill-brightness", "set-light-fixture",
         "duplicate-light-object", "remove-light-object", addWithFixture

@@ -79,8 +79,9 @@ public struct LightObjectRequest: Sendable {
         case .disc: type = .point
         case .panel: type = .area
         case .none:
-            guard let catalogueId, LightObjectAuthoring.fixtureCatalogueIDs.contains(catalogueId),
-                  catalogueId != NativeTrackSpotAim.catalogue else { throw AuthoringFailure("LIGHT_FIXTURE_REQUIRED") }
+            guard let catalogueId, LightObjectAuthoring.guidedFixtureCatalogueIDs.contains(catalogueId) else {
+                throw AuthoringFailure("LIGHT_FIXTURE_REQUIRED")
+            }
             type = .spot
         }
         let position = [0, min(3, height * 0.75), 0]
@@ -98,7 +99,12 @@ public struct LightObjectRequest: Sendable {
             "light": .object(light), "settings": .object(settings)]
         if let catalogueId {
             guard fixture == .none else { throw invalid }
-            let pose = try FurnishingPose(position: position, yaw: 0, scale: 1)
+            let descriptor = try SharedFurnishingCatalog.descriptor(catalogueId)
+            let aperture = descriptor["functional"]["apertureCentre"]
+            guard vector(aperture, count: 3), let coordinates = aperture.items else {
+                throw AuthoringFailure("LIGHT_FIXTURE_SOURCE_UNAVAILABLE")
+            }
+            let pose = try FurnishingPose(position: coordinates.compactMap(\.double).map { -$0 }, yaw: 0, scale: 1)
             fields["visual"] = .object(["catalogId": .string(catalogueId), "catalogVersion": .integer(1), "pose": pose.value])
         }
         return .object(fields)
