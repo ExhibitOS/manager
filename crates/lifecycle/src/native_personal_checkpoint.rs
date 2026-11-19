@@ -531,6 +531,14 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none()
+        && pair == (crate::native_payload::R209_TRANSITION_SPOTS_RELEASE_TARGET.2,
+                    crate::native_payload::R209_GREEK_CURRENT_RELEASE_TARGET.2)
+    {
+        // Round the measured stopped Transition inventory to the next MiB.
+        return MAX_BYTES + 1811 * 1024 * 1024;
+    }
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none()
         && pair == (crate::native_payload::R209_FLOOR_RELEASE_TARGET.2,
                     crate::native_payload::R209_POINT_RELEASE_TARGET.2)
     {
@@ -3445,13 +3453,15 @@ mod tests {
     #[test]
     fn r209_recent_checkpoint_capacity_is_directional() {
         use crate::native_payload::{R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_FLOOR_RELEASE_TARGET,
-            R209_GREEK_SPOT_RELEASE_TARGET, R209_POINT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET,
+            R209_GREEK_CURRENT_RELEASE_TARGET, R209_GREEK_SPOT_RELEASE_TARGET, R209_POINT_RELEASE_TARGET,
+            R209_TRANSITION_SPOTS_RELEASE_TARGET,
             R209_WHEAT_ORDINARY_TARGET};
         for (previous, source, target, observed, expected_cap) in [
             (R209_FLOOR_RELEASE_TARGET, R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, 3_496_259_728u64, 3_497_000_960u64),
             (R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET, 3_496_098_780u64, 3_497_000_960u64),
             (R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_GREEK_SPOT_RELEASE_TARGET, 3_679_413_846u64, 3_679_453_184u64),
             (R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET, 3_862_543_387u64, 3_862_953_984u64),
+            (R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET, R209_GREEK_CURRENT_RELEASE_TARGET, 4_045_697_506u64, 4_046_454_784u64),
         ] {
             let (source, target) = (source.2, target.2);
             let cap = checkpoint_inventory_limit((source, target), None);

@@ -207,6 +207,7 @@ final class PublicationTests: XCTestCase {
         try checkSelectedSuccessor(manifest: AuthoringAPI.r209ArtworkSpotsReleaseManifest)
         try checkSelectedSuccessor(manifest: AuthoringAPI.r209GreekSpotReleaseManifest)
         try checkSelectedSuccessor(manifest: AuthoringAPI.r209TransitionSpotsReleaseManifest)
+        try checkSelectedSuccessor(manifest: AuthoringAPI.r209GreekCurrentReleaseManifest)
     }
 
     private func checkSelectedSuccessor(manifest: String) throws {
@@ -254,6 +255,8 @@ final class PublicationTests: XCTestCase {
                                          nextManifest: AuthoringAPI.r209GreekSpotReleaseManifest)
         try checkSelectedSuccessorReplay(previousManifest: AuthoringAPI.r209GreekSpotReleaseManifest,
                                          nextManifest: AuthoringAPI.r209TransitionSpotsReleaseManifest)
+        try checkSelectedSuccessorReplay(previousManifest: AuthoringAPI.r209TransitionSpotsReleaseManifest,
+                                         nextManifest: AuthoringAPI.r209GreekCurrentReleaseManifest)
     }
 
     private func checkSelectedSuccessorReplay(previousManifest: String, nextManifest: String) throws {
