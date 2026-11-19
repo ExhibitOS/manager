@@ -53,6 +53,19 @@ public actor NativeAutomationSession {
     }
 
     static func checkOrdinarySuccessorOperation(_ operation: String, manifest: String?) throws {
+        if AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: manifest) {
+            switch operation {
+            case "read", "reopen-saved", "save", "workspace-furnishing-list", "workspace-furnishing-read",
+                 "workspace-frame-lineage-status", "workspace-frame-attach", "workspace-frame-image-fit-prepare",
+                 "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel",
+                 "saved-head-static-readiness", "export-oex", "export-static-saved-head":
+                return
+            case "export-static-native-original", "export-static-native-original-publication":
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            default:
+                throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+        }
         let voiceCorrection = AuthoringAPI.supportsR201OrdinarySuccessor(manifest: manifest)
         let floorAndFrames = AuthoringAPI.supportsR203OrdinarySuccessor(manifest: manifest)
         if operation == "floor-entrance-stone-footsteps-apply" {
@@ -77,6 +90,14 @@ public actor NativeAutomationSession {
             throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
         default:
             throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
+    }
+
+    static func checkR209WheatFrameTarget(placementId: String?, modelSHA256: String?, manifest: String?) throws {
+        guard AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: manifest) else { return }
+        guard placementId == "89ec602d-79ff-4851-9ead-85bdd4a382cf",
+              modelSHA256 == "a96b4942c2cd10b25fe1b33001443e1824fc125bc258f28a68547d38d8c54362" else {
+            throw BridgeFailure("VIEWPORT_COMMAND_DENIED")
         }
     }
 
@@ -271,6 +292,7 @@ public actor NativeAutomationSession {
         if let path = appliedDraftRecoveryPath {
             guard !AuthoringAPI.supportsR201OrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
                   !AuthoringAPI.supportsR203OrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
+                  !AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: existingWorkspaceV5?.manifestSHA256),
                   existingWorkspaceV5 != nil, workspaceV5ValidationRuntime == nil,
                   workspaceV6ValidationRuntime == nil, workspaceV7ValidationRuntime == nil,
                   selectedOEXFormat == nil, let pin = inputs[path], nativeImportDigest(pin) else {
@@ -518,9 +540,15 @@ public actor NativeAutomationSession {
         let admitsInfoStandPreparation = await api.admitsWorkspaceInfoStandPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
         if AuthoringAPI.supportsR201OrdinarySuccessor(manifest: config.manifestSha256)
-            || AuthoringAPI.supportsR203OrdinarySuccessor(manifest: config.manifestSha256) {
+            || AuthoringAPI.supportsR203OrdinarySuccessor(manifest: config.manifestSha256)
+            || AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: config.manifestSha256) {
             guard admitsSavedHeadAuthoring, session.nativePublicationProfile == "bounded-local-v1" else {
                 throw AuthoringFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
+            }
+        }
+        if AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: config.manifestSha256) {
+            guard await api.admitsFrameImageFitReconciliation, await api.admitsWorkspaceCeilingRail else {
+                throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE")
             }
         }
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
@@ -3046,6 +3074,11 @@ public actor NativeAutomationSession {
             }
             let command = try NativeAutomationArtworkRules.command(request, keys: ["placementId"])
             guard let target = command["placementId"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+            if AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: runtimeManifest) {
+                let attachments = current.draft?.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["frameAttachments"].items
+                let model = attachments?.first { $0["placementId"].string == target }?["modelSha256"].string
+                try Self.checkR209WheatFrameTarget(placementId: target, modelSHA256: model, manifest: runtimeManifest)
+            }
             let preview = try await api.prepareFrameImageFitReconciliation(placementId: target, in: current)
             let (_, _, refreshed) = try await checked(request)
             guard try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
@@ -3156,6 +3189,8 @@ public actor NativeAutomationSession {
                     "placementId", "artworkRevisionId", "assetId", "furnishingId", "furnishingVersion", "modelSha256"
                 ]), let attachment = try? JSONDecoder().decode(WorkspaceArtworkFrameAttachment.self, from: JSONEncoder().encode(input)),
                       try value(attachment) == input else { throw BridgeFailure("VIEWPORT_COMMAND_DENIED") }
+                try Self.checkR209WheatFrameTarget(placementId: attachment.placementId,
+                    modelSHA256: attachment.modelSha256, manifest: runtimeManifest)
                 command = .attach(attachment)
             } else {
                 guard let input = try? NativeAutomationArtworkRules.command(request, keys: ["placementId"]),

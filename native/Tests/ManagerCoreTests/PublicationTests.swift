@@ -171,6 +171,36 @@ final class PublicationTests: XCTestCase {
         XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: true))
     }
 
+    func testR209WheatOrdinarySuccessorKeepsSelectedAndIntakeOperationsClosed() throws {
+        let manifest = AuthoringAPI.r209WheatOrdinaryManifest
+        let predecessor = AuthoringAPI.r209PointReleaseManifest
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: manifest))
+        let api = try AuthoringAPI(port: 58000, tenantId: UUID().uuidString, nativeRuntimeManifestSHA256: manifest)
+        XCTAssertTrue(api.workspaceFurnishingRuntimeQualified)
+        for operation in ["read", "reopen-saved", "save", "workspace-furnishing-list", "workspace-furnishing-read",
+                          "workspace-frame-attach", "workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply",
+                          "workspace-frame-image-fit-cancel", "saved-head-static-readiness", "export-oex", "export-static-saved-head"] {
+            XCTAssertNoThrow(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest))
+        }
+        for operation in ["workspace-furnishing-intake-create", "workspace-furnishing-intake-upload", "workspace-frame-detach",
+                          "light-prepare", "floor-entrance-stone-footsteps-apply", "export-static-native-original", "export-static"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkOrdinarySuccessorOperation(operation, manifest: manifest))
+        }
+        let placement = "89ec602d-79ff-4851-9ead-85bdd4a382cf"
+        let oak = "a96b4942c2cd10b25fe1b33001443e1824fc125bc258f28a68547d38d8c54362"
+        XCTAssertNoThrow(try NativeAutomationSession.checkR209WheatFrameTarget(placementId: placement, modelSHA256: oak, manifest: manifest))
+        XCTAssertThrowsError(try NativeAutomationSession.checkR209WheatFrameTarget(placementId: UUID().uuidString, modelSHA256: oak, manifest: manifest))
+        XCTAssertThrowsError(try NativeAutomationSession.checkR209WheatFrameTarget(placementId: placement, modelSHA256: nil, manifest: manifest))
+        #endif
+        XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: predecessor))
+        XCTAssertFalse(AuthoringAPI.supportsR209WheatOrdinarySuccessor(manifest: manifest.uppercased()))
+        XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
+    }
+
     func testR209SelectedSuccessorsOnlyAdmitTheExistingSelectedCommand() throws {
         try checkSelectedSuccessor(manifest: AuthoringAPI.r209FloorReleaseManifest)
         try checkSelectedSuccessor(manifest: AuthoringAPI.r209PointReleaseManifest)

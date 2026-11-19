@@ -507,6 +507,14 @@ pub(crate) fn transition_source_ledger(payload: &crate::native_payload::Payload,
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none()
+        && pair == (crate::native_payload::R209_POINT_RELEASE_TARGET.2,
+                    crate::native_payload::R209_WHEAT_ORDINARY_TARGET.2)
+    {
+        // Round the post-point cold inventory up to the next MiB.
+        return MAX_BYTES + 1287 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none()
         && pair == (crate::native_payload::R209_FLOOR_RELEASE_TARGET.2,
                     crate::native_payload::R209_POINT_RELEASE_TARGET.2)
     {
@@ -3415,6 +3423,21 @@ mod tests {
         file.set_len(point_limit + 1).unwrap();
         assert_eq!(inventory_with_limit(&root, false, point_limit).unwrap_err().code, invalid().code);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn r209_wheat_ordinary_checkpoint_capacity_is_directional() {
+        let source = crate::native_payload::R209_POINT_RELEASE_TARGET.2;
+        let target = crate::native_payload::R209_WHEAT_ORDINARY_TARGET.2;
+        let observed = 3_496_259_728u64;
+        let cap = checkpoint_inventory_limit((source, target), None);
+        assert_eq!(cap, 3_497_000_960);
+        assert!((observed..observed + 1024 * 1024).contains(&cap));
+        for pair in [(target, source), (target, target), (source, source),
+            (crate::native_payload::R209_FLOOR_RELEASE_TARGET.2, target)] {
+            assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+        }
     }
 
     #[cfg(feature = "workspace-v5-owner-validation")]

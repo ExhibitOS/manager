@@ -3365,6 +3365,7 @@ public actor AuthoringAPI {
             || supportsR285SettledHayesRuntime(manifest: manifest)
             || supportsR201OrdinarySuccessor(manifest: manifest)
             || supportsR203OrdinarySuccessor(manifest: manifest)
+            || supportsR209WheatOrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4333,6 +4334,16 @@ public actor AuthoringAPI {
         #endif
     }
 
+    static let r209WheatOrdinaryManifest = "1589d11bab0d9fa433507e9b824f3e6ab5547ac3b820c5026957e6df5e5be8ed"
+
+    nonisolated static func supportsR209WheatOrdinarySuccessor(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == r209WheatOrdinaryManifest
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsR285UpperFramingRuntime(manifest: String) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "75895a172d843d6839309d0cc20febb7c210db0a35959e838cc8aa9dc507240a"
@@ -4350,6 +4361,7 @@ public actor AuthoringAPI {
             || supportsR285UpperFramingRuntime(manifest: manifest)
             || supportsR201OrdinarySuccessor(manifest: manifest)
             || supportsR203OrdinarySuccessor(manifest: manifest)
+            || supportsR209WheatOrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4382,6 +4394,7 @@ public actor AuthoringAPI {
             || manifest == "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae"
             || supportsR201OrdinarySuccessor(manifest: manifest)
             || supportsR203OrdinarySuccessor(manifest: manifest)
+            || supportsR209WheatOrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif
@@ -4440,6 +4453,7 @@ public actor AuthoringAPI {
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
             || supportsR201OrdinarySuccessor(manifest: manifest)
             || supportsR203OrdinarySuccessor(manifest: manifest)
+            || supportsR209WheatOrdinarySuccessor(manifest: manifest)
         #else
         false
         #endif

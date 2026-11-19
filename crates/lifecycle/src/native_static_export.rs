@@ -50,7 +50,8 @@ fn r285_saved_head_runtime_allowed(manifest: &str) -> bool {
         crate::native_payload::R285_UPPER_FRAMING_TARGET.2,
         crate::native_payload::R285_ORDINARY_PUBLICATION_BUDGET_TARGET.2,
         crate::native_payload::R201_ORDINARY_SUCCESSOR_TARGET.2,
-        crate::native_payload::R203_ORDINARY_SUCCESSOR_TARGET.2].contains(&manifest);
+        crate::native_payload::R203_ORDINARY_SUCCESSOR_TARGET.2,
+        crate::native_payload::R209_WHEAT_ORDINARY_TARGET.2].contains(&manifest);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = manifest; false }
 }
