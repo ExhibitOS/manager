@@ -171,6 +171,79 @@ final class PublicationTests: XCTestCase {
         XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: noSelection, runtimeAdmitted: true))
     }
 
+    func testFloorReleaseOnlyAdmitsTheExistingSelectedCommand() throws {
+        let manifest = AuthoringAPI.r209FloorReleaseManifest
+        let selection = NativePublicationReleaseSelection.r125ApprovedR201
+        let admitted = AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest)
+        let selected: DocumentValue = .object(["operation": .string("export-static-native-original"),
+            "command": .object(["releaseSelection": .string(selection.rawValue)])])
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(admitted)
+        XCTAssertTrue(AuthoringAPI.supportsPinnedStartupDrain(manifest: manifest))
+        XCTAssertEqual(try NativePublicationReleaseSelection.checked(in: selected, runtimeAdmitted: admitted), selection)
+        for operation in ["save", "workspace-frame-attach", "floor-entrance-stone-footsteps-apply",
+                          "export-oex", "export-static-saved-head", "export-static-native-original",
+                          "export-static-native-original-publication"] {
+            XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(
+                in: .object(["operation": .string(operation)]), runtimeAdmitted: admitted), operation)
+        }
+        #else
+        XCTAssertFalse(admitted)
+        XCTAssertThrowsError(try NativePublicationReleaseSelection.checked(in: selected, runtimeAdmitted: admitted))
+        #endif
+        XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        for invalid in [nil, manifest.uppercased(), "0" + manifest.dropFirst()] {
+            XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: invalid))
+        }
+        let image = try NativePublicationOriginalImage(.object([
+            "artworkId": .string("10000000-0000-4000-8000-000000000016"), "artworkRevision": .integer(1),
+            "importJobId": .string("10000000-0000-4000-8000-000000000017")
+        ]))
+        XCTAssertNotEqual(try selection.sourceCommitment(etag: "synthetic", originalImage: image),
+            try selection.sourceCommitment(etag: "synthetic", originalImage: image, runtimeManifest: manifest))
+        XCTAssertThrowsError(try selection.checkSource(etag: "synthetic", originalImage: image, manifest: manifest))
+        XCTAssertThrowsError(try selection.checkSource(etag: "synthetic", originalImage: nil, manifest: manifest))
+    }
+
+    func testSameHeadFloorIntentRejectsCompletedBrassRequestAndKeepsItsReceipt() throws {
+        let owner = UUID().uuidString.lowercased()
+        let draft = try NativeExhibitionDraft.new(title: "Saved source")
+        let etag = "\"studio-r209-" + String(repeating: "a", count: 64) + "\""
+        let source = NativeDocumentState(format: 1, revision: 584, workspaceId: owner, tenantId: owner, principalId: owner,
+            draft: draft, etag: etag, savedEditVersion: draft.document["editVersion"].integer, pending: nil)
+        var state = NativePublicationState(format: 1, revision: 1, workspaceId: owner, tenantId: owner, principalId: owner,
+            pending: nil, completed: nil)
+        let request = UUID().uuidString.lowercased()
+        let digest = String(repeating: "b", count: 64)
+        let brass = try state.nativeOriginalIntent(in: source, runtimeManifest: AuthoringAPI.r209BrassReleaseManifest,
+            requestId: request, requestSHA256: digest)
+        try state.stageNativeOriginal(brass)
+        let publicationID = UUID().uuidString.lowercased()
+        let published = NativePublication(publicationId: publicationID, publicUrl: "/p/" + publicationID,
+            revisionSha256: String(repeating: "c", count: 64), publishedAt: "2026-11-19T00:00:00Z", status: "published")
+        state.pending = nil
+        state.completed = NativePublicationCompleted(pending: brass, publication: published)
+        try state.claimNativeOriginalExport(brass)
+        let retained = state
+        let replay = try state.nativeOriginalIntent(in: source, runtimeManifest: AuthoringAPI.r209FloorReleaseManifest,
+            requestId: request, requestSHA256: digest)
+        XCTAssertNotEqual(brass.planBindingSha256, replay.planBindingSha256)
+        XCTAssertThrowsError(try XCTUnwrap(state.completed).refuseNativeOriginalExportReplay(replay)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "PUBLICATION_PLAN_CHANGED")
+        }
+        XCTAssertThrowsError(try state.stageNativeOriginal(replay)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "PUBLICATION_PLAN_CHANGED")
+        }
+        XCTAssertEqual(state, retained)
+        let fresh = try state.nativeOriginalIntent(in: source, runtimeManifest: AuthoringAPI.r209FloorReleaseManifest,
+            requestId: UUID().uuidString.lowercased(), requestSHA256: digest)
+        try state.stageNativeOriginal(fresh)
+        XCTAssertEqual(state.pending, fresh)
+        XCTAssertEqual(state.completed, retained.completed)
+        XCTAssertEqual(state.nativeOriginalAttempts?[request], retained.nativeOriginalAttempts?[request])
+    }
+
     func testBrassReleaseUsesTheExistingSelectorAndKeepsOrdinaryEditingClosed() throws {
         let manifest = AuthoringAPI.r209BrassReleaseManifest
         let selection = NativePublicationReleaseSelection.r125ApprovedR201

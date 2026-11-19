@@ -4303,10 +4303,12 @@ public actor AuthoringAPI {
 
     static let r209BrassReleaseManifest = "c40ad24882ce0d14081ff1690b166b8df5341f56528b9cb1788e4e8e125b1502"
 
+    static let r209FloorReleaseManifest = "afd127161cc907e4ee241efff586bf3b7010190c78431b559f162d93365e60ba"
+
     nonisolated static func supportsR125ApprovedReleaseRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == r125ApprovedReleaseManifest || manifest == r203CorrectedReleaseManifest
-            || manifest == r209BrassReleaseManifest
+            || manifest == r209BrassReleaseManifest || manifest == r209FloorReleaseManifest
         #else
         false
         #endif

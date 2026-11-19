@@ -167,8 +167,11 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
 
     // Domain-separated commitment to the existing exact private request tuple.
     // Typed encoding preserves field boundaries and the guard runs before intent.
-    func sourceCommitment(etag: String, originalImage: NativePublicationOriginalImage) throws -> String {
-        let fields = [rawValue, etag, originalImage.artworkId, String(originalImage.artworkRevision), originalImage.importJobId]
+    func sourceCommitment(etag: String, originalImage: NativePublicationOriginalImage,
+                          runtimeManifest: String? = nil) throws -> String {
+        var fields = [rawValue]
+        if let runtimeManifest { fields.append(runtimeManifest) }
+        fields += [etag, originalImage.artworkId, String(originalImage.artworkRevision), originalImage.importJobId]
         return nativeImportSHA256(try JSONEncoder().encode(fields))
     }
 
@@ -184,10 +187,13 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
             expected = "8e8ffefe244e22179f5aa307bfa7f66fbb7924f1f62d439a48f721f4bd818c98"
         case AuthoringAPI.r209BrassReleaseManifest:
             expected = "2a16a4f466922235e911040a84579d2e4198b861eadd5784b79a753bd022bfb1"
+        case AuthoringAPI.r209FloorReleaseManifest:
+            expected = "58a665cc19c88e08b0536a513b9141224ff53fe2585204992d495b297b0bf69a"
         default:
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
-        guard try sourceCommitment(etag: etag, originalImage: originalImage) == expected else {
+        let commitmentManifest = manifest == AuthoringAPI.r209FloorReleaseManifest ? manifest : nil
+        guard try sourceCommitment(etag: etag, originalImage: originalImage, runtimeManifest: commitmentManifest) == expected else {
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
     }
