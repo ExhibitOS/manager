@@ -40,6 +40,7 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
             || manifest == "e2a219503b653a1995df732229c1ec9263d1f9f2abe9c0cf26ca727ea3a99f01"
             || manifest == "66c6bc51aae3d41bead2dad08b8375178977a8f8c798df6e8cd95cda38f00874"
             || partial_wall_portal_saved_head_runtime_allowed(manifest)
+            || crate::native_payload::current_default_catalogue_manifest_matches(manifest)
             || plain_baseboard_saved_head_runtime_allowed(manifest)
             || bench_basecolor_saved_head_runtime_allowed(manifest)
             || owner_local_original_saved_head_runtime_allowed(manifest)

@@ -99,6 +99,12 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
             && workspaceCeilingRailProfile == "workspace-ceiling-rail-v1"
     }
 
+    public var advertisesCurrentDefaultCatalogueUpdate: Bool {
+        defaultCatalogueUpdateProfile == DefaultCatalogueUpdateCheck.capability
+            && advertisesWorkspaceCeilingRail && advertisesWorkspacePortalFinish
+            && workspacePortalModularFitProfile == WorkspaceFurnishingFitProfile.modularPortal.rawValue
+    }
+
     public var advertisesWorkspaceRectangularPortalFit: Bool {
         advertisesWorkspacePortalFinish
             && workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
@@ -3336,9 +3342,22 @@ public actor AuthoringAPI {
     nonisolated static func supportsOrdinaryPartialWallPortal(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "803ce4960489551e1a2ac9c84ca7f3a804c2f5e0324e719a590661c457ff2918"
+            || supportsCurrentDefaultCatalogueRuntime(manifest: manifest)
         #else
         false
         #endif
+    }
+
+    nonisolated static func supportsCurrentDefaultCatalogueRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "67613da677830cdc9f177cfee6ed650df8f3037f86be745c36f32b1eac3052e8"
+        #else
+        return false
+        #endif
+    }
+
+    public nonisolated var currentDefaultCatalogueRuntimeQualified: Bool {
+        Self.supportsCurrentDefaultCatalogueRuntime(manifest: nativeRuntimeManifestSHA256)
     }
 
     nonisolated static func supportsDefault119CleanFurnishingRuntime(manifest: String) -> Bool {
@@ -3367,6 +3386,7 @@ public actor AuthoringAPI {
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || supportsR285SettledHayesRuntime(manifest: manifest)
+            || supportsCurrentDefaultCatalogueRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -3666,7 +3686,8 @@ public actor AuthoringAPI {
     }
 
     public var admitsDefaultCatalogueUpdate: Bool {
-        admitsWorkspaceFurnishings && session?.defaultCatalogueUpdateProfile == DefaultCatalogueUpdateCheck.capability
+        currentDefaultCatalogueRuntimeQualified && admitsWorkspaceFurnishings
+            && session?.advertisesCurrentDefaultCatalogueUpdate == true
     }
 
     public func checkDefaultCatalogueUpdate() async throws -> DefaultCatalogueUpdateCheck {

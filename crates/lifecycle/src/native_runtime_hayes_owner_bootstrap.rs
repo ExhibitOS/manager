@@ -203,6 +203,11 @@ impl HayesSetup {
         })
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn matches_ordinary_manifest(&self, manifest: &str) -> bool {
+        !self.pin.hayes_preopen_selected && self.pin.host_manifest_sha256() == manifest
+    }
+
     pub(super) fn has_secret(&self, value: &str) -> bool {
         self.socket.secret == value
     }

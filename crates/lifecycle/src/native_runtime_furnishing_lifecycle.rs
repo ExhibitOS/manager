@@ -190,6 +190,9 @@ impl Binding {
         let ordinary_combined = self.catalog == 52 && self.restore.is_none()
             && (fresh_contact || self.admission_kind == Admission::CleanReopen || r285_cosmic_recovery)
             && crate::native_payload::combined_thumbnail_ordinary_host_matches(tuple);
+        let current_catalogue = self.catalog == 57 && self.restore.is_none()
+            && matches!(self.admission_kind, Admission::FreshEmpty | Admission::CleanReopen)
+            && crate::native_payload::current_default_catalogue_host_matches(tuple);
         let current_rail = self.catalog == 53 && self.restore.is_none()
             && self.admission_kind == Admission::CleanReopen
             && crate::native_payload::current_rail_host_matches(tuple);
@@ -216,7 +219,7 @@ impl Binding {
         };
         if self.version != 1
             || (private_codec.is_some() && !private_exb)
-            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail || private_exb || current_rail
+            || !(matches!(self.catalog, 37..=41) || private_hayes_bootstrap || retained_restore || carried_restore || thumbnail || gpu || current_thumbnail || ordinary_combined || combined_thumbnail || private_exb || current_rail || current_catalogue
                 || (self.catalog == 44 && self.restore.is_none()
                     && matches!(self.admission_kind, Admission::CleanReopen | Admission::CatalogUpgrade040To044)
                     && crate::native_payload::ordinary_hayes_release_host_matches(tuple))
