@@ -43,12 +43,12 @@ try {
         response.setHeader('Referrer-Policy', 'no-referrer');
         response.setHeader('X-Content-Type-Options', 'nosniff');
         response.setHeader('Content-Security-Policy', "connect-src 'self' blob:; frame-ancestors 'none'; form-action 'none'; base-uri 'none'");
-        const exactEntry = request.url === '/index.html' && request.method === 'GET';
-        const bootstrap = exactEntry && request.headers.authorization === 'Bearer ' + secret;
+        const signed = request.headers.authorization === 'Bearer ' + secret;
+        const bootstrap = signed && request.url === '/index.html' && request.method === 'GET';
         const admitted = request.headers.cookie?.split(/;\s*/).includes(cookie);
         if (stopped || request.headers.host !== host ||
             (request.headers.origin !== undefined && request.headers.origin !== 'http://' + host) ||
-            (!bootstrap && !admitted)) {
+            (!signed && !admitted)) {
             response.writeHead(403).end();
             return;
         }

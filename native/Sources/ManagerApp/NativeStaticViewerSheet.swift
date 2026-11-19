@@ -43,6 +43,14 @@ private struct StaticViewerWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        let scope = [entry.url.deletingLastPathComponent().absoluteString, entry.authorization]
+        guard let data = try? JSONEncoder().encode(scope) else {
+            Task { @MainActor in failed = true }
+            return WKWebView(frame: .zero, configuration: configuration)
+        }
+        let script = Self.fetchAuthorization + "(" + String(decoding: data, as: UTF8.self) + ");"
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         var request = URLRequest(url: entry.url, cachePolicy: .reloadIgnoringLocalCacheData)
@@ -50,6 +58,34 @@ private struct StaticViewerWebView: NSViewRepresentable {
         view.load(request)
         return view
     }
+
+    // The exported Viewer deliberately omits cookies on static data fetches.
+    // Supply only the ephemeral preview credential and keep that fetch policy.
+    private static let fetchAuthorization = #"""
+    ((scope) => {
+        const origin = new URL(scope[0]).origin;
+        if (location.origin !== origin) return;
+        const fetchOriginal = window.fetch.bind(window);
+        window.fetch = (input, options) => {
+            const request = input instanceof Request ? input : null;
+            const method = options?.method ?? request?.method ?? "GET";
+            const credentials = options?.credentials ?? request?.credentials;
+            if (credentials !== "omit" || !["GET", "HEAD"].includes(method.toUpperCase())) {
+                return fetchOriginal(input, options);
+            }
+            let url;
+            try { url = new URL(request?.url ?? input, document.baseURI); }
+            catch { return fetchOriginal(input, options); }
+            if (url.origin !== origin || url.username || url.password || url.search || url.hash) {
+                return fetchOriginal(input, options);
+            }
+            const read = new Request(input, options);
+            const headers = new Headers(read.headers);
+            headers.set("Authorization", scope[1]);
+            return fetchOriginal(new Request(read, {headers, redirect: "error"}));
+        };
+    })
+    """#
 
     func updateNSView(_ view: WKWebView, context: Context) {}
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
