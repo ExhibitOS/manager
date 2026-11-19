@@ -187,9 +187,11 @@ public struct LightObjectRequest: Sendable {
                   let value = command["basePlacement"].string, let placement = RoomBaseLightPlacement(rawValue: value) else { throw Self.invalid }
             _ = try RoomBaseLightIntent.setPlacement(placement, lightId: actualId, in: frame.draft.candidate)
         case "set-room-ceiling-fill-brightness":
-            guard Set(fields.keys) == ["type", "lightId", "brightness"], let brightness = command["brightness"].double,
+            guard Set(fields.keys).subtracting(["mode"]) == ["type", "lightId", "brightness"],
+                  fields["mode"] == nil || command["mode"] == .string("default"), let brightness = command["brightness"].double,
                   brightness.isFinite, (0...1).contains(brightness) else { throw Self.invalid }
-            _ = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, lightId: actualId, in: frame.draft.candidate)
+            _ = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, usesDefault: RoomCeilingFill.usesDefault(command),
+                                                                lightId: actualId, in: frame.draft.candidate)
         case "set-light-fixture":
             guard Set(fields.keys) == ["type", "lightId", "visual"] else { throw Self.invalid }
             if command["visual"] != .null {
@@ -327,7 +329,8 @@ public struct LightObjectRequest: Sendable {
             next = try RoomBaseLightIntent.setPlacement(placement, lightId: sourceLightId, in: next)
         case "set-room-ceiling-fill-brightness":
             guard let brightness = command["brightness"].double else { throw Self.changed }
-            next = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, lightId: sourceLightId, in: next)
+            next = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, usesDefault: RoomCeilingFill.usesDefault(command),
+                                                                   lightId: sourceLightId, in: next)
         case "set-light-fixture":
             let visual = command["visual"]
             var settings = try NativeLightFixture.settings(in: frame.draft, lightId: sourceLightId)

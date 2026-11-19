@@ -16,7 +16,7 @@ struct NativePrivateHost: Sendable {
         return try encoder.encode(state)
     }
     init(requestId: String, title: String, protecting current: NativeDocumentState,
-         roomBaseLight: Bool) throws {
+         roomBaseLight: Bool, defaultCeilingFill: Bool = false) throws {
         guard UUID(uuidString: requestId)?.uuidString.lowercased() == requestId,
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.utf16.count <= 512,
               current.pending == nil, !current.dirty,
@@ -25,7 +25,7 @@ struct NativePrivateHost: Sendable {
         }
         creationRequestId = requestId; protectedBytes = try Self.bytes(current)
         protectedExhibitionId = current.draft?.id
-        let draft = try NativeExhibitionDraft.new(title: title, roomBaseLight: roomBaseLight)
+        let draft = try NativeExhibitionDraft.new(title: title, roomBaseLight: roomBaseLight, defaultCeilingFill: defaultCeilingFill)
         guard draft.id != protectedExhibitionId else { throw BridgeFailure("PRIVATE_EXHIBITION_SCOPE_CHANGED") }
         document = NativeDocumentState(format: 1, revision: 1, workspaceId: current.workspaceId,
             tenantId: current.tenantId, principalId: current.principalId, draft: draft,
