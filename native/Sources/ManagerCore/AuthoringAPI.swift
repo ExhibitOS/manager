@@ -4628,6 +4628,17 @@ public actor AuthoringAPI {
         return try proposal.checkedReply(reply)
     }
 
+    nonisolated static func checkLightCreationProposal(_ operation: String, fixtureFirst: Bool,
+                                                       supplementalFill: Bool) throws {
+        if fixtureFirst && operation == "add-light" {
+            throw AuthoringFailure("LIGHT_FIXTURE_REQUIRED", status: 422)
+        }
+        guard operation != LightObjectAuthoring.addWithFixture || fixtureFirst,
+              operation != NativeAutomationScene.supplementalCeilingFillCommand || supplementalFill else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+    }
+
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
@@ -4642,17 +4653,14 @@ public actor AuthoringAPI {
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
-        if admitsNativeFixtureFirstAuthoring && (operation == "add-light" || supplementalFill) {
-            throw AuthoringFailure("LIGHT_FIXTURE_REQUIRED", status: 422)
-        }
+        try Self.checkLightCreationProposal(operation, fixtureFirst: admitsNativeFixtureFirstAuthoring,
+                                            supplementalFill: admitsRoomSupplementalCeilingFill)
         guard admitted,
-              operation != LightObjectAuthoring.addWithFixture || admitsNativeFixtureFirstAuthoring,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               proposal["settings"]["angularProfile"] == .null || (operation == "set-light-object" && admitsNativeUpperFraming),
               let session,
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
-              operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
-              !supplementalFill || admitsRoomSupplementalCeilingFill else {
+              operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
