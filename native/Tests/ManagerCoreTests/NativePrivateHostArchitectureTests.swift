@@ -93,16 +93,21 @@ final class NativePrivateHostArchitectureTests: XCTestCase {
         draft = try NativePrivateHostArchitecture.applying(room(secondRoom, position: [0,0,8]), to: draft)
         draft = try NativePrivateHostArchitecture.applying(cube(firstRoom, firstSurfaces), to: draft)
         draft = try NativePrivateHostArchitecture.applying(cube(secondRoom, secondSurfaces), to: draft)
+        var nearLimit = draft.document
+        nearLimit["editVersion"] = .integer(Int64(Int32.max) - 1)
+        draft = try NativeExhibitionDraft(document: nearLimit)
         let dims: DocumentValue = .object(["width": .number(2.4), "height": .integer(3)])
+        // The Server accepts this common shift within its floor tolerance.
+        let offset = DocumentValue.vector([0,-0.5 + 0.000005])
         func side(_ wall: String) -> DocumentValue {
-            .object(["surfaceId": .string(wall), "offset": .vector([0,-0.5])])
+            .object(["surfaceId": .string(wall), "offset": offset])
         }
         let proposal = try NativeDoorPairProposal(command: .object([
             "dimensions": dims, "first": side(firstSurfaces[1]), "second": side(secondSurfaces[0])
         ]), draft: draft, tenantId: uuid(), principalId: uuid(), requestId: uuid())
         func opening(_ id: String, _ wall: String, _ peer: String) -> DocumentValue {
             .object(["id": .string(id), "type": .string("door"), "surfaceId": .string(wall),
-                     "dimensions": dims, "offset": .vector([0,-0.5]), "connectsToOpeningId": .string(peer)])
+                     "dimensions": dims, "offset": offset, "connectsToOpeningId": .string(peer)])
         }
         let ids = [DocumentValue.string(first), .string(second)]
         var candidate = draft.candidate
@@ -116,7 +121,7 @@ final class NativePrivateHostArchitectureTests: XCTestCase {
         let accepted = try proposal.checkedReply(reply)
         XCTAssertEqual(accepted.openingIds, .array(ids))
         XCTAssertEqual(accepted.draft.candidate, candidate)
-        XCTAssertEqual(accepted.draft.document["editVersion"].integer, draft.document["editVersion"].integer! + 1)
+        XCTAssertEqual(accepted.draft.document["editVersion"].integer, Int64(Int32.max))
         var changed = reply
         changed["candidate"]["title"] = .string("Unexpected replacement")
         XCTAssertThrowsError(try proposal.checkedReply(changed))

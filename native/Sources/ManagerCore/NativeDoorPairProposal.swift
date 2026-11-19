@@ -49,21 +49,20 @@ struct NativeDoorPairProposal {
               Self.binding.allSatisfy({ reply[$0] == value[$0] }),
               let ids = reply["openingIds"].items, ids.count == 2, ids[0] != ids[1],
               try JSONEncoder().encode(reply).count <= 1_100_000 else { throw error }
-        var expected = draft
-        do {
-            for (index, id) in ids.enumerated() {
-                expected = try NativePrivateHostArchitecture.applying(.object([
-                    "type": .string("opening-add"), "id": id, "surfaceId": walls[index]["id"],
-                    "width": value["dimensions"]["width"], "height": value["dimensions"]["height"], "offset": offsets[index]
-                ]), to: expected)
-            }
-            expected = try NativePrivateHostArchitecture.applying(.object([
-                "type": .string("connect-openings"), "firstId": ids[0], "secondId": ids[1]
-            ]), to: expected)
-        } catch { throw error }
-        guard expected.candidate == reply["candidate"] else { throw error }
+        var expected = draft.candidate
+        guard var openings = expected["openings"].items, ids.allSatisfy({ id in
+            guard let value = id.string, UUID(uuidString: value)?.uuidString.lowercased() == value else { return false }
+            return id != draft.document["id"] && NativePrivateHostArchitecture.unique(value, candidate: expected)
+        }) else { throw error }
+        for index in ids.indices {
+            openings.append(.object(["type": .string("door"), "id": ids[index], "surfaceId": walls[index]["id"],
+                "dimensions": value["dimensions"], "offset": offsets[index], "connectsToOpeningId": ids[1-index]]))
+        }
+        expected["openings"] = .array(openings)
+        try NativePrivateHostArchitecture.markTemplate(&expected)
+        guard expected == reply["candidate"] else { throw error }
         var staged = draft
-        try staged.replaceCandidate(expected.candidate)
+        try staged.replaceCandidate(expected)
         return (staged, reply["openingIds"])
     }
 }
