@@ -3365,6 +3365,22 @@ public actor NativeAutomationSession {
             var next = current
             next.draft = carried
             result = try value(await bridge.saveDocumentState(context, state: next))
+        case "floor-recorded-default-apply":
+            try checkedRevision(request, current)
+            let command = try RecordedFloorCommand(value: request["command"])
+            guard selectedOEXFormat == nil, existingWorkspaceV5 != nil,
+                  authoringSession?.advertisesRecordedFloorDefault == true, let draft = current.draft else {
+                throw BridgeFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+            }
+            let preview = try await api.prepareRecordedFloor(command, in: current)
+            let (_, _, refreshed) = try await checked(request)
+            try Task.checkCancellation()
+            guard try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            var next = refreshed
+            next.draft = try preview.applying(to: draft)
+            let document = next.draft == draft ? current : try await bridge.saveDocumentState(context, state: next)
+            result = .object(["document": try value(document), "changed": .bool(next.draft != draft),
+                              "floorRecording": try value(preview.recording)])
         case "floor-appearance-apply":
             try checkedRevision(request, current)
             let policy = try await checkSavedSurfacePolicy(current, api: api)
