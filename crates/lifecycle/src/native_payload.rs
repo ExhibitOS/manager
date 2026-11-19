@@ -893,6 +893,13 @@ pub(crate) const R209_GREEK_SPOT_RELEASE_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const R209_TRANSITION_SPOTS_RELEASE_TARGET: RuntimeTuple = (
+    "4aabdcb0c9cc166e77d260d36a68dedada29e994",
+    "8a0e5c4d344c60a641e9945270903ec99281943716b5f39fd2240db7cd8f24c2",
+    "2d6a809ecce9a0339ae7edb81206f12b82ed3a18971119f61a8487386d18ad44",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const R285_NATIVE_DETAIL_CONTEXT_TARGET: RuntimeTuple = (
     "1d289b5f20c8b4eda0258a57b17b175031c7c2a6",
     "df1a584a8a2573e84d6a8f0e9b8ac8293eaa08d9cdfcec284d1aa5201daebfba",
@@ -928,7 +935,8 @@ fn r285_greek_thumbnail_trace_runtime_pair(pair: (&str, &str)) -> Option<(Runtim
         (R209_FLOOR_RELEASE_TARGET, R209_POINT_RELEASE_TARGET),
         (R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET),
         (R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET),
-        (R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_GREEK_SPOT_RELEASE_TARGET)]
+        (R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_GREEK_SPOT_RELEASE_TARGET),
+        (R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET)]
         .into_iter().find(|(source, target)| pair == (source.2, target.2))
 }
 
@@ -950,7 +958,7 @@ fn r285_bench_after_terminal_host_matches(tuple: (&str, &str, &str)) -> bool {
         R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET, R201_ORDINARY_SUCCESSOR_TARGET, R203_CORRECTED_RELEASE_TARGET,
         R203_ORDINARY_SUCCESSOR_TARGET, R209_BRASS_RELEASE_TARGET, R209_FLOOR_RELEASE_TARGET,
         R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET,
-        R209_GREEK_SPOT_RELEASE_TARGET].contains(&tuple);
+        R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -973,7 +981,7 @@ pub(crate) fn r285_hayes_preopen_terminal_host_matches(tuple: (&str, &str, &str)
         R285_UPPER_FRAMING_TARGET, R285_ORDINARY_PUBLICATION_BUDGET_TARGET, R285_APPROVED_RELEASE_TARGET, R201_ORDINARY_SUCCESSOR_TARGET, R203_CORRECTED_RELEASE_TARGET,
         R203_ORDINARY_SUCCESSOR_TARGET, R209_BRASS_RELEASE_TARGET, R209_FLOOR_RELEASE_TARGET,
         R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET,
-        R209_GREEK_SPOT_RELEASE_TARGET].contains(&tuple) }
+        R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET].contains(&tuple) }
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -2156,6 +2164,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         || R209_WHEAT_ORDINARY_TARGET.2 == manifest
         || R209_ARTWORK_SPOTS_RELEASE_TARGET.2 == manifest
         || R209_GREEK_SPOT_RELEASE_TARGET.2 == manifest
+        || R209_TRANSITION_SPOTS_RELEASE_TARGET.2 == manifest
         || CATALOG40_RETAINED_OEX_CLEANUP.2 == manifest
 }
 
@@ -4380,6 +4389,7 @@ pub(crate) mod normal_oex_release_declaration_tests {
             (R209_BRASS_RELEASE_TARGET, R209_FLOOR_RELEASE_TARGET, R209_POINT_RELEASE_TARGET),
             (R209_POINT_RELEASE_TARGET, R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET),
             (R209_WHEAT_ORDINARY_TARGET, R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_GREEK_SPOT_RELEASE_TARGET),
+            (R209_ARTWORK_SPOTS_RELEASE_TARGET, R209_GREEK_SPOT_RELEASE_TARGET, R209_TRANSITION_SPOTS_RELEASE_TARGET),
         ] {
             assert_eq!(FurnishingTransition::from_manifests((source.2, target.2)),
                 Some(FurnishingTransition::SameCatalog {
@@ -4474,6 +4484,27 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert_eq!(previous.context().manifest_sha256, R209_ARTWORK_SPOTS_RELEASE_TARGET.2);
         assert_eq!(selected.context().manifest_sha256, R209_GREEK_SPOT_RELEASE_TARGET.2);
         assert_eq!(transition.context().manifest_sha256, R209_GREEK_SPOT_RELEASE_TARGET.2);
+        assert_eq!(previous.workspace_furnishing_ledger(catalog).unwrap(), selected.workspace_furnishing_ledger(catalog).unwrap());
+        assert!(previous.static_detail_export_resources(true).is_ok());
+        assert!(selected.static_detail_export_resources(true).is_ok());
+        assert!(selected.static_detail_export_resources(false).is_err());
+        assert!(Payload::open_workspace_v5_validation(&target, true).is_err());
+        assert!(Payload::open_fresh_workspace_v7_validation(&target).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed Greek and Transition packages; read-only payload openers"]
+    fn r209_transition_spots_preserve_catalog_and_only_private_detail() {
+        let source = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R209_GREEK_SPOT").unwrap());
+        let target = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R209_TRANSITION_SPOTS").unwrap());
+        let previous = Payload::open_workspace_v5_validation(&source, false).unwrap();
+        let selected = Payload::open_workspace_v5_validation(&target, false).unwrap();
+        let transition = Payload::open_saved_workspace_transition(&target).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        assert_eq!(previous.context().manifest_sha256, R209_GREEK_SPOT_RELEASE_TARGET.2);
+        assert_eq!(selected.context().manifest_sha256, R209_TRANSITION_SPOTS_RELEASE_TARGET.2);
+        assert_eq!(transition.context().manifest_sha256, R209_TRANSITION_SPOTS_RELEASE_TARGET.2);
         assert_eq!(previous.workspace_furnishing_ledger(catalog).unwrap(), selected.workspace_furnishing_ledger(catalog).unwrap());
         assert!(previous.static_detail_export_resources(true).is_ok());
         assert!(selected.static_detail_export_resources(true).is_ok());
@@ -9220,6 +9251,7 @@ impl Payload {
                     || R209_POINT_RELEASE_TARGET == provenance
                     || R209_ARTWORK_SPOTS_RELEASE_TARGET == provenance
                     || R209_GREEK_SPOT_RELEASE_TARGET == provenance
+                    || R209_TRANSITION_SPOTS_RELEASE_TARGET == provenance
                     || furnishing_thumbnail_host_matches(provenance)
                     || current_image_thumbnail_host_matches(provenance)
                     || gpu_model_host_matches(provenance)))
