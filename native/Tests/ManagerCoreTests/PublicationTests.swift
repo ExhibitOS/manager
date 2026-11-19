@@ -231,7 +231,8 @@ final class PublicationTests: XCTestCase {
         #endif
         XCTAssertFalse(AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: manifest))
         XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
-        for invalid in [nil, manifest.uppercased(), "f" + manifest.dropFirst()] {
+        let differentFirstDigit = manifest.first == "0" ? "1" : "0"
+        for invalid in [nil, manifest.uppercased(), differentFirstDigit + manifest.dropFirst()] {
             XCTAssertFalse(AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: invalid))
         }
         let image = try NativePublicationOriginalImage(.object([
