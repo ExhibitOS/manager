@@ -2406,9 +2406,12 @@ impl InstallationController {
         }, saved_workspace_host.then_some(RetainedSavedHeadCheck::Sealed { target_manifest: Some(&target_manifest) }),
         |service, profile, document, key| {
             #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
-            if target.official_room_lighting_catalog() == Some(crate::native_payload::WorkspaceFurnishingCatalog::DefaultCatalogue057) {
+            if target_manifest == crate::native_payload::OFFICIAL_ROOM_LIGHTING_TARGET.2 {
                 if !saved_workspace_host { return Err(invalid()); }
                 check_official_room_lighting_head(service, profile, document)?;
+            } else if target_manifest == crate::native_payload::OFFICIAL_ROOM_LIGHTING_PENDING_TARGET.2 {
+                if !saved_workspace_host { return Err(invalid()); }
+                check_official_room_lighting_pending_journal(service, profile)?;
             }
             #[cfg(not(all(feature = "workspace-v5-owner-validation", target_os = "macos")))]
             let _ = profile;
