@@ -370,18 +370,28 @@ pub(crate) fn check_personal_transition_document(
     Ok(())
 }
 
-// Only the existing checkpoint owner can authenticate a retained publication.
-// All ordinary document/dirty guards remain in the generic predicate above.
+#[cfg(all(target_os = "macos", debug_assertions))]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetainedTransitionDocument { Dirty, PendingSave }
+
+// Only the checkpoint owner can attest the exact pending Save. It still
+// excludes a second pending writer and all other transition checks apply.
 #[cfg(all(target_os = "macos", debug_assertions))]
 pub(crate) fn check_personal_transition_writers(
     document: &native_document::DocumentState,
     publication: &native_publication::PublicationState,
-    check_retained_dirty: impl FnOnce() -> Result<()>,
+    check_retained_document: impl FnOnce() -> Result<RetainedTransitionDocument>,
     check_retained_publication: impl FnOnce() -> Result<bool>,
 ) -> Result<()> {
     let retained_publication = check_retained_publication()?;
+    if document.pending.is_some() {
+        if publication.pending.is_none() && check_retained_document()? == RetainedTransitionDocument::PendingSave {
+            return Ok(());
+        }
+        return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+    }
     check_personal_transition_document(document, publication.pending.is_some() && !retained_publication,
-        check_retained_dirty)
+        || check_retained_document().map(|_| ()))
 }
 
 impl InstallationController {
@@ -460,7 +470,7 @@ impl InstallationController {
         &self,
         token: &str,
         retained: native_maintenance::TransitionRetention<'_>,
-        retained_document_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<()>,
+        retained_document_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<RetainedTransitionDocument>,
         retained_publication_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState, &native_publication::PublicationState) -> Result<bool>,
         current52_png_check: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState, &str, &native_upload::Transfer) -> Result<bool>,
         task: impl FnOnce(&LifecycleService, &Path, &native_document::DocumentState) -> Result<T>,

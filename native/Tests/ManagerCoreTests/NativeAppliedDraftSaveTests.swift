@@ -38,6 +38,72 @@ final class NativeAppliedDraftSaveTests: XCTestCase {
         return api
     }
 
+    private func ordinaryCeilingFixture() throws -> (NativeDocumentState, NativeDocumentState, DocumentValue) {
+        let (base, _, initial) = try fixture()
+        let before = try NativeExhibitionDraft.new(roomBaseLight: true, ceilingFill: true)
+        let light = try XCTUnwrap(before.candidate["lights"].items?.first?["id"].string)
+        var source = base; source.draft = before
+        var after = before
+        try after.replaceCandidate(RoomBaseLightIntent.setCeilingFillBrightness(0.5, usesDefault: true,
+            lightId: light, in: before.candidate))
+        var pending = source
+        pending.revision += 2
+        pending.draft = after
+        pending.pending = .init(requestId: requestId, etag: source.etag, draft: after)
+        var input = initial
+        input["exhibitionId"] = .string(before.id)
+        input["sourceNativeRevision"] = .integer(41)
+        input["candidate"] = after.candidate
+        input["originalDraft"] = after.document
+        input["savedDraft"] = before.document
+        input["lightId"] = .string(light)
+        return (source, pending, input)
+    }
+
+    func testOrdinaryCeilingFillRetainsOriginalPendingTupleAndCommitsAtMostOnce() async throws {
+        let (source, pending, input) = try ordinaryCeilingFixture()
+        let anchor = try NativeAppliedDraftSave.Anchor(input, ordinaryCeilingFill: true)
+        XCTAssertThrowsError(try NativeAppliedDraftSave.Anchor(input))
+        XCTAssertEqual(try anchor.state(pending, manifest: manifest), .pending)
+        let api = try await connect(source, pending: pending, dropCommitReply: true)
+        do { _ = try await NativeAppliedDraftSave.replayOriginal(anchor, current: pending, manifest: manifest, api: api); XCTFail("Injected lost commit reply") }
+        catch { }
+        let saved = try await NativeAppliedDraftSave.replayOriginal(anchor, current: pending, manifest: manifest, api: api)
+        XCTAssertEqual(saved.draft, pending.pending?.draft)
+        XCTAssertEqual(AppliedSaveProtocol.counts().commits, 1)
+        XCTAssertEqual(AppliedSaveProtocol.counts().puts, 2)
+        XCTAssertEqual(pending.pending?.requestId, requestId)
+    }
+
+    func testOrdinaryCeilingFillRefusesUnrelatedBodyOwnerPendingAndHeadBeforePut() async throws {
+        let (source, pending, input) = try ordinaryCeilingFixture()
+        let anchor = try NativeAppliedDraftSave.Anchor(input, ordinaryCeilingFill: true)
+        let api = try await connect(source, pending: pending)
+        var foreign = pending
+        foreign = .init(format: pending.format, revision: pending.revision, workspaceId: UUID().uuidString.lowercased(),
+            tenantId: pending.tenantId, principalId: pending.principalId, draft: pending.draft, etag: pending.etag,
+            savedEditVersion: pending.savedEditVersion, pending: pending.pending)
+        let body = try XCTUnwrap(pending.draft)
+        var wrongRequest = pending
+        wrongRequest.pending = .init(requestId: UUID().uuidString.lowercased(), etag: pending.etag, draft: body)
+        var tagged = pending
+        tagged.pending = .init(requestId: requestId, etag: pending.etag, draft: body, origin: NativeAppliedDraftSave.origin)
+        for state in [foreign, wrongRequest, tagged] {
+            do { _ = try await NativeAppliedDraftSave.replayOriginal(anchor, current: state, manifest: manifest, api: api); XCTFail("Conflict must preserve intent") }
+            catch { }
+        }
+        var wrong = input
+        wrong["candidate"]["title"] = .string("Unrelated edit")
+        wrong["originalDraft"]["candidate"] = wrong["candidate"]
+        XCTAssertThrowsError(try NativeAppliedDraftSave.Anchor(wrong, ordinaryCeilingFill: true))
+        wrong = input; wrong["originalDraft"]["createdAt"] = .string("2020-01-01T00:00:00Z")
+        XCTAssertThrowsError(try NativeAppliedDraftSave.Anchor(wrong, ordinaryCeilingFill: true))
+        AppliedSaveProtocol.changeHeadBodyWithSameETag()
+        do { _ = try await NativeAppliedDraftSave.replayOriginal(anchor, current: pending, manifest: manifest, api: api); XCTFail("Different base body") }
+        catch { }
+        XCTAssertEqual(AppliedSaveProtocol.counts().puts, 0)
+    }
+
     func testAppliedBeforeSaveUsesRetainedBodyAndOriginalIdentityWithoutReapplying() async throws {
         let (source, pending, input) = try fixture(), anchor = try NativeAppliedDraftSave.Anchor(input)
         let api = try await connect(source, pending: pending)
@@ -171,6 +237,10 @@ private final class AppliedSaveProtocol: URLProtocol, @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         head["etag"] = .string("\"studio-r14-" + String(repeating: "d", count: 64) + "\"")
         head["revision"] = .integer(14)
+    }
+    static func changeHeadBodyWithSameETag() {
+        lock.lock(); defer { lock.unlock() }
+        head["draft"]["candidate"]["title"] = .string("An unrelated authenticated body")
     }
     static func markSavedWithoutReceipt() {
         lock.lock(); defer { lock.unlock() }

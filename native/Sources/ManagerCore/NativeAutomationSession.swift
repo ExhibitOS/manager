@@ -146,6 +146,7 @@ public actor NativeAutomationSession {
         }
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
         let officialRoomLighting = Self.supportsOfficialRoomLighting(manifest: existingWorkspaceV5?.manifestSHA256)
+        let ordinaryCeilingFillRecovery = Self.supportsOrdinaryCeilingFillRecovery(manifest: existingWorkspaceV5?.manifestSHA256)
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
@@ -163,6 +164,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: $0.manifestSHA256)
                     || officialRoomLighting
+                    || ordinaryCeilingFillRecovery
             } == true
         let firstArchitectureManifest = existingWorkspaceV5?.manifestSHA256
         let firstArchitectureSupported = firstArchitectureManifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
@@ -172,6 +174,8 @@ public actor NativeAutomationSession {
                && workspaceV7ValidationRuntime == nil && appliedDraftRecoveryPath == nil),
               !officialRoomLighting || (ordinaryExisting && !selectedOEX9 && !selectedOEX10
                   && !firstArchitectureEntry && appliedDraftRecoveryPath == nil),
+              !ordinaryCeilingFillRecovery || (ordinaryExisting && !selectedOEX9 && !selectedOEX10
+                  && !firstArchitectureEntry && appliedDraftRecoveryPath != nil && thumbnailPreviewTraceRequestID == nil),
               !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
               !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
@@ -211,7 +215,9 @@ public actor NativeAutomationSession {
                   selectedOEXFormat == nil, let pin = inputs[path], nativeImportDigest(pin) else {
                 throw BridgeFailure("AUTOMATION_CONFIGURATION_INVALID")
             }
-            appliedDraftRecovery = try NativeAppliedDraftSave.Anchor(Self.sharedBenchReply(root: outputRoot, path: path, expectedSHA256: pin))
+            appliedDraftRecovery = try NativeAppliedDraftSave.Anchor(
+                Self.sharedBenchReply(root: outputRoot, path: path, expectedSHA256: pin),
+                ordinaryCeilingFill: ordinaryCeilingFillRecovery)
         } else { appliedDraftRecovery = nil }
         bridge = try NativeBridge(helper: helper, profile: profile, freshSelectedOEX: selectedOEXFormat != nil,
                                   freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
@@ -429,6 +435,7 @@ public actor NativeAutomationSession {
         }
         guard !status.needsShutdown, !status.accountRequired, status.selectedOex != true, status.errorCode == nil,
               let config = status.configuration, config.manifestSha256 == expected.manifestSHA256,
+              appliedDraftRecovery?.retainedSavedDraft == nil || config.kind == "personal",
               config.tenantId == expected.tenantId, config.ports.web == ports["web"],
               config.ports.api == ports["api"], config.ports.database == ports["database"],
               saved.workspaceId == expected.workspaceId, saved.tenantId == expected.tenantId,
@@ -473,7 +480,8 @@ public actor NativeAutomationSession {
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
         let admitsOfficialRoomLighting = Self.admitsOfficialRoomLighting(manifest: config.manifestSha256, session: session)
-        if Self.supportsOfficialRoomLighting(manifest: config.manifestSha256), !admitsOfficialRoomLighting {
+        if (Self.supportsOfficialRoomLighting(manifest: config.manifestSha256)
+            || Self.supportsOrdinaryCeilingFillRecovery(manifest: config.manifestSha256)), !admitsOfficialRoomLighting {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
@@ -984,7 +992,8 @@ public actor NativeAutomationSession {
             guard let path = request["inputPath"].string, let pin = inputs[path], nativeImportDigest(pin) else {
                 throw BridgeFailure("AUTOMATION_INPUT_INVALID")
             }
-            anchor = try NativeAppliedDraftSave.Anchor(Self.sharedBenchReply(root: root, path: path, expectedSHA256: pin))
+            anchor = try NativeAppliedDraftSave.Anchor(Self.sharedBenchReply(root: root, path: path, expectedSHA256: pin),
+                ordinaryCeilingFill: appliedDraftRecovery?.retainedSavedDraft != nil)
         }
         guard id != anchor.requestId, appliedDraftRecovery == nil || anchor == appliedDraftRecovery else {
             throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT")
@@ -2138,8 +2147,16 @@ public actor NativeAutomationSession {
         #endif
     }
 
+    static func supportsOrdinaryCeilingFillRecovery(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "f5b071dc8d7db844ead64ae0a08017173f2e1eef75c28d2984682716732d8538"
+        #else
+        false
+        #endif
+    }
+
     static func admitsOfficialRoomLighting(manifest: String, session: AuthoringSession) -> Bool {
-        supportsOfficialRoomLighting(manifest: manifest)
+        (supportsOfficialRoomLighting(manifest: manifest) || supportsOrdinaryCeilingFillRecovery(manifest: manifest))
             && session.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             && session.nativeLightObjectAuthoringProposalProfile == LightObjectAuthoring.profile
             && session.advertisesRoomCeilingFillDefault

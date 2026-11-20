@@ -16,10 +16,12 @@ enum NativeAppliedDraftSave {
         let sourceNativeRevision: UInt64, sourceEditVersion: Int64
         let candidate: DocumentValue
         let originalDraft: NativeExhibitionDraft?
+        let retainedSavedDraft: NativeExhibitionDraft?
 
-        init(_ input: DocumentValue) throws {
+        init(_ input: DocumentValue, ordinaryCeilingFill: Bool = false) throws {
             let keys: Set<String> = ["version", "requestId", "workspaceId", "tenantId", "principalId", "exhibitionId", "runtimeManifestSHA256", "etag", "sourceNativeRevision", "sourceEditVersion", "candidate"]
-            guard case .object(let fields) = input, Set(fields.keys).subtracting(["originalDraft"]) == keys,
+            let optional: Set<String> = ordinaryCeilingFill ? ["originalDraft", "savedDraft", "lightId"] : ["originalDraft"]
+            guard case .object(let fields) = input, Set(fields.keys).subtracting(optional) == keys,
                   input["version"] == .integer(1),
                   let request = input["requestId"].string, let workspace = input["workspaceId"].string,
                   let tenant = input["tenantId"].string, let principal = input["principalId"].string,
@@ -42,6 +44,27 @@ enum NativeAppliedDraftSave {
                     throw BridgeFailure("APPLIED_DRAFT_INTENT_INVALID")
                 }
             } else { originalDraft = nil }
+            if ordinaryCeilingFill {
+                let saved = try NativeExhibitionDraft(document: input["savedDraft"])
+                guard let originalDraft, saved.id == exhibition, saved.document["editVersion"] == .integer(edit),
+                      let light = input["lightId"].string, UUID(uuidString: light)?.uuidString.lowercased() == light,
+                      case .object(let baseFields) = saved.document, case .object(let pendingFields) = originalDraft.document,
+                      baseFields.filter({ !["candidate", "updatedAt", "editVersion"].contains($0.key) })
+                        == pendingFields.filter({ !["candidate", "updatedAt", "editVersion"].contains($0.key) }),
+                      saved.candidate != candidate else { throw BridgeFailure("APPLIED_DRAFT_INTENT_INVALID") }
+                let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1, tenantId: tenant,
+                    principalId: principal, draft: saved, selection: nil, mode: "translate", view: "isometric",
+                    disabled: false, workspaceId: workspace, baseETag: etag)
+                let command: DocumentValue = .object(["type": .string("set-room-ceiling-fill-brightness"),
+                    "lightId": .string(light), "brightness": .number(0.5), "mode": .string("default")])
+                let request = try LightObjectRequest(command: command, frame: frame)
+                var comparison = ["candidate": candidate, "lightId": .string(light)]
+                for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"] {
+                    comparison[key] = request.value[key]
+                }
+                _ = try request.checkedReply(.object(comparison))
+                retainedSavedDraft = saved
+            } else { retainedSavedDraft = nil }
         }
 
         /// Only the Session's retained successful apply response supplies this
@@ -90,8 +113,9 @@ enum NativeAppliedDraftSave {
                 throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT")
             }
             if let pending = current.pending {
+                let expectedOrigin = retainedSavedDraft == nil ? origin : nil
                 guard current.revision == sourceNativeRevision + 1, current.savedEditVersion == sourceEditVersion,
-                      current.etag == etag, pending.origin == origin, pending.requestId == requestId,
+                      current.etag == etag, pending.origin == expectedOrigin, pending.requestId == requestId,
                       pending.etag == etag, pending.draft == draft,
                       pending.modelCandidate == nil, pending.productImage == nil,
                       originalDraft == nil || originalDraft == draft else {
@@ -116,7 +140,8 @@ enum NativeAppliedDraftSave {
             guard head.draft.id == exhibitionId else { throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT") }
             if position == .pending && head.etag == etag {
                 guard head.revision == Self.serverRevision(etag),
-                      head.draft.document["editVersion"] == .integer(sourceEditVersion) else {
+                      head.draft.document["editVersion"] == .integer(sourceEditVersion),
+                      retainedSavedDraft.map({ $0 == head.draft }) ?? true else {
                     throw BridgeFailure("APPLIED_DRAFT_RECOVERY_CONFLICT")
                 }
             } else {

@@ -28,6 +28,8 @@ const NEW_MANIFEST: &str = "10a21f3b7a73a66011e077f7927f951f917e604720591acbcc2c
 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
 const OFFICIAL_ROOM_LIGHTING_JOURNAL: &str = "c13f3e2f6e5de1d66c00037c876a2a3e7614e02fe78350167e14f689e1b2f5aa";
 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+const OFFICIAL_ROOM_LIGHTING_PENDING_JOURNAL: &str = "673bd7facea2c3299c50d120c83e2fc819ba9b4f111a673834a4fe01a73232d6";
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
 const OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES: u64 = 4512 * 1024 * 1024;
 #[cfg(feature = "workspace-v5-owner-validation")]
 use crate::native_payload::{
@@ -221,7 +223,8 @@ fn check_retained_saved_head(
     owner: (&str, &str, &str),
 ) -> Result<()> {
     let mismatch = || err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED");
-    if !crate::native_payload::native_camera_pose_retained_dirty_transition(pair) {
+    let pending_lighting = crate::native_payload::official_room_lighting_pending_transition(pair);
+    if !pending_lighting && !crate::native_payload::native_camera_pose_retained_dirty_transition(pair) {
         return Err(mismatch());
     }
     super::installations::native_document::validate(working)?;
@@ -231,7 +234,7 @@ fn check_retained_saved_head(
     let version = saved.saved_edit_version.ok_or_else(mismatch)?;
     if (working.workspace_id.as_str(), working.tenant_id.as_str(), working.principal_id.as_str()) != owner
         || (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str()) != owner
-        || working.pending.is_some() || saved.pending.is_some()
+        || saved.pending.is_some()
         || working.etag.is_none() || working.etag != saved.etag
         || working.saved_edit_version != Some(version)
         || saved_draft["editVersion"].as_u64() != Some(version)
@@ -239,6 +242,15 @@ fn check_retained_saved_head(
         || working_draft["id"] != saved_draft["id"]
         || working_draft["exhibitionId"] != saved_draft["exhibitionId"]
     {
+        return Err(mismatch());
+    }
+    if pending_lighting {
+        let pending = working.pending.as_ref().ok_or_else(mismatch)?;
+        if pending.origin.is_some() || pending.model_candidate.is_some() || pending.product_image.is_some()
+            || pending.etag != working.etag || &pending.draft != working_draft
+            || saved.revision.checked_add(2) != Some(working.revision)
+        { return Err(mismatch()); }
+    } else if working.pending.is_some() {
         return Err(mismatch());
     }
     Ok(())
@@ -340,6 +352,7 @@ impl Checkpoint {
 
     fn check_host(&self, saved_workspace_host: bool) -> Result<()> {
         let pair = (self.old_manifest.as_str(), self.new_manifest.as_str());
+        let pending_lighting = crate::native_payload::official_room_lighting_pending_transition(pair);
         #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
         if self.official_room_lighting_reopen.is_some()
             && (!saved_workspace_host || !self.trial || self.saved_document_sha256.is_none()
@@ -350,9 +363,12 @@ impl Checkpoint {
                 || !crate::native_payload::fixed64_publication_repair_clean_transition(pair)
                 || self.startup_cancellation_045.is_some()
         }) { return Err(invalid()); }
+        if pending_lighting && self.retained_saved_head.is_none() {
+            return Err(invalid());
+        }
         if self.retained_saved_head.is_some()
             && (!saved_workspace_host || self.saved_document_sha256.is_none()
-                || !crate::native_payload::native_camera_pose_retained_dirty_transition(pair))
+                || !(pending_lighting || crate::native_payload::native_camera_pose_retained_dirty_transition(pair)))
         { return Err(invalid()); }
         #[cfg(feature = "workspace-v5-owner-validation")]
         if FurnishingTransition::from_manifests(pair).is_some() != self.furnishing.is_some() {
@@ -519,7 +535,8 @@ pub(crate) fn transition_source_ledger(payload: &crate::native_payload::Payload,
 
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if proof.is_none() && FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting) {
+    if proof.is_none() && (FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting)
+        || crate::native_payload::official_room_lighting_pending_transition(pair)) {
         return OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2098,6 +2115,19 @@ fn check_official_room_lighting_head(
     Ok(())
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+fn check_official_room_lighting_pending_journal(service: &LifecycleService, profile: &Path) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(profile).map_err(|_| invalid())?;
+    if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != crate::native_payload::OFFICIAL_ROOM_LIGHTING_PROFILE_ID
+        || service.root != profile.join("local-runtime")
+    { return Err(invalid()); }
+    let journal = super::installations::native_document::document_filename(&service.root);
+    let bytes = installation_backup::source_bytes(profile, &journal, MAX_MANIFEST as u64, true)?;
+    if digest(&bytes) != OFFICIAL_ROOM_LIGHTING_PENDING_JOURNAL { return Err(invalid()); }
+    Ok(())
+}
+
 impl InstallationController {
     fn with_transition_key<T>(
         &self,
@@ -2117,8 +2147,16 @@ impl InstallationController {
             {
                 let owner = service.personal_identity()?;
                 match retained_saved_head_check {
-                    Some(RetainedSavedHeadCheck::Stage { pair, saved }) =>
-                        check_retained_saved_head(pair, document, saved, (&owner.0, &owner.1, &owner.2)),
+                    Some(RetainedSavedHeadCheck::Stage { pair, saved }) => {
+                        let pending_lighting = crate::native_payload::official_room_lighting_pending_transition(pair);
+                        #[cfg(target_os = "macos")]
+                        if pending_lighting {
+                            check_official_room_lighting_pending_journal(service, profile)?;
+                        }
+                        check_retained_saved_head(pair, document, saved, (&owner.0, &owner.1, &owner.2))?;
+                        Ok(if pending_lighting { installations::RetainedTransitionDocument::PendingSave }
+                            else { installations::RetainedTransitionDocument::Dirty })
+                    }
                     Some(RetainedSavedHeadCheck::Sealed { target_manifest }) => {
                         if key_path.starts_with(&service.root) { return Err(invalid()); }
                         let key = Bytes(crate::profile_backup::external_key(profile, key_path)?);
@@ -2126,7 +2164,15 @@ impl InstallationController {
                         let checkpoint = service.transition_checkpoint(&envelope, key.0.as_slice().try_into().map_err(|_| invalid())?)?;
                         checkpoint.check_host(true)?;
                         if checkpoint.staged != staging { return Err(invalid()); }
-                        checkpoint.check_retained_saved_document(document, (&owner.0, &owner.1, &owner.2), target_manifest)
+                        let pending_lighting = crate::native_payload::official_room_lighting_pending_transition(
+                            (&checkpoint.old_manifest, &checkpoint.new_manifest));
+                        #[cfg(target_os = "macos")]
+                        if pending_lighting {
+                            check_official_room_lighting_pending_journal(service, profile)?;
+                        }
+                        checkpoint.check_retained_saved_document(document, (&owner.0, &owner.1, &owner.2), target_manifest)?;
+                        Ok(if pending_lighting { installations::RetainedTransitionDocument::PendingSave }
+                            else { installations::RetainedTransitionDocument::Dirty })
                     }
                     Some(RetainedSavedHeadCheck::CleanStage { .. }) | None => Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING")),
                 }
@@ -2229,6 +2275,7 @@ impl InstallationController {
         let target_manifest = target.context().manifest_sha256;
         let pair = (source_manifest.as_str(), target_manifest.as_str());
         if !saved_workspace_transition_supported(pair) || !retained_transition_proof_matches(pair, retained.image())
+            || (crate::native_payload::official_room_lighting_pending_transition(pair) && retained_saved_head.is_none())
             || !startup_cancellation_proof_matches(pair, retained.image(), startup_cancellation_045)
             || ((retained.gpu().is_some() || retained.original().is_some()) && startup_cancellation_045.is_some())
             || (retained.original().is_some() && !crate::native_payload::current_image_thumbnail_transition(pair))
@@ -2696,7 +2743,8 @@ mod tests {
         // A retained seal without its publication is never treated as ordinary.
         let mut removed = checkpoint;
         removed.retained_publication_sha256 = Some("c".repeat(64));
-        assert!(installations::check_personal_transition_writers(&document, &publication, || Ok(()), || {
+        assert!(installations::check_personal_transition_writers(&document, &publication,
+            || Ok(installations::RetainedTransitionDocument::Dirty), || {
             check_sealed_publication_retention(&removed, Path::new("/synthetic/ordinary-source"),
                 Path::new("/synthetic/ordinary-stage"), None, &document, &publication, owner, "")
         }).is_err());
@@ -2735,6 +2783,44 @@ mod tests {
         exercise_pending_publication_enclosing_guard(&serde_json::from_slice(&document).unwrap(), &parsed_publication);
         assert!(fs::read(doc_path).unwrap() == document);
         assert!(fs::read(pub_path).unwrap() == publication);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_room_lighting_transition_requires_the_same_pending_save_and_sealed_head() {
+        use installations::{RetainedTransitionDocument, native_document::Pending};
+        let pair = (crate::native_payload::OFFICIAL_ROOM_LIGHTING_TARGET.2,
+            crate::native_payload::OFFICIAL_ROOM_LIGHTING_PENDING_TARGET.2);
+        let (saved, mut working) = native_camera_pose_documents();
+        working.revision = saved.revision + 2;
+        working.pending = Some(Pending {
+            request_id: "10000000-0000-4000-8000-000000000006".into(),
+            etag: working.etag.clone(), draft: working.draft.clone().unwrap(),
+            origin: None, model_candidate: None, product_image: None,
+        });
+        let owner = (saved.workspace_id.as_str(), saved.tenant_id.as_str(), saved.principal_id.as_str());
+        check_retained_saved_head(pair, &working, &saved, owner).unwrap();
+        let publication = crate::installations::native_publication::PublicationState {
+            format: 1, revision: 0, workspace_id: owner.0.into(), tenant_id: owner.1.into(), principal_id: owner.2.into(),
+            pending: None, completed: None, native_original_attempts: BTreeMap::new(),
+        };
+        installations::check_personal_transition_writers(&working, &publication, || {
+            check_retained_saved_head(pair, &working, &saved, owner)?;
+            Ok(RetainedTransitionDocument::PendingSave)
+        }, || Ok(false)).unwrap();
+        assert!(installations::check_personal_transition_writers(&working, &publication,
+            || Ok(RetainedTransitionDocument::Dirty), || Ok(false)).is_err());
+        assert!(check_retained_saved_head((pair.1, pair.0), &working, &saved, owner).is_err());
+        let mut wrong = working.clone(); wrong.pending.as_mut().unwrap().origin = Some("automation-applied-draft-v1".into());
+        assert!(check_retained_saved_head(pair, &wrong, &saved, owner).is_err());
+        let mut wrong = working.clone(); wrong.pending.as_mut().unwrap().draft["candidate"]["title"] = "unrelated".into();
+        assert!(check_retained_saved_head(pair, &wrong, &saved, owner).is_err());
+        let mut wrong = working.clone(); wrong.pending = None;
+        assert!(check_retained_saved_head(pair, &wrong, &saved, owner).is_err());
+        let mut wrong = saved.clone(); wrong.revision -= 1;
+        assert!(check_retained_saved_head(pair, &working, &wrong, owner).is_err());
+        let mut wrong = saved.clone(); wrong.principal_id = "10000000-0000-4000-8000-000000000099".into();
+        assert!(check_retained_saved_head(pair, &working, &wrong, owner).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
