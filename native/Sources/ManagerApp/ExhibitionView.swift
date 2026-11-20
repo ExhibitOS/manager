@@ -2273,6 +2273,7 @@ final class ExhibitionModel: ObservableObject {
         guard access == viewportAccessID else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return result
     }
+    var currentCataloguePlacementCheckAvailable: Bool { api?.currentDefaultCatalogueRuntimeQualified == true }
     var workspaceCeilingRailAvailable: Bool {
         workspaceFurnishingIntakeAvailable && session?.advertisesWorkspaceCeilingRail == true
             && api?.workspaceCeilingRailRuntimeQualified == true

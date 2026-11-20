@@ -3363,6 +3363,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsCurrentDefaultCatalogueRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98"
+            || manifest == "eee0808ab66919d15341327acb80f0055d00224ca12d984926efa526827a4109"
         #else
         return false
         #endif
@@ -4042,6 +4043,24 @@ public actor AuthoringAPI {
     public func prepareWorkspaceCeilingRail(_ attachment: WorkspaceCeilingRailAttachment, furnishingId: String,
                                             in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
         try await prepareWorkspaceCeilingRailInsertion([attachment], furnishingId: furnishingId, expectedModelSHA256: nil, in: document)
+    }
+
+    public func verifyOrdinaryCeilingRailFit(_ attachment: WorkspaceCeilingRailAttachment,
+                                             furnishingId: String, in document: NativeDocumentState) async throws {
+        guard !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
+        }
+        let held = generation
+        let saved = try await exhibition(draft.id)
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard saved.draft == draft, saved.etag == etag, policy.revision == saved.revision, policy.etag == etag,
+              policy.confirmsOrdinaryDraft, generation == held else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let candidate = try await prepareWorkspaceCeilingRail(attachment, furnishingId: furnishingId, in: document)
+        try await validateNativeViewportEdit(candidate ?? draft, etag: etag)
+        try saved.requireSameComparison(await exhibition(draft.id))
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
     }
 
     func prepareWorkspaceCeilingRailInsertion(_ attachments: [WorkspaceCeilingRailAttachment], furnishingId: String,
