@@ -4592,7 +4592,7 @@ public actor AuthoringAPI {
             workspaceId: document.workspaceId, baseETag: etag)
         let proposal = try FrameImageFitReconciliationRequest(placementId: placementId, frame: frame)
         let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
-                                                     etag: etag, proposal: proposal.value)
+            etag: etag, proposal: proposal.value, occupiedWheatDocument: occupiedWheat ? document : nil)
         let preview = try proposal.checkedReply(reply)
         if occupiedWheat {
             let attachments = preview.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["frameAttachments"].items
@@ -4728,7 +4728,7 @@ public actor AuthoringAPI {
     }
 
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
-                                 proposal: DocumentValue) async throws -> DocumentValue {
+                                 proposal: DocumentValue, occupiedWheatDocument: NativeDocumentState? = nil) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
         let recordedFloor = ["select-floor-material", "reset-floor-sound"].contains(operation)
         let placementVoice = operation == "set-placement-voice"
@@ -4737,9 +4737,15 @@ public actor AuthoringAPI {
         let supplementalFill = operation == NativeAutomationScene.supplementalCeilingFillCommand
         let scene = recordedFloor || supplementalFill || ["set-pedestal", "add-light", "set-light-details"].contains(operation)
         let frameImageFit = operation == "reconcile-frame-image-fit"
+        let occupiedWheat = frameImageFit && nativeSession && !authenticationBusy && occupiedWheatDocument.map { document in
+            guard let session, let placementId = proposal["placementId"].string, document.draft?.id == exhibitionId,
+                  document.etag == etag, studioRevision == 218,
+                  proposal["tenantId"].string == document.tenantId, proposal["principalId"].string == document.principalId else { return false }
+            return supportsOccupiedWheatFrameImageFit(placementId: placementId, document: document, session: session)
+        } == true
         let budgetPolicy = operation == "set-viewer-budget-policy"
         let doorPair = operation == NativeDoorPairProposal.command
-        let admitted = doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let admitted = doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? (admitsFrameImageFitReconciliation || occupiedWheat) : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
