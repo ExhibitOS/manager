@@ -148,6 +148,8 @@ struct SelectedLightInspector: View {
                                 }
                                 if let brightness = fields.ceilingFillBrightness {
                                     RoomCeilingFillBrightnessControl(model: model, savedBrightness: brightness,
+                                        usesDefault: fields.ceilingFillUsesDefault,
+                                        canUseDefault: model.canPreviewDefaultRoomCeilingFill,
                                         enabled: ready && model.canPreviewRoomBaseLightPlacement)
                                         .id(fields.lightId)
                                 } else {
@@ -300,12 +302,16 @@ struct SelectedLightInspector: View {
 private struct RoomCeilingFillBrightnessControl: View {
     @ObservedObject var model: ExhibitionModel
     let savedBrightness: Double
+    let usesDefault: Bool
+    let canUseDefault: Bool
     let enabled: Bool
     @State private var brightness: Double
 
-    init(model: ExhibitionModel, savedBrightness: Double, enabled: Bool) {
+    init(model: ExhibitionModel, savedBrightness: Double, usesDefault: Bool, canUseDefault: Bool, enabled: Bool) {
         self.model = model
         self.savedBrightness = savedBrightness
+        self.usesDefault = usesDefault
+        self.canUseDefault = canUseDefault
         self.enabled = enabled
         self._brightness = State(initialValue: savedBrightness)
     }
@@ -315,8 +321,14 @@ private struct RoomCeilingFillBrightnessControl: View {
             Slider(value: $brightness, in: 0...1, step: 0.01) { Text("천장 면조명 밝기") }
                 .accessibilityValue(brightness.formatted(.percent.precision(.fractionLength(0))))
             LabeledContent("천장 면조명 밝기", value: brightness.formatted(.percent.precision(.fractionLength(0))))
-            Button("밝기 미리보기") { Task { await model.previewRoomCeilingFillBrightness(brightness) } }
-                .disabled(brightness == savedBrightness)
+            Button(usesDefault ? "직접 지정한 밝기 미리보기" : "밝기 미리보기") {
+                Task { await model.previewRoomCeilingFillBrightness(brightness) }
+            }.disabled(brightness == savedBrightness && !usesDefault)
+            if canUseDefault && !usesDefault {
+                Button("기본 밝기 미리보기") {
+                    Task { await model.previewRoomCeilingFillBrightness(RoomCeilingFill.initialBrightness, useDefault: true) }
+                }
+            }
         }
         .disabled(!enabled)
         .onChange(of: savedBrightness) { _, value in brightness = value }

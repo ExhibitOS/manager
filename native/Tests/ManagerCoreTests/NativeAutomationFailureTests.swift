@@ -98,6 +98,29 @@ final class NativeAutomationFailureTests: XCTestCase {
         state.pending = nil
         XCTAssertThrowsError(try NativeAutomationSession.firstArchitectureDraft(invalid, in: state, roomBaseLight: false))
     }
+
+    func testNegotiatedOrdinaryConstructorsShareTheCeilingOnlyFirstRoom() throws {
+        let id = "10000000-0000-4000-8000-000000000001"
+        let state = NativeDocumentState(format: 1, revision: 0, workspaceId: id, tenantId: id, principalId: id,
+            draft: nil, etag: nil, savedEditVersion: nil, pending: nil)
+        let request: DocumentValue = .object(["command": .object(["title": .string("Synthetic first room")])])
+        let initial = try NativeAutomationSession.emptyExhibitionDraft(request, in: state,
+            roomBaseLight: true, defaultCeilingFill: true)
+        let architecture = try NativeAutomationSession.firstArchitectureDraft(request, in: state,
+            roomBaseLight: true, defaultCeilingFill: true)
+        let privateHost = try NativePrivateHost(requestId: id, title: "Synthetic private", protecting: state,
+            roomBaseLight: true, defaultCeilingFill: true)
+        for draft in [initial, architecture, try XCTUnwrap(privateHost.document.draft)] {
+            let lights = try XCTUnwrap(draft.candidate["lights"].items)
+            XCTAssertEqual(lights.map { $0["type"] }, [.string("area")])
+            XCTAssertEqual(lights.first?["transform"]["position"], .vector([0, 3.98, 0]))
+            let details = try NativeLightFixture.bindings(in: draft.candidate)
+            XCTAssertEqual(details.first?["ceilingFill"]["mode"], .string("default"))
+        }
+        let unchanged = try NativeAutomationSession.emptyExhibitionDraft(request, in: state, roomBaseLight: true)
+        let legacyLights = try XCTUnwrap(unchanged.candidate["lights"].items)
+        XCTAssertEqual(legacyLights.map { $0["type"] }, [.string("point")])
+    }
     func testInstalledReopenUsesVerifiedConfigurationAndRefusesScopeOrPortDrift() throws {
         let tenant = "10000000-0000-4000-8000-000000000001", manifest = String(repeating: "a", count: 64)
         func configuration(kind: String? = "personal", owner: String? = nil, sha: String? = nil,

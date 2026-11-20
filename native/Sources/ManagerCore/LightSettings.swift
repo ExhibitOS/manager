@@ -209,6 +209,7 @@ public struct LightFormBuffer: Equatable, Sendable {
     public let isRoomBaseLight: Bool
     public let basePlacement: RoomBaseLightPlacement?
     public let ceilingFillBrightness: Double?
+    public let ceilingFillUsesDefault: Bool
     public var type: NativeLightType
     public var red: String, green: String, blue: String
     public var colorMode: NativeLightColorMode
@@ -267,6 +268,7 @@ public struct LightFormBuffer: Equatable, Sendable {
         isRoomBaseLight = settings?["purpose"] == .string("room-base")
         basePlacement = settings?["basePlacement"].string.flatMap(RoomBaseLightPlacement.init(rawValue:))
         ceilingFillBrightness = settings.flatMap { try? RoomCeilingFill.brightness(in: $0["ceilingFill"]) }
+        ceilingFillUsesDefault = settings.map { RoomCeilingFill.usesDefault($0["ceilingFill"]) } == true
         originalTemperature = settings?["temperatureKelvin"].double
         originalColor = try color.map { value in
             guard let n = value.double, n.isFinite else { throw LightCommand.invalid() }; return n

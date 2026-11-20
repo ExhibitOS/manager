@@ -87,6 +87,48 @@ final class RoomBaseLightIntentTests: XCTestCase {
         XCTAssertThrowsError(try edit.checkedReply(reply(edit, candidate: altered)))
     }
 
+    func testNewDefaultRoomPreservesPowerUntilAnExplicitSameBrightnessEdit() throws {
+        let legacy = try NativeExhibitionDraft.new(roomBaseLight: true, ceilingFill: true)
+        var draft = try NativeExhibitionDraft.new(roomBaseLight: true, defaultCeilingFill: true)
+        let lightId = try id(draft)
+        let roomId = try XCTUnwrap(draft.rooms.first?["id"].string)
+        XCTAssertEqual(draft.candidate["lights"].items?.map { $0["type"] }, [.string("area")])
+        XCTAssertEqual(light(draft)["dimensions"], light(legacy)["dimensions"])
+        XCTAssertEqual(light(draft)["transform"], light(legacy)["transform"])
+        let legacyIntensity = try XCTUnwrap(light(legacy)["intensity"].double)
+        XCTAssertEqual(light(draft)["intensity"].double, 5 * legacyIntensity)
+        XCTAssertTrue(try LightFormBuffer(draft: draft, selectedLightId: lightId).ceilingFillUsesDefault)
+        let beforeEdit = draft.candidate
+        let edited = try RoomBaseLightIntent.setCeilingFillBrightness(0.5, lightId: lightId, in: beforeEdit)
+        XCTAssertEqual(edited["lights"][0]["intensity"].double, legacyIntensity)
+        XCTAssertEqual(details(edited)["ceilingFill"]["mode"], .null)
+        XCTAssertEqual(try RoomBaseLightIntent.setCeilingFillBrightness(0.5, usesDefault: true, lightId: lightId, in: edited), beforeEdit)
+
+        try draft.updateRoom(roomId, name: "Resized", width: 8, height: 5, depth: 12)
+        let manual = try RoomBaseLightIntent.setPlacement(.manual, lightId: lightId, in: draft.candidate)
+        XCTAssertEqual(details(manual)["ceilingFill"]["mode"], .string("default"))
+        XCTAssertEqual(manual["lights"][0]["intensity"], light(draft)["intensity"])
+        XCTAssertEqual(try RoomBaseLightIntent.setPlacement(.auto, lightId: lightId, in: manual), draft.candidate)
+    }
+
+    func testUnsupportedDefaultEnsureDoesNotGenerateAPointLight() throws {
+        var draft = try NativeExhibitionDraft.new()
+        var candidate = draft.candidate
+        candidate["rooms"][0]["transform"]["scale"] = .vector([2, 1, 1])
+        try draft.replaceCandidate(candidate)
+        let roomId = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let selection = ViewportSelection(kind: "room", id: roomId)
+        let action = RoomBaseLightAction.ensure(roomId: roomId, defaultCeilingFill: true)
+        XCTAssertEqual(try action.encodedValue(in: draft, selected: selection)["ceilingFillProfile"],
+                       .string(RoomCeilingFill.defaultProfile))
+        XCTAssertFalse(try action.apply(candidate, to: &draft, selected: selection))
+        XCTAssertEqual(draft.candidate, candidate)
+        let point = try RoomBaseLightAction.appendingLight(to: candidate, room: draft.rooms[0],
+            lightId: UUID().uuidString.lowercased(), ceilingFill: true)
+        XCTAssertEqual(point["lights"][0]["type"], .string("point"))
+        XCTAssertThrowsError(try action.apply(point, to: &draft, selected: selection))
+    }
+
     func testNegotiatedCeilingFillAcceptsNearUnitRoomAndChecksExplicitCeilingDepth() throws {
         var draft = try NativeExhibitionDraft.new()
         var base = draft.candidate

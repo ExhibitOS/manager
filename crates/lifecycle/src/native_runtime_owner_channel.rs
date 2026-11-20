@@ -195,6 +195,19 @@ impl Setup {
         }
         self.normal_selected_v3_bootstrap(auth, generation, start.owner_mode())
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(super) fn current_catalogue_bootstrap(
+        &self, auth: &LocalAuthority, generation: &str, start: super::FurnishingStart, manifest: &str,
+    ) -> Result<Vec<u8>> {
+        if !matches!(start, super::FurnishingStart::Initialize | super::FurnishingStart::Reopen)
+            || self.furnishing_writer.is_none() || self.adoption.is_some() || self.thumbnail_preview_trace.is_some()
+            || !self.hayes.as_ref().is_some_and(|hayes| hayes.matches_ordinary_manifest(manifest))
+        {
+            return Err(err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"));
+        }
+        self.workspace_furnishing_bootstrap(auth, generation, start)
+    }
+
     fn normal_selected_v3_bootstrap(&self, auth: &LocalAuthority, generation: &str, mode: &'static str) -> Result<Vec<u8>> {
         let value=FreshOwnerBootstrap {workspace:auth,owner_channel:FreshOwnerBinding {version:3,runtime_generation:generation,secret:&self.secret,mode}};
         let bytes=serde_json::to_vec(&value).map_err(|_|err("NATIVE_OWNER_CHANNEL_UNAVAILABLE"))?;

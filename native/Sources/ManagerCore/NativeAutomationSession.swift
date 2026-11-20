@@ -18,6 +18,11 @@ public actor NativeAutomationSession {
         "gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"
     ]
 
+    static func admitsOrdinaryCeilingRailInsertionRuntime(manifest: String?) -> Bool {
+        AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: manifest)
+            || AuthoringAPI.supportsCurrentDefaultCatalogueRuntime(manifest: manifest)
+    }
+
     static func replayResponse(for operation: String, prior: (Data, DocumentValue)?, matching request: Data) throws -> DocumentValue? {
         guard !freshResponseOperations.contains(operation), let prior else { return nil }
         guard prior.0 == request else { throw BridgeFailure("AUTOMATION_REQUEST_CHANGED") }
@@ -1941,7 +1946,8 @@ public actor NativeAutomationSession {
               configuration.ports.database == ports.database else { throw BridgeFailure("AUTOMATION_SCOPE_CHANGED") }
     }
 
-    static func emptyExhibitionDraft(_ request: DocumentValue, in current: NativeDocumentState, roomBaseLight: Bool = false) throws -> NativeExhibitionDraft {
+    static func emptyExhibitionDraft(_ request: DocumentValue, in current: NativeDocumentState,
+                                     roomBaseLight: Bool = false, defaultCeilingFill: Bool = false) throws -> NativeExhibitionDraft {
         guard current.draft == nil, current.etag == nil, current.pending == nil, current.savedEditVersion == nil else {
             throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE")
         }
@@ -1950,11 +1956,12 @@ public actor NativeAutomationSession {
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 200 else {
             throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
         }
-        return try NativeExhibitionDraft.new(title: title, roomBaseLight: roomBaseLight)
+        return try NativeExhibitionDraft.new(title: title, roomBaseLight: roomBaseLight, defaultCeilingFill: defaultCeilingFill)
     }
 
-    static func firstArchitectureDraft(_ request: DocumentValue, in current: NativeDocumentState, roomBaseLight: Bool) throws -> NativeExhibitionDraft {
-        let initial = try emptyExhibitionDraft(request, in: current, roomBaseLight: roomBaseLight)
+    static func firstArchitectureDraft(_ request: DocumentValue, in current: NativeDocumentState,
+                                       roomBaseLight: Bool, defaultCeilingFill: Bool = false) throws -> NativeExhibitionDraft {
+        let initial = try emptyExhibitionDraft(request, in: current, roomBaseLight: roomBaseLight, defaultCeilingFill: defaultCeilingFill)
         guard let rooms = initial.candidate["rooms"].items, rooms.count == 1,
               let roomID = rooms[0]["id"].string else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
         let ids = (0..<6).map { _ in UUID().uuidString.lowercased() }
@@ -2019,7 +2026,8 @@ public actor NativeAutomationSession {
                 guard existing.creationRequestId == id else { throw BridgeFailure("PRIVATE_EXHIBITION_ALREADY_OPEN") }
             } else {
                 privateHost = try NativePrivateHost(requestId: id, title: title, protecting: current,
-                    roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
+                    roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true,
+                    defaultCeilingFill: authoringSession?.advertisesRoomCeilingFillDefault == true)
             }
         } else {
             guard let host = privateHost, let hostId = request["command"]["exhibitionId"].string,
@@ -2302,7 +2310,9 @@ public actor NativeAutomationSession {
             }
             try checkedRevision(request, current)
             var next = current
-            next.draft = try Self.firstArchitectureDraft(request, in: current, roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
+            next.draft = try Self.firstArchitectureDraft(request, in: current,
+                roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true,
+                defaultCeilingFill: authoringSession?.advertisesRoomCeilingFillDefault == true)
             try Task.checkCancellation()
             let staged = try await bridge.saveDocumentState(context, state: next)
             guard staged.draft == next.draft else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
@@ -2314,7 +2324,10 @@ public actor NativeAutomationSession {
             try checkedRevision(request, current)
             guard installedAuthoringCLI || independentFirstArchitecture,
                   await api.admitsPersonalExhibitionCreation else { throw BridgeFailure("EXHIBITION_CREATE_UNAVAILABLE") }
-            var next = current; next.draft = try Self.emptyExhibitionDraft(request, in: current, roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true)
+            var next = current
+            next.draft = try Self.emptyExhibitionDraft(request, in: current,
+                roomBaseLight: authoringSession?.advertisesRoomBaseLightPlacement == true,
+                defaultCeilingFill: authoringSession?.advertisesRoomCeilingFillDefault == true)
             try Task.checkCancellation()
             result = try value(await bridge.saveDocumentState(context, state: next))
         case "architecture-apply":
@@ -2724,7 +2737,7 @@ public actor NativeAutomationSession {
             let keys: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId",
                                      "expectedRevision", "expectedEditVersion", "command"]
             guard Set(fields.keys) == keys, existingWorkspaceV5 != nil, selectedOEXFormat == nil,
-                  AuthoringAPI.supportsR285ClosingArticulationRuntime(manifest: runtimeManifest),
+                  Self.admitsOrdinaryCeilingRailInsertionRuntime(manifest: runtimeManifest),
                   await api.admitsWorkspaceCeilingRail else { throw BridgeFailure("WORKSPACE_FURNISHING_UNAVAILABLE") }
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "roomId", "furnishingId", "modelSha256", "attachments"])

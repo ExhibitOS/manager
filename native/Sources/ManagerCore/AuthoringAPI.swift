@@ -53,6 +53,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeOriginalImageCoarseProfile: String? = nil
     public var workspaceMaterialProfile: String? = nil
     public var workspaceFurnishingProfile: String? = nil
+    public var defaultCatalogueUpdateProfile: String? = nil
     public var workspaceFurnishingStoolProfile: String? = nil
     public var workspaceFurnishingRoomVisualProfile: String? = nil
     public var workspaceArtworkFrameProfile: String? = nil
@@ -69,6 +70,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var roomBaseLightProfile: String? = nil
     public var roomBaseLightPlacementProfile: String? = nil
     public var roomCeilingFillProfile: String? = nil
+    public var nativeRoomCeilingFillDefaultProfile: String? = nil
     public var roomSupplementalCeilingFillProfile: String? = nil
 
     public var advertisesFurnishingWalkingCollision: Bool {
@@ -81,6 +83,9 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     }
     public var advertisesRoomCeilingFill: Bool {
         advertisesRoomBaseLightPlacement && roomCeilingFillProfile == RoomCeilingFill.profile
+    }
+    public var advertisesRoomCeilingFillDefault: Bool {
+        advertisesRoomCeilingFill && nativeRoomCeilingFillDefaultProfile == RoomCeilingFill.defaultProfile
     }
     public var advertisesRoomSupplementalCeilingFill: Bool {
         advertisesRoomCeilingFill && roomSupplementalCeilingFillProfile == RoomCeilingFill.supplementalProfile
@@ -96,6 +101,12 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var advertisesWorkspaceCeilingRail: Bool {
         advertisesWorkspaceFurnishingRoomVisual && workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
             && workspaceCeilingRailProfile == "workspace-ceiling-rail-v1"
+    }
+
+    public var advertisesCurrentDefaultCatalogueUpdate: Bool {
+        defaultCatalogueUpdateProfile == DefaultCatalogueUpdateCheck.capability
+            && advertisesWorkspaceCeilingRail && advertisesWorkspacePortalFinish
+            && workspacePortalModularFitProfile == WorkspaceFurnishingFitProfile.modularPortal.rawValue
     }
 
     public var advertisesWorkspaceRectangularPortalFit: Bool {
@@ -3335,9 +3346,22 @@ public actor AuthoringAPI {
     nonisolated static func supportsOrdinaryPartialWallPortal(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "803ce4960489551e1a2ac9c84ca7f3a804c2f5e0324e719a590661c457ff2918"
+            || supportsCurrentDefaultCatalogueRuntime(manifest: manifest)
         #else
         false
         #endif
+    }
+
+    nonisolated static func supportsCurrentDefaultCatalogueRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98"
+        #else
+        return false
+        #endif
+    }
+
+    public nonisolated var currentDefaultCatalogueRuntimeQualified: Bool {
+        Self.supportsCurrentDefaultCatalogueRuntime(manifest: nativeRuntimeManifestSHA256)
     }
 
     nonisolated static func supportsDefault119CleanFurnishingRuntime(manifest: String) -> Bool {
@@ -3366,6 +3390,7 @@ public actor AuthoringAPI {
             || manifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
             || supportsR285ClosingArticulationRuntime(manifest: manifest)
             || supportsR285SettledHayesRuntime(manifest: manifest)
+            || supportsCurrentDefaultCatalogueRuntime(manifest: manifest)
         #else
         false
         #endif
@@ -3662,6 +3687,34 @@ public actor AuthoringAPI {
         }
         guard Set(page.items.map(\.intakeId)).count == page.items.count else { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
         return page
+    }
+
+    public var admitsDefaultCatalogueUpdate: Bool {
+        currentDefaultCatalogueRuntimeQualified && admitsWorkspaceFurnishings
+            && session?.advertisesCurrentDefaultCatalogueUpdate == true
+    }
+
+    public func checkDefaultCatalogueUpdate() async throws -> DefaultCatalogueUpdateCheck {
+        guard admitsDefaultCatalogueUpdate else { throw AuthoringFailure("DEFAULT_CATALOGUE_UNAVAILABLE") }
+        let path = try workspaceFurnishingPath("default-catalogue/check")
+        let result: DefaultCatalogueUpdateCheck = try await request(path, method: "POST", body: Data("{}".utf8), timeout: 60)
+        return try result.checked()
+    }
+
+    public func installDefaultCatalogueUpdate(_ check: DefaultCatalogueUpdateCheck) async throws -> DefaultCatalogueUpdateReceipt {
+        guard admitsDefaultCatalogueUpdate, let plan = try check.checked().update else {
+            throw AuthoringFailure("DEFAULT_CATALOGUE_UNAVAILABLE")
+        }
+        struct Input: Encodable {
+            let activeManifestSha256: String
+            let candidateManifestSha256: String
+            let planSha256: String
+        }
+        let input = Input(activeManifestSha256: check.active.manifestSha256,
+                          candidateManifestSha256: plan.manifestSha256, planSha256: plan.planSha256)
+        let path = try workspaceFurnishingPath("default-catalogue/install")
+        let receipt: DefaultCatalogueUpdateReceipt = try await request(path, method: "POST", body: encoded(input), timeout: 180)
+        return try receipt.checked(previous: check.active, plan: plan)
     }
 
     public func workspaceFurnishings(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingSummary> {
@@ -4577,7 +4630,9 @@ public actor AuthoringAPI {
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session,
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
-              operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill else {
+              operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
+              operation != "set-room-ceiling-fill-brightness" || !RoomCeilingFill.usesDefault(proposal)
+                  || session.advertisesRoomCeilingFillDefault else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),

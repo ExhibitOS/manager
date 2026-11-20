@@ -249,7 +249,9 @@ fn ordinary_inherited_hayes(payload: &Payload, start: Option<FurnishingStart>) -
         && crate::native_payload::combined_thumbnail_fresh_host_matches((
             payload.context().source_commit.as_str(), payload.producer_sha256(), payload.context().manifest_sha256.as_str()));
     (payload.current_rail_payload() && start == Some(FurnishingStart::Reopen))
-        || fresh_contact || (payload.retained_furnishing_catalog().is_some()
+        || fresh_contact
+        || (payload.current_default_catalogue_runtime() && matches!(start, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
+        || (payload.retained_furnishing_catalog().is_some()
         && matches!(start, Some(FurnishingStart::Reopen | FurnishingStart::Upgrade040To044 | FurnishingStart::Upgrade044To045)))
         || (payload.ordinary_fresh_furnishing()
             && matches!(start, Some(FurnishingStart::Initialize | FurnishingStart::Reopen)))
@@ -1814,6 +1816,17 @@ impl Session {
     fn workspace_furnishing_start(&self, prior: Option<&Binding>) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
+        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057
+            && (self.normal_oex_selected || self.transition_fence.is_some()
+                || prior.is_some_and(|binding| binding.phase != Phase::Clean || binding.restore.is_some()
+                    || !binding.matches_catalog_tuple(57, (
+                        &self.payload.context().source_commit,
+                        self.payload.producer_sha256(),
+                        &self.payload.context().manifest_sha256,
+                    ))))
+        {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
         if catalog == WorkspaceFurnishingCatalog::CurrentRail053 {
             self.check_native_observation_fence()?;
             self.payload.recheck()?;
@@ -1900,7 +1913,8 @@ impl Session {
         // Official 047 provisions the default personal profile through the
         // normal app. Its bound personal record, Session lock and absence of
         // previous runs are required before creating the initialization marker.
-        let fresh_release = self.payload.fresh_image_release() && current_run(root)?.is_none();
+        let fresh_release = (self.payload.fresh_image_release() || self.payload.current_default_catalogue_runtime())
+            && current_run(root)?.is_none();
         if (self.fresh_ordinary_furnishing || fresh_release) && !exists(&root.join("native-database"))? {
             if exists(&root.join("blobs"))? || exists(&root.join("config"))? {
                 return Err(err("NATIVE_FRESH_WORKSPACE_REQUIRED"));
@@ -3447,6 +3461,9 @@ const { isDeepStrictEqual } = require('node:util');
             _ => return Err(err("HAYES_OPERATION_UNAVAILABLE")),
         };
         let mut private_input = match (&self.local_authority, &owner_setup, self.payload.workspace_import_version(), furnishing) {
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            (Some(a), Some(setup), None, Some(start)) if self.payload.current_default_catalogue_runtime() =>
+                Some(setup.current_catalogue_bootstrap(a, generation, start, &self.payload.context().manifest_sha256)?),
             (Some(a), Some(setup), _, Some(start)) => Some(setup.workspace_furnishing_bootstrap(a, generation, start)?),
             (Some(a), Some(setup), Some(version), _) => Some(setup.workspace_import_bootstrap(a, generation, version)?),
             (Some(a), Some(setup), _, _) if self.payload.workspace_v5_selected_input() => Some(setup.workspace_v5_bootstrap(a, generation)?),

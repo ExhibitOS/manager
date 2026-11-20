@@ -1193,6 +1193,55 @@ pub(crate) const CATALOG40_TANGENT_TRANSITION: (&str, &str) =
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 type RuntimeTuple = (&'static str, &'static str, &'static str);
 
+const CURRENT_DEFAULT_CATALOGUE_MARKER: (&str, u64, &str) = (
+    "platform/scripts/native-default-catalogue-update-v1.json", 971,
+    "15cd541803845ba42096e54107280eca6c5d82f0ca22eb71f52e31f3190bc676",
+);
+const CURRENT_DEFAULT_CATALOGUE_SCHEMA: (&str, u64, &str) = (
+    "platform/database/native-default-catalogue/057_default_catalogue.sql", 1027,
+    "c0868465d7b223f884c178e3b776affa27bcc5c2bc3d81063389e7b5660ab9c7",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CURRENT_DEFAULT_CATALOGUE_STOCK: (&str, u64, &str) = (
+    "platform/assets/furnishings/default-manifest.json", 36360,
+    "f248b227b60ec97c8c951c56fc56a998aa1b0eb485106a04a0d7ccd6f31d517b",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CURRENT_DEFAULT_CATALOGUE_METADATA: &str = "platform/apps/api/trust/default-catalogue-baseline-v1.json";
+// The helper validates its ordered name|sha256 lines. The Server marker
+// separately binds the compact JSON representation of the same rows.
+const CURRENT_DEFAULT_CATALOGUE_LINE_LEDGER_SHA256: &str = "e7981de4097237f7c6a6aa17d0b1b7b4c43008b9e9c6db8ac39b3d925437fc37";
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CURRENT_DEFAULT_CATALOGUE_PAIR: (RuntimeTuple, (u64, &str)) = (
+    (
+        "5d855b82ef42f52141c660d2fc06d38ee6348f55",
+        "032a055494daa91e44e5d33c96c28877b9801fbef16433b0f9eebf8f4f590e6f",
+        "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98",
+    ),
+    (17916, "554f75d274f6f7ba7534fb0063e72d792d77beaba6e8fa21a8d8e2d731787a2a"),
+);
+
+pub(crate) fn current_default_catalogue_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CURRENT_DEFAULT_CATALOGUE_PAIR.0 == tuple;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    {
+        let _ = tuple;
+        false
+    }
+}
+
+pub(crate) fn current_default_catalogue_manifest_matches(manifest: &str) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return CURRENT_DEFAULT_CATALOGUE_PAIR.0.2 == manifest;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    {
+        let _ = manifest;
+        false
+    }
+}
+
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const CATALOG39_UPGRADE_SOURCE: RuntimeTuple = (
     "66d70f701a76d043f06ef4ce0933aad3669f8230",
@@ -2577,6 +2626,7 @@ pub(crate) enum WorkspaceFurnishingCatalog {
     CurrentImageThumbnail051,
     CombinedThumbnails052,
     CurrentRail053,
+    DefaultCatalogue057,
 }
 
 impl WorkspaceFurnishingCatalog {
@@ -2600,6 +2650,7 @@ impl WorkspaceFurnishingCatalog {
             Self::CurrentImageThumbnail051 => 51,
             Self::CombinedThumbnails052 => 52,
             Self::CurrentRail053 => 53,
+            Self::DefaultCatalogue057 => 57,
         }
     }
 
@@ -2609,7 +2660,7 @@ impl WorkspaceFurnishingCatalog {
             | Self::HayesDisposition043 | Self::HayesRelease044 | Self::RequiredModelPreparation045
             | Self::LargeModelPreparation046 | Self::FreshImagePreparation047 | Self::InfoStandPreparation048
             | Self::GpuModelPreparation049 | Self::FurnishingThumbnail050 | Self::CurrentImageThumbnail051
-            | Self::CombinedThumbnails052 | Self::CurrentRail053)
+            | Self::CombinedThumbnails052 | Self::CurrentRail053 | Self::DefaultCatalogue057)
     }
 }
 
@@ -2974,6 +3025,33 @@ pub(crate) mod normal_oex_release_declaration_tests {
         payload.manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(hash.into()), executable: Some(false), link: None });
         payload.manifest.source_commit = tuple.0.into(); payload.manifest.producer_sha256 = tuple.1.into();
         payload.manifest_sha256 = tuple.2.into(); payload
+    }
+
+    #[test]
+    fn current_default_catalogue_marker_cannot_reclassify_a_previous_ordinary_payload() {
+        let mut payload = combined_thumbnail_payload(COMBINED_THUMBNAIL_TARGET);
+        payload.manifest.files.push(furnishing_ledger_file(CURRENT_DEFAULT_CATALOGUE_MARKER.0.into()));
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap_err().code, "NATIVE_RUNTIME_UNQUALIFIED");
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the independently reviewed current Catalog 057 payload"]
+    fn current_default_catalogue057_matches_the_exact_ordinary_seal_and_ledger() {
+        let root = std::env::var_os("EXHIBITOS_TEST_CURRENT_DEFAULT_CATALOGUE_057").unwrap();
+        let mut payload = Payload::open(Path::new(&root)).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+        assert_eq!(payload.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert!(catalog.uses_writer_lease());
+        assert_eq!(payload.workspace_furnishing_ledger(catalog).unwrap().lines().count(), 48);
+        assert!(payload.workspace_furnishing_ledger(WorkspaceFurnishingCatalog::CombinedThumbnails052).is_err());
+        assert!(!payload.normal_oex_selected_input().unwrap());
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(&payload.manifest_sha256));
+        payload.workspace_v5_validation = true;
+        assert!(payload.workspace_furnishing_catalog().is_err());
+        payload.workspace_v5_validation = false;
+        payload.manifest_sha256 = COMBINED_THUMBNAIL_TARGET.2.into();
+        assert!(payload.workspace_furnishing_catalog().is_err());
     }
 
     #[test]
@@ -7344,6 +7422,26 @@ impl Payload {
             || info_stand_preparation_host_matches(tuple)
     }
 
+    pub(crate) fn current_default_catalogue_runtime(&self) -> bool {
+        self.manifest.mode == "local-validation" && current_default_catalogue_host_matches((
+            &self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256,
+        ))
+    }
+
+    fn current_default_catalogue_inputs_match(&self) -> bool {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        {
+            let (metadata_bytes, metadata_hash) = CURRENT_DEFAULT_CATALOGUE_PAIR.1;
+            let expected = [CURRENT_DEFAULT_CATALOGUE_MARKER, CURRENT_DEFAULT_CATALOGUE_SCHEMA,
+                CURRENT_DEFAULT_CATALOGUE_STOCK, (CURRENT_DEFAULT_CATALOGUE_METADATA, metadata_bytes, metadata_hash)];
+            expected.into_iter().all(|(path, bytes, hash)| self.manifest.files.iter().any(|file|
+                file.path == path && file.link.is_none() && file.executable == Some(false)
+                && file.bytes == Some(bytes) && file.sha256.as_deref() == Some(hash)))
+        }
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        false
+    }
+
     pub(crate) fn fresh_image_release(&self) -> bool {
         self.manifest.mode == "release" && self.manifest.official_signed
             && self.manifest.redistribution_qualified
@@ -7595,6 +7693,17 @@ impl Payload {
     }
 
     pub(crate) fn workspace_furnishing_catalog(&self) -> Result<Option<WorkspaceFurnishingCatalog>> {
+        if self.current_default_catalogue_runtime() {
+            if self.workspace_v5_validation || self.workspace_import.is_some() || !self.current_default_catalogue_inputs_match() {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+            return Ok(Some(WorkspaceFurnishingCatalog::DefaultCatalogue057));
+        }
+        if self.manifest.files.iter().any(|file| file.path == CURRENT_DEFAULT_CATALOGUE_MARKER.0
+            || file.path.starts_with("platform/database/native-default-catalogue/"))
+        {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
         if self.current_rail_payload() {
             return Ok(Some(WorkspaceFurnishingCatalog::CurrentRail053));
         }
@@ -8184,15 +8293,26 @@ impl Payload {
                     || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 55
+            } else if directory == "native-default-catalogue" {
+                let (path, bytes, hash) = CURRENT_DEFAULT_CATALOGUE_SCHEMA;
+                if catalog != WorkspaceFurnishingCatalog::DefaultCatalogue057 || !self.current_default_catalogue_runtime()
+                    || file.path != path || file.link.is_some() || file.executable != Some(false)
+                    || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
+                {
+                    return Err(invalid());
+                }
+                57
             } else if file.path.starts_with(CURRENT_IMAGE_THUMBNAIL_DIRECTORY) {
                 let (path, bytes, hash) = CURRENT_IMAGE_THUMBNAIL_SCHEMA;
-                if !matches!(catalog, WorkspaceFurnishingCatalog::CurrentImageThumbnail051 | WorkspaceFurnishingCatalog::CombinedThumbnails052 | WorkspaceFurnishingCatalog::CurrentRail053)
+                if !matches!(catalog, WorkspaceFurnishingCatalog::CurrentImageThumbnail051 | WorkspaceFurnishingCatalog::CombinedThumbnails052
+                    | WorkspaceFurnishingCatalog::CurrentRail053 | WorkspaceFurnishingCatalog::DefaultCatalogue057)
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 51
             } else if file.path.starts_with(FURNISHING_THUMBNAIL_DIRECTORY) {
                 let (path, bytes, hash) = FURNISHING_THUMBNAIL_SCHEMA;
-                if !matches!(catalog, WorkspaceFurnishingCatalog::FurnishingThumbnail050 | WorkspaceFurnishingCatalog::CombinedThumbnails052 | WorkspaceFurnishingCatalog::CurrentRail053)
+                if !matches!(catalog, WorkspaceFurnishingCatalog::FurnishingThumbnail050 | WorkspaceFurnishingCatalog::CombinedThumbnails052
+                    | WorkspaceFurnishingCatalog::CurrentRail053 | WorkspaceFurnishingCatalog::DefaultCatalogue057)
                     || file.path != path || file.bytes != Some(bytes) || file.sha256.as_deref() != Some(hash)
                 { return Err(invalid()); }
                 50
@@ -8229,14 +8349,20 @@ impl Payload {
             WorkspaceFurnishingCatalog::CombinedThumbnails052 if bench_after_terminal => 49,
             WorkspaceFurnishingCatalog::CombinedThumbnails052 if bench_basecolor || self.hayes_preopen_terminal() => 48,
             WorkspaceFurnishingCatalog::CombinedThumbnails052 => 47,
-            WorkspaceFurnishingCatalog::CurrentRail053 => 48,
+            WorkspaceFurnishingCatalog::CurrentRail053 | WorkspaceFurnishingCatalog::DefaultCatalogue057 => 48,
             WorkspaceFurnishingCatalog::FreshImagePreparation047 | WorkspaceFurnishingCatalog::InfoStandPreparation048
                 | WorkspaceFurnishingCatalog::GpuModelPreparation049 | WorkspaceFurnishingCatalog::FurnishingThumbnail050
                 | WorkspaceFurnishingCatalog::CurrentImageThumbnail051 => 46,
             _ => catalog.version(),
         };
         if rows.len() != count as usize { return Err(invalid()); }
-        Ok(rows.into_values().collect::<Vec<_>>().join("\n"))
+        let ledger = rows.into_values().collect::<Vec<_>>().join("\n");
+        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057
+            && digest(ledger.as_bytes()) != CURRENT_DEFAULT_CATALOGUE_LINE_LEDGER_SHA256
+        {
+            return Err(invalid());
+        }
+        Ok(ledger)
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(crate) fn catalog39_upgrade_source_ledger(&self) -> Result<String> {
