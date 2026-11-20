@@ -2303,14 +2303,28 @@ public actor NativeAutomationSession {
         switch manifest {
         case AuthoringAPI.r216SelectedFinishesManifest: expected = (610, 278)
         case AuthoringAPI.r218PaintingSelectedManifest: expected = (618, 281)
-        case AuthoringAPI.r219WheatFitSelectedManifest:
+        case AuthoringAPI.r219WheatFitSelectedManifest, AuthoringAPI.r219ClosingSelectedManifest:
             expected = (622, 282)
             guard !document.dirty,
                   document.workspaceId == "23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef",
                   document.tenantId == "3edee474-9a9f-48d1-b779-b8f71c4da86e",
                   document.principalId == "0bbe4668-9a2b-4a53-8367-758b03fe5cb9",
                   document.etag == #""studio-r219-491d609d502991d106e9f14c4446f0884bea0ae3b49f00fbbbb3c2d188f02c07""#,
-                  document.draft != nil else { throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE") }
+                  let draft = document.draft else { throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE") }
+            if manifest == AuthoringAPI.r219ClosingSelectedManifest {
+                guard publication.workspaceId == document.workspaceId, publication.tenantId == document.tenantId,
+                      publication.principalId == document.principalId, let closed = publication.completed,
+                      closed.mode == "native-original-v1", closed.sourceExhibitionId == draft.id,
+                      closed.snapshotExhibitionId == draft.id, closed.sourceEtag == document.etag,
+                      closed.publishRequestId == "83e4ea84-acc3-474b-9728-37ba2f887bca",
+                      closed.publication.publicationId == "0d4f3236-77f6-4e91-87f2-8bdc3591cac9",
+                      closed.publication.revisionSha256 == "03cf2f613ce936ea022b5f343985de3a28824500c52ca96181b42f388e57deb2",
+                      closed.publication.status == "published", let plan = closed.planBindingSha256,
+                      let attempt = publication.nativeOriginalAttempts?[closed.publishRequestId],
+                      attempt.exportClaimed, attempt.planBindingSha256 == plan else {
+                    throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+                }
+            }
         default: expected = (613, 279)
         }
         guard document.revision == expected.revision, document.savedEditVersion == expected.edit,

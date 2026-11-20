@@ -31,6 +31,11 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
                                  other: AuthoringAPI.r218PaintingSelectedManifest)
     }
 
+    func testIndependentR219ClosingCommandThroughExistingDispatch() throws {
+        try checkSelectedCommand("EXHIBITOS_TEST_R219_CLOSING_COMMAND", expected: AuthoringAPI.r219ClosingSelectedManifest,
+                                 other: AuthoringAPI.r219WheatFitSelectedManifest)
+    }
+
     private func checkSelectedCommand(_ file: String, expected: String, other: String) throws {
         let sealed = try JSONDecoder().decode(DocumentValue.self, from: fixture(file))
         let manifest = try XCTUnwrap(sealed["runtimeManifestSha256"].string)
@@ -91,6 +96,24 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
         pending.pending = .init(etag: source.etag, draft: try XCTUnwrap(source.draft))
         XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: AuthoringAPI.r219WheatFitSelectedManifest,
             document: pending, publication: publication, requestID: requestID))
+    }
+
+    func testFreshR219ClosingRequiresClaimedWheatPredecessor() throws {
+        let manifest = AuthoringAPI.r219ClosingSelectedManifest
+        try checkFreshRequestPreservesHistory(manifest: manifest, publicationFixture: "EXHIBITOS_TEST_R219_WHEAT_PUBLICATION",
+                                               documentFixture: "EXHIBITOS_TEST_R219_WHEAT_FIT_JOURNAL")
+        let decoder = JSONDecoder()
+        let source = try decoder.decode(NativeDocumentState.self, from: fixture("EXHIBITOS_TEST_R219_WHEAT_FIT_JOURNAL"))
+        let closed = try decoder.decode(NativePublicationState.self, from: fixture("EXHIBITOS_TEST_R219_WHEAT_PUBLICATION"))
+        let fresh = UUID().uuidString.lowercased()
+        var invalid = closed
+        invalid.completed = nil
+        XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest,
+            document: source, publication: invalid, requestID: fresh))
+        invalid = closed
+        invalid.nativeOriginalAttempts = nil
+        XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest,
+            document: source, publication: invalid, requestID: fresh))
     }
 
     private func checkFreshRequestPreservesHistory(manifest: String, publicationFixture: String,

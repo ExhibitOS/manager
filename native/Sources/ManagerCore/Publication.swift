@@ -236,6 +236,9 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
         case AuthoringAPI.r219WheatFitSelectedManifest:
             expected = "2020364662f9fb050fdfdb3320011c1b9980fa605997da344947bc4e91221168"
             commitmentManifest = manifest
+        case AuthoringAPI.r219ClosingSelectedManifest:
+            expected = "edba195922fe239bdd00a59dfb57c47d4dddb6848995acc4a7a64ede24a67717"
+            commitmentManifest = manifest
         default:
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
