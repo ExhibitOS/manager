@@ -64,6 +64,7 @@ struct FloorSettingsView: View {
     private func number(_ label: String, _ key: FloorFormBuffer.Numeric) -> some View {
         TextField(label, text: Binding(get: { buffer.numbers[key] ?? "" }, set: { buffer.numbers[key] = $0 }))
     }
+    @ViewBuilder
     private func resetButton(_ field: FloorSettings.Field) -> some View {
         if field == .sound && recordedSelectionAvailable {
             Button("현재 재질의 승인된 녹음으로 재설정", action: { reset(field) })
