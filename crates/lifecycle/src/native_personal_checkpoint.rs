@@ -31,6 +31,10 @@ const OFFICIAL_ROOM_LIGHTING_JOURNAL: &str = "c13f3e2f6e5de1d66c00037c876a2a3e76
 const OFFICIAL_ROOM_LIGHTING_PENDING_JOURNAL: &str = "673bd7facea2c3299c50d120c83e2fc819ba9b4f111a673834a4fe01a73232d6";
 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
 const OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES: u64 = 4512 * 1024 * 1024;
+// The stopped r216 inventory is 4,779,211,003 bytes. Leave one 16 MiB PostgreSQL
+// WAL segment for the trial and round up to the next segment boundary.
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const OFFICIAL_R216_SELECTED_CHECKPOINT_MAX_BYTES: u64 = 4576 * 1024 * 1024;
 #[cfg(feature = "workspace-v5-owner-validation")]
 use crate::native_payload::{
     CATALOG40_FRAME_TRANSITION, CATALOG40_TANGENT_TRANSITION, FurnishingTransition,
@@ -546,9 +550,12 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     if proof.is_none() && (FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting)
         || crate::native_payload::official_room_lighting_pending_transition(pair)
         || crate::native_payload::official_room_lighting_selected_transition(pair)
-        || crate::native_payload::official_r215_original_repair_transition(pair)
-        || crate::native_payload::official_r216_selected_transition(pair)) {
+        || crate::native_payload::official_r215_original_repair_transition(pair)) {
         return OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r216_selected_transition(pair) {
+        return OFFICIAL_R216_SELECTED_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
@@ -3239,6 +3246,47 @@ mod tests {
             assert!(!gpu_empty_document(pair, &changed, owner));
         }
         assert!(catalog45_activation_saved_document(pair, false, false, None, &document).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r216_checkpoint_capacity_matches_stopped_inventory_and_directed_pair() {
+        use crate::native_payload::{OFFICIAL_R215_ORIGINAL_REPAIR_TARGET, OFFICIAL_R216_SELECTED_TARGET,
+            OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET};
+        let source = OFFICIAL_R215_ORIGINAL_REPAIR_TARGET.2;
+        let target = OFFICIAL_R216_SELECTED_TARGET.2;
+        let predecessor = OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET.2;
+        let limit = checkpoint_inventory_limit((source, target), None);
+        assert_eq!(limit, 4_798_283_776);
+        assert_eq!(checkpoint_inventory_limit((predecessor, source), None), OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES);
+        for pair in [(target, source), (source, source), (target, target), (predecessor, target), ("unqualified", target)] {
+            assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+        }
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(), hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64), saved_etag: "\"studio-r216-synthetic\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
+
+        let root = std::env::temp_dir().join(format!("r216-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let path = Path::new("blobs/inventory");
+        let file = private_options().open(root.join(path)).unwrap();
+        let stopped_bytes = 4_779_211_003;
+        file.set_len(stopped_bytes).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[path].bytes, stopped_bytes);
+        file.set_len(limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
