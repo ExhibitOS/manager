@@ -101,6 +101,28 @@ final class NativeOriginalPublicationRepairTests: XCTestCase {
         var missing = try value(state); missing["nativeOriginalAttempts"] = .object([:])
         XCTAssertThrowsError(try stage(decode(missing, as: NativePublicationState.self), document, request))
     }
+    func testR216SealedCommandUsesTheExistingSelectedOriginalPath() throws {
+        guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_TEST_R216_SELECTED_COMMAND"] else {
+            throw XCTSkip("Requires the independently reviewed sealed command")
+        }
+        let source = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        let manifest = try XCTUnwrap(source["runtimeManifestSha256"].string)
+        let command = source["command"]
+        let etag = try XCTUnwrap(command["etag"].string)
+        let image = try NativePublicationOriginalImage(command["originalImage"])
+        let selection = try XCTUnwrap(NativePublicationReleaseSelection(rawValue: command["releaseSelection"].string ?? ""))
+        XCTAssertEqual(manifest, AuthoringAPI.r216SelectedFinishesManifest)
+        XCTAssertEqual(try selection.sourceCommitment(etag: etag, originalImage: image, runtimeManifest: manifest),
+                       source["sdkOriginalCommandCommitmentSha256"].string)
+        #if DEBUG && os(macOS)
+        try selection.checkSource(etag: etag, originalImage: image, manifest: manifest)
+        #endif
+        XCTAssertThrowsError(try selection.checkSource(etag: etag + " ", originalImage: image, manifest: manifest))
+        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: nil, manifest: manifest))
+        XCTAssertThrowsError(try selection.checkSource(etag: etag, originalImage: image,
+                                                       manifest: AuthoringAPI.r215CeilingFillOriginalRepairManifest))
+    }
+
     func testOfficialR215RetainsTheExactDetachedFrameAndUnclaimedIntent() throws {
         guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_TEST_R215_ORIGINAL_RECOVERY_FIXTURE"] else {
             throw XCTSkip("Requires the exact detached stopped r215 fixture")

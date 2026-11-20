@@ -245,8 +245,8 @@ public actor NativeAutomationSession {
             #endif
         }
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
-        let officialR215Selected = [AuthoringAPI.r215CeilingFillSelectedManifest,
-            AuthoringAPI.r215CeilingFillOriginalRepairManifest].contains(existingWorkspaceV5?.manifestSHA256 ?? "")
+        let officialSelected = [AuthoringAPI.r215CeilingFillSelectedManifest,
+            AuthoringAPI.r215CeilingFillOriginalRepairManifest, AuthoringAPI.r216SelectedFinishesManifest].contains(existingWorkspaceV5?.manifestSHA256 ?? "")
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
@@ -271,7 +271,7 @@ public actor NativeAutomationSession {
         guard !firstArchitectureEntry || (firstArchitectureSupported && !selectedOEX9 && !selectedOEX10
                && workspaceV5ValidationRuntime == nil && workspaceV6ValidationRuntime == nil
                && workspaceV7ValidationRuntime == nil && appliedDraftRecoveryPath == nil),
-              !officialR215Selected || (ordinaryExisting && !firstArchitectureEntry && appliedDraftRecoveryPath == nil),
+              !officialSelected || (ordinaryExisting && !firstArchitectureEntry && appliedDraftRecoveryPath == nil),
               !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
               !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
@@ -321,7 +321,7 @@ public actor NativeAutomationSession {
                                   freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
                                   workspaceV7ValidationRuntime: workspaceV7ValidationRuntime,
-                                  requireExistingManagedProfile: officialR215Selected || appliedDraftRecoveryPath != nil)
+                                  requireExistingManagedProfile: officialSelected || appliedDraftRecoveryPath != nil)
     }
     /// The installed entry supplies its bundled helper and the default or
     /// explicitly selected managed profile.
@@ -2313,6 +2313,12 @@ public actor NativeAutomationSession {
         if runtimeManifest == AuthoringAPI.r215CeilingFillOriginalRepairManifest, operation != "read" {
             guard operation == "export-static-native-original",
                   id == NativePublicationState.r215RetainedOriginalRequestId else {
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
+        }
+        if runtimeManifest == AuthoringAPI.r216SelectedFinishesManifest, operation != "read" {
+            guard operation == "export-static-native-original",
+                  request["command"]["releaseSelection"] == .string(NativePublicationReleaseSelection.r125ApprovedR201.rawValue) else {
                 throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
             }
         }
@@ -4555,6 +4561,13 @@ public actor NativeAutomationSession {
             if nativeOriginal {
                 guard let manifest = runtimeManifest, let requestSHA256 = originalRequestSHA256 else {
                     throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+                }
+                if manifest == AuthoringAPI.r216SelectedFinishesManifest {
+                    guard current.revision == 610, current.savedEditVersion == 278,
+                          publication.pending == nil, publication.nativeOriginalAttempts?[id] == nil,
+                          publication.completed?.publishRequestId != id else {
+                        throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+                    }
                 }
                 let intent = try publication.nativeOriginalIntent(in: current, runtimeManifest: manifest,
                     requestId: id, requestSHA256: requestSHA256)
