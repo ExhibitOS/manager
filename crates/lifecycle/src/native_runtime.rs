@@ -476,6 +476,13 @@ struct Current {
     #[serde(default, deserialize_with = "read_furnishing_binding", skip_serializing_if = "Option::is_none")]
     furnishing: Option<Binding>,
 }
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct OfficialRoomLightingReopen {
+    predecessor: Current,
+    generation: String,
+}
 fn read_furnishing_binding<'de, D: serde::Deserializer<'de>>(input: D) -> std::result::Result<Option<Binding>, D::Error> {
     Binding::deserialize(input).map(Some)
 }
@@ -1137,6 +1144,83 @@ impl FurnishingTransitionTrial {
         Ok(())
     }
 
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn plan_official_room_lighting_reopen(
+        &self,
+        service: &LifecycleService,
+        transition: FurnishingTransition,
+    ) -> Result<OfficialRoomLightingReopen> {
+        if transition != FurnishingTransition::OfficialRoomLighting {
+            return Err(err(furnishing_lifecycle::ERROR));
+        }
+        let (writer, predecessor) = self.hold(service, transition)?;
+        self.check_committed_recovery(&service.root, &writer, transition)?;
+        Ok(OfficialRoomLightingReopen { predecessor, generation: Uuid::new_v4().to_string() })
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn hold_official_room_lighting_reopen_recovery(
+        &self,
+        service: &LifecycleService,
+        transition: FurnishingTransition,
+        reopen: &OfficialRoomLightingReopen,
+    ) -> Result<FurnishingTransitionWriterGuard> {
+        let refused = || err(furnishing_lifecycle::ERROR);
+        if transition != FurnishingTransition::OfficialRoomLighting
+            || !installations::uuid(&reopen.generation)
+            || reopen.generation == self.generation || reopen.generation == self.source.id
+        { return Err(refused()); }
+        let writer = FurnishingTransitionWriterGuard::acquire_existing(&service.root)?;
+        let source = self.source_binding(transition)?;
+        let owner = service.personal_identity()?;
+        let prior = reopen.predecessor.furnishing.as_ref().ok_or_else(refused)?;
+        prior.check()?;
+        if writer.identity()? != source.physical
+            || (&owner.0, &owner.1, &owner.2) != (&source.owner.workspace_id, &source.owner.tenant_id, &source.owner.principal_id)
+            || source.owner.owner_uid != unsafe { libc::geteuid() }
+            || reopen.predecessor.format != 1 || reopen.predecessor.id != self.generation
+            || prior.generation != self.generation || prior.previous_generation.as_deref() != Some(self.source.id.as_str())
+            || prior.phase != Phase::Clean || prior.admission_kind != Admission::CleanReopen
+            || prior.restore.is_some() || prior.owner != source.owner || prior.physical != source.physical
+            || !prior.matches_catalog_tuple(57, transition.target())
+        { return Err(refused()); }
+        let (_, source_proof) = self.recoverable_source_completion(&service.root, transition)?;
+        let current = current_run(&service.root)?.ok_or_else(refused)?;
+        // A crash after returning the source pointer still resumes the same physical recovery.
+        if current == self.source {
+            return if source_proof.consumed_by.is_none() { Ok(writer) } else { Err(refused()) };
+        }
+        if source_proof.consumed_by.as_deref() != Some(self.generation.as_str()) {
+            return Err(refused());
+        }
+        let (stopped, proof) = read_run(&service.root, &self.generation)?;
+        let proof = proof.ok_or_else(refused)?;
+        if proof.binding_sha256 != prior.sha256()? || stopped.state != "stopped"
+            || stopped.failure_code.is_some() || stopped.exits.get("postgres") != Some(&0)
+            || stopped.exits.get("node") != Some(&0) || stopped.exits.get("auxiliary") != Some(&0)
+            || [stopped.postgres_pid, stopped.node_pid, stopped.auxiliary_pid].into_iter().any(|pid| pid.is_some())
+            || proof.consumed_by.as_ref().is_some_and(|generation| generation != &reopen.generation)
+        { return Err(refused()); }
+        check_interrupted_root(&service.root)?;
+        if current == reopen.predecessor {
+            return Ok(writer);
+        }
+        let attempt = current.furnishing.as_ref().ok_or_else(refused)?;
+        if current.id != reopen.generation || attempt.generation != reopen.generation
+            || proof.consumed_by.as_deref() != Some(reopen.generation.as_str())
+            || attempt.previous_generation.as_deref() != Some(self.generation.as_str())
+            || !matches!(attempt.phase, Phase::Active | Phase::Clean)
+            || attempt.admission_kind != Admission::CleanReopen || attempt.restore.is_some()
+            || attempt.owner != prior.owner || attempt.physical != prior.physical
+            || !attempt.matches_catalog_tuple(57, transition.target())
+        { return Err(refused()); }
+        let (context, completion) = read_run(&service.root, &reopen.generation)?;
+        if context.ports != stopped.ports
+            || completion.as_ref().is_some_and(|proof| proof.consumed_by.is_some())
+        { return Err(refused()); }
+        Ok(writer)
+    }
+
     pub(crate) fn check_recovery_root(
         &self,
         root: &Path,
@@ -1281,6 +1365,8 @@ pub struct Session {
     transition_fence: Option<String>,
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     furnishing_transition_trial: Option<(FurnishingTransitionTrial, FurnishingTransition)>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    official_room_lighting_reopen: Option<OfficialRoomLightingReopen>,
     guard: Option<OperationGuard>,
     postgres: Option<Owned>,
     node: Option<Owned>,
@@ -1750,6 +1836,11 @@ impl Session {
         self.furnishing_transition_trial = Some((trial, transition));
         self
     }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn with_official_room_lighting_reopen(mut self, reopen: OfficialRoomLightingReopen) -> Self {
+        self.official_room_lighting_reopen = Some(reopen);
+        self
+    }
     fn bound_session(
         service: &LifecycleService,
         payload: Arc<Payload>,
@@ -1767,6 +1858,8 @@ impl Session {
             transition_fence,
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             furnishing_transition_trial: None,
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            official_room_lighting_reopen: None,
             guard: Some(guard),
             postgres: None,
             node: None,
@@ -1839,6 +1932,11 @@ impl Session {
     fn workspace_furnishing_start(&self, prior: Option<&Binding>) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let provisional_reopen = self.payload.official_room_lighting_catalog() == Some(WorkspaceFurnishingCatalog::DefaultCatalogue057)
+            && self.official_room_lighting_reopen.is_some();
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let provisional_reopen = false;
         if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057 {
             let occupied = self.payload.official_room_lighting_catalog() == Some(catalog);
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -1847,7 +1945,7 @@ impl Session {
                     *step == FurnishingTransition::OfficialRoomLighting);
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
             let occupied_trial = false;
-            if self.normal_oex_selected || (self.transition_fence.is_some() && !occupied_trial)
+            if self.normal_oex_selected || (self.transition_fence.is_some() && !occupied_trial && !provisional_reopen)
                 || (!occupied_trial && (occupied && prior.is_none()
                     || prior.is_some_and(|binding| binding.phase != Phase::Clean || binding.restore.is_some()
                         || !binding.matches_catalog_tuple(57, (
@@ -1882,7 +1980,7 @@ impl Session {
         } else {
             FurnishingStart::Initialize
         };
-        if self.transition_fence.is_some() {
+        if self.transition_fence.is_some() && !provisional_reopen {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             if let Some((_, transition)) = self.furnishing_transition_trial.as_ref() {
                 if catalog == transition.target_catalog()
@@ -2779,6 +2877,23 @@ const { isDeepStrictEqual } = require('node:util');
             .stderr(Stdio::piped());
         for (key, value) in extra {
             command.env(key, value);
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if self.official_room_lighting_reopen.is_some() {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let descriptor = self.guard.as_ref().ok_or_else(|| err(furnishing_lifecycle::ERROR))?.as_raw_fd();
+            if descriptor < 3 { return Err(err(furnishing_lifecycle::ERROR)); }
+            // Preserve the operation fence if the maintenance process dies
+            // between spawning a child and recording its PID.
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(descriptor, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(descriptor, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
         }
         if let Some(setup) = owner_setup { setup.configure(&mut command)?; }
         if let Some(writer) = signing_output {
@@ -3781,7 +3896,15 @@ const { isDeepStrictEqual } = require('node:util');
         let prior = current_run(&self.service.root)?;
         let id = Uuid::new_v4().to_string();
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        let id = if let Some((trial, _)) = &self.furnishing_transition_trial {
+        let id = if let Some(reopen) = &self.official_room_lighting_reopen {
+            if self.transition_fence.is_none() || !services || self.furnishing_transition_trial.is_some()
+                || prior.as_ref() != Some(&reopen.predecessor)
+                || self.payload.official_room_lighting_catalog() != Some(WorkspaceFurnishingCatalog::DefaultCatalogue057)
+            {
+                return Err(err(furnishing_lifecycle::ERROR));
+            }
+            reopen.generation.clone()
+        } else if let Some((trial, _)) = &self.furnishing_transition_trial {
             if self.transition_fence.is_none() || !services || prior.as_ref() != Some(&trial.source) {
                 return Err(err(furnishing_lifecycle::ERROR));
             }
@@ -3831,6 +3954,10 @@ const { isDeepStrictEqual } = require('node:util');
             let has_database = exists(&self.service.root.join("native-database"))?;
             if services {
                 furnishing = self.workspace_furnishing_start(prior_binding.as_ref())?;
+                #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+                if self.official_room_lighting_reopen.is_some() && furnishing != Some(FurnishingStart::Reopen) {
+                    return Err(err(furnishing_lifecycle::ERROR));
+                }
             }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             if self.oex_retained_cleanup.is_some() && furnishing != Some(FurnishingStart::Reopen) {
@@ -3989,7 +4116,7 @@ const { isDeepStrictEqual } = require('node:util');
         self.furnishing_selected_saved = false;
         self.furnishing_keep_fences = false;
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-        if self.furnishing_transition_trial.is_some() {
+        if self.furnishing_transition_trial.is_some() || self.official_room_lighting_reopen.is_some() {
             self.furnishing_keep_fences = true;
         }
         self.state = "starting".into();
@@ -4689,6 +4816,23 @@ const { isDeepStrictEqual } = require('node:util');
         }
         self.check_native_observation_fence()?;
         self.guard.as_ref().ok_or_else(|| err("NATIVE_STOP_PENDING"))
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    pub(crate) fn verify_official_room_lighting_reopened(&self) -> Result<()> {
+        let refused = || err(furnishing_lifecycle::ERROR);
+        self.drained_transition_guard()?;
+        let reopen = self.official_room_lighting_reopen.as_ref().ok_or_else(refused)?;
+        let current = current_run(&self.service.root)?.ok_or_else(refused)?;
+        let binding = current.furnishing.as_ref().ok_or_else(refused)?;
+        if current.id != reopen.generation || binding.phase != Phase::Clean
+            || binding.admission_kind != Admission::CleanReopen
+            || binding.previous_generation.as_deref() != Some(reopen.predecessor.id.as_str())
+            || binding.restore.is_some()
+            || !binding.matches_catalog_tuple(57, crate::native_payload::OFFICIAL_ROOM_LIGHTING_TARGET)
+        { return Err(refused()); }
+        check_cold_checkpoint_root(&self.service.root)?;
+        unconsumed_furnishing_completion(&self.service.root, binding)?;
+        Ok(())
     }
     pub fn status(&mut self) -> Result<Context> {
         self.poll()?;

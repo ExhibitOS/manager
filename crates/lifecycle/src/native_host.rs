@@ -711,6 +711,13 @@ impl Host {
                                     )?;
                                 }
                                 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+                                LocalPersonalTransition::QualifyOfficialRoomLightingReopen { staging, key_file, qualified_receipt_sha256 } => {
+                                    let target = Arc::new(Payload::open(&resources)?);
+                                    controller.qualify_official_room_lighting_reopen(
+                                        &token, target, &staging, &key_file, &qualified_receipt_sha256,
+                                    )?;
+                                }
+                                #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
                                 LocalPersonalTransition::InspectPreReadyGuard { staging, key_file, failed_generation, recovery_receipt_sha256 } => {
                                     let target = Payload::open_saved_workspace_transition(&resources)?;
                                     let receipt = controller.inspect_pre_ready_guard(
@@ -1120,6 +1127,14 @@ impl Host {
         if request.version != 1 || request.id > 9_007_199_254_740_991 {
             return Err(err("NATIVE_PROTOCOL_INVALID"));
         }
+        #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
+        if !self.workspace_v5_maintenance_only
+            && !matches!(&request.command, UiCommand::Context | UiCommand::NativeStatus { .. }
+                | UiCommand::NativeStop { .. } | UiCommand::DocumentState { .. })
+            && self.controller.official_room_lighting_writer_fenced()?
+        {
+            return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
+        }
         if self.private_exb_maintenance {
             use super::installations::native_maintenance::Input;
             let recovery = self.fresh_ordinary_root.is_some();
@@ -1155,7 +1170,8 @@ impl Host {
             let guard_diagnostic = false;
             #[cfg(target_os = "macos")]
             let committed_recovery = matches!(&request.command, UiCommand::NativeMaintenance {
-                maintenance: Input::LocalPersonalTransition { transition: LocalPersonalTransition::RecoverCommitted { .. }, .. },
+                maintenance: Input::LocalPersonalTransition { transition: LocalPersonalTransition::RecoverCommitted { .. }
+                    | LocalPersonalTransition::QualifyOfficialRoomLightingReopen { .. }, .. },
                 ..
             });
             #[cfg(not(target_os = "macos"))]

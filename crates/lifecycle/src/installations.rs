@@ -936,6 +936,12 @@ impl InstallationController {
         }
         Ok(())
     }
+    #[cfg(all(target_os = "macos", debug_assertions, feature = "workspace-v5-owner-validation"))]
+    pub(crate) fn official_room_lighting_writer_fenced(&self) -> Result<bool> {
+        self.profile.as_ref().map(|profile|
+            crate::native_personal::physical_checkpoint::official_room_lighting_writer_fenced(&profile.root)
+        ).transpose().map(|fenced| fenced.unwrap_or(false))
+    }
     pub fn with_current<T>(
         &self,
         token: &str,

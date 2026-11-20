@@ -161,6 +161,9 @@ struct Checkpoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "catalog40")]
     furnishing: Option<crate::native_runtime::FurnishingTransitionTrial>,
+    #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    official_room_lighting_reopen: Option<crate::native_runtime::OfficialRoomLightingReopen>,
     trial: bool,
     drained_failure: Option<String>,
     restore: Option<RestorePlan>,
@@ -337,6 +340,11 @@ impl Checkpoint {
 
     fn check_host(&self, saved_workspace_host: bool) -> Result<()> {
         let pair = (self.old_manifest.as_str(), self.new_manifest.as_str());
+        #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+        if self.official_room_lighting_reopen.is_some()
+            && (!saved_workspace_host || !self.trial || self.saved_document_sha256.is_none()
+                || FurnishingTransition::from_manifests(pair) != Some(FurnishingTransition::OfficialRoomLighting))
+        { return Err(invalid()); }
         if self.retained_publication_sha256.as_deref().is_some_and(|sha| {
             !saved_workspace_host || self.saved_document_sha256.is_none() || !hash_valid(sha)
                 || !crate::native_payload::fixed64_publication_repair_clean_transition(pair)
@@ -968,6 +976,17 @@ fn read_pending(root: &Path) -> Result<Vec<u8>> {
     installation_backup::source_bytes(root, ENVIRONMENT, PENDING_LIMIT as u64, true)
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+pub(crate) fn official_room_lighting_writer_fenced(profile: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(profile).map_err(|_| invalid())?;
+    if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != crate::native_payload::OFFICIAL_ROOM_LIGHTING_PROFILE_ID {
+        return Ok(false);
+    }
+    let root = profile.join("local-runtime");
+    Ok(read_pending(&root)?.starts_with(PENDING_PREFIX))
+}
+
 pub(crate) fn check_trial_fence(root: &Path, expected: &str) -> Result<()> {
     let pending = read_pending(root)?;
     if !pending.starts_with(PENDING_PREFIX) || digest(&pending) != expected {
@@ -1387,10 +1406,29 @@ impl LifecycleService {
         if checkpoint.staged != staging {
             return Err(invalid());
         }
+        #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+        let provisional = checkpoint.official_room_lighting_reopen.as_ref();
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", target_os = "macos")))]
+        let provisional: Option<()> = None;
+        if provisional.is_some() {
+            if committed.is_some() || !saved_workspace_host || !checkpoint.trial || document.is_none() {
+                return Err(invalid());
+            }
+            #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+            check_official_room_lighting_head(self, self.root.parent().ok_or_else(invalid)?, document.ok_or_else(invalid)?)?;
+        }
         #[cfg(feature = "workspace-v5-owner-validation")]
         let furnishing = checkpoint.furnishing.as_ref().zip(checkpoint.furnishing_transition());
+        if provisional.is_some() {
+            #[cfg(feature = "workspace-v5-owner-validation")]
+            if furnishing.is_none() { return Err(invalid()); }
+        }
         #[cfg(feature = "workspace-v5-owner-validation")]
         let writer = furnishing.map(|(trial, transition)| {
+            #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+            if let Some(reopen) = provisional {
+                return trial.hold_official_room_lighting_reopen_recovery(self, transition, reopen);
+            }
             if checkpoint.trial { trial.hold_recovery(self, transition) } else { trial.hold_source(self, transition) }
         }).transpose()?;
         let ordinary_cold_check = || crate::native_runtime::check_cold_transition_root(
@@ -1398,7 +1436,9 @@ impl LifecycleService {
         );
         #[cfg(feature = "workspace-v5-owner-validation")]
         if let (Some((trial, transition)), Some(writer)) = (furnishing, &writer) {
-            trial.check_recovery_root(&self.root, writer, transition, retained.image())?;
+            if provisional.is_none() {
+                trial.check_recovery_root(&self.root, writer, transition, retained.image())?;
+            }
         } else {
             ordinary_cold_check()?;
         }
@@ -1573,6 +1613,69 @@ impl LifecycleService {
             session.with_furnishing_transition_trial(trial, transition)
         } else { session };
         Ok((session, checkpoint, binding, envelope))
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+    fn qualify_official_room_lighting_reopen(
+        &self,
+        target: Arc<Payload>,
+        staging: &Path,
+        key: &[u8; 32],
+        qualified_receipt_sha256: &str,
+        document: &super::installations::native_document::DocumentState,
+    ) -> Result<()> {
+        let guard = self.lock()?;
+        self.check_prepare_guard(&guard)?;
+        target.recheck()?;
+        if !hash_valid(qualified_receipt_sha256) { return Err(invalid()); }
+        let receipt = format!("native-personal-transition-qualified-{qualified_receipt_sha256}.gcm");
+        let qualified = installation_backup::source_bytes(&self.root, &receipt, ENVELOPE_LIMIT as u64, true)?;
+        if digest(&qualified) != qualified_receipt_sha256 { return Err(invalid()); }
+        let mut checkpoint = self.transition_checkpoint(&qualified, key)?;
+        checkpoint.check_host(true)?;
+        let transition = checkpoint.furnishing_transition().ok_or_else(invalid)?;
+        if transition != FurnishingTransition::OfficialRoomLighting || checkpoint.staged != staging
+            || !checkpoint.trial || checkpoint.restore.is_some() || checkpoint.drained_failure.is_some()
+            || checkpoint.official_room_lighting_reopen.is_some()
+            || checkpoint.new_manifest != target.context().manifest_sha256
+        { return Err(invalid()); }
+        let binding = bindings(&checkpoint)?;
+        let record = installation_backup::source_bytes(&self.root, RECORD, 4096, true)?;
+        let environment = read_pending(&self.root)?;
+        check_committed_checkpoint_bindings(&binding, &record, &environment,
+            checkpoint.saved_document_sha256.as_deref(), document)?;
+        let trial = checkpoint.furnishing.as_ref().ok_or_else(invalid)?;
+        let reopen = trial.plan_official_room_lighting_reopen(self, transition)?;
+        checkpoint.official_room_lighting_reopen = Some(reopen.clone());
+        let proposed: Personal = serde_json::from_slice(&binding.new_record).map_err(|_| invalid())?;
+        let fields = personal_environment_fields(&proposed, &binding.new_env.0)?;
+        let envelope = seal(&checkpoint, key)?;
+        publish_pending(&self.root, &envelope)?;
+        let pending = read_pending(&self.root)?;
+        if pending.strip_prefix(PENDING_PREFIX) != Some(envelope.as_slice()) { return Err(invalid()); }
+        let mut session = crate::native_runtime::Session::new_transition_trial(self, target, proposed.ports, guard,
+            TrialBinding { fields, pending_sha256: digest(&pending) })?.with_official_room_lighting_reopen(reopen);
+        let checked = (|| {
+            if session.start()?.state != "ready" { return Err(invalid()); }
+            let authoring = session.authoring_session()?;
+            if authoring["tenantId"].as_str() != Some(checkpoint.tenant_id.as_str())
+                || authoring["principalId"].as_str() != Some(checkpoint.principal_id.as_str())
+            { return Err(invalid()); }
+            session.verify_transition_studio(&authoring, document)
+        })();
+        let stopped = session.stop()?;
+        checked?;
+        self.check_prepare_guard(session.drained_transition_guard()?)?;
+        if stopped.state != "stopped" || read_pending(&self.root)? != pending { return Err(invalid()); }
+        session.verify_official_room_lighting_reopened()?;
+        let retained = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
+        let live = inventory_with_limit(&self.root, false, checkpoint.inventory_limit() + pending.len() as u64)?;
+        if live.iter().filter(|(path, _)| retained(path))
+            .ne(checkpoint.files.iter().filter(|(path, _)| retained(path))) {
+            return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
+        }
+        keep_receipt(&self.root, "reopen-qualified", &envelope)?;
+        replace_private(&self.root, ENVIRONMENT, &binding.new_env.0, 4096)
     }
 
     fn activate_local_personal_runtime_transition(
@@ -1825,6 +1928,8 @@ impl LifecycleService {
             startup_cancellation_045: startup_cancellation_045.cloned(),
             #[cfg(feature = "workspace-v5-owner-validation")]
             furnishing,
+            #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+            official_room_lighting_reopen: None,
             trial: false,
             drained_failure: None,
             restore: None,
@@ -2390,6 +2495,24 @@ impl InstallationController {
                 check_official_room_lighting_head(service, profile, document)?;
                 service.recover_local_personal_runtime_transition(staging, key, true, TransitionRetention::None,
                     Some(document), Some((&manifest, qualified_receipt_sha256)))
+            })
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+    pub(crate) fn qualify_official_room_lighting_reopen(
+        &self,
+        token: &str,
+        target: Arc<Payload>,
+        staging: &Path,
+        key_path: &Path,
+        qualified_receipt_sha256: &str,
+    ) -> Result<()> {
+        let manifest = target.context().manifest_sha256;
+        if manifest != crate::native_payload::OFFICIAL_ROOM_LIGHTING_TARGET.2 { return Err(invalid()); }
+        self.with_transition_key(token, key_path, staging, TransitionRetention::None, Current52PngRetention::Deny,
+            Some(RetainedSavedHeadCheck::Sealed { target_manifest: Some(&manifest) }), |service, profile, document, key| {
+                check_official_room_lighting_head(service, profile, document)?;
+                service.qualify_official_room_lighting_reopen(target, staging, key, qualified_receipt_sha256, document)
             })
     }
 

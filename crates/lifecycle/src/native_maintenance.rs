@@ -90,6 +90,8 @@ pub enum LocalPersonalTransition {
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
     RecoverCommitted { staging: PathBuf, key_file: PathBuf, qualified_receipt_sha256: String },
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
+    QualifyOfficialRoomLightingReopen { staging: PathBuf, key_file: PathBuf, qualified_receipt_sha256: String },
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation"))]
     InspectPreReadyGuard {
         staging: PathBuf,
         key_file: PathBuf,
