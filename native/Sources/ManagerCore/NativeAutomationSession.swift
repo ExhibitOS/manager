@@ -2299,8 +2299,13 @@ public actor NativeAutomationSession {
     static func checkFreshOfficialOriginal(manifest: String, document: NativeDocumentState,
                                            publication: NativePublicationState, requestID: String) throws {
         guard AuthoringAPI.isFreshOfficialSelectedRuntime(manifest: manifest) else { return }
-        let isR216 = manifest == AuthoringAPI.r216SelectedFinishesManifest
-        guard document.revision == (isR216 ? 610 : 613), document.savedEditVersion == (isR216 ? 278 : 279),
+        let expected: (revision: Int, edit: Int)
+        switch manifest {
+        case AuthoringAPI.r216SelectedFinishesManifest: expected = (610, 278)
+        case AuthoringAPI.r218PaintingSelectedManifest: expected = (618, 281)
+        default: expected = (613, 279)
+        }
+        guard document.revision == expected.revision, document.savedEditVersion == expected.edit,
               publication.pending == nil, publication.nativeOriginalAttempts?[requestID] == nil,
               publication.completed?.publishRequestId != requestID else {
             throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")

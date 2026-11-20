@@ -21,6 +21,11 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
                                  other: AuthoringAPI.r217PublicFinishesManifest)
     }
 
+    func testIndependentR218PaintingCommandThroughExistingDispatch() throws {
+        try checkSelectedCommand("EXHIBITOS_TEST_R218_PAINTING_COMMAND", expected: AuthoringAPI.r218PaintingSelectedManifest,
+                                 other: AuthoringAPI.r217WheatSelectedManifest)
+    }
+
     private func checkSelectedCommand(_ file: String, expected: String, other: String) throws {
         let sealed = try JSONDecoder().decode(DocumentValue.self, from: fixture(file))
         let manifest = try XCTUnwrap(sealed["runtimeManifestSha256"].string)
@@ -54,10 +59,23 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
                                               publicationFixture: "EXHIBITOS_TEST_R217_PUBLIC_FINISHES_PUBLICATION")
     }
 
-    private func checkFreshRequestPreservesHistory(manifest: String, publicationFixture: String) throws {
+    func testFreshR218PaintingRequestPreservesAcceptedWheatHistory() throws {
+        try checkFreshRequestPreservesHistory(manifest: AuthoringAPI.r218PaintingSelectedManifest,
+                                              publicationFixture: "EXHIBITOS_TEST_R217_WHEAT_PUBLICATION",
+                                              documentFixture: "EXHIBITOS_TEST_R218_SAVED_DOCUMENT")
+    }
+
+    private func checkFreshRequestPreservesHistory(manifest: String, publicationFixture: String,
+                                                   documentFixture: String? = nil) throws {
         let decoder = JSONDecoder()
-        let read = try decoder.decode(DocumentValue.self, from: fixture("EXHIBITOS_TEST_R217_AUTHENTICATED_READ"))
-        let source = try decoder.decode(NativeDocumentState.self, from: JSONEncoder().encode(read["document"]))
+        let sourceBytes: Data
+        if let documentFixture {
+            sourceBytes = try fixture(documentFixture)
+        } else {
+            let read = try decoder.decode(DocumentValue.self, from: fixture("EXHIBITOS_TEST_R217_AUTHENTICATED_READ"))
+            sourceBytes = try JSONEncoder().encode(read["document"])
+        }
+        let source = try decoder.decode(NativeDocumentState.self, from: sourceBytes)
         let prior = try decoder.decode(NativePublicationState.self, from: fixture(publicationFixture))
         let fresh = UUID().uuidString.lowercased()
         try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest, document: source, publication: prior, requestID: fresh)
