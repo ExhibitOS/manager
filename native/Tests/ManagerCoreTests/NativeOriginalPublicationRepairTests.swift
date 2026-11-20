@@ -101,6 +101,42 @@ final class NativeOriginalPublicationRepairTests: XCTestCase {
         var missing = try value(state); missing["nativeOriginalAttempts"] = .object([:])
         XCTAssertThrowsError(try stage(decode(missing, as: NativePublicationState.self), document, request))
     }
+    func testOfficialR215RetainsTheExactDetachedFrameAndUnclaimedIntent() throws {
+        guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_TEST_R215_ORIGINAL_RECOVERY_FIXTURE"] else {
+            throw XCTSkip("Requires the exact detached stopped r215 fixture")
+        }
+        let fixture = try JSONDecoder().decode(DocumentValue.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        let document = try decode(fixture["document"], as: NativeDocumentState.self)
+        let state = try decode(fixture["publication"], as: NativePublicationState.self)
+        let request = fixture["request"]
+        let uuid = try XCTUnwrap(request["requestId"].string)
+        let manifest = AuthoringAPI.r215CeilingFillOriginalRepairManifest
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        func restored(_ candidate: NativePublicationState, wire: DocumentValue = request,
+                      requestId: String = uuid) throws -> NativePublicationPending {
+            try candidate.nativeOriginalIntent(in: document, runtimeManifest: manifest,
+                requestId: requestId, requestSHA256: nativeImportSHA256(encoder.encode(wire)))
+        }
+        #if DEBUG
+        let retained = try restored(state)
+        XCTAssertEqual(retained, state.pending)
+        XCTAssertEqual(retained.planBindingSha256, NativePublicationState.r215RetainedOriginalPlan)
+        var staged = state
+        try staged.stageNativeOriginal(retained)
+        XCTAssertEqual(staged, state)
+        var absent = state; absent.pending = nil
+        XCTAssertThrowsError(try restored(absent))
+        var changed = request; changed["outputPath"] = .string("/private/synthetic/different")
+        XCTAssertThrowsError(try restored(state, wire: changed))
+        XCTAssertThrowsError(try restored(state, requestId: UUID().uuidString.lowercased()))
+        var claimed = try value(state)
+        claimed["nativeOriginalAttempts"][uuid]["exportClaimed"] = .bool(true)
+        XCTAssertThrowsError(try restored(decode(claimed, as: NativePublicationState.self)))
+        #else
+        XCTAssertThrowsError(try restored(state).requirePlanBinding(state.pending?.planBindingSha256))
+        #endif
+    }
+
     func testFreshRepairIntentUsesCurrentPlanAndClaimedOrCompletedReplayStillFails() throws {
         let (document, state, request) = try fixture()
         var fresh = state; fresh.pending = nil; fresh.nativeOriginalAttempts = nil

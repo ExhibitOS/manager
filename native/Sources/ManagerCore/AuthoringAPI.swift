@@ -4321,6 +4321,7 @@ public actor AuthoringAPI {
     static let r210CaptionStandsSelectedManifest = "86796846d9f8c082746370b7e9cfe25fce002dc79fe21d45f80e165807ccf61b"
 
     static let r215CeilingFillSelectedManifest = "d96ded5b7099e573b555c3afc5ffab17be58c6fbd8b51b64f93b26f05f734993"
+    static let r215CeilingFillOriginalRepairManifest = "2b5e72c53c41a54375008209cfef3c22e94154d12b92de38a1de976b3dd3e4dd"
 
     nonisolated static func supportsR125ApprovedReleaseRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
@@ -4330,6 +4331,7 @@ public actor AuthoringAPI {
             || manifest == r209GreekSpotReleaseManifest || manifest == r209TransitionSpotsReleaseManifest
             || manifest == r209GreekCurrentReleaseManifest
             || manifest == r210CaptionStandsSelectedManifest || manifest == r215CeilingFillSelectedManifest
+            || manifest == r215CeilingFillOriginalRepairManifest
         #else
         false
         #endif

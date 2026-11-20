@@ -245,7 +245,8 @@ public actor NativeAutomationSession {
             #endif
         }
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
-        let officialR215Selected = existingWorkspaceV5?.manifestSHA256 == AuthoringAPI.r215CeilingFillSelectedManifest
+        let officialR215Selected = [AuthoringAPI.r215CeilingFillSelectedManifest,
+            AuthoringAPI.r215CeilingFillOriginalRepairManifest].contains(existingWorkspaceV5?.manifestSHA256 ?? "")
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
@@ -2308,6 +2309,12 @@ public actor NativeAutomationSession {
         if AuthoringAPI.supportsR201OrdinarySuccessor(manifest: runtimeManifest),
            operation == "applied-draft-save-resume", request["command"] == .null {
             throw BridgeFailure("APPLIED_DRAFT_SAME_SESSION_INTENT_UNAVAILABLE")
+        }
+        if runtimeManifest == AuthoringAPI.r215CeilingFillOriginalRepairManifest, operation != "read" {
+            guard operation == "export-static-native-original",
+                  id == NativePublicationState.r215RetainedOriginalRequestId else {
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
         }
         let releaseSelection = try NativePublicationReleaseSelection.checked(in: request,
             runtimeAdmitted: AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: runtimeManifest))

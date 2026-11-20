@@ -215,6 +215,9 @@ enum NativePublicationReleaseSelection: String, Encodable, Sendable {
         case AuthoringAPI.r215CeilingFillSelectedManifest:
             expected = "9b30b176d71245cfe3b2dd4821f027eadd5124ef075e1bd27d6b5122e46430b8"
             commitmentManifest = manifest
+        case AuthoringAPI.r215CeilingFillOriginalRepairManifest:
+            expected = "2c0bbcadbc904b1b5180e8616342242495ee5bf4160d6fcd16e5d0b05ab38eca"
+            commitmentManifest = manifest
         default:
             throw AuthoringFailure("NATIVE_DETAIL_UNAVAILABLE")
         }
@@ -294,6 +297,9 @@ public struct NativePublicationState: Codable, Equatable, Sendable {
         return try completed.publication.validated()
     }
 
+    static let r215RetainedOriginalRequestId = "32fd72ba-9710-4a02-9cf0-ed15d48eaef1"
+    static let r215RetainedOriginalPlan = "fe60fb2a571bd2ac186d8d643b1865066b1ca592a1856860e902834af14bd24f"
+
     /// Reconstruct from the current checked document and complete original wire
     /// request. The qualified API-only repair preserves the old commitment;
     /// neither the pending intent nor its immutable attempt is rebound.
@@ -311,6 +317,15 @@ public struct NativePublicationState: Codable, Equatable, Sendable {
         }
         let current = try intent(runtimeManifest)
         #if DEBUG
+        if runtimeManifest == AuthoringAPI.r215CeilingFillOriginalRepairManifest {
+            let original = try intent(AuthoringAPI.r215CeilingFillSelectedManifest)
+            guard requestId == Self.r215RetainedOriginalRequestId, let pending, pending == original,
+                  original.planBindingSha256 == Self.r215RetainedOriginalPlan,
+                  let attempt = nativeOriginalAttempts?[requestId], !attempt.exportClaimed,
+                  attempt.planBindingSha256 == original.planBindingSha256,
+                  completed?.publishRequestId != requestId else { throw AuthoringFailure("PUBLICATION_PLAN_CHANGED") }
+            return pending
+        }
         if runtimeManifest == "09eacf46cabcc7564d0ad9dee50bf5c40f398a69667d8886e9558d6db67fdbd1",
            let pending, pending.planBindingSha256 != current.planBindingSha256 {
             let original = try intent("7af55e9ecddb2da8a76e5985fbb184e59150ca5b7c799a058cbc7d334bd48a29")

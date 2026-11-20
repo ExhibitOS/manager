@@ -210,6 +210,7 @@ final class PublicationTests: XCTestCase {
         try checkSelectedSuccessor(manifest: AuthoringAPI.r209GreekCurrentReleaseManifest)
         try checkSelectedSuccessor(manifest: AuthoringAPI.r210CaptionStandsSelectedManifest)
         try checkSelectedSuccessor(manifest: AuthoringAPI.r215CeilingFillSelectedManifest)
+        try checkSelectedSuccessor(manifest: AuthoringAPI.r215CeilingFillOriginalRepairManifest)
     }
 
     private func checkSelectedSuccessor(manifest: String) throws {
