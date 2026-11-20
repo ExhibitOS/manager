@@ -63,6 +63,58 @@ final class RoomBaseLightIntentTests: XCTestCase {
         .object(["type": .string("set-light-object"), "lightId": .string(try id(draft)), "light": without(row, "id"),
             "settings": settings ?? without(details(draft.candidate), "lightId")])
     }
+
+    func testCeilingFillRetainsQualifiedUpperFramingWithoutAdmittingItInCommands() throws {
+        var draft = try NativeExhibitionDraft.new(roomBaseLight: true, ceilingFill: true)
+        let baseID = try id(draft), room = draft.rooms[0]["id"]
+        let spotID = DocumentValue.string(UUID().uuidString.lowercased())
+        let targetID = DocumentValue.string(UUID().uuidString.lowercased())
+        let artworkID = DocumentValue.string(UUID().uuidString.lowercased())
+        let railID = DocumentValue.string(UUID().uuidString.lowercased())
+        let angular: DocumentValue = .object(["version": .integer(1), "kind": .string("upper-framing"),
+            "cutoffAngle": .number(0.3), "softnessAngle": .number(0.2)])
+        let trackAim: DocumentValue = .object(["version": .integer(1), "profile": .string(NativeTrackSpotAim.profile),
+            "mount": .object(["railPlacementId": railID, "position": .vector([0, 0, 0]), "yaw": .integer(0)]),
+            "aim": .object(["kind": .string("placement-center"), "placementId": targetID, "offset": .vector([0, 0, 0])])])
+        let spotDetail: DocumentValue = .object(["lightId": spotID, "fixture": .string("none"), "trackAim": trackAim,
+            "angularProfile": angular])
+        var baseline = draft.candidate
+        baseline["lights"] = .array([light(draft), .object(["id": spotID, "roomId": room, "type": .string("spot")])])
+        baseline["placements"] = .array([.object(["id": targetID, "roomId": room, "artworkRevisionId": artworkID])])
+        baseline["artworks"] = .array([.object(["revisionId": artworkID, "artworkType": .string("image")])])
+        baseline["extensions"][namespace]["lights"] = .array([details(baseline), spotDetail])
+        try draft.replaceCandidate(baseline)
+
+        let command: DocumentValue = .object(["type": .string("set-room-ceiling-fill-brightness"),
+            "lightId": .string(baseID), "brightness": .number(0.5), "mode": .string("default")])
+        let prepared = try request(command, draft)
+        let candidate = try RoomBaseLightIntent.setCeilingFillBrightness(0.5, usesDefault: true, lightId: baseID, in: baseline)
+        let preview = try prepared.checkedReply(reply(prepared, candidate: candidate))
+        XCTAssertEqual(try preview.apply(to: draft).candidate, candidate)
+        XCTAssertEqual(candidate["extensions"][namespace]["lights"][1], spotDetail)
+
+        var tampered = candidate
+        tampered["extensions"][namespace]["lights"][1]["angularProfile"]["cutoffAngle"] = .number(0.5)
+        XCTAssertThrowsError(try prepared.checkedReply(reply(prepared, candidate: tampered)))
+        var extra = command; extra["angularProfile"] = angular
+        XCTAssertThrowsError(try request(extra, draft))
+        var settings = without(details(baseline), "lightId"); settings["angularProfile"] = angular
+        XCTAssertThrowsError(try request(setCommand(draft, row: light(draft), settings: settings), draft))
+
+        for (field, value) in [("kind", DocumentValue.string("unknown")), ("extra", .integer(1)),
+                               ("softnessAngle", .number(1e-45)), ("cutoffAngle", .number(1.5))] {
+            var bad = baseline
+            bad["extensions"][namespace]["lights"][1]["angularProfile"][field] = value
+            var changedDraft = draft; try changedDraft.replaceCandidate(bad)
+            XCTAssertThrowsError(try request(command, changedDraft))
+        }
+        var wrongAim = baseline
+        wrongAim["extensions"][namespace]["lights"][1]["trackAim"]["aim"] = .object(["kind": .string("point"),
+            "position": .vector([0, 0, 0])])
+        try draft.replaceCandidate(wrongAim)
+        XCTAssertThrowsError(try request(command, draft))
+    }
+
     func testPinnedNode24RangeGoldenValues() throws {
         // Node24.21.0 roomBaseLightRange(34959f7), not a sampled geometry fit.
         let vectors: [(Double, Double, Double, Double)] = [

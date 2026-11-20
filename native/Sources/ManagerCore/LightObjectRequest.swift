@@ -456,13 +456,37 @@ public struct LightObjectRequest: Sendable {
         var seen = Set<String>()
         for row in rows {
             guard let id = row["lightId"].string, uuid(id), seen.insert(id.lowercased()).inserted,
-                  candidate["lights"].items?.filter({ same($0["id"].string, id) }).count == 1,
+                  let matches = candidate["lights"].items?.filter({ same($0["id"].string, id) }),
+                  matches.count == 1, let light = matches.first,
                   case .object(var fields) = row else { throw invalid }
             fields.removeValue(forKey: "lightId")
-            if namespace == details { try checkSettings(.object(fields)) }
-            else { try checkAttachment(.object(fields)) }
+            if namespace == details {
+                if let angular = fields.removeValue(forKey: "angularProfile") {
+                    try checkStoredUpperFraming(angular, trackAim: row["trackAim"], light: light, candidate: candidate)
+                }
+                try checkSettings(.object(fields))
+            } else { try checkAttachment(.object(fields)) }
         }
         return rows
+    }
+
+    private static func checkStoredUpperFraming(_ value: DocumentValue, trackAim: DocumentValue,
+                                                light: DocumentValue, candidate: DocumentValue) throws {
+        let aim = trackAim["aim"]
+        guard case .object(let fields) = value, Set(fields.keys) == ["version", "kind", "cutoffAngle", "softnessAngle"],
+              value["version"] == .integer(1), value["kind"] == .string("upper-framing"),
+              let cutoff = value["cutoffAngle"].double, let softness = value["softnessAngle"].double,
+              cutoff.isFinite, softness.isFinite, cutoff > -.pi / 2, cutoff < .pi / 2,
+              softness > 0, cutoff + softness <= .pi / 2,
+              light["type"] == .string("spot"), aim["kind"] == .string("placement-center"),
+              let target = aim["placementId"].string, let room = light["roomId"].string,
+              let placements = candidate["placements"].items?.filter({ same($0["id"].string, target) }),
+              placements.count == 1, let placement = placements.first, same(placement["roomId"].string, room),
+              let revision = placement["artworkRevisionId"].string,
+              let artworks = candidate["artworks"].items?.filter({ same($0["revisionId"].string, revision) }),
+              artworks.count == 1, artworks.first?["artworkType"] == .string("image") else { throw invalid }
+        let inverse = Float(1 / sin(softness))
+        guard inverse.isFinite, inverse > 0 else { throw invalid }
     }
     private static func writeRows(_ rows: [DocumentValue], namespace: String, in candidate: inout DocumentValue) {
         if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
