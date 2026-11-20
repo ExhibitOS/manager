@@ -546,7 +546,8 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     if proof.is_none() && (FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting)
         || crate::native_payload::official_room_lighting_pending_transition(pair)
         || crate::native_payload::official_room_lighting_selected_transition(pair)
-        || crate::native_payload::official_r215_original_repair_transition(pair)) {
+        || crate::native_payload::official_r215_original_repair_transition(pair)
+        || crate::native_payload::official_r216_selected_transition(pair)) {
         return OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2164,6 +2165,31 @@ fn check_official_r215_selected_head(service: &LifecycleService, profile: &Path,
     check_official_room_lighting_journal(service, profile, JOURNAL)
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+impl InstallationController {
+    fn check_official_r216_selected_head(&self, service: &LifecycleService, profile: &Path,
+        document: &super::installations::native_document::DocumentState) -> Result<()> {
+        const ETAG: &str = r#""studio-r216-81122b38783da0ef3c22b571ff941074d02d6f43a8ffc8417d9bfe0877d285ea""#;
+        const DOCUMENT: &str = "ce5efc5325b8f4c7d73c550a160d614167fe2a6c8b55c925095bba9594d4911c";
+        const PUBLICATION: &str = "b8230c4cf45a2e98a030e96dee59fe4e0af7ba3ffd38ea6e5cc9bb8fb99ee928";
+        if document.revision != 610 || document.saved_edit_version != Some(278)
+            || document.etag.as_deref() != Some(ETAG) || document.pending.is_some()
+            || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != Some(278)
+        {
+            return Err(invalid());
+        }
+        check_official_room_lighting_journal(service, profile, DOCUMENT)?;
+        let (publication, _) = self.personal_transition_publication(service, profile)?;
+        let journals = self.personal_transition_journal_digests(service, profile)?;
+        if publication.pending.is_some()
+            || !matches!(journals.as_slice(), [_, _, Some(digest), ..] if digest == PUBLICATION)
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+
 impl InstallationController {
     fn with_transition_key<T>(
         &self,
@@ -2337,6 +2363,11 @@ impl InstallationController {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 check_official_r215_selected_head(service, profile, document)?;
             }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if crate::native_payload::official_r216_selected_transition(pair) {
+                if retained_saved_head.is_some() { return Err(invalid()); }
+                self.check_official_r216_selected_head(service, profile, document)?;
+            }
             let owner = service.personal_identity()?;
             if let Some(saved) = retained_saved_head {
                 check_retained_saved_head(pair, document, saved, (&owner.0, &owner.1, &owner.2))?;
@@ -2460,6 +2491,11 @@ impl InstallationController {
                 crate::native_payload::OFFICIAL_R215_ORIGINAL_REPAIR_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 check_official_r215_selected_head(service, profile, document)?;
+            }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if target_manifest == crate::native_payload::OFFICIAL_R216_SELECTED_TARGET.2 {
+                if !saved_workspace_host { return Err(invalid()); }
+                self.check_official_r216_selected_head(service, profile, document)?;
             }
             #[cfg(not(all(feature = "workspace-v5-owner-validation", target_os = "macos")))]
             let _ = profile;
