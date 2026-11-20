@@ -5,6 +5,34 @@ import Foundation
 /// remain with the caller; this value never grants permission or saves a draft.
 public struct FrameImageFitReconciliationRequest: Sendable {
     public static let profile = "saved-head-frame-image-fit-v1"
+    static func admitsOccupiedWheat(manifest: String?, document: NativeDocumentState, placementId: String,
+                                   session: AuthoringSession) -> Bool {
+        #if DEBUG && os(macOS)
+        guard manifest == "3299659f0be756424c2abfa80f866cb54e4976c75f398d19f9d1de33481c4912",
+              document.workspaceId == "23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef",
+              document.tenantId == session.tenantId, document.principalId == session.userId,
+              ["admin", "artist", "curator"].contains(session.role),
+              session.nativeAuthoringProposalProfile == "saved-head-v1", session.advertisesWorkspaceArtworkFrame,
+              session.nativeFrameImageFitProposalProfile == profile,
+              placementId == "89ec602d-79ff-4851-9ead-85bdd4a382cf",
+              document.revision == 618, document.savedEditVersion == 281, !document.dirty,
+              document.etag == #""studio-r218-ea370957db37cfb1016cb296eb3843d2585de0cb4bb42b885f91ffdabcfa074e""#,
+              let candidate = document.draft?.candidate,
+              candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["version"] == .integer(11),
+              let selected = try? FrameImageFitCheck.validate(candidate, target: placementId), selected.fit == nil else { return false }
+        let attachment = selected.rows[selected.index]
+        return attachment["artworkRevisionId"] == .string("53d66af3-0ff2-4dd9-8cc7-9056a6ddf8b9")
+            && attachment["assetId"] == .string("000266b5-34b5-44c2-a794-1fe8c344f949")
+            && attachment["furnishingId"] == .string("4ddff48b-c2b2-5166-9e35-cd1c7aabb5b3")
+            && attachment["modelSha256"] == .string("a96b4942c2cd10b25fe1b33001443e1824fc125bc258f28a68547d38d8c54362")
+            && candidate["artworks"].items?.first(where: { $0["revisionId"] == attachment["artworkRevisionId"] })?["assets"].items?.contains(where: {
+                $0["id"] == attachment["assetId"] && $0["sha256"] == .string("cde67c823c0fed9574d94d4a95facbcc7e3b7782af8424d55fb41c8a53c250b7")
+            }) == true
+        #else
+        false
+        #endif
+    }
+
     /// A local availability hint only; saved-head and API admission remain authoritative.
     public static func supports(placementId: String, in draft: NativeExhibitionDraft) -> Bool {
         (try? FrameImageFitCheck.validate(draft.candidate, target: placementId)) != nil

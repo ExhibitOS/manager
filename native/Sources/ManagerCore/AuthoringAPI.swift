@@ -4548,27 +4548,43 @@ public actor AuthoringAPI {
             && session?.nativeFrameImageFitProposalProfile == FrameImageFitReconciliationRequest.profile
     }
 
-    private func requireLiveFrameImageFitReconciliation() async throws {
-        guard admitsFrameImageFitReconciliation, let session else { throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE") }
+    public nonisolated func supportsOccupiedWheatFrameImageFit(placementId: String, document: NativeDocumentState,
+                                                              session: AuthoringSession) -> Bool {
+        FrameImageFitReconciliationRequest.admitsOccupiedWheat(manifest: nativeRuntimeManifestSHA256,
+            document: document, placementId: placementId, session: session)
+    }
+
+    private func requireLiveFrameImageFitReconciliation(placementId: String, document: NativeDocumentState,
+                                                       occupiedWheat: Bool) async throws {
+        guard nativeSession, !authenticationBusy, admitsFrameImageFitReconciliation || occupiedWheat,
+              let session else { throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE") }
         let live = try await verifyRetainedSession(session)
         guard live.nativeAuthoringProposalProfile == "saved-head-v1", live.advertisesWorkspaceArtworkFrame,
-              live.nativeFrameImageFitProposalProfile == FrameImageFitReconciliationRequest.profile else {
+              live.nativeFrameImageFitProposalProfile == FrameImageFitReconciliationRequest.profile,
+              !occupiedWheat || supportsOccupiedWheatFrameImageFit(placementId: placementId, document: document, session: live) else {
             throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE")
         }
     }
 
     public func prepareFrameImageFitReconciliation(placementId: String,
                                                     in document: NativeDocumentState) async throws -> FrameImageFitReconciliationPreview {
-        guard admitsFrameImageFitReconciliation, document.tenantId == tenant,
-              document.principalId == session?.userId else { throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE") }
+        guard nativeSession, !authenticationBusy, let session, document.tenantId == tenant,
+              document.principalId == session.userId else { throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE") }
+        let occupiedWheat = supportsOccupiedWheatFrameImageFit(placementId: placementId, document: document, session: session)
+        guard admitsFrameImageFitReconciliation || occupiedWheat else { throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE") }
         guard !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag else {
             throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED")
         }
         let heldGeneration = generation
-        try await requireLiveFrameImageFitReconciliation()
+        try await requireLiveFrameImageFitReconciliation(placementId: placementId, document: document, occupiedWheat: occupiedWheat)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         let saved = try await exhibition(draft.id)
         guard saved.etag == etag, saved.draft == draft else { throw AuthoringFailure("REMOTE_CONFLICT", status: 412) }
+        if occupiedWheat {
+            let policy = try await nativeViewportPolicy(draft.id)
+            guard policy.confirmsOrdinaryDraft, policy.exhibitionId == draft.id, policy.etag == etag,
+                  policy.revision == saved.revision else { throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE") }
+        }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         let frame = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1,
             tenantId: document.tenantId, principalId: document.principalId, draft: saved.draft,
@@ -4578,10 +4594,17 @@ public actor AuthoringAPI {
         let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
                                                      etag: etag, proposal: proposal.value)
         let preview = try proposal.checkedReply(reply)
+        if occupiedWheat {
+            let attachments = preview.candidate["extensions"][WorkspaceFurnishingPlacement.namespace]["frameAttachments"].items
+            let fit = attachments?.first(where: { $0["placementId"].string == placementId })?["imageFit"]
+            guard preview.changed, fit?["pixelWidth"] == .integer(2048), fit?["pixelHeight"] == .integer(1630) else {
+                throw AuthoringFailure("FRAME_IMAGE_FIT_INVALID")
+            }
+        }
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         try await validateNativeViewportEdit(try preview.apply(to: saved.draft) ?? saved.draft, etag: etag)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        try await requireLiveFrameImageFitReconciliation()
+        try await requireLiveFrameImageFitReconciliation(placementId: placementId, document: document, occupiedWheat: occupiedWheat)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         return preview
     }

@@ -2224,18 +2224,26 @@ final class ExhibitionModel: ObservableObject {
         workspacePortalFinishAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
             && !architectureDirty && !formDirty && !positionDirty && state?.etag != nil && viewportController.editingContextActive
     }
-    var canEditWorkspaceArtworkFrame: Bool {
-        workspaceArtworkFrameAvailable && canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
+    private var canStageArtworkFrameChange: Bool {
+        canSelectCatalog && !immutable && !dirty && !viewingPlanDirty
             && state?.etag != nil && viewportController.editingContextActive
     }
+    var canEditWorkspaceArtworkFrame: Bool { workspaceArtworkFrameAvailable && canStageArtworkFrameChange }
+
+    private var occupiedWheatFrameImageFitAvailable: Bool {
+        guard !selectedBoundedPolicy, let state, let session, let viewportCredentials,
+              state.tenantId == viewportCredentials.tenantId, state.principalId == viewportCredentials.principalId else { return false }
+        return api?.supportsOccupiedWheatFrameImageFit(placementId: placementId, document: state, session: session) == true
+    }
+
     var frameImageFitAvailable: Bool {
-        guard workspaceArtworkFrameAvailable,
+        guard workspaceArtworkFrameAvailable || occupiedWheatFrameImageFitAvailable,
               session?.nativeFrameImageFitProposalProfile == FrameImageFitReconciliationRequest.profile,
               let draft else { return false }
         return FrameImageFitReconciliationRequest.supports(placementId: placementId, in: draft)
     }
     var canReconcileFrameImageFit: Bool {
-        frameImageFitAvailable && canEditWorkspaceArtworkFrame && !formDirty && !positionDirty && !architectureDirty
+        frameImageFitAvailable && canStageArtworkFrameChange && !formDirty && !positionDirty && !architectureDirty
             && viewportSelection == ViewportSelection(kind: "placement", id: placementId)
     }
     func reconcileSelectedFrameImageFit() async {
@@ -2243,7 +2251,8 @@ final class ExhibitionModel: ObservableObject {
         let target = placementId, access = viewportAccessID
         let context = viewportController.editingContextGeneration, host = viewportController.hostEpoch
         do {
-            let changed = try await applyWorkspaceArtworkFrame(to: target, access: access) { api, state in
+            let changed = try await applyArtworkFrameChange(to: target, access: access,
+                occupiedWheat: occupiedWheatFrameImageFitAvailable) { api, state in
                 let preview = try await api.prepareFrameImageFitReconciliation(placementId: target, in: state)
                 guard self.viewportSelection == ViewportSelection(kind: "placement", id: target),
                       self.viewportController.editingContextGeneration == context,
@@ -2349,14 +2358,19 @@ final class ExhibitionModel: ObservableObject {
     }
     func applyWorkspaceArtworkFrame(to target: String, access: UUID,
                                     prepare: (AuthoringAPI, NativeDocumentState) async throws -> NativeExhibitionDraft?) async throws -> Bool {
-        guard canEditWorkspaceArtworkFrame else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
-        return try await withWorkspaceFurnishingAccess(access) { api in
+        try await applyArtworkFrameChange(to: target, access: access, occupiedWheat: false, prepare: prepare)
+    }
+
+    private func applyArtworkFrameChange(to target: String, access: UUID, occupiedWheat: Bool,
+        prepare: (AuthoringAPI, NativeDocumentState) async throws -> NativeExhibitionDraft?) async throws -> Bool {
+        func apply(using api: AuthoringAPI) async throws -> Bool {
             guard var current = state else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
             guard target == placementId else { throw AuthoringFailure("FRAME_TARGET_STALE") }
             let next = try await prepare(api, current)
             guard access == viewportAccessID, state?.revision == current.revision, state?.draft == current.draft,
                   !formDirty, !positionDirty, !architectureDirty, !viewingPlanDirty, !immutable,
-                  viewportController.editingContextActive, target == placementId else {
+                  viewportController.editingContextActive, target == placementId,
+                  !occupiedWheat || occupiedWheatFrameImageFitAvailable else {
                 throw AuthoringFailure("FRAME_TARGET_STALE")
             }
             guard let next else { return false }
@@ -2366,6 +2380,15 @@ final class ExhibitionModel: ObservableObject {
             notice = "액자 변경을 이 Mac에 보관했습니다. 전시를 저장하세요."
             return true
         }
+        if occupiedWheat {
+            guard canReconcileFrameImageFit, occupiedWheatFrameImageFitAvailable, access == viewportAccessID,
+                  !infoStandPreviewing, let api else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
+            workViewport = .blocked
+            defer { workViewport = nil }
+            return try await apply(using: api)
+        }
+        guard canEditWorkspaceArtworkFrame else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
+        return try await withWorkspaceFurnishingAccess(access) { try await apply(using: $0) }
     }
     func applyWorkspacePortalFinish(openingId: String, furnishingId: String?, access: UUID) async throws -> Bool {
         guard canEditWorkspacePortalFinish else { throw AuthoringFailure("PORTAL_SAVED_DRAFT_REQUIRED") }
