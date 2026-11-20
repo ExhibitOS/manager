@@ -1229,9 +1229,18 @@ const ORDINARY_RAIL_INSERTION_CHECK_RUNTIME: RuntimeTuple = (
     "eee0808ab66919d15341327acb80f0055d00224ca12d984926efa526827a4109",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const RECORDED_FLOOR_DEFAULT_RUNTIME: RuntimeTuple = (
+    "506822982e8f4901f6b2dd26571af6b4ac54a55b",
+    "b53bd78a5a22ad14f5e05b998070c0a75163ac715cf452eeb04c29d6748786a3",
+    "d39cb81496dd53b8c6da2036f71c600bb62ed9e5d78172d50301478e11b5b697",
+);
+
 pub(crate) fn current_default_catalogue_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CURRENT_DEFAULT_CATALOGUE_PAIR.0 == tuple || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME == tuple;
+    return CURRENT_DEFAULT_CATALOGUE_PAIR.0 == tuple
+        || RECORDED_FLOOR_DEFAULT_RUNTIME == tuple
+        || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     {
         let _ = tuple;
@@ -1241,7 +1250,9 @@ pub(crate) fn current_default_catalogue_host_matches(tuple: (&str, &str, &str)) 
 
 pub(crate) fn current_default_catalogue_manifest_matches(manifest: &str) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return CURRENT_DEFAULT_CATALOGUE_PAIR.0.2 == manifest || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME.2 == manifest;
+    return CURRENT_DEFAULT_CATALOGUE_PAIR.0.2 == manifest
+        || RECORDED_FLOOR_DEFAULT_RUNTIME.2 == manifest
+        || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME.2 == manifest;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     {
         let _ = manifest;

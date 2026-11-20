@@ -792,7 +792,23 @@ final class ExhibitionModel: ObservableObject {
     private var floorImageAttempts = Set<FloorSettings.Preset>()
     private var floorImagesLoading = false
     private var floorBaseline = FloorFormBuffer(settings: nil)
-    var floorDirty: Bool { floor != floorBaseline }
+    @Published private(set) var recordedFloorPreview: RecordedFloorPreview?
+    @Published private(set) var recordedFloorRequestPending = false
+    @Published private var recordedFloorReadback: (etag: String, statuses: [RecordedFloorStatus])?
+    @Published private(set) var recordedFloorReadbackPending = false
+    var selectedRecordedFloorStatus: RecordedFloorStatus? {
+        guard let readback = recordedFloorReadback, !floorDirty, state?.dirty == false,
+              state?.etag == readback.etag, let target = floorTarget else { return nil }
+        return readback.statuses.first { status in
+            target.kind == .surface ? status.surfaceId?.lowercased() == target.id.lowercased()
+                : status.surfaceId == nil && status.roomId.lowercased() == target.id.lowercased()
+        }
+    }
+    var floorDirty: Bool { floor != floorBaseline || recordedFloorPreview != nil }
+    var recordedFloorSupported: Bool { session?.advertisesRecordedFloorDefault == true }
+    var canStageRecordedFloor: Bool {
+        canEditFloor && recordedFloorSupported && !floorDirty && !recordedFloorRequestPending && !recordedFloorReadbackPending && state?.dirty == false
+    }
     var floorCanReset: Bool { floorBaseline.settings != nil && floor.settings?.preset == floorBaseline.settings?.preset && !floor.restoreLegacy }
     var floorTargets: [FloorSettings.Target] { (try? draft.map { try FloorSettings.targets(in: $0.candidate) }) ?? [] }
     var floorTarget: FloorSettings.Target? { floorTargets.first { $0.key == floorTargetKey } }
@@ -2860,6 +2876,7 @@ final class ExhibitionModel: ObservableObject {
         } catch { return false }
     }
     private func syncFloor() {
+        recordedFloorPreview = nil
         floorPreview = nil; floorPreviewBase = nil; floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
         do {
             if !floorTargets.contains(where: { $0.key == floorTargetKey }) { floorTargetKey = floorTargets.first?.key ?? "" }
@@ -2871,7 +2888,7 @@ final class ExhibitionModel: ObservableObject {
         } catch { floorEditable = false; floorStatus = "바닥 설정을 읽지 못했습니다. 원래 설정은 유지됩니다." }
     }
     func selectFloor(_ key: String) {
-        guard !entrancePreviewActive, !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, !placingArtwork,
+        guard recordedFloorPreview == nil, !recordedFloorRequestPending, !entrancePreviewActive, !busy, !pending, !formDirty, !positionDirty, !architectureDirty, !architectureApplying, !placingArtwork,
               floorTargets.contains(where: { $0.key == key }) else { return }
         floorTargetKey = key; syncFloor()
     }
@@ -2888,6 +2905,13 @@ final class ExhibitionModel: ObservableObject {
     }
     func previewFloor() { guard canEditFloor else { return }; refreshFloorPreview() }
     private func setFloorCandidate(_ next: inout NativeExhibitionDraft, target: FloorSettings.Target) throws {
+        if let recordedFloorPreview {
+            guard recordedFloorSupported, recordedFloorPreview.command.target == target else {
+                throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+            }
+            next = try recordedFloorPreview.applying(to: next)
+            return
+        }
         if floor.concreteFootstepsRequested {
             try next.replaceCandidate(ConcreteFootsteps.proposedCandidate(in: next, target: target, resourcesAvailable: floorAudioRuntimeAvailable))
             return
@@ -2905,7 +2929,50 @@ final class ExhibitionModel: ObservableObject {
         var fields = floor; fields.concreteFootstepsRequested = true; floor = fields
     }
     func stageFloorPreset(_ preset: FloorSettings.Preset, fields: Set<FloorSettings.Field>) {
+        if canStageRecordedFloor && fields == Set(FloorSettings.Field.allCases), let target = floorTarget {
+            Task { await stageRecordedFloor(.select(target, preset)) }
+            return
+        }
         stageFloorMaterial(preset, defaults: FloorSettings.defaults(preset), fields: fields)
+    }
+    func checkRecordedFloorReadiness() async {
+        guard canStageRecordedFloor, !recordedFloorReadbackPending, let current = state, let etag = current.etag,
+              let api else { return }
+        let access = viewportAccessID
+        recordedFloorReadback = nil
+        recordedFloorReadbackPending = true
+        defer { recordedFloorReadbackPending = false }
+        do {
+            let statuses = try await api.recordedFloorReadiness(in: current)
+            guard self.api === api, viewportAccessID == access, state?.etag == etag, state?.revision == current.revision else { return }
+            recordedFloorReadback = (etag, statuses)
+        } catch {
+            guard self.api === api, viewportAccessID == access, state?.etag == etag else { return }
+            floorStatus = (error as? AuthoringFailure)?.errorDescription ?? "저장한 발소리 녹음을 확인하지 못했습니다."
+        }
+    }
+    func stageRecordedFloor(_ command: RecordedFloorCommand) async {
+        guard canStageRecordedFloor, let current = state, let api, let base = current.draft,
+              let target = floorTarget, command.target == target else { return }
+        let access = viewportAccessID, context = viewportController.editingContextGeneration
+        recordedFloorRequestPending = true
+        defer { recordedFloorRequestPending = false }
+        do {
+            let preview = try await api.prepareRecordedFloor(command, in: current)
+            try Task.checkCancellation()
+            guard self.api === api, canEditFloor, recordedFloorSupported, !floorDirty, floorTarget == target,
+                  state?.revision == current.revision, state?.etag == current.etag, draft == base,
+                  viewportAccessID == access, viewportController.editingContextGeneration == context else { return }
+            guard preview.candidate != base.candidate else {
+                floorStatus = "이 바닥에 이미 같은 설정이 저장되어 있습니다."
+                return
+            }
+            recordedFloorPreview = preview
+            refreshFloorPreview()
+        } catch {
+            guard self.api === api, viewportAccessID == access, floorTarget == target else { return }
+            floorStatus = (error as? AuthoringFailure)?.errorDescription ?? "발소리 설정을 확인하지 못했습니다."
+        }
     }
     private func stageFloorMaterial(_ preset: FloorSettings.Preset, defaults: [FloorSettings.Field: DocumentValue],
                                     fields: Set<FloorSettings.Field>) {
@@ -2956,6 +3023,10 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func resetFloorField(_ field: FloorSettings.Field) {
+        if field == .sound, recordedFloorSupported, let target = floorTarget {
+            Task { await stageRecordedFloor(.reset(target)) }
+            return
+        }
         guard canEditFloor, floorCanReset, let draft, let persisted = floorBaseline.settings else { return }
         do { try floor.reset(field, to: persisted.preset, candidate: draft.candidate) }
         catch { floorStatus = "현재 보관한 재질의 기본값을 적용하지 못했습니다. 다른 입력은 유지됩니다." }
