@@ -45,34 +45,43 @@ public enum NativeGeometryAction: Sendable {
 /// These actions can add only one authored light and its corresponding marker.
 public enum RoomBaseLightAction: Sendable {
     public static let profile = "room-base-light-v1"
-    case addRoom(name: String, ceilingFill: Bool = false, defaultCeilingFill: Bool = false)
-    case ensure(roomId: String, ceilingFill: Bool = false, defaultCeilingFill: Bool = false)
+    case addRoom(name: String, ceilingFill: Bool = false, defaultCeilingFill: Bool = false, roomLocalCeilingFill: Bool = false)
+    case ensure(roomId: String, ceilingFill: Bool = false, defaultCeilingFill: Bool = false, roomLocalCeilingFill: Bool = false)
 
     public var requestsCeilingFill: Bool {
         switch self {
-        case .addRoom(_, let enabled, let useDefault), .ensure(_, let enabled, let useDefault): return enabled || useDefault
+        case .addRoom(_, let enabled, let useDefault, let roomLocal), .ensure(_, let enabled, let useDefault, let roomLocal):
+            return enabled || useDefault || roomLocal
         }
     }
 
     public var requestsDefaultCeilingFill: Bool {
         switch self {
-        case .addRoom(_, _, let useDefault), .ensure(_, _, let useDefault): return useDefault
+        case .addRoom(_, _, let useDefault, let roomLocal), .ensure(_, _, let useDefault, let roomLocal): return useDefault || roomLocal
+        }
+    }
+
+    public var requestsRoomLocalCeilingFill: Bool {
+        switch self {
+        case .addRoom(_, _, _, let roomLocal), .ensure(_, _, _, let roomLocal): return roomLocal
         }
     }
 
     public func encodedValue(in draft: NativeExhibitionDraft?, selected: ViewportSelection?) throws -> DocumentValue {
         var value: DocumentValue
         switch self {
-        case .addRoom(let name, _, _):
+        case .addRoom(let name, _, _, _):
             guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   name.utf16.count <= 512 else { throw AuthoringFailure("ROOM_INVALID") }
             value = .object(["type": .string("add-room-with-base-light"), "name": .string(name)])
-        case .ensure(let roomId, _, _):
+        case .ensure(let roomId, _, _, _):
             guard let draft, selected == ViewportSelection(kind: "room", id: roomId),
                   selected?.belongs(to: draft) == true else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             value = .object(["type": .string("ensure-room-base-light"), "roomId": .string(roomId)])
         }
-        if requestsCeilingFill {
+        if requestsRoomLocalCeilingFill {
+            value["ceilingFillProfile"] = .string(RoomCeilingFill.roomLocalProfile)
+        } else if requestsCeilingFill {
             value["ceilingFillProfile"] = .string(requestsDefaultCeilingFill ? RoomCeilingFill.defaultProfile : RoomCeilingFill.profile)
         }
         return value
@@ -91,7 +100,7 @@ public enum RoomBaseLightAction: Sendable {
     }
 
     static func appendingLight(to candidate: DocumentValue, room: DocumentValue, lightId: String,
-                               ceilingFill: Bool = false, defaultCeilingFill: Bool = false) throws -> DocumentValue {
+                               ceilingFill: Bool = false, defaultCeilingFill: Bool = false, roomLocalCeilingFill: Bool = false) throws -> DocumentValue {
         let dimensions = room["dimensions"]
         guard let roomId = room["id"].string, UUID(uuidString: roomId) != nil,
               let width = dimensions["width"].double, let depth = dimensions["depth"].double,
@@ -106,16 +115,17 @@ public enum RoomBaseLightAction: Sendable {
         var binding: [String: DocumentValue] = ["lightId": .string(lightId), "fixture": .string("none"),
                                  "range": .number(try RoomBaseLightIntent.range(width: width, height: height, depth: depth)),
                                  "purpose": .string("room-base"), "basePlacement": .string("auto")]
-        let fillDimensions = ceilingFill || defaultCeilingFill ? supportedCeilingFillDimensions(in: candidate, room: room) : nil
+        let usesDefault = defaultCeilingFill || roomLocalCeilingFill
+        let fillDimensions = ceilingFill || usesDefault ? supportedCeilingFillDimensions(in: candidate, room: room) : nil
         if let dimensions = fillDimensions {
             let emitter = try RoomCeilingFill.emitter(dimensions: dimensions,
-                brightness: RoomCeilingFill.initialBrightness, usesDefault: defaultCeilingFill)
+                brightness: RoomCeilingFill.initialBrightness, usesDefault: usesDefault)
             for key in ["dimensions", "transform", "intensity"] { light[key] = emitter[key] }
             light["type"] = .string("area")
             light["unit"] = .string("lumen")
             binding.removeValue(forKey: "range")
-            binding["ceilingFill"] = RoomCeilingFill.setting(brightness: RoomCeilingFill.initialBrightness, usesDefault: defaultCeilingFill)
-        } else if defaultCeilingFill {
+            binding["ceilingFill"] = RoomCeilingFill.setting(brightness: RoomCeilingFill.initialBrightness, usesDefault: usesDefault)
+        } else if usesDefault {
             return candidate
         }
         lights.append(light)
@@ -128,7 +138,7 @@ public enum RoomBaseLightAction: Sendable {
         result["lights"] = .array(lights)
         if result["extensions"] == .null { result["extensions"] = .object([:]) }
         result["extensions"][NativeLightFixture.namespace] = details
-        return result
+        return roomLocalCeilingFill ? SpaceLightingFormBuffer.addingRoomLocal(to: result) : result
     }
 
     /// Validate the exact reply before changing local edit version or undo history.
@@ -139,14 +149,14 @@ public enum RoomBaseLightAction: Sendable {
         guard let rooms = expected["rooms"].items, let lights = expected["lights"].items else { throw changed }
         let room: DocumentValue
         switch self {
-        case .addRoom(let name, _, _):
+        case .addRoom(let name, _, _, _):
             guard let newId = candidate["rooms"].items?.last?["id"].string,
                   UUID(uuidString: newId) != nil,
                   !rooms.contains(where: { $0["id"].string?.lowercased() == newId.lowercased() }),
                   !lights.contains(where: { $0["id"].string?.lowercased() == newId.lowercased() }) else { throw changed }
             room = Self.newRoom(id: newId, name: name)
             expected["rooms"] = .array(rooms + [room])
-        case .ensure(let roomId, _, _):
+        case .ensure(let roomId, _, _, _):
             let matchingRooms = rooms.filter { $0["id"].string?.lowercased() == roomId.lowercased() }
             guard matchingRooms.count == 1, let target = matchingRooms.first else { throw changed }
             room = target
@@ -168,7 +178,8 @@ public enum RoomBaseLightAction: Sendable {
               expected["rooms"].items?.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }) == false,
               !lights.contains(where: { $0["id"].string?.lowercased() == lightId.lowercased() }) else { throw changed }
         expected = try Self.appendingLight(to: expected, room: room, lightId: lightId,
-            ceilingFill: requestsCeilingFill, defaultCeilingFill: requestsDefaultCeilingFill)
+            ceilingFill: requestsCeilingFill, defaultCeilingFill: requestsDefaultCeilingFill,
+            roomLocalCeilingFill: requestsRoomLocalCeilingFill)
         let template = "org.exhibitos.studio/template"
         if expected["extensions"][template] != .null {
             guard case .object = expected["extensions"][template], case .bool = expected["extensions"][template]["modified"] else { throw changed }
@@ -254,6 +265,9 @@ public struct ViewportAcceptance: Decodable, Sendable {
     }
     public var supportsDefaultRoomCeilingFill: Bool {
         supportsRoomCeilingFill && capabilities?.contains(RoomCeilingFill.defaultProfile) == true
+    }
+    public var supportsRoomLocalCeilingFill: Bool {
+        supportsDefaultRoomCeilingFill && capabilities?.contains(RoomCeilingFill.roomLocalProfile) == true
     }
     public var supportsLightFixture: Bool { accepted && capabilities?.contains("light-fixture-aim-v1") == true }
     public var supportsWallFinish: Bool { accepted && capabilities?.contains("architectural-finishes-v1") == true }
