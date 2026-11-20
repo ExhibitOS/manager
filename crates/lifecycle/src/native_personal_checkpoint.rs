@@ -576,11 +576,16 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         return 5098 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if proof.is_none() && (crate::native_payload::official_r218_painting_transition(pair)
-        || crate::native_payload::official_r219_wheat_fit_transition(pair)) {
+    if proof.is_none() && crate::native_payload::official_r218_painting_transition(pair) {
         // Exact post-bench stopped census plus one 16 MiB WAL segment,
         // rounded up for the existing trial re-inventory.
         return 5273 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r219_wheat_fit_transition(pair) {
+        // The exact r219 stopped census (5,695,323,250 bytes) plus one 16 MiB
+        // trial WAL segment, rounded up to a whole MiB.
+        return 5448 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
@@ -3548,10 +3553,52 @@ mod tests {
         let mut pending = serde_json::to_value(&document).unwrap();
         pending["pending"] = serde_json::json!({"requestId":Uuid::new_v4(),"etag":document.etag,"draft":document.draft});
         assert!(check_r219_wheat_saved_document(&serde_json::from_value(pending).unwrap()).is_err());
-        let pair = (crate::native_payload::OFFICIAL_R218_PAINTING_TARGET.2,
-            crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2);
-        assert_eq!(checkpoint_inventory_limit(pair, None), 5273 * 1024 * 1024);
-        assert_eq!(checkpoint_inventory_limit((pair.1, pair.0), None), MAX_BYTES);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r219_wheat_fit_checkpoint_capacity_matches_measured_directed_pair() {
+        use crate::native_payload::{OFFICIAL_R217_WHEAT_TARGET, OFFICIAL_R218_PAINTING_TARGET,
+            OFFICIAL_R219_WHEAT_FIT_TARGET};
+        let predecessor = OFFICIAL_R217_WHEAT_TARGET.2;
+        let source = OFFICIAL_R218_PAINTING_TARGET.2;
+        let target = OFFICIAL_R219_WHEAT_FIT_TARGET.2;
+        let pair = (source, target);
+        let limit = checkpoint_inventory_limit(pair, None);
+        let measured = 5_695_323_250_u64;
+        let mib = 1024 * 1024;
+        assert_eq!(limit, (measured + 16 * mib).div_ceil(mib) * mib);
+        assert_eq!(limit, 5_712_642_048);
+        assert_eq!(checkpoint_inventory_limit((predecessor, source), None), 5_529_141_248);
+        for disallowed in [(target, source), (source, source), (target, target), (predecessor, target)] {
+            assert_eq!(checkpoint_inventory_limit(disallowed, None), MAX_BYTES);
+        }
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(),
+            hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64),
+            saved_etag: "\"studio-r219-synthetic\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit(pair, Some(&proof)), MAX_BYTES);
+
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap()
+            .join(format!("r219-wheat-checkpoint-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let relative = Path::new("blobs/inventory");
+        let file = private_options().open(root.join(relative)).unwrap();
+        file.set_len(measured).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, 5_529_141_248).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[relative].bytes, measured);
+        file.set_len(limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
