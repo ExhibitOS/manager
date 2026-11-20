@@ -2542,6 +2542,9 @@ final class ExhibitionModel: ObservableObject {
     var canUseDefaultRoomCeilingFill: Bool {
         canUseRoomCeilingFill && session?.advertisesRoomCeilingFillDefault == true && viewportController.defaultRoomCeilingFillSupported
     }
+    var canUseRoomLocalCeilingFill: Bool {
+        canUseDefaultRoomCeilingFill && session?.advertisesRoomLocalCeilingFill == true && viewportController.roomLocalCeilingFillSupported
+    }
     var canEnsureRoomBaseLight: Bool {
         canUseRoomBaseLight && !roomId.isEmpty && viewportSelection == ViewportSelection(kind: "room", id: roomId)
     }
@@ -2549,10 +2552,11 @@ final class ExhibitionModel: ObservableObject {
                                       action: RoomBaseLightAction, access: UUID) async {
         await work {
             guard canUseRoomBaseLight, !action.requestsCeilingFill || canUseRoomCeilingFill,
-                  !action.requestsDefaultCeilingFill || canUseDefaultRoomCeilingFill, access == viewportAccessID, !pending, !formDirty, !positionDirty,
+                  !action.requestsDefaultCeilingFill || canUseDefaultRoomCeilingFill,
+                  !action.requestsRoomLocalCeilingFill || canUseRoomLocalCeilingFill, access == viewportAccessID, !pending, !formDirty, !positionDirty,
                   !architectureDirty, !architectureApplying, !placingArtwork,
                   draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-            if case .ensure(let target, _, _) = action, target != roomId { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            if case .ensure(let target, _, _, _) = action, target != roomId { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             guard try action.apply(candidate, to: &next, selected: viewportSelection) else {
                 notice = action.requestsDefaultCeilingFill ? "이 공간의 기본 조명을 변경하지 않았습니다." : "이 공간에는 이미 기본 조명이 있습니다."
                 return
@@ -3290,15 +3294,20 @@ final class ExhibitionModel: ObservableObject {
         await previewLightObject(.object(["type": .string("set-room-base-light-placement"),
             "lightId": .string(selectedLightId), "basePlacement": .string(placement.rawValue)]))
     }
+    var canOptIntoRoomLocalCeilingFill: Bool {
+        canUseRoomLocalCeilingFill && draft.map { SpaceLightingFormBuffer.canAddRoomLocal(to: $0.candidate) } == true
+    }
     func previewRoomCeilingFillBrightness(_ brightness: Double, useDefault: Bool = false) async {
+        let optsIntoRoomLocal = useDefault && canOptIntoRoomLocalCeilingFill
         guard canPreviewLightObjectAction, session?.advertisesRoomCeilingFill == true,
               let light, let savedBrightness = light.ceilingFillBrightness,
-              savedBrightness != brightness || light.ceilingFillUsesDefault != useDefault,
+              savedBrightness != brightness || light.ceilingFillUsesDefault != useDefault || optsIntoRoomLocal,
               !useDefault || (session?.advertisesRoomCeilingFillDefault == true && brightness == RoomCeilingFill.initialBrightness),
               brightness.isFinite, (0...1).contains(brightness) else { return }
         var command: DocumentValue = .object(["type": .string("set-room-ceiling-fill-brightness"),
             "lightId": .string(selectedLightId), "brightness": .number(brightness)])
         if useDefault { command["mode"] = .string("default") }
+        if optsIntoRoomLocal { command["spaceLightingMode"] = RoomCeilingFill.roomLocalMode }
         await previewLightObject(command)
     }
     private func lightObjectCommandAvailable(_ command: DocumentValue) -> Bool {
@@ -3306,6 +3315,7 @@ final class ExhibitionModel: ObservableObject {
         return (!needsAim || trackSpotAimAvailable)
             && (command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true)
             && (command["type"] != .string("set-room-ceiling-fill-brightness") || session?.advertisesRoomCeilingFill == true)
+            && (command["spaceLightingMode"] == .null || canUseRoomLocalCeilingFill)
     }
     func previewLightObjectAction(_ type: String) async {
         guard canPreviewLightObjectAction,
@@ -3787,7 +3797,8 @@ final class ExhibitionModel: ObservableObject {
             guard !ordinaryBoundedRuntime, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLightPlacement == true,
                 ceilingFill: session?.advertisesRoomCeilingFill == true,
-                defaultCeilingFill: session?.advertisesRoomCeilingFillDefault == true)
+                defaultCeilingFill: session?.advertisesRoomCeilingFillDefault == true,
+                roomLocalCeilingFill: session?.advertisesRoomLocalCeilingFill == true)
             value.etag = nil; value.savedEditVersion = nil
             try await persist(value); storedImmutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "새 전시를 이 Mac에 보관했습니다. 공간과 작품을 구성한 뒤 전시를 저장하세요."

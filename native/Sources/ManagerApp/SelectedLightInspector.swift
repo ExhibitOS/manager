@@ -324,7 +324,7 @@ private struct RoomCeilingFillBrightnessControl: View {
             Button(usesDefault ? "직접 지정한 밝기 미리보기" : "밝기 미리보기") {
                 Task { await model.previewRoomCeilingFillBrightness(brightness) }
             }.disabled(brightness == savedBrightness && !usesDefault)
-            if canUseDefault && !usesDefault {
+            if canUseDefault && (!usesDefault || model.canOptIntoRoomLocalCeilingFill) {
                 Button("기본 밝기 미리보기") {
                     Task { await model.previewRoomCeilingFillBrightness(RoomCeilingFill.initialBrightness, useDefault: true) }
                 }

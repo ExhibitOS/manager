@@ -160,7 +160,10 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var roomCeilingFillSupported = false {
         didSet { if !roomCeilingFillSupported { defaultRoomCeilingFillSupported = false } }
     }
-    @Published fileprivate(set) var defaultRoomCeilingFillSupported = false
+    @Published fileprivate(set) var defaultRoomCeilingFillSupported = false {
+        didSet { if !defaultRoomCeilingFillSupported { roomLocalCeilingFillSupported = false } }
+    }
+    @Published fileprivate(set) var roomLocalCeilingFillSupported = false
     @Published fileprivate(set) var wallFinishSupported = false
     @Published fileprivate(set) var benchViewpointTargetHeightSupported = false
     @Published fileprivate(set) var benchInspectorSupported = false {
@@ -433,7 +436,8 @@ final class NativeViewportController: ObservableObject {
         if case .installation(.alignOnVerifiedPlinth(_)) = command, !plinthEnvelopeAlignSupported { return }
         if case .roomBaseLight(let roomAction) = command,
            !model.canUseRoomBaseLight || (roomAction.requestsCeilingFill && !model.canUseRoomCeilingFill)
-               || (roomAction.requestsDefaultCeilingFill && !model.canUseDefaultRoomCeilingFill) { return }
+               || (roomAction.requestsDefaultCeilingFill && !model.canUseDefaultRoomCeilingFill)
+               || (roomAction.requestsRoomLocalCeilingFill && !model.canUseRoomLocalCeilingFill) { return }
         let contextGeneration = editingContextGeneration, access = model.viewportAccessID
         do {
             let (candidate, base) = try await action(command)
@@ -725,6 +729,8 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.roomCeilingFillSupported = self.controller.roomBaseLightSupported && acceptance.supportsRoomCeilingFill
                         self.controller.defaultRoomCeilingFillSupported = self.controller.roomCeilingFillSupported
                             && acceptance.supportsDefaultRoomCeilingFill
+                        self.controller.roomLocalCeilingFillSupported = self.controller.defaultRoomCeilingFillSupported
+                            && acceptance.supportsRoomLocalCeilingFill
                         self.controller.wallFinishSupported = acceptance.supportsWallFinish
                         self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
                         self.controller.benchViewpointTargetHeightSupported = frame.workspaceId == nil && !frame.disabled
@@ -1576,14 +1582,14 @@ struct NativeViewportArea: View {
         Button("공간 추가") {
             let action: NativeGeometryAction = model.canUseRoomBaseLight
                 ? .roomBaseLight(.addRoom(name: "새 공간", ceilingFill: model.canUseRoomCeilingFill,
-                    defaultCeilingFill: model.canUseDefaultRoomCeilingFill))
+                    defaultCeilingFill: model.canUseDefaultRoomCeilingFill, roomLocalCeilingFill: model.canUseRoomLocalCeilingFill))
                 : .addRoom(name: "새 공간")
             Task { await controller.perform(action, model: model) }
         }
         if model.canUseRoomBaseLight {
             Button("기본 조명 적용") {
                 let action = RoomBaseLightAction.ensure(roomId: model.roomId, ceilingFill: model.canUseRoomCeilingFill,
-                    defaultCeilingFill: model.canUseDefaultRoomCeilingFill)
+                    defaultCeilingFill: model.canUseDefaultRoomCeilingFill, roomLocalCeilingFill: model.canUseRoomLocalCeilingFill)
                 Task { await controller.perform(.roomBaseLight(action), model: model) }
             }.disabled(!model.canEnsureRoomBaseLight)
         }
