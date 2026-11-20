@@ -245,6 +245,7 @@ public actor NativeAutomationSession {
             #endif
         }
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
+        let officialR215Selected = existingWorkspaceV5?.manifestSHA256 == AuthoringAPI.r215CeilingFillSelectedManifest
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
@@ -269,6 +270,7 @@ public actor NativeAutomationSession {
         guard !firstArchitectureEntry || (firstArchitectureSupported && !selectedOEX9 && !selectedOEX10
                && workspaceV5ValidationRuntime == nil && workspaceV6ValidationRuntime == nil
                && workspaceV7ValidationRuntime == nil && appliedDraftRecoveryPath == nil),
+              !officialR215Selected || (ordinaryExisting && !firstArchitectureEntry && appliedDraftRecoveryPath == nil),
               !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
               !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
@@ -318,7 +320,7 @@ public actor NativeAutomationSession {
                                   freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
                                   workspaceV7ValidationRuntime: workspaceV7ValidationRuntime,
-                                  requireExistingManagedProfile: appliedDraftRecovery != nil)
+                                  requireExistingManagedProfile: officialR215Selected || appliedDraftRecoveryPath != nil)
     }
     /// The installed entry supplies its bundled helper and the default or
     /// explicitly selected managed profile.
