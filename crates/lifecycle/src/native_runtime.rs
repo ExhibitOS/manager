@@ -1949,6 +1949,8 @@ impl Session {
                         || crate::native_payload::official_room_lighting_pending_transition(
                             (step.source().2, step.target().2))
                         || crate::native_payload::official_room_lighting_selected_transition(
+                            (step.source().2, step.target().2))
+                        || crate::native_payload::official_r215_original_repair_transition(
                             (step.source().2, step.target().2)));
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
             let occupied_trial = false;

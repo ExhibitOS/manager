@@ -537,7 +537,8 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting)
         || crate::native_payload::official_room_lighting_pending_transition(pair)
-        || crate::native_payload::official_room_lighting_selected_transition(pair)) {
+        || crate::native_payload::official_room_lighting_selected_transition(pair)
+        || crate::native_payload::official_r215_original_repair_transition(pair)) {
         return OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2019,14 +2020,15 @@ fn current52_png_checkpoint_matches(
 }
 
 #[cfg(feature = "workspace-v5-owner-validation")]
-pub(crate) fn fixed64_pending_publication_matches(
+pub(crate) fn retained_native_original_publication_matches(
     pair: (&str, &str), document: &crate::installations::native_document::DocumentState,
     publication: &crate::installations::native_publication::PublicationState,
     owner: (&str, &str, &str), journal_sha256: &str, sealed_sha256: Option<&str>,
 ) -> Result<bool> {
-    if publication.pending.is_none() && sealed_sha256.is_none() { return Ok(false); }
+    let official_repair = crate::native_payload::official_r215_original_repair_transition(pair);
+    if !official_repair && publication.pending.is_none() && sealed_sha256.is_none() { return Ok(false); }
     let reject = || err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING");
-    if !crate::native_payload::fixed64_publication_repair_clean_transition(pair)
+    if (!official_repair && !crate::native_payload::fixed64_publication_repair_clean_transition(pair))
         || document.pending.is_some() || !hash_valid(journal_sha256)
         || sealed_sha256.is_some_and(|sealed| sealed != journal_sha256)
         || (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str()) != owner
@@ -2034,6 +2036,12 @@ pub(crate) fn fixed64_pending_publication_matches(
     { return Err(reject()); }
     crate::installations::native_publication::validate(publication)?;
     let pending = publication.pending.as_ref().ok_or_else(reject)?;
+    if official_repair && (journal_sha256 != "de9201e014f0fd7354a0f4499cbd44866a71d6c69221441fcd9f8b045ba61017"
+        || pending.publish_request_id != "32fd72ba-9710-4a02-9cf0-ed15d48eaef1"
+        || pending.plan_binding_sha256.as_deref() != Some("fe60fb2a571bd2ac186d8d643b1865066b1ca592a1856860e902834af14bd24f"))
+    {
+        return Err(reject());
+    }
     let draft = document.draft.as_ref().ok_or_else(reject)?;
     let etag = document.etag.as_deref().ok_or_else(reject)?;
     let version = draft.get("editVersion").and_then(serde_json::Value::as_u64);
@@ -2050,7 +2058,7 @@ pub(crate) fn fixed64_pending_publication_matches(
 }
 
 #[cfg(feature = "workspace-v5-owner-validation")]
-fn fixed64_sealed_pending_publication_matches(
+fn sealed_native_original_publication_matches(
     pair: (&str, &str), document: &crate::installations::native_document::DocumentState,
     publication: &crate::installations::native_publication::PublicationState,
     owner: (&str, &str, &str), journal_sha256: &str, sealed_sha256: Option<&str>,
@@ -2058,7 +2066,7 @@ fn fixed64_sealed_pending_publication_matches(
     if publication.pending.is_some() && sealed_sha256.is_none() {
         return Err(err("NATIVE_PERSONAL_TRANSITION_WRITER_PENDING"));
     }
-    fixed64_pending_publication_matches(pair, document, publication, owner, journal_sha256, sealed_sha256)
+    retained_native_original_publication_matches(pair, document, publication, owner, journal_sha256, sealed_sha256)
 }
 
 #[cfg(feature = "workspace-v5-owner-validation")]
@@ -2079,7 +2087,7 @@ fn check_sealed_publication_retention(
         || (checkpoint.workspace_id.as_str(), checkpoint.tenant_id.as_str(), checkpoint.principal_id.as_str()) != owner
         || checkpoint.saved_document_sha256.as_deref() != Some(saved_document_digest(document)?.as_str())
     { return Err(invalid()); }
-    fixed64_sealed_pending_publication_matches((&checkpoint.old_manifest, &checkpoint.new_manifest),
+    sealed_native_original_publication_matches((&checkpoint.old_manifest, &checkpoint.new_manifest),
         document, publication, owner, journal_sha256, checkpoint.retained_publication_sha256.as_deref())
 }
 
@@ -2208,7 +2216,7 @@ impl InstallationController {
                 match retained_saved_head_check {
                     Some(RetainedSavedHeadCheck::CleanStage { pair }) |
                     Some(RetainedSavedHeadCheck::Stage { pair, .. }) =>
-                        fixed64_pending_publication_matches(pair, document, publication,
+                        retained_native_original_publication_matches(pair, document, publication,
                             (&owner.0, &owner.1, &owner.2), &journal_sha256, None),
                     Some(RetainedSavedHeadCheck::Sealed { target_manifest }) => {
                         if key_path.starts_with(&service.root) { return Err(invalid()); }
@@ -2316,7 +2324,8 @@ impl InstallationController {
                 check_official_room_lighting_head(service, profile, document)?;
             }
             #[cfg(all(debug_assertions, target_os = "macos"))]
-            if crate::native_payload::official_room_lighting_selected_transition(pair) {
+            if crate::native_payload::official_room_lighting_selected_transition(pair)
+                || crate::native_payload::official_r215_original_repair_transition(pair) {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 check_official_r215_selected_head(service, profile, document)?;
             }
@@ -2359,7 +2368,7 @@ impl InstallationController {
                 let (publication, publication_sha256) = self.personal_transition_publication(service, profile)?;
                 let publication_sha256 = publication_sha256.unwrap_or_default();
                 if publication.pending.is_some() && checkpoint.retained_publication_sha256.is_none() { return Err(invalid()); }
-                fixed64_sealed_pending_publication_matches(pair, document, &publication, (&owner.0, &owner.1, &owner.2),
+                sealed_native_original_publication_matches(pair, document, &publication, (&owner.0, &owner.1, &owner.2),
                     &publication_sha256, checkpoint.retained_publication_sha256.as_deref())?;
                 if checkpoint.saved_document_sha256.as_deref() != Some(document_sha256.as_str())
                     || checkpoint.startup_cancellation_045.as_ref() != startup_cancellation_045
@@ -2369,7 +2378,7 @@ impl InstallationController {
             } else {
                 let (publication, publication_sha256) = self.personal_transition_publication(service, profile)?;
                 let publication_sha256 = publication_sha256.unwrap_or_default();
-                let retained_publication = fixed64_pending_publication_matches(pair, document, &publication,
+                let retained_publication = retained_native_original_publication_matches(pair, document, &publication,
                     (&owner.0, &owner.1, &owner.2), &publication_sha256, None)?
                     .then_some(publication_sha256);
                 service.authenticate_local_personal_checkpoint(
@@ -2439,7 +2448,8 @@ impl InstallationController {
                 check_official_room_lighting_pending_journal(service, profile)?;
             }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-            if target_manifest == crate::native_payload::OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET.2 {
+            if [crate::native_payload::OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET.2,
+                crate::native_payload::OFFICIAL_R215_ORIGINAL_REPAIR_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 check_official_r215_selected_head(service, profile, document)?;
             }
@@ -2685,9 +2695,9 @@ mod tests {
                    pair: (&str, &str), sealed: bool, expected: Option<&str>| -> bool {
             let accepted = check_personal_transition_writers(doc, state,
                 || Err(invalid()), || if sealed {
-                    fixed64_sealed_pending_publication_matches(pair, doc, state, owner, &journal, expected)
+                    sealed_native_original_publication_matches(pair, doc, state, owner, &journal, expected)
                 } else {
-                    fixed64_pending_publication_matches(pair, doc, state, owner, &journal, None)
+                    retained_native_original_publication_matches(pair, doc, state, owner, &journal, None)
                 });
             accepted.is_ok()
         };
@@ -2816,6 +2826,46 @@ mod tests {
         exercise_pending_publication_enclosing_guard(&serde_json::from_slice(&document).unwrap(), &parsed_publication);
         assert!(fs::read(doc_path).unwrap() == document);
         assert!(fs::read(pub_path).unwrap() == publication);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the detached stopped r215 request, document and pending publication fixture"]
+    fn official_r215_original_repair_retains_only_the_exact_unclaimed_intent() {
+        use crate::installations::{check_personal_transition_writers, native_document, native_publication};
+        use crate::native_payload::{OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET, OFFICIAL_R215_ORIGINAL_REPAIR_TARGET};
+        let file = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R215_ORIGINAL_RECOVERY_FIXTURE").unwrap());
+        let bytes = fs::read(&file).unwrap();
+        let fixture: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let document: native_document::DocumentState = serde_json::from_value(fixture["document"].clone()).unwrap();
+        let state: native_publication::PublicationState = serde_json::from_value(fixture["publication"].clone()).unwrap();
+        let journal = fixture["publicationJournalSha256"].as_str().unwrap();
+        assert_eq!(digest(&serde_json::to_vec(&state).unwrap()), journal);
+        native_document::validate(&document).unwrap();
+        let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+        let pair = (OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET.2, OFFICIAL_R215_ORIGINAL_REPAIR_TARGET.2);
+        let disposition = |candidate: &native_publication::PublicationState, edge, observed: &str, sealed| {
+            check_personal_transition_writers(&document, candidate, || Err(invalid()), ||
+                if let Some(pin) = sealed {
+                    sealed_native_original_publication_matches(edge, &document, candidate, owner, observed, Some(pin))
+                } else {
+                    retained_native_original_publication_matches(edge, &document, candidate, owner, observed, None)
+                })
+        };
+        assert!(disposition(&state, pair, journal, None).is_ok());
+        assert!(disposition(&state, pair, journal, Some(journal)).is_ok());
+        let wrong = "a".repeat(64);
+        assert!(disposition(&state, pair, &wrong, None).is_err());
+        assert!(disposition(&state, pair, journal, Some(&wrong)).is_err());
+        assert!(disposition(&state, (pair.1, pair.0), journal, Some(journal)).is_err());
+        let original = state.pending.as_ref().unwrap();
+        let mut claimed = state.clone();
+        claimed.native_original_attempts.get_mut(&original.publish_request_id).unwrap().export_claimed = true;
+        assert!(disposition(&claimed, pair, journal, Some(journal)).is_err());
+        let mut absent = state.clone();
+        absent.pending = None;
+        assert!(retained_native_original_publication_matches(pair, &document, &absent, owner, journal, None).is_err());
+        assert!(fs::read(file).unwrap() == bytes);
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
