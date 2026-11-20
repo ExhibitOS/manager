@@ -420,7 +420,11 @@ final class ManagerModel: ObservableObject {
     }
     private func bindStaticExport() async {
         guard native?.configuration?.kind == "personal", let bridge, let context else { return }
-        await staticExport.connect(read: { try await bridge.staticExportStatus(context) }, start: { id, output, privateEditor in try await bridge.startStaticExport(context, publicationId: id, output: output, privateEditor: privateEditor) }, cancel: { try await bridge.cancelStaticExport(context) })
+        await staticExport.connect(read: { try await bridge.staticExportStatus(context) },
+            start: { id, output, privateEditor in try await bridge.startStaticExport(context, publicationId: id, output: output, privateEditor: privateEditor) },
+            cancel: { try await bridge.cancelStaticExport(context) },
+            openPreview: { try await bridge.openStaticViewer(context, jobId: $0) },
+            closePreview: { try await bridge.closeStaticViewer(context, viewerId: $0) })
         await hosting.connect(read: { try await bridge.hostingStatus(context) }, inspect: { try await bridge.hostingReview(context) }, accounts: { token in try await bridge.hostingAccounts(context, token: token) }, deploy: { token, account, review, rights, cost in try await bridge.deployStatic(context, token: token, accountId: account, review: review, rightsConfirmed: rights, costConfirmed: cost) }, reconcile: { token in try await bridge.reconcileHosting(context, token: token) }, cancel: { try await bridge.cancelHosting(context) })
     }
     func prepareAndStart() async {
@@ -448,6 +452,7 @@ final class ManagerModel: ObservableObject {
         defer { busy = false }
         guard await authoring.closeGPUPreviewAndWait() else { failure = BridgeFailure("GPU_PREVIEW_DRAIN_PENDING"); return }
         await authoring.cancelImportAndWait()
+        await staticExport.closeViewer()
         do { native = try await bridge.stop(context); schedulePoll() }
         catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_CONNECTION_FAILED") }
     }
@@ -468,6 +473,7 @@ final class ManagerModel: ObservableObject {
         invalidateRetainedAuthoring()
         startAfterPrepare = false
         guard await authoring.closeGPUPreviewAndWait() else { throw BridgeFailure("GPU_PREVIEW_DRAIN_PENDING") }
+        await staticExport.closeViewer()
         native = try await bridge.stop(context)
         try await waitForMaintenanceIdle(bridge, context)
         guard native?.runtime?.hasOwnedProcesses != true else { throw BridgeFailure("NATIVE_STOP_PENDING") }

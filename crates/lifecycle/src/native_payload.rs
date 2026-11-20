@@ -8878,6 +8878,15 @@ impl Payload {
             self.root.join("platform/apps/web/dist-static"),
         ))
     }
+    pub(crate) fn static_publication_reader(&self) -> Result<PathBuf> {
+        let name = "platform/scripts/local-static-publication-source.mjs";
+        if !self.manifest.files.iter().any(|file| file.path == name && file.link.is_none()
+            && file.executable == Some(false)) {
+            return Err(err("NATIVE_STATIC_VIEWER_UNAVAILABLE"));
+        }
+        self.recheck()?;
+        Ok(self.root.join(name))
+    }
     pub(crate) fn static_detail_export_resources(
         &self,
         private_editor: bool,

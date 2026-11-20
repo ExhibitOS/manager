@@ -151,6 +151,10 @@ pub enum Command {
     StaticExportCancel {
         selection_token: String,
     },
+    #[cfg(target_os = "macos")]
+    StaticViewerOpen { selection_token: String, job_id: String },
+    #[cfg(target_os = "macos")]
+    StaticViewerClose { selection_token: String, viewer_id: String },
     Context,
     Presentation,
     SavePresentation {
@@ -290,6 +294,8 @@ struct WireRequest {
     #[cfg(target_os = "macos")]
     export: Option<super::native_static_export::Input>,
     #[cfg(target_os = "macos")]
+    static_viewer_id: Option<String>,
+    #[cfg(target_os = "macos")]
     backup: Option<super::native_backup::Input>,
     #[cfg(target_os = "macos")]
     oex_save: Option<crate::native_host::OexSaveObservation>,
@@ -322,6 +328,29 @@ impl TryFrom<WireRequest> for Request {
             || (wire.hayes_preopen_terminal.is_some() && wire.command != "native_hayes_preopen_terminal") {
             return Err("NATIVE_PROTOCOL_INVALID");
         }
+        #[cfg(target_os = "macos")]
+        if matches!(wire.command.as_str(), "static_viewer_open" | "static_viewer_close") {
+            if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some()
+                || wire.oex_import.is_some() || wire.document.is_some() || wire.publication.is_some()
+                || wire.export.is_some() || wire.backup.is_some() || wire.hosting.is_some()
+                || wire.maintenance.is_some() || wire.oex_save.is_some() || wire.adoption.is_some()
+                || wire.thumbnail.is_some() {
+                return Err("NATIVE_PROTOCOL_INVALID");
+            }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
+            if wire.hayes_execute.is_some() || wire.hayes_job_id.is_some() || wire.hayes_current_artwork_revision.is_some()
+                || wire.hayes_finished_artwork_id.is_some() || wire.hayes_finished_display_sha256.is_some() {
+                return Err("NATIVE_PROTOCOL_INVALID");
+            }
+            let selection_token = wire.selection_token.ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let viewer_id = wire.static_viewer_id.filter(|value| super::uuid(value)).ok_or("NATIVE_PROTOCOL_INVALID")?;
+            let command = if wire.command == "static_viewer_open" {
+                Command::StaticViewerOpen { selection_token, job_id: viewer_id }
+            } else { Command::StaticViewerClose { selection_token, viewer_id } };
+            return Ok(Self { version: wire.version, id: wire.id, command });
+        }
+        #[cfg(target_os = "macos")]
+        if wire.static_viewer_id.is_some() { return Err("NATIVE_PROTOCOL_INVALID"); }
         #[cfg(target_os = "macos")]
         if matches!(wire.command.as_str(), "furnishing_thumbnail_state" | "save_furnishing_thumbnail_state") {
             if wire.state.is_some() || wire.account.is_some() || wire.transfer.is_some() || wire.oex_import.is_some()
@@ -827,6 +856,8 @@ impl Request {
             | Command::StaticExport { .. }
             | Command::StaticExportStatus { .. }
             | Command::StaticExportCancel { .. }
+            | Command::StaticViewerOpen { .. }
+            | Command::StaticViewerClose { .. }
             | Command::NativePrepare { .. }
             | Command::NativeStart { .. }
             | Command::NativeOexSelect { .. }

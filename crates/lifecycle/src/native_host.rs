@@ -17,6 +17,8 @@ use crate::{
 mod adoption_pair;
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub use adoption_pair::AdoptionPair;
+#[path = "native_static_viewer.rs"]
+mod static_viewer;
 
 use std::sync::{
     Arc, Mutex,
@@ -171,6 +173,7 @@ pub struct Host {
     worker: Option<thread::JoinHandle<()>>,
     adoption: Option<crate::native_runtime::model_adoption::Operation>,
     exporter: super::installations::native_static_export::Exporter,
+    static_viewer: Option<static_viewer::Viewer>,
     hoster: super::installations::native_hosting::Hoster,
 }
 enum Work {
@@ -190,6 +193,7 @@ impl Host {
     pub fn new(controller: Arc<InstallationController>, resources: PathBuf) -> Self {
         Self {
             exporter: super::installations::native_static_export::Exporter::new(controller.clone()),
+            static_viewer: None,
             hoster: super::installations::native_hosting::Hoster::new(controller.clone()),
             controller,
             resources,
@@ -405,6 +409,7 @@ impl Host {
         Ok(())
     }
     fn reset_selection_state(&mut self) -> Result<()> {
+        self.close_static_viewer()?;
         let mut state = self
             .state
             .lock()
@@ -432,6 +437,11 @@ impl Host {
         state.oex_put_authorized = false;
         #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
         { state.hayes_receipt = None; }
+        Ok(())
+    }
+    fn close_static_viewer(&mut self) -> Result<()> {
+        if let Some(viewer) = &mut self.static_viewer { viewer.close()?; }
+        self.static_viewer = None;
         Ok(())
     }
     fn snapshot(&self) -> Result<Status> {
@@ -1512,11 +1522,36 @@ impl Host {
                 return serde_json::to_value(self.exporter.status(selection_token)?)
                     .map_err(|_| err("STATE_INVALID"));
             }
+            UiCommand::StaticViewerOpen { selection_token, job_id } => {
+                let root = self.selected(selection_token)?;
+                {
+                    let state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                    if state.busy || state.selected_oex || state.detail_closing
+                        || state.root.as_ref().is_some_and(|selected| selected != &root) {
+                        return Err(err("NATIVE_STATIC_VIEWER_UNAVAILABLE"));
+                    }
+                }
+                let status = self.exporter.status(selection_token)?
+                    .ok_or_else(|| err("NATIVE_STATIC_VIEWER_RECEIPT_INVALID"))?;
+                self.close_static_viewer()?;
+                let payload = Payload::open(&self.resources)?;
+                let (viewer, entry) = static_viewer::Viewer::open(&payload, &status, job_id)?;
+                self.static_viewer = Some(viewer);
+                return serde_json::to_value(entry).map_err(|_| err("STATE_INVALID"));
+            }
+            UiCommand::StaticViewerClose { selection_token, viewer_id } => {
+                self.selected(selection_token)?;
+                if self.static_viewer.as_ref().is_some_and(|viewer| viewer.matches(viewer_id)) {
+                    self.close_static_viewer()?;
+                }
+                return Ok(serde_json::json!({"closed":true}));
+            }
             UiCommand::StaticExport {
                 selection_token,
                 export,
             } => {
                 let root = self.selected(selection_token)?;
+                self.close_static_viewer()?;
                 let mut state = self
                     .state
                     .lock()
@@ -1548,6 +1583,7 @@ impl Host {
             }
             UiCommand::NativeStop { selection_token } => {
                 let root = self.selected(selection_token)?;
+                self.close_static_viewer()?;
                 if self.exporter.detail_held(selection_token)? {
                     let mut state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
                     if state.root.as_ref().is_some_and(|selected| selected != &root) {
@@ -1689,6 +1725,7 @@ impl Host {
         serde_json::to_value(status).map_err(|_| err("STATE_INVALID"))
     }
     pub fn shutdown(&mut self) {
+        let _ = self.close_static_viewer();
         if let Ok(mut state) = self.state.lock() {
             state.detail_closing = true;
         }
