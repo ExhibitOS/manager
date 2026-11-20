@@ -4325,6 +4325,13 @@ public actor AuthoringAPI {
 
     static let r216SelectedFinishesManifest = "1b02487a9010fd27079ebd6fdc52c7fc014294de154e45e4d6276221a163d9dd"
 
+    static let r217PublicFinishesManifest = "6b510ec026211af69fe59569150d42b72630f45b3edc8b20f8c83049239452fd"
+    static let r217CannonManifest = "0853e8440192c66eef83fc048a5396c6f641e11eee54939cead4fd2b54288eb1"
+
+    nonisolated static func isFreshOfficialSelectedRuntime(manifest: String?) -> Bool {
+        [r216SelectedFinishesManifest, r217PublicFinishesManifest, r217CannonManifest].contains(manifest ?? "")
+    }
+
     nonisolated static func supportsR125ApprovedReleaseRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == r125ApprovedReleaseManifest || manifest == r203CorrectedReleaseManifest
@@ -4333,7 +4340,7 @@ public actor AuthoringAPI {
             || manifest == r209GreekSpotReleaseManifest || manifest == r209TransitionSpotsReleaseManifest
             || manifest == r209GreekCurrentReleaseManifest
             || manifest == r210CaptionStandsSelectedManifest || manifest == r215CeilingFillSelectedManifest
-            || manifest == r215CeilingFillOriginalRepairManifest || manifest == r216SelectedFinishesManifest
+            || manifest == r215CeilingFillOriginalRepairManifest || isFreshOfficialSelectedRuntime(manifest: manifest)
         #else
         false
         #endif

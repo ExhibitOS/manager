@@ -246,7 +246,8 @@ public actor NativeAutomationSession {
         }
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
         let officialSelected = [AuthoringAPI.r215CeilingFillSelectedManifest,
-            AuthoringAPI.r215CeilingFillOriginalRepairManifest, AuthoringAPI.r216SelectedFinishesManifest].contains(existingWorkspaceV5?.manifestSHA256 ?? "")
+            AuthoringAPI.r215CeilingFillOriginalRepairManifest].contains(existingWorkspaceV5?.manifestSHA256 ?? "")
+            || AuthoringAPI.isFreshOfficialSelectedRuntime(manifest: existingWorkspaceV5?.manifestSHA256)
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
@@ -2284,6 +2285,28 @@ public actor NativeAutomationSession {
         ])
     }
 
+    static func classifySelectedOriginal(in request: DocumentValue, manifest: String?) throws -> NativePublicationReleaseSelection? {
+        if AuthoringAPI.isFreshOfficialSelectedRuntime(manifest: manifest), request["operation"].string != "read" {
+            guard request["operation"].string == "export-static-native-original",
+                  request["command"]["releaseSelection"] == .string(NativePublicationReleaseSelection.r125ApprovedR201.rawValue) else {
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
+        }
+        return try NativePublicationReleaseSelection.checked(in: request,
+            runtimeAdmitted: AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: manifest))
+    }
+
+    static func checkFreshOfficialOriginal(manifest: String, document: NativeDocumentState,
+                                           publication: NativePublicationState, requestID: String) throws {
+        guard AuthoringAPI.isFreshOfficialSelectedRuntime(manifest: manifest) else { return }
+        let isR216 = manifest == AuthoringAPI.r216SelectedFinishesManifest
+        guard document.revision == (isR216 ? 610 : 613), document.savedEditVersion == (isR216 ? 278 : 279),
+              publication.pending == nil, publication.nativeOriginalAttempts?[requestID] == nil,
+              publication.completed?.publishRequestId != requestID else {
+            throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+        }
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
@@ -2316,14 +2339,7 @@ public actor NativeAutomationSession {
                 throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
             }
         }
-        if runtimeManifest == AuthoringAPI.r216SelectedFinishesManifest, operation != "read" {
-            guard operation == "export-static-native-original",
-                  request["command"]["releaseSelection"] == .string(NativePublicationReleaseSelection.r125ApprovedR201.rawValue) else {
-                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
-            }
-        }
-        let releaseSelection = try NativePublicationReleaseSelection.checked(in: request,
-            runtimeAdmitted: AuthoringAPI.supportsR125ApprovedReleaseRuntime(manifest: runtimeManifest))
+        let releaseSelection = try Self.classifySelectedOriginal(in: request, manifest: runtimeManifest)
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
@@ -4562,13 +4578,7 @@ public actor NativeAutomationSession {
                 guard let manifest = runtimeManifest, let requestSHA256 = originalRequestSHA256 else {
                     throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
                 }
-                if manifest == AuthoringAPI.r216SelectedFinishesManifest {
-                    guard current.revision == 610, current.savedEditVersion == 278,
-                          publication.pending == nil, publication.nativeOriginalAttempts?[id] == nil,
-                          publication.completed?.publishRequestId != id else {
-                        throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
-                    }
-                }
+                try Self.checkFreshOfficialOriginal(manifest: manifest, document: current, publication: publication, requestID: id)
                 let intent = try publication.nativeOriginalIntent(in: current, runtimeManifest: manifest,
                     requestId: id, requestSHA256: requestSHA256)
                 planBinding = intent.planBindingSha256
