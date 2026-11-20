@@ -576,6 +576,12 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         return 5098 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r218_painting_transition(pair) {
+        // Exact post-bench stopped census plus one 16 MiB WAL segment,
+        // rounded up for the existing trial re-inventory.
+        return 5273 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
         || crate::native_payload::white_rail_opposite_clean_transition(pair)
@@ -2199,6 +2205,10 @@ impl InstallationController {
                 (610, 278, r#""studio-r216-81122b38783da0ef3c22b571ff941074d02d6f43a8ffc8417d9bfe0877d285ea""#,
                  "ce5efc5325b8f4c7d73c550a160d614167fe2a6c8b55c925095bba9594d4911c",
                  "b8230c4cf45a2e98a030e96dee59fe4e0af7ba3ffd38ea6e5cc9bb8fb99ee928")
+            } else if target == crate::native_payload::OFFICIAL_R218_PAINTING_TARGET.2 {
+                (618, 281, r#""studio-r218-ea370957db37cfb1016cb296eb3843d2585de0cb4bb42b885f91ffdabcfa074e""#,
+                 "a890979083b925fb5ee282923c8f59c58bf0a23823ee617d6ea4d9b0af36d492",
+                 "7848f4a3e25c8687841391a97029722893d0c252c0af4d062003a6af611dbf14")
             } else if [crate::native_payload::OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_WHEAT_TARGET.2].contains(&target) {
@@ -2408,7 +2418,8 @@ impl InstallationController {
             if crate::native_payload::official_r216_selected_transition(pair)
                 || crate::native_payload::official_r217_public_finishes_transition(pair)
                 || crate::native_payload::official_r217_cannon_transition(pair)
-                || crate::native_payload::official_r217_wheat_transition(pair) {
+                || crate::native_payload::official_r217_wheat_transition(pair)
+                || crate::native_payload::official_r218_painting_transition(pair) {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, pair.1, document)?;
             }
@@ -2540,7 +2551,8 @@ impl InstallationController {
             if [crate::native_payload::OFFICIAL_R216_SELECTED_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2,
-                crate::native_payload::OFFICIAL_R217_WHEAT_TARGET.2].contains(&target_manifest.as_str()) {
+                crate::native_payload::OFFICIAL_R217_WHEAT_TARGET.2,
+                crate::native_payload::OFFICIAL_R218_PAINTING_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, target_manifest.as_str(), document)?;
             }
@@ -3446,6 +3458,47 @@ mod tests {
         let stopped_bytes = 5_328_629_965;
         file.set_len(stopped_bytes).unwrap();
         assert_eq!(inventory_with_limit(&root, false, 5_167_382_528).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[path].bytes, stopped_bytes);
+        file.set_len(limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r218_painting_checkpoint_capacity_matches_stopped_inventory_and_directed_pair() {
+        use crate::native_payload::{OFFICIAL_R217_WHEAT_TARGET, OFFICIAL_R218_PAINTING_TARGET,
+            OFFICIAL_R217_CANNON_TARGET};
+        let source = OFFICIAL_R217_WHEAT_TARGET.2;
+        let target = OFFICIAL_R218_PAINTING_TARGET.2;
+        let predecessor = OFFICIAL_R217_CANNON_TARGET.2;
+        let limit = checkpoint_inventory_limit((source, target), None);
+        assert_eq!(limit, 5_529_141_248);
+        assert_eq!(checkpoint_inventory_limit((predecessor, source), None), 5_345_640_448);
+        for pair in [(target, source), (source, source), (target, target), (predecessor, target), ("unqualified", target)] {
+            assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+        }
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(), hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64), saved_etag: "\"studio-r217-synthetic\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
+
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("r218-painting-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let path = Path::new("blobs/inventory");
+        let file = private_options().open(root.join(path)).unwrap();
+        let stopped_bytes = 5_511_915_178;
+        file.set_len(stopped_bytes).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, 5_345_640_448).unwrap_err().code, invalid().code);
         assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[path].bytes, stopped_bytes);
         file.set_len(limit + 1).unwrap();
         assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
