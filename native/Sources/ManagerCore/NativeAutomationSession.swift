@@ -2303,7 +2303,8 @@ public actor NativeAutomationSession {
         switch manifest {
         case AuthoringAPI.r216SelectedFinishesManifest: expected = (610, 278)
         case AuthoringAPI.r218PaintingSelectedManifest: expected = (618, 281)
-        case AuthoringAPI.r219WheatFitSelectedManifest, AuthoringAPI.r219ClosingSelectedManifest:
+        case AuthoringAPI.r219WheatFitSelectedManifest, AuthoringAPI.r219ClosingSelectedManifest,
+             AuthoringAPI.r219NineLightsSelectedManifest:
             expected = (622, 282)
             guard !document.dirty,
                   document.workspaceId == "23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef",
@@ -2311,14 +2312,22 @@ public actor NativeAutomationSession {
                   document.principalId == "0bbe4668-9a2b-4a53-8367-758b03fe5cb9",
                   document.etag == #""studio-r219-491d609d502991d106e9f14c4446f0884bea0ae3b49f00fbbbb3c2d188f02c07""#,
                   let draft = document.draft else { throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE") }
-            if manifest == AuthoringAPI.r219ClosingSelectedManifest {
+            if manifest != AuthoringAPI.r219WheatFitSelectedManifest {
+                let predecessor: (request: String, publication: String, revision: String)
+                if manifest == AuthoringAPI.r219ClosingSelectedManifest {
+                    predecessor = ("83e4ea84-acc3-474b-9728-37ba2f887bca", "0d4f3236-77f6-4e91-87f2-8bdc3591cac9",
+                                   "03cf2f613ce936ea022b5f343985de3a28824500c52ca96181b42f388e57deb2")
+                } else {
+                    predecessor = ("47189574-fc69-47e5-ae91-2c9c64466c20", "34b9adbd-d6c2-42c7-9b31-81e10ddfed59",
+                                   "81085f842c2df5a85962bd1db0d85afc7cd19c87acc0d3d5b07a17a822848d0c")
+                }
                 guard publication.workspaceId == document.workspaceId, publication.tenantId == document.tenantId,
                       publication.principalId == document.principalId, let closed = publication.completed,
                       closed.mode == "native-original-v1", closed.sourceExhibitionId == draft.id,
                       closed.snapshotExhibitionId == draft.id, closed.sourceEtag == document.etag,
-                      closed.publishRequestId == "83e4ea84-acc3-474b-9728-37ba2f887bca",
-                      closed.publication.publicationId == "0d4f3236-77f6-4e91-87f2-8bdc3591cac9",
-                      closed.publication.revisionSha256 == "03cf2f613ce936ea022b5f343985de3a28824500c52ca96181b42f388e57deb2",
+                      closed.publishRequestId == predecessor.request,
+                      closed.publication.publicationId == predecessor.publication,
+                      closed.publication.revisionSha256 == predecessor.revision,
                       closed.publication.status == "published", let plan = closed.planBindingSha256,
                       let attempt = publication.nativeOriginalAttempts?[closed.publishRequestId],
                       attempt.exportClaimed, attempt.planBindingSha256 == plan else {
