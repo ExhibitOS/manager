@@ -44,7 +44,7 @@ final class FrameImageFitReconciliationAPITests: XCTestCase {
         var source = replacingBindings(try FrameFitSynthetic.draft(version: 11, fitted: false).document)
         source["editVersion"] = .integer(281)
         source["candidate"]["extensions"][FrameFitSynthetic.ns]["ceilingAttachments"] = .array([])
-        let draft = try NativeExhibitionDraft(document: source)
+        let draft = try JSONDecoder().decode(NativeExhibitionDraft.self, from: JSONEncoder().encode(source))
         let state = NativeDocumentState(format: 1, revision: 618, workspaceId: "23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef",
             tenantId: FrameFitSynthetic.owner, principalId: FrameFitSynthetic.owner, draft: draft,
             etag: #""studio-r218-ea370957db37cfb1016cb296eb3843d2585de0cb4bb42b885f91ffdabcfa074e""#,
