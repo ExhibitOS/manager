@@ -1297,6 +1297,12 @@ pub(crate) const OFFICIAL_R219_EPHEMERAL_SEAT_TARGET: RuntimeTuple = (
     "9abb6f2106cecda239265b9478104af45c5644530928d7a1a7188aaceda1b987",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET: RuntimeTuple = (
+    "dbf827fa2e43d3337320323d017a9a60123221f8",
+    "6d3a6d6281ed1759e98a4826a1af7b26f60ebd47f1c12fd3460488d72c65b1ed",
+    "7f89c22f4fa9f31bc02bcbf8709b101d54c2acbc2347ea3ae9d3853fca77dc2a",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const OFFICIAL_ROOM_LIGHTING_PROFILE_ID: (u64, u64) = (16777244, 42815025);
 const OFFICIAL_ROOM_LIGHTING_SQL: (&str, u64, &str) = (
     "platform/scripts/occupied-room-lighting-migration.sql", 2159,
@@ -1314,7 +1320,7 @@ pub(crate) fn official_room_lighting_catalog(tuple: (&str, &str, &str)) -> Optio
             OFFICIAL_R216_SELECTED_TARGET, OFFICIAL_R217_PUBLIC_FINISHES_TARGET, OFFICIAL_R217_CANNON_TARGET,
             OFFICIAL_R217_WHEAT_TARGET, OFFICIAL_R218_PAINTING_TARGET, OFFICIAL_R219_WHEAT_FIT_TARGET,
             OFFICIAL_R219_SEAT_PREVIEW_TARGET, OFFICIAL_R219_CLOSING_SELECTED_TARGET,
-            OFFICIAL_R219_EPHEMERAL_SEAT_TARGET].contains(&tuple) {
+            OFFICIAL_R219_EPHEMERAL_SEAT_TARGET, OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET].contains(&tuple) {
             return Some(WorkspaceFurnishingCatalog::DefaultCatalogue057);
         }
     }
@@ -1384,6 +1390,11 @@ pub(crate) fn official_r219_closing_selected_transition(pair: (&str, &str)) -> b
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn official_r219_ephemeral_seat_transition(pair: (&str, &str)) -> bool {
     pair == (OFFICIAL_R219_CLOSING_SELECTED_TARGET.2, OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn official_r219_nine_lights_selected_transition(pair: (&str, &str)) -> bool {
+    pair == (OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2, OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2191,7 +2202,7 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         OFFICIAL_R216_SELECTED_TARGET.2, OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2, OFFICIAL_R217_CANNON_TARGET.2,
         OFFICIAL_R217_WHEAT_TARGET.2, OFFICIAL_R218_PAINTING_TARGET.2, OFFICIAL_R219_WHEAT_FIT_TARGET.2,
         OFFICIAL_R219_SEAT_PREVIEW_TARGET.2, OFFICIAL_R219_CLOSING_SELECTED_TARGET.2,
-        OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2].contains(&manifest) {
+        OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2, OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2].contains(&manifest) {
         return true;
     }
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
@@ -2434,6 +2445,11 @@ impl FurnishingTransition {
         if official_r219_ephemeral_seat_transition(pair) {
             return Some(Self::SameCatalog { source: OFFICIAL_R219_CLOSING_SELECTED_TARGET,
                 target: OFFICIAL_R219_EPHEMERAL_SEAT_TARGET, catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057 });
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if official_r219_nine_lights_selected_transition(pair) {
+            return Some(Self::SameCatalog { source: OFFICIAL_R219_EPHEMERAL_SEAT_TARGET,
+                target: OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET, catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057 });
         }
         if let Some((source, target)) = r285_greek_thumbnail_trace_runtime_pair(pair) {
             return Some(Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -3615,6 +3631,34 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert_eq!(official_room_lighting_catalog((to.0, from.1, to.2)), None);
         assert!(!saved_workspace_transition_target(&"0".repeat(64)));
         assert!(to_payload.static_detail_export_resources(true).is_err());
+        assert!(to_payload.static_detail_export_resources(false).is_err());
+        assert!(Payload::open_workspace_v5_validation(&target_path, true).is_err());
+        assert!(Payload::open_fresh_workspace_v7_validation(&target_path).is_err());
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(to.2));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires sealed ephemeral-seat and nine-light selected occupied payloads"]
+    fn official_r219_nine_lights_selected_requires_exact_seat_predecessor() {
+        let path = |name| PathBuf::from(std::env::var_os(name).unwrap());
+        let source_path = path("EXHIBITOS_TEST_R219_EPHEMERAL_SEAT_RUNTIME");
+        let target_path = path("EXHIBITOS_TEST_R219_NINE_LIGHTS_RUNTIME");
+        let from_payload = Payload::open_saved_workspace_transition(&source_path).unwrap();
+        let to_payload = Payload::open_saved_workspace_transition(&target_path).unwrap();
+        let from = OFFICIAL_R219_EPHEMERAL_SEAT_TARGET;
+        let to = OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET;
+        let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+        assert_eq!(from_payload.context().manifest_sha256, from.2);
+        assert_eq!(to_payload.context().manifest_sha256, to.2);
+        assert_eq!(FurnishingTransition::from_manifests((from.2, to.2)),
+            Some(FurnishingTransition::SameCatalog { source: from, target: to, catalog }));
+        assert_eq!(to_payload.workspace_furnishing_ledger(catalog).unwrap(), from_payload.workspace_furnishing_ledger(catalog).unwrap());
+        for denied in [(to.2, from.2), (to.2, to.2), (OFFICIAL_R219_CLOSING_SELECTED_TARGET.2, to.2)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        assert_eq!(official_room_lighting_catalog((to.0, from.1, to.2)), None);
+        assert!(to_payload.static_detail_export_resources(true).is_ok());
         assert!(to_payload.static_detail_export_resources(false).is_err());
         assert!(Payload::open_workspace_v5_validation(&target_path, true).is_err());
         assert!(Payload::open_fresh_workspace_v7_validation(&target_path).is_err());
@@ -9574,7 +9618,7 @@ impl Payload {
                     || [OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET, OFFICIAL_R215_ORIGINAL_REPAIR_TARGET,
                         OFFICIAL_R216_SELECTED_TARGET, OFFICIAL_R217_PUBLIC_FINISHES_TARGET, OFFICIAL_R217_CANNON_TARGET,
                         OFFICIAL_R217_WHEAT_TARGET, OFFICIAL_R218_PAINTING_TARGET, OFFICIAL_R219_WHEAT_FIT_TARGET,
-                        OFFICIAL_R219_CLOSING_SELECTED_TARGET].contains(&provenance)
+                        OFFICIAL_R219_CLOSING_SELECTED_TARGET, OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET].contains(&provenance)
                     || combined_thumbnail_host_matches(provenance)
                     || R285_FRAME_V11_TARGET == provenance
                     || R285_FRAME_FIT_V11_TARGET == provenance

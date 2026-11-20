@@ -600,6 +600,12 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         return 5797 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r219_nine_lights_selected_transition(pair) {
+        // The nonpersisting preview retains the measured Closing scope.
+        // A separate pre-activation census must confirm the bound still fits.
+        return 5797 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
         || crate::native_payload::white_rail_opposite_clean_transition(pair)
@@ -2237,6 +2243,14 @@ const OFFICIAL_R219_EPHEMERAL_SEAT_SOURCE_FILES: [(&str, u64, &str); 2] = [
 ];
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const OFFICIAL_R219_NINE_LIGHTS_SOURCE_FILES: [(&str, u64, &str); 2] = [
+    ("native-current-run.json", 4096,
+     "e7f2fe027d057928ccf8b829ea9532c2ae8c2373106e081ded273a0f9b04de02"),
+    ("native-runs/47c91ae9-53c2-4fe7-9e18-472934bf702e/state.json", 1_048_576,
+     "2ab1fdffb3284c2250f178cc7041dacd045cdcdff9259cb3fcc523369d133bbc"),
+];
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl InstallationController {
     fn check_official_selected_saved_head(&self, service: &LifecycleService, profile: &Path,
         target: &str, document: &super::installations::native_document::DocumentState) -> Result<()> {
@@ -2252,10 +2266,17 @@ impl InstallationController {
             } else if [crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_SEAT_PREVIEW_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_CLOSING_SELECTED_TARGET.2,
-                crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2].contains(&target) {
+                crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2,
+                crate::native_payload::OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2].contains(&target) {
                 check_r219_wheat_saved_document(document)?;
-                let publication_digest = if target == crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2 {
-                    for (file, limit, expected) in OFFICIAL_R219_EPHEMERAL_SEAT_SOURCE_FILES {
+                let publication_digest = if [crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2,
+                    crate::native_payload::OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2].contains(&target) {
+                    let stopped_files = if target == crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2 {
+                        OFFICIAL_R219_EPHEMERAL_SEAT_SOURCE_FILES
+                    } else {
+                        OFFICIAL_R219_NINE_LIGHTS_SOURCE_FILES
+                    };
+                    for (file, limit, expected) in stopped_files {
                         if digest(&installation_backup::source_bytes(&service.root, file, limit, true)?) != expected {
                             return Err(invalid());
                         }
@@ -2483,7 +2504,8 @@ impl InstallationController {
                 || crate::native_payload::official_r219_wheat_fit_transition(pair)
                 || crate::native_payload::official_r219_seat_preview_transition(pair)
                 || crate::native_payload::official_r219_closing_selected_transition(pair)
-                || crate::native_payload::official_r219_ephemeral_seat_transition(pair) {
+                || crate::native_payload::official_r219_ephemeral_seat_transition(pair)
+                || crate::native_payload::official_r219_nine_lights_selected_transition(pair) {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, pair.1, document)?;
             }
@@ -2620,7 +2642,8 @@ impl InstallationController {
                 crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_SEAT_PREVIEW_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_CLOSING_SELECTED_TARGET.2,
-                crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2].contains(&target_manifest.as_str()) {
+                crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2,
+                crate::native_payload::OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, target_manifest.as_str(), document)?;
             }
@@ -3722,6 +3745,19 @@ mod tests {
         file.set_len(limit + 1).unwrap();
         assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r219_nine_lights_selected_cap_is_only_for_its_occupied_pair() {
+        use crate::native_payload::{OFFICIAL_R219_CLOSING_SELECTED_TARGET, OFFICIAL_R219_EPHEMERAL_SEAT_TARGET,
+            OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET};
+        let source = OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2;
+        let target = OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), 6_078_595_072);
+        for denied in [(target, source), (target, target), (OFFICIAL_R219_CLOSING_SELECTED_TARGET.2, target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
