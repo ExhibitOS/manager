@@ -2299,7 +2299,7 @@ public actor NativeAutomationSession {
     static func checkFreshOfficialOriginal(manifest: String, document: NativeDocumentState,
                                            publication: NativePublicationState, requestID: String) throws {
         guard AuthoringAPI.isFreshOfficialSelectedRuntime(manifest: manifest) else { return }
-        let expected: (revision: Int, edit: Int)
+        let expected: (revision: UInt64, edit: Int64)
         switch manifest {
         case AuthoringAPI.r216SelectedFinishesManifest: expected = (610, 278)
         case AuthoringAPI.r218PaintingSelectedManifest: expected = (618, 281)
