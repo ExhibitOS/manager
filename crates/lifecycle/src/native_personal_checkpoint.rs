@@ -2137,7 +2137,7 @@ fn check_official_room_lighting_journal(service: &LifecycleService, profile: &Pa
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 fn check_official_r215_selected_head(service: &LifecycleService, profile: &Path,
     document: &super::installations::native_document::DocumentState) -> Result<()> {
-    const ETAG: &str = ""studio-r215-4c96569af0cca07ee52acaa281e6b9c486962efb10f4d2955afa799e859fbeed"";
+    const ETAG: &str = r#""studio-r215-4c96569af0cca07ee52acaa281e6b9c486962efb10f4d2955afa799e859fbeed""#;
     const JOURNAL: &str = "69b149533717f7248a2e7e3f689df6c6fd6c2f14385ca573a43ffbf5f8d03fa9";
     if document.revision != 603 || document.saved_edit_version != Some(273)
         || document.etag.as_deref() != Some(ETAG) || document.pending.is_some()
