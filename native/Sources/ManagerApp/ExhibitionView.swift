@@ -1408,8 +1408,11 @@ final class ExhibitionModel: ObservableObject {
     var canSelectBench: Bool { canSelectCatalog }
     var canPreviewBench: Bool { canEditBench && benchDirty && !benchPreviewing }
     var showsLinkedBenchTargetHeight: Bool {
-        guard viewportController.benchViewpointTargetHeightSupported, let draft, let bench, let baseline = benchBaseline,
+        guard let draft, let bench, let baseline = benchBaseline,
               !bench.usesFreshViewpoint, bench.viewpointId == baseline.viewpointId, bench.roomId == baseline.roomId else { return false }
+        let hasCurrentPreview = benchPreviewAccessID == viewportAccessID && benchPreview?.base == draft
+            && benchPreview?.command.requiresViewpointTargetHeight == true
+        guard viewportController.benchViewpointTargetHeightSupported || hasCurrentPreview else { return false }
         let linkedID = bench.viewpointId.lowercased()
         let views = (try? BenchViewpoint.list(in: draft)) ?? []
         return views.contains { $0.id.lowercased() == linkedID && $0.roomId.lowercased() == bench.roomId.lowercased() }
@@ -2731,7 +2734,6 @@ final class ExhibitionModel: ObservableObject {
         if benchRemoving { return .remove(id: selectedBenchId) }
         guard let bench, bench.id == selectedBenchId else { throw AuthoringFailure("BENCH_SELECTION_CHANGED") }
         if let baseline = benchBaseline, let command = try bench.linkedTargetHeightCommand(comparedTo: baseline) {
-            guard showsLinkedBenchTargetHeight else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
             return command
         }
         let settings = try bench.settings(), viewpoint = try bench.newViewpoint()
