@@ -78,6 +78,8 @@ fn check_cold_transition_source(root: &Path, pair: (&str, &str)) -> Result<()> {
 
 const DOMAIN: &[u8] = b"ExhibitOS-local-personal-physical-checkpoint-v1\0";
 const ENVELOPE: &str = "physical-checkpoint.gcm";
+const OFFICIAL_R215_RETAINED_PUBLICATION_SHA256: &str =
+    "de9201e014f0fd7354a0f4499cbd44866a71d6c69221441fcd9f8b045ba61017";
 const MAX_FILES: usize = 50_000;
 const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[cfg(feature = "workspace-v5-owner-validation")]
@@ -358,11 +360,17 @@ impl Checkpoint {
             && (!saved_workspace_host || !self.trial || self.saved_document_sha256.is_none()
                 || FurnishingTransition::from_manifests(pair) != Some(FurnishingTransition::OfficialRoomLighting))
         { return Err(invalid()); }
-        if self.retained_publication_sha256.as_deref().is_some_and(|sha| {
-            !saved_workspace_host || self.saved_document_sha256.is_none() || !hash_valid(sha)
-                || !crate::native_payload::fixed64_publication_repair_clean_transition(pair)
-                || self.startup_cancellation_045.is_some()
-        }) { return Err(invalid()); }
+        let r215_original_repair = crate::native_payload::official_r215_original_repair_transition(pair);
+        let retained_publication = self.retained_publication_sha256.as_deref();
+        if (r215_original_repair && retained_publication != Some(OFFICIAL_R215_RETAINED_PUBLICATION_SHA256))
+            || retained_publication.is_some_and(|sha| {
+                !saved_workspace_host || self.saved_document_sha256.is_none() || !hash_valid(sha)
+                    || !(r215_original_repair || crate::native_payload::fixed64_publication_repair_clean_transition(pair))
+                    || self.startup_cancellation_045.is_some()
+            })
+        {
+            return Err(invalid());
+        }
         if pending_lighting && self.retained_saved_head.is_none() {
             return Err(invalid());
         }
@@ -2036,7 +2044,7 @@ pub(crate) fn retained_native_original_publication_matches(
     { return Err(reject()); }
     crate::installations::native_publication::validate(publication)?;
     let pending = publication.pending.as_ref().ok_or_else(reject)?;
-    if official_repair && (journal_sha256 != "de9201e014f0fd7354a0f4499cbd44866a71d6c69221441fcd9f8b045ba61017"
+    if official_repair && (journal_sha256 != OFFICIAL_R215_RETAINED_PUBLICATION_SHA256
         || pending.publish_request_id != "32fd72ba-9710-4a02-9cf0-ed15d48eaef1"
         || pending.plan_binding_sha256.as_deref() != Some("fe60fb2a571bd2ac186d8d643b1865066b1ca592a1856860e902834af14bd24f"))
     {
@@ -2826,6 +2834,35 @@ mod tests {
         exercise_pending_publication_enclosing_guard(&serde_json::from_slice(&document).unwrap(), &parsed_publication);
         assert!(fs::read(doc_path).unwrap() == document);
         assert!(fs::read(pub_path).unwrap() == publication);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the untouched encrypted failure checkpoint and its already-issued private key"]
+    fn official_r215_actual_failed_seal_passes_only_exact_saved_host_admission() {
+        let stage = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R215_REFUSED_CHECKPOINT").unwrap());
+        let envelope_path = stage.join("checkpoint").join(ENVELOPE);
+        let envelope = fs::read(&envelope_path).unwrap();
+        assert_eq!(digest(&envelope), "1257d344568a65fbcf7d3e66fa4773991e8d47626ec26b2d6b24414eb5327b9b");
+        let key = Bytes(fs::read(stage.join("checkpoint.key")).unwrap());
+        let key: &[u8; 32] = key.0.as_slice().try_into().unwrap();
+        let checkpoint = || open(&envelope, key).unwrap();
+        let original = checkpoint();
+        assert_eq!(original.retained_publication_sha256.as_deref(), Some(OFFICIAL_R215_RETAINED_PUBLICATION_SHA256));
+        assert!(original.check_host(true).is_ok());
+        assert!(original.check_host(false).is_err());
+        let mut modified = checkpoint();
+        modified.retained_publication_sha256 = Some("a".repeat(64));
+        assert!(modified.check_host(true).is_err());
+        modified.retained_publication_sha256 = None;
+        assert!(modified.check_host(true).is_err());
+        let mut modified = checkpoint();
+        modified.saved_document_sha256 = None;
+        assert!(modified.check_host(true).is_err());
+        let mut modified = checkpoint();
+        std::mem::swap(&mut modified.old_manifest, &mut modified.new_manifest);
+        assert!(modified.check_host(true).is_err());
+        assert!(fs::read(envelope_path).unwrap() == envelope);
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
