@@ -29,6 +29,34 @@ final class BenchViewportRequestTests: XCTestCase {
         XCTAssertTrue(current.supportsBenchInspector)
         XCTAssertFalse(ViewportSelection(kind: "bench", id: request.command.benchId).belongs(to: request.frame.draft))
     }
+    func testLinkedHeightUsesClosedEnvelopeAndSeparateOrdinaryCapability() throws {
+        let initial = try fixture()
+        var base = initial.frame.draft
+        try base.replaceCandidate(initial.command.proposedCandidate(in: base, selectedBenchId: initial.command.benchId))
+        let view = try XCTUnwrap(BenchSettings.list(in: base).first?.viewpointId)
+        let f = initial.frame
+        let frame = ViewportFrame(epoch: f.epoch, sequence: f.sequence + 1, tenantId: f.tenantId,
+                                  principalId: f.principalId, draft: base, selection: nil,
+                                  mode: f.mode, view: f.view, disabled: false)
+        let command = BenchCommand.setViewpointTargetHeight(benchId: initial.command.benchId, viewpointId: view, targetY: 1.3)
+        let request = try BenchViewportRequest(frame: frame, command: command, selectedBenchId: command.benchId)
+        guard case .object(let fields) = request.value else { return XCTFail("Expected object") }
+        XCTAssertEqual(Set(fields.keys), Set(["version", "epoch", "sequence", "tenantId", "principalId",
+                                              "requestId", "type", "benchId", "viewpointId", "targetY"]))
+        XCTAssertEqual(request.value["type"], .string("set-bench-viewpoint-target-height"))
+        var response = try reply(request)
+        _ = try request.checkedReply(response, selectedBenchId: command.benchId)
+        response["sequence"] = initial.value["sequence"]
+        XCTAssertThrowsError(try request.checkedReply(response, selectedBenchId: command.benchId))
+
+        let decoder = JSONDecoder()
+        let previous = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"capabilities":["bench-inspector-v1"]}"#.utf8))
+        XCTAssertFalse(previous.supportsBenchViewpointTargetHeight)
+        let ordinary = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"boundedReadOnly":false,"capabilities":["bench-inspector-v1","bench-viewpoint-target-height-v1"]}"#.utf8))
+        XCTAssertTrue(ordinary.supportsBenchViewpointTargetHeight)
+        let readOnly = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"boundedReadOnly":true,"capabilities":["bench-inspector-v1","bench-viewpoint-target-height-v1"]}"#.utf8))
+        XCTAssertFalse(readOnly.supportsBenchViewpointTargetHeight)
+    }
     func testWrongScopeLateReplyExtraFieldsAndUnrelatedCandidateAreRefused() throws {
         let request = try fixture(), good = try reply(request)
         for key in ["version", "sequence", "epoch", "tenantId", "principalId", "requestId", "benchId"] {

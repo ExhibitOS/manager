@@ -162,7 +162,10 @@ final class NativeViewportController: ObservableObject {
     }
     @Published fileprivate(set) var defaultRoomCeilingFillSupported = false
     @Published fileprivate(set) var wallFinishSupported = false
-    @Published fileprivate(set) var benchInspectorSupported = false
+    @Published fileprivate(set) var benchViewpointTargetHeightSupported = false
+    @Published fileprivate(set) var benchInspectorSupported = false {
+        didSet { if !benchInspectorSupported { benchViewpointTargetHeightSupported = false } }
+    }
     @Published fileprivate(set) var plaqueInspectorSupported = false
     @Published fileprivate(set) var surfaceMaterialTexturesSupported = false
     @Published fileprivate(set) var entrancePreviewSupported = false
@@ -270,7 +273,10 @@ final class NativeViewportController: ObservableObject {
         return try await plaqueInspectorAction(command, selectedPlaqueId)
     }
     func benchInspector(_ command: BenchCommand, selectedBenchId: String) async throws -> BenchPreview {
-        guard connected, benchInspectorSupported, let benchInspectorAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+        guard connected, benchInspectorSupported, let benchInspectorAction,
+              !command.requiresViewpointTargetHeight || benchViewpointTargetHeightSupported else {
+            throw AuthoringFailure("VIEWPORT_NOT_READY")
+        }
         return try await benchInspectorAction(command, selectedBenchId)
     }
     func furnishingVisuals(_ command: FurnishingCommand) async throws -> FurnishingPreview {
@@ -721,6 +727,8 @@ struct NativeViewport: NSViewRepresentable {
                             && acceptance.supportsDefaultRoomCeilingFill
                         self.controller.wallFinishSupported = acceptance.supportsWallFinish
                         self.controller.benchInspectorSupported = acceptance.supportsBenchInspector
+                        self.controller.benchViewpointTargetHeightSupported = frame.workspaceId == nil && !frame.disabled
+                            && acceptance.supportsBenchViewpointTargetHeight
                         self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
                         self.controller.surfaceMaterialTexturesSupported = acceptance.supportsSurfaceMaterialTextures
                         self.controller.entrancePreviewSupported = acceptance.supportsEntrancePreview
@@ -1074,7 +1082,8 @@ struct NativeViewport: NSViewRepresentable {
             controller.benchInspectorAction = { [weak self] command, selectedBenchId in
                 guard let self, self.active, self.controller.owner == self.epoch, self.controller.benchInspectorSupported,
                       self.placementIntent == nil, !self.inspectorPending, let web = self.web, let frame = self.latest,
-                      self.prepared, self.sent == frame.sequence, !frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                      self.prepared, self.sent == frame.sequence, !frame.disabled,
+                      !command.requiresViewpointTargetHeight || frame.workspaceId == nil else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let request = try BenchViewportRequest(frame: frame, command: command, selectedBenchId: selectedBenchId)
                 self.inspectorPending = true
                 defer { self.inspectorPending = false }

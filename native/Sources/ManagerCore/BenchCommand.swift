@@ -7,14 +7,22 @@ public enum BenchCommand: Equatable, Sendable {
     case add(BenchSettings, viewpoint: BenchViewpoint?)
     case set(BenchSettings, viewpoint: BenchViewpoint?)
     case remove(id: String)
+    case setViewpointTargetHeight(benchId: String, viewpointId: String, targetY: Double)
     public var benchId: String {
-        switch self { case .add(let bench, _), .set(let bench, _): bench.id; case .remove(let id): id }
+        switch self {
+        case .add(let bench, _), .set(let bench, _): bench.id
+        case .remove(let id), .setViewpointTargetHeight(let id, _, _): id
+        }
+    }
+    public var requiresViewpointTargetHeight: Bool {
+        if case .setViewpointTargetHeight = self { return true }
+        return false
     }
     private var bench: BenchSettings? {
-        switch self { case .add(let value, _), .set(let value, _): value; case .remove: nil }
+        switch self { case .add(let value, _), .set(let value, _): value; case .remove, .setViewpointTargetHeight: nil }
     }
     private var viewpoint: BenchViewpoint? {
-        switch self { case .add(_, let value), .set(_, let value): value; case .remove: nil }
+        switch self { case .add(_, let value), .set(_, let value): value; case .remove, .setViewpointTargetHeight: nil }
     }
     public var value: DocumentValue {
         switch self {
@@ -23,14 +31,22 @@ public enum BenchCommand: Equatable, Sendable {
             if let viewpoint { fields["viewpoint"] = viewpoint.value }
             return .object(fields)
         case .remove(let id): return .object(["type": .string("remove-bench"), "benchId": .string(id)])
+        case .setViewpointTargetHeight(let benchId, let viewpointId, let targetY):
+            return .object(["type": .string("set-bench-viewpoint-target-height"),
+                            "benchId": .string(benchId), "viewpointId": .string(viewpointId), "targetY": .number(targetY)])
         }
     }
     private var isAdd: Bool { if case .add = self { return true }; return false }
     /// Expected narrow delta only. Full shared validators remain authoritative
     /// for bench bounds, affine geometry, view footprint and runtime clearance.
     public func proposedCandidate(in draft: NativeExhibitionDraft, selectedBenchId: String?) throws -> DocumentValue {
-        guard selectedBenchId == benchId, BenchSettings.uuid(benchId) else { throw AuthoringFailure("BENCH_SELECTION_CHANGED") }
+        guard BenchSettings.uuid(benchId),
+              requiresViewpointTargetHeight ? selectedBenchId?.lowercased() == benchId.lowercased() : selectedBenchId == benchId
+        else { throw AuthoringFailure("BENCH_SELECTION_CHANGED") }
         let benches = try BenchSettings.list(in: draft)
+        if case .setViewpointTargetHeight(_, let viewpointId, let targetY) = self {
+            return try targetHeightCandidate(in: draft, benches: benches, viewpointId: viewpointId, targetY: targetY)
+        }
         let existing = benches.firstIndex { $0.id.lowercased() == benchId.lowercased() }
         guard isAdd ? existing == nil : existing != nil else { throw AuthoringFailure("BENCH_SELECTION_CHANGED") }
         if let existing { guard benches[existing].id == benchId else { throw AuthoringFailure("BENCH_SELECTION_CHANGED") } }
@@ -55,6 +71,34 @@ public enum BenchCommand: Equatable, Sendable {
         } else if let existing { rows.remove(at: existing) }
         candidate["extensions"][BenchSettings.namespace] = .object(["version": .integer(1), "benches": .array(rows)])
         var projection = draft; try projection.replaceCandidate(candidate)
+        _ = try BenchSettings.list(in: projection)
+        guard try JSONEncoder().encode(candidate).count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
+        return candidate
+    }
+    private func targetHeightCandidate(in draft: NativeExhibitionDraft, benches: [BenchSettings],
+                                       viewpointId: String, targetY: Double) throws -> DocumentValue {
+        let linkedId = viewpointId.lowercased()
+        guard BenchSettings.uuid(viewpointId), targetY.isFinite,
+              let bench = benches.first(where: { $0.id.lowercased() == benchId.lowercased() }),
+              bench.viewpointId.lowercased() == linkedId,
+              benches.filter({ $0.viewpointId.lowercased() == linkedId }).count == 1,
+              let room = draft.rooms.first(where: { $0["id"].string?.lowercased() == bench.roomId.lowercased() }),
+              let ceiling = room["dimensions"]["height"].double, targetY >= 0, targetY <= ceiling,
+              let viewpoint = try BenchViewpoint.list(in: draft).first(where: { $0.id.lowercased() == linkedId }),
+              viewpoint.roomId.lowercased() == bench.roomId.lowercased(),
+              var presentation = try BenchSettings.extensionValue(BenchSettings.presentationNamespace, in: draft),
+              var rows = presentation["viewpoints"].items,
+              let index = rows.firstIndex(where: { $0["id"].string == viewpoint.id }),
+              var target = rows[index]["target"].items else { throw BenchSettings.invalid() }
+        if target[1].double == targetY { return draft.candidate }
+        target[1] = .number(targetY)
+        rows[index]["target"] = .array(target)
+        presentation["viewpoints"] = .array(rows)
+        guard try JSONEncoder().encode(presentation).count <= 32_768 else { throw BenchSettings.invalid() }
+        var candidate = draft.candidate
+        candidate["extensions"][BenchSettings.presentationNamespace] = presentation
+        var projection = draft
+        try projection.replaceCandidate(candidate)
         _ = try BenchSettings.list(in: projection)
         guard try JSONEncoder().encode(candidate).count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
         return candidate

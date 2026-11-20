@@ -198,6 +198,7 @@ public struct BenchFormBuffer: Equatable, Sendable {
     public var viewpointName: String
     public var viewX = "0.0", viewY = "1.2", viewZ = "0.0"
     public var targetX = "0.0", targetY = "1.2", targetZ = "-2.0", fov = "50.0"
+    public var linkedTargetY = ""
     private let originalYaw: Double
     private let originalYawDegrees: String
 
@@ -221,6 +222,7 @@ public struct BenchFormBuffer: Equatable, Sendable {
         usesFreshViewpoint = false; viewpointId = bench.viewpointId; viewpointName = view.name
         viewX = String(view.position[0]); viewY = String(view.position[1]); viewZ = String(view.position[2])
         targetX = String(view.target[0]); targetY = String(view.target[1]); targetZ = String(view.target[2]); fov = String(view.fov)
+        linkedTargetY = targetY
     }
     private func number(_ text: String) throws -> Double {
         guard let n = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), n.isFinite else { throw BenchSettings.invalid() }; return n
@@ -231,6 +233,15 @@ public struct BenchFormBuffer: Equatable, Sendable {
                                  yaw: yawDegrees == originalYawDegrees ? originalYaw : number(yawDegrees) * .pi / 180,
                                  width: number(width), depth: number(depth), height: number(height), material: material,
                                  viewpointId: usesFreshViewpoint ? freshViewpointId : viewpointId, workspaceVisual: workspaceVisual)
+    }
+    public func linkedTargetHeightCommand(comparedTo baseline: Self) throws -> BenchCommand? {
+        guard linkedTargetY != baseline.linkedTargetY else { return nil }
+        var unchanged = self
+        unchanged.linkedTargetY = baseline.linkedTargetY
+        guard !usesFreshViewpoint, unchanged == baseline else { throw BenchSettings.invalid() }
+        let height = try number(linkedTargetY)
+        guard height != (try number(baseline.linkedTargetY)) else { throw BenchSettings.invalid() }
+        return .setViewpointTargetHeight(benchId: id, viewpointId: viewpointId, targetY: height)
     }
     public func newViewpoint() throws -> BenchViewpoint? {
         guard usesFreshViewpoint else { return nil }
