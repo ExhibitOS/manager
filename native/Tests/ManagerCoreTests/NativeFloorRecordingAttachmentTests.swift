@@ -56,7 +56,7 @@ final class NativeFloorRecordingAttachmentTests: XCTestCase {
         candidate["extensions"][floorNamespace]["bindings"] = .array(bindings)
         try draft.replaceCandidate(candidate)
         XCTAssertThrowsError(try attachment.expectedCandidate(in: draft)) { error in
-            XCTAssertEqual((error as? AuthoringFailure)?.code, "FLOOR_SOUND_CONFLICT")
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "FLOOR_RECORDING_MUTED")
         }
         XCTAssertEqual(draft.candidate, candidate)
     }

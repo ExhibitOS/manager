@@ -38,9 +38,8 @@ struct NativeFloorRecordingAttachment: Sendable {
             throw AuthoringFailure("FLOOR_RECORDING_TARGET_INVALID")
         }
         let sound = try FloorSettings.soundStatus(target: target, candidate: draft.candidate)
-        guard sound.mode != .none, sound.mode != .explicit else {
-            throw AuthoringFailure("FLOOR_SOUND_CONFLICT")
-        }
+        guard sound.mode != .none else { throw AuthoringFailure("FLOOR_RECORDING_MUTED") }
+        guard sound.mode != .explicit else { throw AuthoringFailure("FLOOR_RECORDING_ALREADY_BOUND") }
         var candidate = draft.candidate
         let materials = candidate["extensions"][WorkspaceFloorMaterialBinding.namespace]
         let bindings = materials["bindings"].items?.filter { $0["surfaceId"] == .string(surfaceID) }
@@ -62,10 +61,10 @@ struct NativeFloorRecordingAttachment: Sendable {
         let matches = footsteps.indices.filter { footsteps[$0]["surfaceId"].string?.lowercased() == surfaceID }
         guard matches.count == 1, let index = matches.first,
               footsteps[index]["surfaceId"] == .string(surfaceID), footsteps[index]["material"] == .string("stone"),
-              footsteps[index]["bank"] == .null else { throw AuthoringFailure("FLOOR_SOUND_CONFLICT") }
+              footsteps[index]["bank"] == .null else { throw AuthoringFailure("FLOOR_RECORDING_ALREADY_BOUND") }
         let previousAsset = footsteps[index]["assetId"]
         guard previousAsset == .null || previousAsset == .string(audioID) else {
-            throw AuthoringFailure("FLOOR_SOUND_CONFLICT")
+            throw AuthoringFailure("FLOOR_RECORDING_ALREADY_BOUND")
         }
         let existing = media.filter { $0["id"].string?.lowercased() == audioID }
         guard existing.isEmpty || existing == [expectedMedia] else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
