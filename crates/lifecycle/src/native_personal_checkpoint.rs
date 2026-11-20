@@ -570,6 +570,12 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         return 4928 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r217_wheat_transition(pair) {
+        // Exact stopped Cannon inventory, plus one 16 MiB WAL segment,
+        // rounded up for the existing trial re-inventory.
+        return 5098 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
         || crate::native_payload::white_rail_opposite_clean_transition(pair)
@@ -2194,11 +2200,14 @@ impl InstallationController {
                  "ce5efc5325b8f4c7d73c550a160d614167fe2a6c8b55c925095bba9594d4911c",
                  "b8230c4cf45a2e98a030e96dee59fe4e0af7ba3ffd38ea6e5cc9bb8fb99ee928")
             } else if [crate::native_payload::OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2,
-                crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2].contains(&target) {
-                let protected_publication = if target == crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2 {
-                    "f90fe5e0a2ba3098ddb439eaa8efc06569101ba7a8d9383872ae606f42a06cdb"
-                } else {
-                    "b2aab4c70b44511269415f37bb24620aa92b7d27516a0759d45de4e960957084"
+                crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2,
+                crate::native_payload::OFFICIAL_R217_WHEAT_TARGET.2].contains(&target) {
+                let protected_publication = match target {
+                    manifest if manifest == crate::native_payload::OFFICIAL_R217_WHEAT_TARGET.2 =>
+                        "439603e89781cbf8157a67a12a69172b4fc35d44f3f524e9729a29a2cd57cb40",
+                    manifest if manifest == crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2 =>
+                        "f90fe5e0a2ba3098ddb439eaa8efc06569101ba7a8d9383872ae606f42a06cdb",
+                    _ => "b2aab4c70b44511269415f37bb24620aa92b7d27516a0759d45de4e960957084",
                 };
                 (613, 279, r#""studio-r217-c9dffec48380e5d63977bc15c264b4b7760fe1da65661799ef9cdc5ad8c6d756""#,
                  "bbcfcb687afd98990e96e2cdc96a7dcc01bbe099ed9558ae1c518f4e9331d758",
@@ -2398,7 +2407,8 @@ impl InstallationController {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             if crate::native_payload::official_r216_selected_transition(pair)
                 || crate::native_payload::official_r217_public_finishes_transition(pair)
-                || crate::native_payload::official_r217_cannon_transition(pair) {
+                || crate::native_payload::official_r217_cannon_transition(pair)
+                || crate::native_payload::official_r217_wheat_transition(pair) {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, pair.1, document)?;
             }
@@ -2529,7 +2539,8 @@ impl InstallationController {
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
             if [crate::native_payload::OFFICIAL_R216_SELECTED_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2,
-                crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2].contains(&target_manifest.as_str()) {
+                crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2,
+                crate::native_payload::OFFICIAL_R217_WHEAT_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, target_manifest.as_str(), document)?;
             }
@@ -3394,6 +3405,47 @@ mod tests {
         let stopped_bytes = 5_145_492_238;
         file.set_len(stopped_bytes).unwrap();
         assert_eq!(inventory_with_limit(&root, false, 4_982_833_152).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[path].bytes, stopped_bytes);
+        file.set_len(limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r217_wheat_checkpoint_capacity_matches_stopped_inventory_and_directed_pair() {
+        use crate::native_payload::{OFFICIAL_R217_CANNON_TARGET, OFFICIAL_R217_WHEAT_TARGET,
+            OFFICIAL_R217_PUBLIC_FINISHES_TARGET};
+        let source = OFFICIAL_R217_CANNON_TARGET.2;
+        let target = OFFICIAL_R217_WHEAT_TARGET.2;
+        let predecessor = OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2;
+        let limit = checkpoint_inventory_limit((source, target), None);
+        assert_eq!(limit, 5_345_640_448);
+        assert_eq!(checkpoint_inventory_limit((predecessor, source), None), 5_167_382_528);
+        for pair in [(target, source), (source, source), (target, target), (predecessor, target), ("unqualified", target)] {
+            assert_eq!(checkpoint_inventory_limit(pair, None), MAX_BYTES);
+        }
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(), hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64), saved_etag: "\"studio-r217-synthetic\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
+
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("r217-wheat-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let path = Path::new("blobs/inventory");
+        let file = private_options().open(root.join(path)).unwrap();
+        let stopped_bytes = 5_328_629_965;
+        file.set_len(stopped_bytes).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, 5_167_382_528).unwrap_err().code, invalid().code);
         assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[path].bytes, stopped_bytes);
         file.set_len(limit + 1).unwrap();
         assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);

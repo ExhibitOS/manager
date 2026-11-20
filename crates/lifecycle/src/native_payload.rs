@@ -1261,6 +1261,12 @@ pub(crate) const OFFICIAL_R217_CANNON_TARGET: RuntimeTuple = (
     "0853e8440192c66eef83fc048a5396c6f641e11eee54939cead4fd2b54288eb1",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const OFFICIAL_R217_WHEAT_TARGET: RuntimeTuple = (
+    "b8808b5d9110fabd6868b39b490d8ddb0129ba97",
+    "15f17cbb9c693ecb8132ba040dca0ac4d9788ec28271fd4ac472cdebd8418e09",
+    "a413939c88870a81eac51de3d374fc852431693e052df7c470fef608fd9ede40",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const OFFICIAL_ROOM_LIGHTING_PROFILE_ID: (u64, u64) = (16777244, 42815025);
 const OFFICIAL_ROOM_LIGHTING_SQL: (&str, u64, &str) = (
     "platform/scripts/occupied-room-lighting-migration.sql", 2159,
@@ -1275,7 +1281,7 @@ pub(crate) fn official_room_lighting_catalog(tuple: (&str, &str, &str)) -> Optio
         if tuple == OFFICIAL_ROOM_LIGHTING_SOURCE { return Some(WorkspaceFurnishingCatalog::CombinedThumbnails052); }
         if [OFFICIAL_ROOM_LIGHTING_TARGET, OFFICIAL_ROOM_LIGHTING_PENDING_TARGET,
             OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET, OFFICIAL_R215_ORIGINAL_REPAIR_TARGET,
-            OFFICIAL_R216_SELECTED_TARGET, OFFICIAL_R217_PUBLIC_FINISHES_TARGET, OFFICIAL_R217_CANNON_TARGET].contains(&tuple) {
+            OFFICIAL_R216_SELECTED_TARGET, OFFICIAL_R217_PUBLIC_FINISHES_TARGET, OFFICIAL_R217_CANNON_TARGET, OFFICIAL_R217_WHEAT_TARGET].contains(&tuple) {
             return Some(WorkspaceFurnishingCatalog::DefaultCatalogue057);
         }
     }
@@ -1315,6 +1321,11 @@ pub(crate) fn official_r217_public_finishes_transition(pair: (&str, &str)) -> bo
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn official_r217_cannon_transition(pair: (&str, &str)) -> bool {
     pair == (OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2, OFFICIAL_R217_CANNON_TARGET.2)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn official_r217_wheat_transition(pair: (&str, &str)) -> bool {
+    pair == (OFFICIAL_R217_CANNON_TARGET.2, OFFICIAL_R217_WHEAT_TARGET.2)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2119,7 +2130,7 @@ pub(crate) fn catalog45_startup_recovery(pair: (&str, &str)) -> Option<Catalog45
 pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
     if [OFFICIAL_ROOM_LIGHTING_TARGET.2, OFFICIAL_ROOM_LIGHTING_PENDING_TARGET.2,
         OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET.2, OFFICIAL_R215_ORIGINAL_REPAIR_TARGET.2,
-        OFFICIAL_R216_SELECTED_TARGET.2, OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2, OFFICIAL_R217_CANNON_TARGET.2].contains(&manifest) {
+        OFFICIAL_R216_SELECTED_TARGET.2, OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2, OFFICIAL_R217_CANNON_TARGET.2, OFFICIAL_R217_WHEAT_TARGET.2].contains(&manifest) {
         return true;
     }
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
@@ -2332,6 +2343,11 @@ impl FurnishingTransition {
         if official_r217_cannon_transition(pair) {
             return Some(Self::SameCatalog { source: OFFICIAL_R217_PUBLIC_FINISHES_TARGET,
                 target: OFFICIAL_R217_CANNON_TARGET, catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057 });
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if official_r217_wheat_transition(pair) {
+            return Some(Self::SameCatalog { source: OFFICIAL_R217_CANNON_TARGET,
+                target: OFFICIAL_R217_WHEAT_TARGET, catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057 });
         }
         if let Some((source, target)) = r285_greek_thumbnail_trace_runtime_pair(pair) {
             return Some(Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -3335,6 +3351,36 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert_eq!(FurnishingTransition::from_manifests((from.2, to.2)),
             Some(FurnishingTransition::SameCatalog { source: from, target: to, catalog }));
         for denied in [(to.2, from.2), (to.2, to.2), (OFFICIAL_R216_SELECTED_TARGET.2, to.2)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        let rows = target.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(rows, source.workspace_furnishing_ledger(catalog).unwrap());
+        assert_eq!(rows.lines().count(), 50);
+        assert_eq!(digest(rows.as_bytes()), OFFICIAL_ROOM_LIGHTING_TARGET_LEDGER);
+        assert!(target.static_detail_export_resources(true).is_ok());
+        assert!(target.static_detail_export_resources(false).is_err());
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(to.2));
+        assert!(Payload::open_workspace_v5_validation(&target_path, true).is_err());
+        assert!(Payload::open_fresh_workspace_v7_validation(&target_path).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact independently reviewed r217 Cannon and Wheat packages"]
+    fn official_r217_wheat_keeps_catalog_and_private_detail_only() {
+        let path = |name| PathBuf::from(std::env::var_os(name).unwrap());
+        let source_path = path("EXHIBITOS_TEST_R217_CANNON");
+        let target_path = path("EXHIBITOS_TEST_R217_WHEAT");
+        let source = Payload::open_saved_workspace_transition(&source_path).unwrap();
+        let target = Payload::open_saved_workspace_transition(&target_path).unwrap();
+        let from = OFFICIAL_R217_CANNON_TARGET;
+        let to = OFFICIAL_R217_WHEAT_TARGET;
+        let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+        assert_eq!(source.context().manifest_sha256, from.2);
+        assert_eq!(target.context().manifest_sha256, to.2);
+        assert_eq!(FurnishingTransition::from_manifests((from.2, to.2)),
+            Some(FurnishingTransition::SameCatalog { source: from, target: to, catalog }));
+        for denied in [(to.2, from.2), (to.2, to.2), (OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2, to.2)] {
             assert!(!saved_workspace_transition_supported(denied));
         }
         let rows = target.workspace_furnishing_ledger(catalog).unwrap();
@@ -9299,7 +9345,7 @@ impl Payload {
                     || CATALOG45_CARRIED_RESTORE_BASE == provenance
                     || self.native_model_adoption_original_target()
                     || [OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET, OFFICIAL_R215_ORIGINAL_REPAIR_TARGET,
-                        OFFICIAL_R216_SELECTED_TARGET, OFFICIAL_R217_PUBLIC_FINISHES_TARGET, OFFICIAL_R217_CANNON_TARGET].contains(&provenance)
+                        OFFICIAL_R216_SELECTED_TARGET, OFFICIAL_R217_PUBLIC_FINISHES_TARGET, OFFICIAL_R217_CANNON_TARGET, OFFICIAL_R217_WHEAT_TARGET].contains(&provenance)
                     || combined_thumbnail_host_matches(provenance)
                     || R285_FRAME_V11_TARGET == provenance
                     || R285_FRAME_FIT_V11_TARGET == provenance
