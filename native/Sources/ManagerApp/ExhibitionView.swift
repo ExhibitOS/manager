@@ -2928,7 +2928,7 @@ final class ExhibitionModel: ObservableObject {
         var fields = floor; fields.concreteFootstepsRequested = true; floor = fields
     }
     func stageFloorPreset(_ preset: FloorSettings.Preset, fields: Set<FloorSettings.Field>) {
-        if recordedFloorSupported && fields == Set(FloorSettings.Field.allCases), let target = floorTarget {
+        if canStageRecordedFloor && fields == Set(FloorSettings.Field.allCases), let target = floorTarget {
             Task { await stageRecordedFloor(.select(target, preset)) }
             return
         }
