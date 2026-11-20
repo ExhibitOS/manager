@@ -1961,6 +1961,8 @@ impl Session {
                         || crate::native_payload::official_r217_wheat_transition(
                             (step.source().2, step.target().2))
                         || crate::native_payload::official_r218_painting_transition(
+                            (step.source().2, step.target().2))
+                        || crate::native_payload::official_r219_wheat_fit_transition(
                             (step.source().2, step.target().2)));
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
             let occupied_trial = false;

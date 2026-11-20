@@ -576,7 +576,8 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         return 5098 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    if proof.is_none() && crate::native_payload::official_r218_painting_transition(pair) {
+    if proof.is_none() && (crate::native_payload::official_r218_painting_transition(pair)
+        || crate::native_payload::official_r219_wheat_fit_transition(pair)) {
         // Exact post-bench stopped census plus one 16 MiB WAL segment,
         // rounded up for the existing trial re-inventory.
         return 5273 * 1024 * 1024;
@@ -2197,6 +2198,20 @@ fn check_official_r215_selected_head(service: &LifecycleService, profile: &Path,
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn check_r219_wheat_saved_document(document: &super::installations::native_document::DocumentState) -> Result<()> {
+    let owner = (document.workspace_id.as_str(), document.tenant_id.as_str(), document.principal_id.as_str());
+    if owner != ("23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef", "3edee474-9a9f-48d1-b779-b8f71c4da86e", "0bbe4668-9a2b-4a53-8367-758b03fe5cb9")
+        || document.format != 1 || document.revision != 622 || document.pending.is_some()
+        || document.saved_edit_version != Some(282)
+        || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != Some(282)
+        || document.etag.as_deref() != Some(r#""studio-r219-491d609d502991d106e9f14c4446f0884bea0ae3b49f00fbbbb3c2d188f02c07""#)
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl InstallationController {
     fn check_official_selected_saved_head(&self, service: &LifecycleService, profile: &Path,
         target: &str, document: &super::installations::native_document::DocumentState) -> Result<()> {
@@ -2209,6 +2224,11 @@ impl InstallationController {
                 (618, 281, r#""studio-r218-ea370957db37cfb1016cb296eb3843d2585de0cb4bb42b885f91ffdabcfa074e""#,
                  "a890979083b925fb5ee282923c8f59c58bf0a23823ee617d6ea4d9b0af36d492",
                  "7848f4a3e25c8687841391a97029722893d0c252c0af4d062003a6af611dbf14")
+            } else if target == crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2 {
+                check_r219_wheat_saved_document(document)?;
+                (622, 282, r#""studio-r219-491d609d502991d106e9f14c4446f0884bea0ae3b49f00fbbbb3c2d188f02c07""#,
+                 "c1573c92bd41a75a161227fd5b6c4794e596c002f6400b8f94f0536b4bd912a2",
+                 "8ad024a51df02b17f8dbb36e7467f12a494b032e4cc5a0ccf4c686ed44ec9135")
             } else if [crate::native_payload::OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_WHEAT_TARGET.2].contains(&target) {
@@ -2419,7 +2439,8 @@ impl InstallationController {
                 || crate::native_payload::official_r217_public_finishes_transition(pair)
                 || crate::native_payload::official_r217_cannon_transition(pair)
                 || crate::native_payload::official_r217_wheat_transition(pair)
-                || crate::native_payload::official_r218_painting_transition(pair) {
+                || crate::native_payload::official_r218_painting_transition(pair)
+                || crate::native_payload::official_r219_wheat_fit_transition(pair) {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, pair.1, document)?;
             }
@@ -2552,7 +2573,8 @@ impl InstallationController {
                 crate::native_payload::OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_CANNON_TARGET.2,
                 crate::native_payload::OFFICIAL_R217_WHEAT_TARGET.2,
-                crate::native_payload::OFFICIAL_R218_PAINTING_TARGET.2].contains(&target_manifest.as_str()) {
+                crate::native_payload::OFFICIAL_R218_PAINTING_TARGET.2,
+                crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, target_manifest.as_str(), document)?;
             }
@@ -3503,6 +3525,33 @@ mod tests {
         file.set_len(limit + 1).unwrap();
         assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact detached Wheat-fit stopped journal"]
+    fn official_r219_wheat_fit_requires_clean_exact_owner_head() {
+        let path = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_R219_WHEAT_FIT_JOURNAL").unwrap());
+        let bytes = fs::read(path).unwrap();
+        assert_eq!(digest(&bytes), "c1573c92bd41a75a161227fd5b6c4794e596c002f6400b8f94f0536b4bd912a2");
+        let document = serde_json::from_slice(&bytes).unwrap();
+        check_r219_wheat_saved_document(&document).unwrap();
+        let mut wrong = document.clone();
+        wrong.principal_id = Uuid::new_v4().to_string();
+        assert!(check_r219_wheat_saved_document(&wrong).is_err());
+        wrong = document.clone();
+        wrong.revision -= 1;
+        assert!(check_r219_wheat_saved_document(&wrong).is_err());
+        wrong = document.clone();
+        wrong.etag = None;
+        assert!(check_r219_wheat_saved_document(&wrong).is_err());
+        let mut pending = serde_json::to_value(&document).unwrap();
+        pending["pending"] = serde_json::json!({"requestId":Uuid::new_v4(),"etag":document.etag,"draft":document.draft});
+        assert!(check_r219_wheat_saved_document(&serde_json::from_value(pending).unwrap()).is_err());
+        let pair = (crate::native_payload::OFFICIAL_R218_PAINTING_TARGET.2,
+            crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2);
+        assert_eq!(checkpoint_inventory_limit(pair, None), 5273 * 1024 * 1024);
+        assert_eq!(checkpoint_inventory_limit((pair.1, pair.0), None), MAX_BYTES);
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
