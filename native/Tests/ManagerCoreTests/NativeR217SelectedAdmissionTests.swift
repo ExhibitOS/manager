@@ -10,41 +10,56 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
     }
 
     func testIndependentR217ScopeCommandsThroughExistingDispatch() throws {
-        let entries = [
-            ("EXHIBITOS_TEST_R217_PUBLIC_COMMAND", AuthoringAPI.r217PublicFinishesManifest, AuthoringAPI.r217CannonManifest),
-            ("EXHIBITOS_TEST_R217_CANNON_COMMAND", AuthoringAPI.r217CannonManifest, AuthoringAPI.r217PublicFinishesManifest)
-        ]
-        for (file, expected, other) in entries {
-            let sealed = try JSONDecoder().decode(DocumentValue.self, from: fixture(file))
-            let manifest = try XCTUnwrap(sealed["runtimeManifestSha256"].string)
-            XCTAssertEqual(manifest, expected)
-            let command = sealed["command"]
-            var request: DocumentValue = .object(["operation": .string("export-static-native-original"), "command": command])
-            let selected = try XCTUnwrap(NativeAutomationSession.classifySelectedOriginal(in: request, manifest: manifest))
-            let image = try NativePublicationOriginalImage(command["originalImage"])
-            let etag = try XCTUnwrap(command["etag"].string)
-            XCTAssertEqual(try selected.sourceCommitment(etag: etag, originalImage: image, runtimeManifest: manifest),
-                           sealed["sdkOriginalCommandCommitmentSha256"].string)
-            try selected.checkSource(etag: etag, originalImage: image, manifest: manifest)
-            XCTAssertNotEqual(try selected.sourceCommitment(etag: etag, originalImage: image, runtimeManifest: other),
-                              sealed["sdkOriginalCommandCommitmentSha256"].string)
-            XCTAssertThrowsError(try selected.checkSource(etag: etag, originalImage: image,
-                                                          manifest: AuthoringAPI.r216SelectedFinishesManifest))
-            XCTAssertThrowsError(try selected.checkSource(etag: etag + " ", originalImage: image, manifest: manifest))
-            XCTAssertThrowsError(try selected.checkSource(etag: etag, originalImage: nil, manifest: manifest))
-            request["operation"] = .string("workspace-frame-attach")
-            XCTAssertThrowsError(try NativeAutomationSession.classifySelectedOriginal(in: request, manifest: manifest))
-            XCTAssertNil(try NativeAutomationSession.classifySelectedOriginal(in: .object(["operation": .string("read")]), manifest: manifest))
-        }
+        try checkSelectedCommand("EXHIBITOS_TEST_R217_PUBLIC_COMMAND", expected: AuthoringAPI.r217PublicFinishesManifest,
+                                 other: AuthoringAPI.r217CannonManifest)
+        try checkSelectedCommand("EXHIBITOS_TEST_R217_CANNON_COMMAND", expected: AuthoringAPI.r217CannonManifest,
+                                 other: AuthoringAPI.r217PublicFinishesManifest)
+    }
+
+    func testIndependentR217WheatCommandThroughExistingDispatch() throws {
+        try checkSelectedCommand("EXHIBITOS_TEST_R217_WHEAT_COMMAND", expected: AuthoringAPI.r217WheatSelectedManifest,
+                                 other: AuthoringAPI.r217PublicFinishesManifest)
+    }
+
+    private func checkSelectedCommand(_ file: String, expected: String, other: String) throws {
+        let sealed = try JSONDecoder().decode(DocumentValue.self, from: fixture(file))
+        let manifest = try XCTUnwrap(sealed["runtimeManifestSha256"].string)
+        XCTAssertEqual(manifest, expected)
+        let command = sealed["command"]
+        var request: DocumentValue = .object(["operation": .string("export-static-native-original"), "command": command])
+        let selected = try XCTUnwrap(NativeAutomationSession.classifySelectedOriginal(in: request, manifest: manifest))
+        let image = try NativePublicationOriginalImage(command["originalImage"])
+        let etag = try XCTUnwrap(command["etag"].string)
+        XCTAssertEqual(try selected.sourceCommitment(etag: etag, originalImage: image, runtimeManifest: manifest),
+                       sealed["sdkOriginalCommandCommitmentSha256"].string)
+        try selected.checkSource(etag: etag, originalImage: image, manifest: manifest)
+        XCTAssertNotEqual(try selected.sourceCommitment(etag: etag, originalImage: image, runtimeManifest: other),
+                          sealed["sdkOriginalCommandCommitmentSha256"].string)
+        XCTAssertThrowsError(try selected.checkSource(etag: etag, originalImage: image,
+                                                      manifest: AuthoringAPI.r216SelectedFinishesManifest))
+        XCTAssertThrowsError(try selected.checkSource(etag: etag + " ", originalImage: image, manifest: manifest))
+        XCTAssertThrowsError(try selected.checkSource(etag: etag, originalImage: nil, manifest: manifest))
+        request["operation"] = .string("workspace-frame-attach")
+        XCTAssertThrowsError(try NativeAutomationSession.classifySelectedOriginal(in: request, manifest: manifest))
+        XCTAssertNil(try NativeAutomationSession.classifySelectedOriginal(in: .object(["operation": .string("read")]), manifest: manifest))
     }
 
     func testFreshRequestPreservesExactDetachedPublicationHistory() throws {
+        try checkFreshRequestPreservesHistory(manifest: AuthoringAPI.r217PublicFinishesManifest,
+                                              publicationFixture: "EXHIBITOS_TEST_R216_PUBLICATION")
+    }
+
+    func testFreshWheatRequestPreservesAcceptedPublicFinishesHistory() throws {
+        try checkFreshRequestPreservesHistory(manifest: AuthoringAPI.r217WheatSelectedManifest,
+                                              publicationFixture: "EXHIBITOS_TEST_R217_PUBLIC_FINISHES_PUBLICATION")
+    }
+
+    private func checkFreshRequestPreservesHistory(manifest: String, publicationFixture: String) throws {
         let decoder = JSONDecoder()
         let read = try decoder.decode(DocumentValue.self, from: fixture("EXHIBITOS_TEST_R217_AUTHENTICATED_READ"))
         let source = try decoder.decode(NativeDocumentState.self, from: JSONEncoder().encode(read["document"]))
-        let prior = try decoder.decode(NativePublicationState.self, from: fixture("EXHIBITOS_TEST_R216_PUBLICATION"))
+        let prior = try decoder.decode(NativePublicationState.self, from: fixture(publicationFixture))
         let fresh = UUID().uuidString.lowercased()
-        let manifest = AuthoringAPI.r217PublicFinishesManifest
         try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest, document: source, publication: prior, requestID: fresh)
         let completed = try XCTUnwrap(prior.completed?.publishRequestId)
         XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest, document: source,

@@ -4328,8 +4328,11 @@ public actor AuthoringAPI {
     static let r217PublicFinishesManifest = "6b510ec026211af69fe59569150d42b72630f45b3edc8b20f8c83049239452fd"
     static let r217CannonManifest = "0853e8440192c66eef83fc048a5396c6f641e11eee54939cead4fd2b54288eb1"
 
+    static let r217WheatSelectedManifest = "a413939c88870a81eac51de3d374fc852431693e052df7c470fef608fd9ede40"
+
     nonisolated static func isFreshOfficialSelectedRuntime(manifest: String?) -> Bool {
-        [r216SelectedFinishesManifest, r217PublicFinishesManifest, r217CannonManifest].contains(manifest ?? "")
+        [r216SelectedFinishesManifest, r217PublicFinishesManifest, r217CannonManifest, r217WheatSelectedManifest]
+            .contains(manifest ?? "")
     }
 
     nonisolated static func supportsR125ApprovedReleaseRuntime(manifest: String?) -> Bool {
