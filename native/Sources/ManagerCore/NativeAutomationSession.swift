@@ -3482,6 +3482,29 @@ public actor NativeAutomationSession {
             } else {
                 result = try value(latest)
             }
+        case "floor-recording-attach-apply":
+            try checkedRevision(request, current)
+            let scope: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId",
+                "principalId", "expectedRevision", "expectedEditVersion", "retainSaveIntent", "command"]
+            guard Set(fields.keys) == scope, request["retainSaveIntent"] == .bool(true),
+                  selectedOEXFormat == nil, existingWorkspaceV5 != nil,
+                  UUID(uuidString: id)?.uuidString.lowercased() == id, let etag = current.etag else {
+                throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
+            }
+            let command = try NativeAutomationArtworkRules.command(request,
+                keys: ["etag", "surfaceId", "materialId", "materialVersion", "audioId", "audioRevision", "expectedMediaAsset"])
+            guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let attachment = try NativeFloorRecordingAttachment(command)
+            let draft = try await api.prepareFloorRecordingAttachment(attachment, in: current)
+            let (_, _, latest) = try await checked(request)
+            guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            try Task.checkCancellation()
+            if let draft {
+                let pending = try NativeAppliedDraftSave.stage(latest, draft: draft, requestId: id)
+                result = try value(await bridge.saveDocumentState(context, state: pending))
+            } else {
+                result = try value(latest)
+            }
         case "room-audio-apply":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["roomId", "etag", "settings"])
