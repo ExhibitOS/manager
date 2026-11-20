@@ -3102,7 +3102,10 @@ public actor NativeAutomationSession {
                 command = .detach(placementId: placementId)
             }
             if let draft = try await api.prepareWorkspaceArtworkFrame(command, in: current) {
-                var next = current
+                let (_, _, refreshed) = try await checked(request)
+                guard try value(refreshed) == value(current) else { throw BridgeFailure("FRAME_TARGET_STALE") }
+                try Task.checkCancellation()
+                var next = refreshed
                 next.draft = draft
                 result = .object(["changed": .bool(true), "document": try value(await bridge.saveDocumentState(context, state: next))])
             } else {

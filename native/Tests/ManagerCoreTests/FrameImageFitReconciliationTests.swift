@@ -67,6 +67,34 @@ final class FrameImageFitReconciliationTests: XCTestCase {
             XCTAssertEqual(next["rights"], base.candidate["rights"])
         }
     }
+
+    func testMeasuredAttachChecksClosedReplyAgainstTheAttachmentProjection() throws {
+        for version in [Int64(7), 9] {
+            let projection = try draft(version)
+            let attachment = WorkspaceArtworkFrameAttachment(placementId: p1, artworkRevisionId: revision,
+                assetId: asset, furnishingId: furnishing, furnishingVersion: 1, modelSha256: String(repeating: "b", count: 64))
+            let request = try MeasuredFrameAttachmentRequest(attachment: attachment, projectedFrame: frame(projection))
+            guard case .object(let fields) = request.value else { return XCTFail("Expected measured attach request") }
+            XCTAssertEqual(Set(fields.keys), ["version", "epoch", "sequence", "tenantId", "principalId",
+                "requestId", "type", "placementId", "furnishingId", "furnishingVersion"])
+            XCTAssertEqual(fields["type"], .string("attach-measured-frame"))
+            XCTAssertEqual(fields["furnishingId"], .string(furnishing))
+            XCTAssertEqual(fields["furnishingVersion"], .integer(1))
+            let expected = candidate(projection, fit: fit)
+            var response = fields.filter { !["type", "furnishingId", "furnishingVersion"].contains($0.key) }
+            response["candidate"] = expected
+            XCTAssertEqual(try request.checkedCandidate(.object(response)), expected)
+            response["candidate"] = candidate(projection)
+            XCTAssertThrowsError(try request.checkedCandidate(.object(response)))
+            var altered = expected
+            altered["rights"] = .object([:])
+            response["candidate"] = altered
+            XCTAssertThrowsError(try request.checkedCandidate(.object(response)))
+            response["candidate"] = expected
+            response["sequence"] = .integer(1)
+            XCTAssertThrowsError(try request.checkedCandidate(.object(response)))
+        }
+    }
     func testAvailabilityRequiresSupportedMeasuredGeometry() throws {
         let base = try draft()
         XCTAssertTrue(FrameImageFitReconciliationRequest.supports(placementId: p1, in: base))

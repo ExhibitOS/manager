@@ -45,6 +45,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     }
     public var nativeTrackSpotAimProfile: String? = nil
     public var nativeFrameImageFitProposalProfile: String? = nil
+    public var nativeMeasuredFrameAttachmentProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
     public var workspacePortalModularFitProfile: String? = nil
@@ -326,6 +327,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FRAME_IMAGE_FIT_UNAVAILABLE": return "이 작업공간에서는 액자 이미지 맞춤을 사용할 수 없습니다."
         case "FRAME_IMAGE_FIT_INVALID", "FRAME_IMAGE_FIT_STALE", "FRAME_IMAGE_FIT_CONFLICT": return "작품과 액자의 저장 상태가 바뀌었습니다. 저장본을 다시 연 뒤 확인하세요."
         case "FRAME_IMAGE_FIT_UNSUPPORTED": return "이 액자와 이미지의 조합은 이미지 맞춤을 지원하지 않습니다."
+        case "FRAME_IMAGE_FIT_REQUIRED": return "액자를 다시 선택해 이미지 맞춤을 확인한 뒤 저장하세요."
         case "FRAME_ASSET_UNSUPPORTED": return "이 작업공간에서 지원하는 등록 액자와 승인된 평면 이미지를 선택하세요."
         case "FRAME_SIZE_UNSUPPORTED": return "폭 60 cm, 높이 80 cm로 승인된 작품을 선택하세요."
         case "FRAME_DEPTH_UNSUPPORTED": return "깊이 정보가 없는 평면 작품을 선택하세요."
@@ -4714,9 +4716,12 @@ public actor AuthoringAPI {
         let supplementalFill = operation == NativeAutomationScene.supplementalCeilingFillCommand
         let scene = recordedFloor || supplementalFill || ["set-pedestal", "add-light", "set-light-details"].contains(operation)
         let frameImageFit = operation == "reconcile-frame-image-fit"
+        let measuredFrameAttachment = operation == "attach-measured-frame"
         let budgetPolicy = operation == "set-viewer-budget-policy"
         let doorPair = operation == NativeDoorPairProposal.command
-        let admitted = doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let admitted = doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy
+            : measuredFrameAttachment ? admitsFrameImageFitReconciliation && session?.nativeMeasuredFrameAttachmentProposalProfile == MeasuredFrameAttachmentRequest.profile
+            : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
@@ -4733,7 +4738,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (doorPair || placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
+              (doorPair || placementVoice || budgetPolicy || frameImageFit || measuredFrameAttachment || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }
@@ -4787,6 +4792,34 @@ public actor AuthoringAPI {
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
         let next = try command.applying(to: saved.draft, furnishing: furnishing,
                                         supportedExtensionVersion: supportedFurnishingExtensionVersion)
+        if case .attach(let attachment) = command,
+           let profile = furnishing?.fit?.profile, profile == .straightRing || profile == .straightMiterRing {
+            guard document.pending == nil else { throw AuthoringFailure("FRAME_SAVED_DRAFT_REQUIRED") }
+            guard admitsFrameImageFitReconciliation, let session,
+                  session.nativeMeasuredFrameAttachmentProposalProfile == MeasuredFrameAttachmentRequest.profile else {
+                throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE")
+            }
+            let live = try await verifyRetainedSession(session)
+            guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            guard live.nativeAuthoringProposalProfile == "saved-head-v1", live.advertisesWorkspaceArtworkFrame,
+                  live.nativeMeasuredFrameAttachmentProposalProfile == MeasuredFrameAttachmentRequest.profile else {
+                throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE")
+            }
+            let projection = ViewportFrame(epoch: UUID().uuidString.lowercased(), sequence: 1,
+                tenantId: document.tenantId, principalId: document.principalId, draft: next ?? saved.draft,
+                selection: .init(kind: "placement", id: attachment.placementId), mode: "select", view: "front", disabled: false,
+                workspaceId: document.workspaceId, baseETag: etag)
+            let request = try MeasuredFrameAttachmentRequest(attachment: attachment, projectedFrame: projection)
+            let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
+                                                         etag: etag, proposal: request.value)
+            guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            let candidate = try request.checkedCandidate(reply)
+            var fitted = saved.draft
+            if candidate != fitted.candidate { try fitted.replaceCandidate(candidate) }
+            try await validateNativeViewportEdit(fitted, etag: etag)
+            guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+            return fitted == saved.draft ? nil : fitted
+        }
         // A repeat attach still checks current rights and model integrity.
         try await validateNativeViewportEdit(next ?? saved.draft, etag: etag)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }

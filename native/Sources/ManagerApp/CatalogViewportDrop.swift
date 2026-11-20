@@ -283,6 +283,7 @@ struct CatalogViewportDrop: DropDelegate {
 
     private func place(_ source: CatalogDragSession.Source, at point: CGPoint, sequence: Int) async {
         var placement: ArtworkPlacementIntent?
+        var placesFrame = false
         do {
             var query = CatalogDropQuery(kind: source.item.kind, phase: .drop, draft: source.draft, point: point)
             if case .artwork(let artwork) = source.item {
@@ -315,6 +316,7 @@ struct CatalogViewportDrop: DropDelegate {
                     throw AuthoringFailure("CATALOG_DROP_INVALID")
                 }
             case (.workspace(let entry), .frame(let id)):
+                placesFrame = true
                 guard !model.dirty, model.workspaceArtworkFrameAvailable,
                       let target = source.draft.placements.first(where: { $0["id"].string == id }),
                       let revision = target["artworkRevisionId"].string, let assetID = target["assetId"].string else {
@@ -362,7 +364,8 @@ struct CatalogViewportDrop: DropDelegate {
             if let placement, model.artworkPlacement?.requestId == placement.requestId {
                 await model.cancelVisualArtworkPlacement()
             }
-            session.complete("이 위치에 배치하지 못했습니다. 대상이나 저장 상태를 확인하세요.")
+            let detail = placesFrame ? (error as? AuthoringFailure)?.errorDescription : nil
+            session.complete(detail ?? "이 위치에 배치하지 못했습니다. 대상이나 저장 상태를 확인하세요.")
         }
     }
 }

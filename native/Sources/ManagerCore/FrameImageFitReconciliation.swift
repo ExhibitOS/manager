@@ -54,6 +54,28 @@ public struct FrameImageFitReconciliationRequest: Sendable {
     }
 }
 
+/// The measured attach proposal returns the ordinary attachment delta and its
+/// server-issued contact record in one candidate.
+struct MeasuredFrameAttachmentRequest: Sendable {
+    static let profile = "saved-head-measured-frame-attachment-v1"
+    let value: DocumentValue
+    private let reconciliation: FrameImageFitReconciliationRequest
+
+    init(attachment: WorkspaceArtworkFrameAttachment, projectedFrame: ViewportFrame) throws {
+        let reconciliation = try FrameImageFitReconciliationRequest(placementId: attachment.placementId, frame: projectedFrame)
+        self.reconciliation = reconciliation
+        var request = reconciliation.value
+        request["type"] = .string("attach-measured-frame")
+        request["furnishingId"] = .string(attachment.furnishingId)
+        request["furnishingVersion"] = .integer(Int64(attachment.furnishingVersion))
+        value = request
+    }
+
+    func checkedCandidate(_ reply: DocumentValue) throws -> DocumentValue {
+        try reconciliation.checkedReply(reply).candidate
+    }
+}
+
 public struct FrameImageFitReconciliationPreview: Sendable {
     public let base: NativeExhibitionDraft
     public let candidate: DocumentValue
