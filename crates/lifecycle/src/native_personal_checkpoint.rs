@@ -1015,6 +1015,17 @@ fn verify_unchanged(root: &Path, checkpoint: &Checkpoint, pending: &[u8]) -> Res
     Ok(())
 }
 
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+fn verify_room_lighting_content(root: &Path, checkpoint: &Checkpoint, pending_bytes: usize) -> Result<()> {
+    let retained = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
+    let live = inventory_with_limit(root, false, checkpoint.inventory_limit() + pending_bytes as u64)?;
+    if live.iter().filter(|(path, _)| retained(path))
+        .ne(checkpoint.files.iter().filter(|(path, _)| retained(path))) {
+        return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
+    }
+    Ok(())
+}
+
 #[cfg(feature = "workspace-v5-owner-validation")]
 fn verify_selected_staging_delta(
     before: &BTreeMap<PathBuf, Entry>, live: &BTreeMap<PathBuf, Entry>,
@@ -1431,6 +1442,10 @@ impl LifecycleService {
             }
             if checkpoint.trial { trial.hold_recovery(self, transition) } else { trial.hold_source(self, transition) }
         }).transpose()?;
+        #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+        if provisional.is_some() && checkpoint.restore.is_none() {
+            verify_room_lighting_content(&self.root, &checkpoint, pending.len())?;
+        }
         let ordinary_cold_check = || crate::native_runtime::check_cold_transition_root(
             &self.root, checkpoint.drained_failure.as_deref(),
         );
@@ -1463,13 +1478,7 @@ impl LifecycleService {
                 check_committed_checkpoint_bindings(&binding, &record, &pending,
                     checkpoint.saved_document_sha256.as_deref(), saved)?;
                 trial.check_committed_recovery(&self.root, writer.as_ref().ok_or_else(invalid)?, transition)?;
-                let retained_content = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
-                let live = inventory_with_limit(&self.root, false, checkpoint.inventory_limit())?;
-                if live.iter().filter(|(path, _)| retained_content(path))
-                    .ne(checkpoint.files.iter().filter(|(path, _)| retained_content(path)))
-                {
-                    return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
-                }
+                verify_room_lighting_content(&self.root, &checkpoint, 0)?;
                 // The operation and writer locks stay held. A crash after
                 // rearming resumes through the existing pending recovery.
                 publish_pending(&self.root, &envelope)?;
@@ -1646,6 +1655,7 @@ impl LifecycleService {
             checkpoint.saved_document_sha256.as_deref(), document)?;
         let trial = checkpoint.furnishing.as_ref().ok_or_else(invalid)?;
         let reopen = trial.plan_official_room_lighting_reopen(self, transition)?;
+        verify_room_lighting_content(&self.root, &checkpoint, 0)?;
         checkpoint.official_room_lighting_reopen = Some(reopen.clone());
         let proposed: Personal = serde_json::from_slice(&binding.new_record).map_err(|_| invalid())?;
         let fields = personal_environment_fields(&proposed, &binding.new_env.0)?;
@@ -1668,12 +1678,7 @@ impl LifecycleService {
         self.check_prepare_guard(session.drained_transition_guard()?)?;
         if stopped.state != "stopped" || read_pending(&self.root)? != pending { return Err(invalid()); }
         session.verify_official_room_lighting_reopened()?;
-        let retained = |path: &Path| path.starts_with("blobs") || path.starts_with("config");
-        let live = inventory_with_limit(&self.root, false, checkpoint.inventory_limit() + pending.len() as u64)?;
-        if live.iter().filter(|(path, _)| retained(path))
-            .ne(checkpoint.files.iter().filter(|(path, _)| retained(path))) {
-            return Err(err("NATIVE_PHYSICAL_CHECKPOINT_STUDIO_CHANGED"));
-        }
+        verify_room_lighting_content(&self.root, &checkpoint, pending.len())?;
         keep_receipt(&self.root, "reopen-qualified", &envelope)?;
         replace_private(&self.root, ENVIRONMENT, &binding.new_env.0, 4096)
     }
