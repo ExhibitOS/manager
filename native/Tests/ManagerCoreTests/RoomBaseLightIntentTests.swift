@@ -4,6 +4,32 @@ import XCTest
 @testable import ManagerCore
 
 final class RoomBaseLightIntentTests: XCTestCase {
+    func testOfficialRoomLightingRequiresTheExactOwnerCapabilities() {
+        let occupied = "495cb1d9bb395c805b64e5572a9e1647e67b18c4e53f1668f658ce41f0ce2818"
+        let fresh = "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98"
+        var owner = AuthoringSession(userId: "owner", tenantId: "tenant", role: "admin",
+            csrfToken: "test", expiresAt: "future")
+        owner.nativeSceneAuthoringProposalProfile = "saved-head-scene-v1"
+        owner.nativeLightObjectAuthoringProposalProfile = LightObjectAuthoring.profile
+        owner.roomBaseLightProfile = RoomBaseLightAction.profile
+        owner.roomBaseLightPlacementProfile = RoomBaseLightPlacement.profile
+        owner.roomCeilingFillProfile = RoomCeilingFill.profile
+        owner.nativeRoomCeilingFillDefaultProfile = RoomCeilingFill.defaultProfile
+        owner.nativePublicationProfile = "bounded-local-v1"
+        XCTAssertTrue(NativeAutomationSession.admitsOfficialRoomLighting(manifest: occupied, session: owner))
+        for rejected in [fresh, occupied.uppercased(), String(repeating: "0", count: 64)] {
+            XCTAssertFalse(NativeAutomationSession.admitsOfficialRoomLighting(manifest: rejected, session: owner))
+        }
+        for capability: WritableKeyPath<AuthoringSession, String?> in [
+            \.nativeSceneAuthoringProposalProfile, \.nativeLightObjectAuthoringProposalProfile,
+            \.roomBaseLightProfile, \.roomBaseLightPlacementProfile, \.roomCeilingFillProfile,
+            \.nativeRoomCeilingFillDefaultProfile, \.nativePublicationProfile,
+        ] {
+            var incomplete = owner
+            incomplete[keyPath: capability] = nil
+            XCTAssertFalse(NativeAutomationSession.admitsOfficialRoomLighting(manifest: occupied, session: incomplete))
+        }
+    }
     private let namespace = NativeLightFixture.namespace
     private let attachments = "org.exhibitos.studio/light-attachments"
     private func fixture(_ placement: RoomBaseLightPlacement? = .auto) throws -> NativeExhibitionDraft {

@@ -145,6 +145,7 @@ public actor NativeAutomationSession {
             #endif
         }
         let draft12 = workspaceV6ValidationRuntime != nil || workspaceV7ValidationRuntime != nil
+        let officialRoomLighting = Self.supportsOfficialRoomLighting(manifest: existingWorkspaceV5?.manifestSHA256)
         let ordinaryExisting = !draft12 && workspaceV5ValidationRuntime == nil
             && existingWorkspaceV5.map {
                 NativeHayesOriginalIntent.supports(manifest: $0.manifestSHA256)
@@ -161,6 +162,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsWalkingCollisionRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: $0.manifestSHA256)
+                    || officialRoomLighting
             } == true
         let firstArchitectureManifest = existingWorkspaceV5?.manifestSHA256
         let firstArchitectureSupported = firstArchitectureManifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
@@ -168,6 +170,8 @@ public actor NativeAutomationSession {
         guard !firstArchitectureEntry || (firstArchitectureSupported && !selectedOEX9 && !selectedOEX10
                && workspaceV5ValidationRuntime == nil && workspaceV6ValidationRuntime == nil
                && workspaceV7ValidationRuntime == nil && appliedDraftRecoveryPath == nil),
+              !officialRoomLighting || (ordinaryExisting && !selectedOEX9 && !selectedOEX10
+                  && !firstArchitectureEntry && appliedDraftRecoveryPath == nil),
               !(selectedOEX9 && selectedOEX10),
               workspaceV6ValidationRuntime == nil || workspaceV7ValidationRuntime == nil,
               !draft12 || (!selectedOEX9 && !selectedOEX10 && workspaceV5ValidationRuntime == nil),
@@ -213,7 +217,7 @@ public actor NativeAutomationSession {
                                   freshWorkspacePorts: existingWorkspaceV5 == nil ? ports : nil, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
                                   workspaceV7ValidationRuntime: workspaceV7ValidationRuntime,
-                                  requireExistingManagedProfile: appliedDraftRecovery != nil)
+                                  requireExistingManagedProfile: appliedDraftRecovery != nil || officialRoomLighting)
     }
     /// The installed entry supplies its bundled helper and the default or
     /// explicitly selected managed profile.
@@ -468,9 +472,13 @@ public actor NativeAutomationSession {
         }
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
+        let admitsOfficialRoomLighting = Self.admitsOfficialRoomLighting(manifest: config.manifestSha256, session: session)
+        if Self.supportsOfficialRoomLighting(manifest: config.manifestSha256), !admitsOfficialRoomLighting {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsPartialWallPortal || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
-                || admitsPreparedBudget || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
+                || admitsPreparedBudget || admitsOfficialRoomLighting || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
@@ -520,7 +528,9 @@ public actor NativeAutomationSession {
         viewerBudgetProposals.removeAll(); sceneProposals.removeAll(); portalProposals.removeAll(); proceduralFrameClearProposals.removeAll(); frameImageFitProposals.removeAll()
         _ = try await bridge.stop(context)
         let stopped = try await waitReady()
+        let officialRoomLighting = Self.supportsOfficialRoomLighting(manifest: manifest)
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses,
+              !officialRoomLighting || (runtime.exits["node"] == 0 && runtime.exits["postgres"] == 0 && runtime.exits["auxiliary"] == 0),
               (workspaceV6ValidationRuntime == nil && workspaceV7ValidationRuntime == nil) || (runtime.exits["node"] == 0 && runtime.exits["postgres"] == 0) else {
             throw BridgeFailure("AUTOMATION_DRAIN_UNCERTAIN")
         }
@@ -530,7 +540,7 @@ public actor NativeAutomationSession {
         bridge = try NativeBridge(helper: helper, profile: profile, temporaryDirectory: temporaryRoot,
                                   workspaceV5ValidationRuntime: workspaceV5ValidationRuntime, workspaceV6ValidationRuntime: workspaceV6ValidationRuntime,
                                   workspaceV7ValidationRuntime: workspaceV7ValidationRuntime,
-                                  requireExistingManagedProfile: requiresReleaseImageRuntime)
+                                  requireExistingManagedProfile: requiresReleaseImageRuntime || officialRoomLighting)
         bridgeOpen = true
         let reopened = try await bridge.context()
         self.context = reopened
@@ -561,6 +571,9 @@ public actor NativeAutomationSession {
         }
         if AuthoringAPI.supportsWalkingCollisionRuntime(manifest: manifest), !session.advertisesFurnishingWalkingCollision {
             throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
+        }
+        if officialRoomLighting, !Self.admitsOfficialRoomLighting(manifest: manifest, session: session) {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard try profileIdentity() == directory, session.userId == current.principalId,
               try value(await bridge.documentState(reopened)) == value(current) else {
@@ -2117,6 +2130,22 @@ public actor NativeAutomationSession {
     }
 
     // Only observations used by the existing saved-head static export guards; no credentials or publication intent.
+    static func supportsOfficialRoomLighting(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "495cb1d9bb395c805b64e5572a9e1647e67b18c4e53f1668f658ce41f0ce2818"
+        #else
+        false
+        #endif
+    }
+
+    static func admitsOfficialRoomLighting(manifest: String, session: AuthoringSession) -> Bool {
+        supportsOfficialRoomLighting(manifest: manifest)
+            && session.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && session.nativeLightObjectAuthoringProposalProfile == LightObjectAuthoring.profile
+            && session.advertisesRoomCeilingFillDefault
+            && session.nativePublicationProfile == "bounded-local-v1"
+    }
+
     static func savedHeadStaticReadinessProjection(runtimeSupported: Bool, publicationProfile: String?,
         policy: NativeViewportPolicy) -> DocumentValue {
         let publicationAdmitted = publicationProfile == "bounded-local-v1"
