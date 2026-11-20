@@ -10,6 +10,8 @@ public enum RoomBaseLightPlacement: String, Codable, Sendable {
 public enum RoomCeilingFill {
     public static let profile = "room-ceiling-fill-v1"
     public static let defaultProfile = "room-ceiling-fill-default-v1"
+    public static let roomLocalProfile = "room-ceiling-fill-room-local-v1"
+    public static let roomLocalMode: DocumentValue = .string("room-local")
     public static let supplementalProfile = "room-supplemental-ceiling-fill-v1"
     static let supplementalPurpose: DocumentValue = .string("room-supplemental-fill")
     public static let initialBrightness = 0.5
@@ -236,7 +238,7 @@ public enum RoomBaseLightIntent {
         var next = candidate; next["lights"] = .array(lights); next["extensions"][details] = .object(["version": .integer(1), "lights": .array(bindings)])
         return next
     }
-    static func setCeilingFillBrightness(_ brightness: Double, usesDefault: Bool = false,
+    static func setCeilingFillBrightness(_ brightness: Double, usesDefault: Bool = false, roomLocal: Bool = false,
                                          lightId: String, in candidate: DocumentValue) throws -> DocumentValue {
         var bindings = try NativeLightFixture.bindings(in: candidate)
         guard var lights = candidate["lights"].items, let lightIndex = lights.firstIndex(where: { same($0["id"].string, lightId) }),
@@ -244,13 +246,14 @@ public enum RoomBaseLightIntent {
               bindings[binding]["purpose"] == .string("room-base"),
               let roomId = lights[lightIndex]["roomId"].string,
               let room = candidate["rooms"].items?.first(where: { same($0["id"].string, roomId) }) else { throw invalid }
+        guard !roomLocal || (usesDefault && brightness == RoomCeilingFill.initialBrightness) else { throw invalid }
         let old = bindings[binding]["ceilingFill"]
-        if try RoomCeilingFill.brightness(in: old) == brightness, RoomCeilingFill.usesDefault(old) == usesDefault { return candidate }
+        var next = roomLocal ? SpaceLightingFormBuffer.addingRoomLocal(to: candidate) : candidate
+        if try RoomCeilingFill.brightness(in: old) == brightness, RoomCeilingFill.usesDefault(old) == usesDefault { return next }
         let dimensions = try bindings[binding]["basePlacement"] == .string("auto")
             ? RoomCeilingFill.dimensions(in: candidate, room: room) : room["dimensions"]
         lights[lightIndex]["intensity"] = try RoomCeilingFill.emitter(dimensions: dimensions, brightness: brightness, usesDefault: usesDefault)["intensity"]
         bindings[binding]["ceilingFill"] = RoomCeilingFill.setting(brightness: brightness, usesDefault: usesDefault)
-        var next = candidate
         next["lights"] = .array(lights)
         next["extensions"][details]["lights"] = .array(bindings)
         return next
