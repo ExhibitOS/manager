@@ -26,6 +26,11 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
                                  other: AuthoringAPI.r217WheatSelectedManifest)
     }
 
+    func testIndependentR219WheatFitCommandThroughExistingDispatch() throws {
+        try checkSelectedCommand("EXHIBITOS_TEST_R219_WHEAT_FIT_COMMAND", expected: AuthoringAPI.r219WheatFitSelectedManifest,
+                                 other: AuthoringAPI.r218PaintingSelectedManifest)
+    }
+
     private func checkSelectedCommand(_ file: String, expected: String, other: String) throws {
         let sealed = try JSONDecoder().decode(DocumentValue.self, from: fixture(file))
         let manifest = try XCTUnwrap(sealed["runtimeManifestSha256"].string)
@@ -63,6 +68,29 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
         try checkFreshRequestPreservesHistory(manifest: AuthoringAPI.r218PaintingSelectedManifest,
                                               publicationFixture: "EXHIBITOS_TEST_R217_WHEAT_PUBLICATION",
                                               documentFixture: "EXHIBITOS_TEST_R218_SAVED_DOCUMENT")
+    }
+
+    func testFreshR219WheatFitRequestPreservesAcceptedPublicationHistory() throws {
+        try checkFreshRequestPreservesHistory(manifest: AuthoringAPI.r219WheatFitSelectedManifest,
+                                              publicationFixture: "EXHIBITOS_TEST_R218_PAINTING_PUBLICATION",
+                                              documentFixture: "EXHIBITOS_TEST_R219_WHEAT_FIT_JOURNAL")
+        let decoder = JSONDecoder()
+        let source = try decoder.decode(NativeDocumentState.self, from: fixture("EXHIBITOS_TEST_R219_WHEAT_FIT_JOURNAL"))
+        let publication = try decoder.decode(NativePublicationState.self, from: fixture("EXHIBITOS_TEST_R218_PAINTING_PUBLICATION"))
+        let wrongOwner = NativeDocumentState(format: source.format, revision: source.revision, workspaceId: source.workspaceId,
+            tenantId: source.tenantId, principalId: UUID().uuidString.lowercased(), draft: source.draft,
+            etag: source.etag, savedEditVersion: source.savedEditVersion, pending: nil)
+        let requestID = UUID().uuidString.lowercased()
+        XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: AuthoringAPI.r219WheatFitSelectedManifest,
+            document: wrongOwner, publication: publication, requestID: requestID))
+        var stale = source
+        stale.etag = nil
+        XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: AuthoringAPI.r219WheatFitSelectedManifest,
+            document: stale, publication: publication, requestID: requestID))
+        var pending = source
+        pending.pending = .init(etag: source.etag, draft: try XCTUnwrap(source.draft))
+        XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: AuthoringAPI.r219WheatFitSelectedManifest,
+            document: pending, publication: publication, requestID: requestID))
     }
 
     private func checkFreshRequestPreservesHistory(manifest: String, publicationFixture: String,
