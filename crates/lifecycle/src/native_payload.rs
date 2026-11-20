@@ -998,6 +998,13 @@ pub(crate) const FIXTURE_FIRST_121_ORDINARY_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const SCULPTURE_SHADOW_121_ORDINARY_TARGET: RuntimeTuple = (
+    "bf211111f61c06e4231a37de747cc14420de01da",
+    "98a051ef950432f69ce22b83c6389b2364ef8ed314773aad02a076e67d92cbd9",
+    "d3142667b9307ae7ddf0e0e11ee22ac0eb12ce50494c348003576d67a703dd67",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     RECTANGLE_FIXED64_TARGET,
     FIXED64_PUBLICATION_REPAIR_TARGET,
@@ -1008,6 +1015,7 @@ const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     ROOM_CEILING_FILL_TARGET,
     DEFAULT_FURNISHINGS_121_ORDINARY_TARGET,
     FIXTURE_FIRST_121_ORDINARY_TARGET,
+    SCULPTURE_SHADOW_121_ORDINARY_TARGET,
 ];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ROOM_CEILING_FILL_TARGET: RuntimeTuple = (
@@ -1136,7 +1144,7 @@ pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)
         ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET,
         R285_ROOM_FILL_EXIT_TARGET, R285_SUPPLEMENTAL_FILL_TARGET, R285_INITIAL_PRODUCT_IMAGE_TARGET,
         R285_CLOSING_ARTICULATION_TARGET, DEFAULT_FURNISHINGS_121_ORDINARY_TARGET,
-        FIXTURE_FIRST_121_ORDINARY_TARGET].contains(&tuple) { return true; }
+        FIXTURE_FIRST_121_ORDINARY_TARGET, SCULPTURE_SHADOW_121_ORDINARY_TARGET].contains(&tuple) { return true; }
     if r285_hayes_preopen_terminal_host_matches(tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
@@ -3256,6 +3264,14 @@ pub(crate) mod normal_oex_release_declaration_tests {
     fn fixture_first_121_admits_exact_fresh_reopen_and_saved_head() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_FIXTURE_FIRST_121_RUNTIME").unwrap());
         check_default121_ordinary_furnishings(&root, FIXTURE_FIRST_121_ORDINARY_TARGET);
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the sealed standard sculpture-shadow 1.21 runtime; read-only payload openers"]
+    fn sculpture_shadow_121_admits_exact_fresh_reopen_and_saved_head() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_SCULPTURE_SHADOW_121_RUNTIME").unwrap());
+        check_default121_ordinary_furnishings(&root, SCULPTURE_SHADOW_121_ORDINARY_TARGET);
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]

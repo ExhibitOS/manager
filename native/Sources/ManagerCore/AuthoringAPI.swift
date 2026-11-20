@@ -3358,6 +3358,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsOrdinaryFixtureFirst121(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "fbbb3a8736fbfce90845e167074b1ce0752e9d886093b21ed01f7ce2994603ac"
+            || manifest == "d3142667b9307ae7ddf0e0e11ee22ac0eb12ce50494c348003576d67a703dd67"
         #else
         false
         #endif

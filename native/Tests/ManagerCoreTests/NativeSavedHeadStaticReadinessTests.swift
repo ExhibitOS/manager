@@ -30,17 +30,24 @@ final class NativeSavedHeadStaticReadinessTests: XCTestCase {
     func testFixtureFirstSealUsesExactOrdinaryAdmission() {
         let fixtureFirst = "fbbb3a8736fbfce90845e167074b1ce0752e9d886093b21ed01f7ce2994603ac"
         let ordinary = "7875816a0d59f73db6cc1cac1f046a147a677cdee1527e18b120d9f1ff9119a6"
+        let sculptureShadow = "d3142667b9307ae7ddf0e0e11ee22ac0eb12ce50494c348003576d67a703dd67"
         #if DEBUG && os(macOS)
         XCTAssertTrue(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: fixtureFirst))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: sculptureShadow))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: sculptureShadow))
         XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: fixtureFirst))
         XCTAssertTrue(AuthoringAPI.supportsOrdinaryDefaultFurnishings121(manifest: ordinary))
         #else
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: fixtureFirst))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: sculptureShadow))
         #endif
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: ordinary))
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: fixtureFirst.uppercased()))
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: "0" + fixtureFirst.dropFirst()))
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: nil))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryFixtureFirst121(manifest: "0" + sculptureShadow.dropFirst()))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinaryDefaultFurnishings121(manifest: sculptureShadow))
+        XCTAssertFalse(AuthoringAPI.supportsOwnerLocalOriginalRuntime(manifest: sculptureShadow))
         XCTAssertFalse(AuthoringAPI.supportsOrdinaryDefaultFurnishings121(manifest: fixtureFirst))
         XCTAssertFalse(AuthoringAPI.supportsOwnerLocalOriginalRuntime(manifest: fixtureFirst))
     }
