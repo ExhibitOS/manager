@@ -33,6 +33,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeRequiredModelOriginalProfile: String? = nil
     public var nativeFinishedHayesOriginalProfile: String? = nil
     public var nativeAuthoringProposalProfile: String? = nil
+    public var nativeRecordedFloorDefaultProfile: String? = nil
     public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeDoorPairAuthoringProfile: String? = nil
@@ -75,6 +76,11 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
 
     public var advertisesFurnishingWalkingCollision: Bool {
         nativeFurnishingWalkingCollisionProfile == FurnishingWalkingCollisionEvaluation.profile
+    }
+
+    public var advertisesRecordedFloorDefault: Bool {
+        nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && nativeRecordedFloorDefaultProfile == RecordedFloorCommand.profile
     }
 
     public var advertisesRoomBaseLight: Bool { roomBaseLightProfile == RoomBaseLightAction.profile }
@@ -339,6 +345,8 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FILE_CHANGED": return "읽는 동안 파일이 바뀌었습니다. 저장을 마친 뒤 다시 선택하세요."
         case "FILE_READ_FAILED", "FILE_REGULAR_REQUIRED": return "파일을 읽을 수 없습니다. 파일 위치와 접근 권한을 확인하세요."
         case "FLOOR_APPLY_REQUIRED": return "바닥 설정을 공간에서 확인한 뒤 적용하거나 입력을 되돌려 주세요."
+        case "FLOOR_RECORDING_UNASSIGNED": return "이 공간의 선택한 바닥 재질에 승인된 발소리 녹음이 연결되어 있지 않습니다."
+        case "FLOOR_RECORDING_RESPONSE_INVALID": return "이 바닥의 발소리 연결을 확인하지 못했습니다. 설정은 적용되지 않았습니다."
         case "FLOOR_SETTINGS_INVALID", "FLOOR_PRESET_REQUIRED": return "바닥 재질과 변경할 항목을 선택하고 입력 범위를 확인하세요."
         case "WALL_FINISH_INVALID", "WALL_FINISH_PREVIEW_FAILED": return "선택한 벽과 마감 수치를 확인하세요. 문·작품과의 여유 공간이 필요하며 기존 설정과 입력은 유지됩니다."
         case "FLOOR_TARGET_INVALID", "CONCRETE_FOOTSTEPS_INVALID": return "실제 바닥 표면을 선택하고 기존 발소리 설정을 확인하세요. 바닥 외관과 다른 소리는 유지됩니다."
@@ -4442,6 +4450,7 @@ public actor AuthoringAPI {
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
+            || NativeFloorRuntime.supportsRecordedDefault(manifestSHA256: manifest)
         #else
         false
         #endif
@@ -4609,14 +4618,82 @@ public actor AuthoringAPI {
         }
     }
 
+    public func recordedFloorReadiness(in document: NativeDocumentState) async throws -> [RecordedFloorStatus] {
+        guard let session, session.advertisesRecordedFloorDefault, session.nativePublicationProfile == "bounded-local-v1",
+              !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag,
+              document.tenantId == tenant, document.principalId == session.userId else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let comparison = try await exhibition(draft.id)
+        guard comparison.draft == draft, comparison.etag == etag else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let path = studioPrefix + "/exhibitions/" + (try identifier(draft.id)) + "/ready"
+        let reply: DocumentValue = try await request(path, ifMatch: etag, publicationProfile: "bounded-local-v1", timeout: 120)
+        try comparison.requireSameComparison(await exhibition(draft.id))
+        guard generation == heldGeneration, reply["etag"] == .string(etag), let records = reply["floorRecordings"].items else {
+            throw AuthoringFailure("FLOOR_RECORDING_RESPONSE_INVALID")
+        }
+        let targets = try FloorSettings.targets(in: draft.candidate).filter { FloorSettings.isActive($0, in: draft.candidate) }
+        let status = try records.map(RecordedFloorStatus.init)
+        let byKey = status.map { record in
+            FloorSettings.Target(kind: record.surfaceId == nil ? .roomBase : .surface,
+                                 id: record.surfaceId ?? record.roomId).key
+        }
+        guard byKey.count == targets.count, Set(byKey) == Set(targets.map(\.key)),
+              status.allSatisfy({ record in
+                  if let id = record.surfaceId {
+                      return draft.candidate["surfaces"].items?.contains {
+                          $0["id"].string?.lowercased() == id.lowercased() && $0["roomId"].string?.lowercased() == record.roomId.lowercased()
+                      } == true
+                  }
+                  return draft.rooms.contains { $0["id"].string?.lowercased() == record.roomId.lowercased() }
+              }) else { throw AuthoringFailure("FLOOR_RECORDING_RESPONSE_INVALID") }
+        return status
+    }
+
+    public func prepareRecordedFloor(_ command: RecordedFloorCommand, in document: NativeDocumentState) async throws -> RecordedFloorPreview {
+        guard nativeSession, !authenticationBusy, nativeRuntimeManifestSHA256 != nil,
+              let session, session.advertisesRecordedFloorDefault,
+              !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag,
+              document.tenantId == tenant, document.principalId == session.userId else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let saved = try await exhibition(draft.id)
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard saved.draft == draft, saved.etag == etag, policy.etag == etag, policy.revision == saved.revision,
+              policy.exhibitionId == draft.id, policy.confirmsOrdinaryDraft, generation == heldGeneration else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let proposal = try RecordedFloorProposal(command: command, document: document)
+        let live = try await verifyRetainedSession(session)
+        guard live.advertisesRecordedFloorDefault, generation == heldGeneration else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision,
+                                                     etag: etag, proposal: proposal.value)
+        let preview = try proposal.checkedReply(reply)
+        let latest = try await exhibition(draft.id)
+        let latestPolicy = try await nativeViewportPolicy(draft.id)
+        try saved.requireSameComparison(latest)
+        guard latestPolicy.exhibitionId == draft.id, latestPolicy.revision == saved.revision, latestPolicy.etag == etag,
+              latestPolicy.confirmsOrdinaryDraft, generation == heldGeneration else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        return preview
+    }
+
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
+        let recordedFloor = ["select-floor-material", "reset-floor-sound"].contains(operation)
         let placementVoice = operation == "set-placement-voice"
         let lightObject = LightObjectAuthoring.commands.contains(operation)
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let supplementalFill = operation == NativeAutomationScene.supplementalCeilingFillCommand
-        let scene = supplementalFill || ["set-pedestal", "add-light", "set-light-details"].contains(operation)
+        let scene = recordedFloor || supplementalFill || ["set-pedestal", "add-light", "set-light-details"].contains(operation)
         let frameImageFit = operation == "reconcile-frame-image-fit"
         let budgetPolicy = operation == "set-viewer-budget-policy"
         let doorPair = operation == NativeDoorPairProposal.command
@@ -4628,7 +4705,7 @@ public actor AuthoringAPI {
                                             supplementalFill: admitsRoomSupplementalCeilingFill)
         guard admitted,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
-              let session,
+              let session, !recordedFloor || session.advertisesRecordedFloorDefault,
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
               operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
               operation != "set-room-ceiling-fill-brightness" || !RoomCeilingFill.usesDefault(proposal)
