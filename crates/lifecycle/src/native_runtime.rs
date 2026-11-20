@@ -1164,6 +1164,7 @@ impl FurnishingTransitionTrial {
         service: &LifecycleService,
         transition: FurnishingTransition,
         reopen: &OfficialRoomLightingReopen,
+        restoring: bool,
     ) -> Result<FurnishingTransitionWriterGuard> {
         let refused = || err(furnishing_lifecycle::ERROR);
         if transition != FurnishingTransition::OfficialRoomLighting
@@ -1190,7 +1191,9 @@ impl FurnishingTransitionTrial {
         if current == self.source {
             return if source_proof.consumed_by.is_none() { Ok(writer) } else { Err(refused()) };
         }
-        if source_proof.consumed_by.as_deref() != Some(self.generation.as_str()) {
+        if source_proof.consumed_by.as_deref() != Some(self.generation.as_str())
+            && !(restoring && source_proof.consumed_by.is_none())
+        {
             return Err(refused());
         }
         let (stopped, proof) = read_run(&service.root, &self.generation)?;

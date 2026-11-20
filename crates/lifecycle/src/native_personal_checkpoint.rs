@@ -1427,7 +1427,7 @@ impl LifecycleService {
         let writer = furnishing.map(|(trial, transition)| {
             #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
             if let Some(reopen) = provisional {
-                return trial.hold_official_room_lighting_reopen_recovery(self, transition, reopen);
+                return trial.hold_official_room_lighting_reopen_recovery(self, transition, reopen, checkpoint.restore.is_some());
             }
             if checkpoint.trial { trial.hold_recovery(self, transition) } else { trial.hold_source(self, transition) }
         }).transpose()?;
