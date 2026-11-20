@@ -29,6 +29,52 @@ final class BenchViewportRequestTests: XCTestCase {
         XCTAssertTrue(current.supportsBenchInspector)
         XCTAssertFalse(ViewportSelection(kind: "bench", id: request.command.benchId).belongs(to: request.frame.draft))
     }
+    func testLinkedHeightUsesClosedEnvelopeAndSeparateOrdinaryCapability() throws {
+        let initial = try fixture()
+        var base = initial.frame.draft
+        try base.replaceCandidate(initial.command.proposedCandidate(in: base, selectedBenchId: initial.command.benchId))
+        let view = try XCTUnwrap(BenchSettings.list(in: base).first?.viewpointId)
+        let f = initial.frame
+        let frame = ViewportFrame(epoch: f.epoch, sequence: f.sequence + 1, tenantId: f.tenantId,
+                                  principalId: f.principalId, draft: base, selection: nil,
+                                  mode: f.mode, view: f.view, disabled: false)
+        let benchId = initial.command.benchId
+        let baseline = try BenchFormBuffer(draft: base, benchId: benchId)
+        var form = baseline
+        form.linkedTargetY = "1.30"
+        let command = try XCTUnwrap(form.linkedTargetHeightCommand(comparedTo: baseline))
+        XCTAssertEqual(command, .setViewpointTargetHeight(benchId: benchId, viewpointId: view, targetY: 1.3))
+        let request = try BenchViewportRequest(frame: frame, command: command, selectedBenchId: command.benchId)
+        guard case .object(let fields) = request.value else { return XCTFail("Expected object") }
+        XCTAssertEqual(Set(fields.keys), Set(["version", "epoch", "sequence", "tenantId", "principalId",
+                                              "requestId", "type", "benchId", "viewpointId", "targetY"]))
+        XCTAssertEqual(request.value["type"], .string("set-bench-viewpoint-target-height"))
+        var response = try reply(request)
+        let preview = try request.checkedReply(response, selectedBenchId: command.benchId)
+        response["sequence"] = initial.value["sequence"]
+        XCTAssertThrowsError(try request.checkedReply(response, selectedBenchId: command.benchId))
+
+        let decoder = JSONDecoder()
+        let previous = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"capabilities":["bench-inspector-v1"]}"#.utf8))
+        XCTAssertFalse(previous.supportsBenchViewpointTargetHeight)
+        let ordinary = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"boundedReadOnly":false,"capabilities":["bench-inspector-v1","bench-viewpoint-target-height-v1"]}"#.utf8))
+        XCTAssertTrue(ordinary.supportsBenchViewpointTargetHeight)
+        let readOnly = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"boundedReadOnly":true,"capabilities":["bench-inspector-v1","bench-viewpoint-target-height-v1"]}"#.utf8))
+        XCTAssertFalse(readOnly.supportsBenchViewpointTargetHeight)
+
+        // Displaying an authenticated preview disables new requests. Applying it
+        // locally still uses the active form and the original draft.
+        let disabled = ViewportFrame(epoch: frame.epoch, sequence: frame.sequence + 1, tenantId: frame.tenantId,
+                                     principalId: frame.principalId, draft: preview.displayDraft, selection: nil,
+                                     mode: frame.mode, view: frame.view, disabled: true)
+        let disabledAck = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"boundedReadOnly":false,"capabilities":["bench-inspector-v1"]}"#.utf8))
+        XCTAssertTrue(disabledAck.supportsBenchInspector)
+        XCTAssertFalse(disabledAck.supportsBenchViewpointTargetHeight)
+        XCTAssertThrowsError(try BenchViewportRequest(frame: disabled, command: command, selectedBenchId: benchId))
+        let applyCommand = try XCTUnwrap(form.linkedTargetHeightCommand(comparedTo: baseline))
+        XCTAssertEqual(try preview.apply(to: base, selectedBenchId: benchId, command: applyCommand).candidate, preview.candidate)
+        XCTAssertThrowsError(try preview.apply(to: disabled.draft, selectedBenchId: benchId, command: applyCommand))
+    }
     func testWrongScopeLateReplyExtraFieldsAndUnrelatedCandidateAreRefused() throws {
         let request = try fixture(), good = try reply(request)
         for key in ["version", "sequence", "epoch", "tenantId", "principalId", "requestId", "benchId"] {

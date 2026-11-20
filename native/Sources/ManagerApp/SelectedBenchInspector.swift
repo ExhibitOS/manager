@@ -99,7 +99,13 @@ struct SelectedBenchInspector: View {
                 Text("같은 공간의 시점을 선택하세요").tag("")
                 ForEach(views.filter { $0.roomId.lowercased() == fields.roomId.lowercased() }, id: \.id) { Text($0.name).tag($0.id) }
             }
-            Text("기존 시점의 위치·방향은 바꾸지 않습니다. 변경하려면 새 시점을 만들어 연결하세요.").font(.caption).foregroundStyle(.secondary)
+            if model.showsLinkedBenchTargetHeight {
+                text("바라볼 높이 · m", \.linkedTargetY)
+                Text("이 시점에서 바라보는 높이만 바꿉니다. 다른 벤치 입력은 따로 적용하세요.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("이 시점을 편집하려면 새 시점을 만들어 연결하세요.").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
     var body: some View {

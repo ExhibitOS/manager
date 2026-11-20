@@ -258,6 +258,10 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsLightFixture: Bool { accepted && capabilities?.contains("light-fixture-aim-v1") == true }
     public var supportsWallFinish: Bool { accepted && capabilities?.contains("architectural-finishes-v1") == true }
     public var supportsBenchInspector: Bool { accepted && capabilities?.contains("bench-inspector-v1") == true }
+    public var supportsBenchViewpointTargetHeight: Bool {
+        supportsBenchInspector && boundedReadOnly == false && editingCapability == nil
+            && capabilities?.contains("bench-viewpoint-target-height-v1") == true
+    }
     public var supportsPlaqueInspector: Bool { accepted && capabilities?.contains("plaque-inspector-v1") == true }
     public var supportsSurfaceMaterialTextures: Bool { accepted && capabilities?.contains(SurfaceMaterialTextureBinding.capability) == true }
     public var supportsEntrancePreview: Bool { accepted && capabilities?.contains("entrance-preview-v1") == true }

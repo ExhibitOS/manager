@@ -1423,6 +1423,17 @@ final class ExhibitionModel: ObservableObject {
     var canAddBench: Bool { canEditBench && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && benches.count < 32 && draft?.rooms.contains(where: { $0["id"].string == roomId }) == true }
     var canSelectBench: Bool { canSelectCatalog }
     var canPreviewBench: Bool { canEditBench && benchDirty && !benchPreviewing }
+    var showsLinkedBenchTargetHeight: Bool {
+        guard let draft, let bench, let baseline = benchBaseline,
+              !bench.usesFreshViewpoint, bench.viewpointId == baseline.viewpointId, bench.roomId == baseline.roomId else { return false }
+        let hasCurrentPreview = benchPreviewAccessID == viewportAccessID && benchPreview?.base == draft
+            && benchPreview?.command.requiresViewpointTargetHeight == true
+        guard viewportController.benchViewpointTargetHeightSupported || hasCurrentPreview else { return false }
+        let linkedID = bench.viewpointId.lowercased()
+        let views = (try? BenchViewpoint.list(in: draft)) ?? []
+        return views.contains { $0.id.lowercased() == linkedID && $0.roomId.lowercased() == bench.roomId.lowercased() }
+            && benches.filter { $0.viewpointId.lowercased() == linkedID }.count == 1
+    }
     var canRemoveBench: Bool { canEditBench && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !selectedBenchId.isEmpty && !benchAdding }
     var canApplyBench: Bool {
         guard canEditBench, benchPreviewAccessID == viewportAccessID, let preview = benchPreview,
@@ -2739,6 +2750,9 @@ final class ExhibitionModel: ObservableObject {
     private func currentBenchCommand() throws -> BenchCommand {
         if benchRemoving { return .remove(id: selectedBenchId) }
         guard let bench, bench.id == selectedBenchId else { throw AuthoringFailure("BENCH_SELECTION_CHANGED") }
+        if let baseline = benchBaseline, let command = try bench.linkedTargetHeightCommand(comparedTo: baseline) {
+            return command
+        }
         let settings = try bench.settings(), viewpoint = try bench.newViewpoint()
         return benchAdding ? .add(settings, viewpoint: viewpoint) : .set(settings, viewpoint: viewpoint)
     }

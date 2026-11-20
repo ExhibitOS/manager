@@ -98,6 +98,52 @@ final class BenchSettingsTests: XCTestCase {
         let overwrite = try BenchViewpoint(value: XCTUnwrap(before["viewpoints"].items?.first))
         XCTAssertThrowsError(try BenchCommand.set(try BenchFormBuffer(draft: draft, benchId: id).settings(), viewpoint: overwrite).proposedCandidate(in: draft, selectedBenchId: id))
     }
+    func testLinkedTargetHeightChangesOnlyExistingViewpointTarget() throws {
+        let (draft, benchId, viewpointId) = try fixture()
+        let baseline = try BenchFormBuffer(draft: draft, benchId: benchId)
+        var fields = baseline
+        XCTAssertNil(try fields.linkedTargetHeightCommand(comparedTo: baseline))
+        fields.linkedTargetY = " " + baseline.linkedTargetY
+        XCTAssertThrowsError(try fields.linkedTargetHeightCommand(comparedTo: baseline))
+        fields.linkedTargetY = "1.30"
+        let command = try XCTUnwrap(fields.linkedTargetHeightCommand(comparedTo: baseline))
+        XCTAssertEqual(command, .setViewpointTargetHeight(benchId: benchId, viewpointId: viewpointId, targetY: 1.3))
+        var expected = draft.candidate
+        var rows = try XCTUnwrap(expected["extensions"][BenchSettings.presentationNamespace]["viewpoints"].items)
+        var target = try XCTUnwrap(rows[0]["target"].items)
+        target[1] = .number(1.3)
+        rows[0]["target"] = .array(target)
+        expected["extensions"][BenchSettings.presentationNamespace]["viewpoints"] = .array(rows)
+        XCTAssertEqual(try command.proposedCandidate(in: draft, selectedBenchId: benchId), expected)
+        let caseVariant = BenchCommand.setViewpointTargetHeight(benchId: benchId.uppercased(), viewpointId: viewpointId.uppercased(), targetY: 1.3)
+        XCTAssertEqual(try caseVariant.proposedCandidate(in: draft, selectedBenchId: benchId), expected)
+        XCTAssertEqual(try BenchPreview(candidate: expected, base: draft, command: command, selectedBenchId: benchId)
+            .apply(to: draft, selectedBenchId: benchId, command: command).candidate, expected)
+
+        fields.width = "1.8"
+        XCTAssertThrowsError(try fields.linkedTargetHeightCommand(comparedTo: baseline))
+        var changed = expected
+        changed["extensions"][BenchSettings.presentationNamespace]["credits"] = .string("unrelated")
+        XCTAssertThrowsError(try command.checkProposal(changed, base: draft, selectedBenchId: benchId))
+        for height in [-0.001, 4.001, Double.nan] {
+            XCTAssertThrowsError(try BenchCommand.setViewpointTargetHeight(benchId: benchId, viewpointId: viewpointId, targetY: height)
+                .proposedCandidate(in: draft, selectedBenchId: benchId))
+        }
+        let other = UUID().uuidString.lowercased()
+        XCTAssertThrowsError(try BenchCommand.setViewpointTargetHeight(benchId: benchId, viewpointId: other, targetY: 1.3)
+            .proposedCandidate(in: draft, selectedBenchId: benchId))
+        XCTAssertThrowsError(try command.proposedCandidate(in: draft, selectedBenchId: other))
+
+        var shared = draft
+        var sharedCandidate = draft.candidate
+        var benches = try XCTUnwrap(sharedCandidate["extensions"][BenchSettings.namespace]["benches"].items)
+        var duplicate = benches[0]
+        duplicate["id"] = .string(other)
+        benches.append(duplicate)
+        sharedCandidate["extensions"][BenchSettings.namespace]["benches"] = .array(benches)
+        try shared.replaceCandidate(sharedCandidate)
+        XCTAssertThrowsError(try command.proposedCandidate(in: shared, selectedBenchId: benchId))
+    }
     func testRemoveRetainsViewpointAndExistingDraftHistoryRoundTripRestoresBench() throws {
         let (draft, id, _) = try fixture()
         let command = BenchCommand.remove(id: id), candidate = try command.proposedCandidate(in: draft, selectedBenchId: id)
