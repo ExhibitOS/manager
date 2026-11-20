@@ -594,6 +594,11 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         return 5623 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r219_ephemeral_seat_transition(pair) {
+        // Reuse the bounded r219 limit. A later cold census must fit with its trial allowance.
+        return 5623 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
         || crate::native_payload::white_rail_opposite_clean_transition(pair)
@@ -2223,6 +2228,14 @@ fn check_r219_wheat_saved_document(document: &super::installations::native_docum
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const OFFICIAL_R219_EPHEMERAL_SEAT_SOURCE_FILES: [(&str, u64, &str); 2] = [
+    ("native-current-run.json", 4096,
+     "c90d0fc15644d30a9bed629e9dc3cbcd46c4c73c8ddf81f788ae645c7eca09dc"),
+    ("native-runs/8f8e850c-9296-44fe-a2ad-5c04d4442543/state.json", 1_048_576,
+     "098c7f0255a8a208ff1d203e0108bd4d1c45188eea7bfe9d4b99cc42872b2b6d"),
+];
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl InstallationController {
     fn check_official_selected_saved_head(&self, service: &LifecycleService, profile: &Path,
         target: &str, document: &super::installations::native_document::DocumentState) -> Result<()> {
@@ -2237,9 +2250,17 @@ impl InstallationController {
                  "7848f4a3e25c8687841391a97029722893d0c252c0af4d062003a6af611dbf14")
             } else if [crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_SEAT_PREVIEW_TARGET.2,
-                crate::native_payload::OFFICIAL_R219_CLOSING_SELECTED_TARGET.2].contains(&target) {
+                crate::native_payload::OFFICIAL_R219_CLOSING_SELECTED_TARGET.2,
+                crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2].contains(&target) {
                 check_r219_wheat_saved_document(document)?;
-                let publication_digest = if target == crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2 {
+                let publication_digest = if target == crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2 {
+                    for (file, limit, expected) in OFFICIAL_R219_EPHEMERAL_SEAT_SOURCE_FILES {
+                        if digest(&installation_backup::source_bytes(&service.root, file, limit, true)?) != expected {
+                            return Err(invalid());
+                        }
+                    }
+                    "676907e6f12d2f9e97bcd174c5abd166660ae4a8015f1ad4e5b59a2d1c77fa9c"
+                } else if target == crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2 {
                     "8ad024a51df02b17f8dbb36e7467f12a494b032e4cc5a0ccf4c686ed44ec9135"
                 } else {
                     "01518e0335b19f6a8e06c7a852e2aad36ff76b89948c4ebd1133feb86c1a17da"
@@ -2460,7 +2481,8 @@ impl InstallationController {
                 || crate::native_payload::official_r218_painting_transition(pair)
                 || crate::native_payload::official_r219_wheat_fit_transition(pair)
                 || crate::native_payload::official_r219_seat_preview_transition(pair)
-                || crate::native_payload::official_r219_closing_selected_transition(pair) {
+                || crate::native_payload::official_r219_closing_selected_transition(pair)
+                || crate::native_payload::official_r219_ephemeral_seat_transition(pair) {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, pair.1, document)?;
             }
@@ -2596,7 +2618,8 @@ impl InstallationController {
                 crate::native_payload::OFFICIAL_R218_PAINTING_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_SEAT_PREVIEW_TARGET.2,
-                crate::native_payload::OFFICIAL_R219_CLOSING_SELECTED_TARGET.2].contains(&target_manifest.as_str()) {
+                crate::native_payload::OFFICIAL_R219_CLOSING_SELECTED_TARGET.2,
+                crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, target_manifest.as_str(), document)?;
             }
@@ -3660,6 +3683,19 @@ mod tests {
         assert_eq!(limit, 5_896_142_848);
         assert_eq!(checkpoint_inventory_limit((OFFICIAL_R219_WHEAT_FIT_TARGET.2, source), None), limit);
         for denied in [(target, source), (target, target), (OFFICIAL_R219_WHEAT_FIT_TARGET.2, target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r219_ephemeral_seat_capacity_is_bounded_to_the_directed_pair() {
+        use crate::native_payload::{OFFICIAL_R219_CLOSING_SELECTED_TARGET, OFFICIAL_R219_EPHEMERAL_SEAT_TARGET,
+            OFFICIAL_R219_SEAT_PREVIEW_TARGET};
+        let source = OFFICIAL_R219_CLOSING_SELECTED_TARGET.2;
+        let target = OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), 5_896_142_848);
+        for denied in [(target, source), (target, target), (OFFICIAL_R219_SEAT_PREVIEW_TARGET.2, target)] {
             assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
         }
     }
