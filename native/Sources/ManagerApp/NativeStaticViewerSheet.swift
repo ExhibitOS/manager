@@ -40,7 +40,7 @@ private struct StaticViewerWebView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(origin: entry.url, failed: $failed) }
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: NSViewRepresentableContext<StaticViewerWebView>) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         let scope = [entry.url.deletingLastPathComponent().absoluteString, entry.authorization]
@@ -87,7 +87,7 @@ private struct StaticViewerWebView: NSViewRepresentable {
     })
     """#
 
-    func updateNSView(_ view: WKWebView, context: Context) {}
+    func updateNSView(_ view: WKWebView, context: NSViewRepresentableContext<StaticViewerWebView>) {}
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
         view.navigationDelegate = nil
         view.stopLoading()
