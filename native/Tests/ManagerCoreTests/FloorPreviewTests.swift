@@ -11,6 +11,10 @@ final class FloorPreviewTests: XCTestCase {
         let interior = "859525370a4599a465a502fff15d1cb26db3961ee11ac5bf0a6f64af070c355d"
         XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: interior, ready: true))
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: interior, ready: false))
+        let recordedDefault = "d39cb81496dd53b8c6da2036f71c600bb62ed9e5d78172d50301478e11b5b697"
+        XCTAssertTrue(NativeFloorRuntime.supports(manifestSHA256: recordedDefault, ready: true))
+        XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: recordedDefault, ready: false))
+        XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: "17c735dac234962c24bce968a646f09f2a54d7df42c172679b264c60df09332f", ready: true))
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: "7e823d9372aba3613fb8794f981c0f01cc97a420e3e82c388a783439bc933556", ready: true), "Do not retain the incomplete proposal")
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: String(repeating: "0", count: 64), ready: true))
         XCTAssertFalse(NativeFloorRuntime.supports(manifestSHA256: nil, ready: true))
@@ -30,6 +34,28 @@ final class FloorPreviewTests: XCTestCase {
             XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: pin, ready: false))
         }
         XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: String(repeating: "0", count: 64), ready: true))
+    }
+
+    func testRecordedFloorOwnerAndExportRequireTheExactOrdinaryRuntime() {
+        let recorded = "d39cb81496dd53b8c6da2036f71c600bb62ed9e5d78172d50301478e11b5b697"
+        let floorOnly = "46c3d7ef193e21eb8185e707cf886832ccd4d7942667407453e939b2f72ce111"
+        let incomplete = "17c735dac234962c24bce968a646f09f2a54d7df42c172679b264c60df09332f"
+        var owner = AuthoringSession(userId: "owner", tenantId: "tenant", role: "admin",
+            csrfToken: "test", expiresAt: "future")
+        owner.nativeSceneAuthoringProposalProfile = "saved-head-scene-v1"
+        owner.nativeRecordedFloorDefaultProfile = RecordedFloorCommand.profile
+        owner.nativePublicationProfile = "bounded-local-v1"
+        XCTAssertTrue(NativeAutomationSession.admitsRecordedFloorOwner(manifest: recorded, session: owner))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: recorded))
+        for rejected in [floorOnly, incomplete, recorded.uppercased(), String(repeating: "0", count: 64)] {
+            XCTAssertFalse(NativeAutomationSession.admitsRecordedFloorOwner(manifest: rejected, session: owner))
+            XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: rejected))
+        }
+        owner.nativePublicationProfile = nil
+        XCTAssertFalse(NativeAutomationSession.admitsRecordedFloorOwner(manifest: recorded, session: owner))
+        owner.nativePublicationProfile = "bounded-local-v1"
+        owner.nativeRecordedFloorDefaultProfile = nil
+        XCTAssertFalse(NativeAutomationSession.admitsRecordedFloorOwner(manifest: recorded, session: owner))
     }
 
     func testRetainedHostFrameMustMatchCurrentPreviewAndScopeWithoutInventingEchoFields() throws {

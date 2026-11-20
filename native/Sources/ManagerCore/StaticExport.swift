@@ -5,6 +5,10 @@ public struct NativeStaticExportReceipt: Codable, Sendable {
     public let publicationId: String, revisionSha256: String, indexSha256: String, manifestSha256: String
     public let files: UInt64, bytes: UInt64, output: String
 }
+public struct NativeStaticViewerEntry: Decodable, Identifiable, Sendable {
+    public let viewerId: String, url: URL, authorization: String, revisionSha256: String
+    public var id: String { viewerId }
+}
 public struct NativeStaticExportStatus: Codable, Sendable {
     struct OutputParentIdentity: Codable, Sendable {
         let device: UInt64, inode: UInt64

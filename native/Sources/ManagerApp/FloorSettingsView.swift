@@ -14,6 +14,8 @@ struct FloorSettingsView: View {
     let canApply: Bool
     let audioResourcesAvailable: Bool
     let images: [FloorSettings.Preset: NSImage]
+    let recordedSelectionAvailable: Bool
+    let canStageRecorded: Bool
     let preview: () -> Void
     let canReset: Bool
     let editable: Bool
@@ -22,6 +24,7 @@ struct FloorSettingsView: View {
     let media: [(id: String, name: String)]
     let stage: (FloorSettings.Preset, Set<FloorSettings.Field>) -> Void
     let reset: (FloorSettings.Field) -> Void
+    let chooseMaterial: () -> Void
     let apply: () -> Void
     let discard: () -> Void
     @Binding var preset: FloorSettings.Preset
@@ -61,8 +64,16 @@ struct FloorSettingsView: View {
     private func number(_ label: String, _ key: FloorFormBuffer.Numeric) -> some View {
         TextField(label, text: Binding(get: { buffer.numbers[key] ?? "" }, set: { buffer.numbers[key] = $0 }))
     }
+    @ViewBuilder
     private func resetButton(_ field: FloorSettings.Field) -> some View {
-        Button("현재 기준 재질 기본값", action: { reset(field) }).disabled(!canReset).help(Self.name(field) + "만 현재 바닥 재질의 기본값으로 바꿉니다.")
+        if field == .sound && recordedSelectionAvailable {
+            Button("현재 재질의 승인된 녹음으로 재설정", action: { reset(field) })
+                .disabled(!canStageRecorded)
+                .help("이 바닥의 기존 개별 녹음이나 끄기 선택을 현재 재질의 승인된 녹음으로 바꿉니다.")
+        } else {
+            Button("현재 기준 재질 기본값", action: { reset(field) }).disabled(!canReset)
+                .help(Self.name(field) + "만 현재 바닥 재질의 기본값으로 바꿉니다.")
+        }
     }
     var body: some View {
         GroupBox("바닥 재질과 소리") {
@@ -102,6 +113,11 @@ struct FloorSettingsView: View {
                 if buffer.settings != nil && !scope.contains(.sound) {
                     Text("선택하지 않은 소리는 유지합니다. 기본 소리 종류가 바뀌는 경우 기존 기준 재질을 유지하고 외관 값을 따로 지정합니다.").font(.caption).foregroundStyle(.secondary)
                 }
+                if recordedSelectionAvailable {
+                    Button("재질과 기본 발소리 선택", action: chooseMaterial).disabled(!canStageRecorded)
+                    Text("재질을 바꿔도 따로 선택한 녹음이나 발소리 끄기는 유지됩니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Button("선택 항목에 재질 기본값 입력") { stage(preset, scope) }.disabled(scope.isEmpty)
                 Text("이미지는 무늬를 고르기 위한 미리보기입니다. 대리석·카펫의 1 m는 편집 시작값이며 실측 크기가 아닙니다.").font(.caption).foregroundStyle(.secondary)
                 if let settings = buffer.settings, !buffer.restoreLegacy {
@@ -135,7 +151,7 @@ struct FloorSettingsView: View {
                         }
                         if media.isEmpty { Text("이 전시에 선택 가능한 WAV가 없습니다.").font(.caption) }
                     }
-                    if buffer.soundMode == "material-default" {
+                    if buffer.soundMode == "material-default" && !recordedSelectionAvailable {
                         Button("이 재질의 승인된 발소리 사용") { buffer.selectSoundMode("material-default") }
                             .disabled(!audioResourcesAvailable)
                         if !audioResourcesAvailable { Text("승인된 발소리를 지원하는 제작 서비스를 준비한 뒤 선택할 수 있습니다.").font(.caption).foregroundStyle(.secondary) }

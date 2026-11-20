@@ -22,8 +22,17 @@ public enum NativeFloorAudioRuntime {
 /// Only exact qualified floor-containing runtimes are admitted here. This
 /// is metadata/byte availability, not a claim of visual or audio qualification.
 public enum NativeFloorRuntime {
+    static func supportsRecordedDefault(manifestSHA256: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifestSHA256 == "d39cb81496dd53b8c6da2036f71c600bb62ed9e5d78172d50301478e11b5b697"
+        #else
+        false
+        #endif
+    }
+
     public static func supports(manifestSHA256: String?, ready: Bool) -> Bool {
         ready && (manifestSHA256 == "46c3d7ef193e21eb8185e707cf886832ccd4d7942667407453e939b2f72ce111"
+            || supportsRecordedDefault(manifestSHA256: manifestSHA256)
             || manifestSHA256 == NativeFloorAudioRuntime.personalManifestSHA256
             || manifestSHA256 == NativeFloorAudioRuntime.selectedPersonalManifestSHA256
             || manifestSHA256 == "b2ce49e9703cadf7d22b73ec5dfd93622489a07c34721f9bbe2b9f6df17ee28e"

@@ -11,7 +11,10 @@ final class StaticExportModel: ObservableObject {
     @Published private(set) var notice = ""
     @Published private(set) var starting = false
     @Published private(set) var inspectingBudget = false
+    @Published private(set) var openingViewer = false
+    @Published var viewer: NativeStaticViewerEntry?
     private var exportGeneration = UUID()
+    private var viewerGeneration = UUID()
     @Published private var budgetInspection: (publication: NativePublication, report: DocumentValue?)?
 
     func budgetInspection(for publication: NativePublication) -> (report: DocumentValue?, attempted: Bool) {
@@ -22,13 +25,59 @@ final class StaticExportModel: ObservableObject {
     private var read: (() async throws -> NativeStaticExportStatus?)?
     private var start: ((String, URL, Bool) async throws -> NativeStaticExportStatus)?
     private var cancel: (() async throws -> NativeStaticExportStatus?)?
+    private var openPreview: ((String) async throws -> NativeStaticViewerEntry)?
+    private var closePreview: ((String) async throws -> Void)?
+    @Published private var viewerReservation: (id: String, close: (String) async throws -> Void)?
+    private var closingViewer = false
+    var canOpenViewer: Bool { openPreview != nil && !openingViewer && viewerReservation == nil }
+    var viewerClosePending: Bool { viewer == nil && viewerReservation != nil }
     private var poll: Task<Void, Never>?
-    func connect(read: @escaping () async throws -> NativeStaticExportStatus?, start: @escaping (String, URL, Bool) async throws -> NativeStaticExportStatus, cancel: @escaping () async throws -> NativeStaticExportStatus?) async {
+    func connect(read: @escaping () async throws -> NativeStaticExportStatus?, start: @escaping (String, URL, Bool) async throws -> NativeStaticExportStatus, cancel: @escaping () async throws -> NativeStaticExportStatus?,
+                 openPreview: @escaping (String) async throws -> NativeStaticViewerEntry, closePreview: @escaping (String) async throws -> Void) async {
+        await closeViewer()
         exportGeneration = UUID()
         budgetInspection = nil
         self.read = read; self.start = start; self.cancel = cancel
+        self.openPreview = openPreview; self.closePreview = closePreview
         do { status = try await read(); if running { follow() } }
         catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_STATIC_EXPORT_FAILED") }
+    }
+    func showViewer(_ completed: NativeStaticExportStatus) async {
+        guard canOpenViewer, status?.jobId == completed.jobId, completed.state == "completed",
+              let receipt = completed.receipt, let openPreview, let closePreview else { return }
+        let generation = viewerGeneration
+        openingViewer = true; failure = nil
+        defer { openingViewer = false }
+        do {
+            let entry = try await openPreview(completed.jobId)
+            viewerReservation = (entry.id, closePreview)
+            guard !Task.isCancelled, generation == viewerGeneration, status?.jobId == completed.jobId else {
+                await closeViewer()
+                return
+            }
+            guard entry.revisionSha256 == receipt.revisionSha256,
+                  let origin = URLComponents(url: entry.url, resolvingAgainstBaseURL: false),
+                  origin.scheme == "http", origin.host == "127.0.0.1",
+                  let port = origin.port, port >= 1024, origin.path == "/index.html",
+                  origin.user == nil, origin.password == nil, origin.query == nil, origin.fragment == nil else {
+                await closeViewer()
+                throw BridgeFailure("NATIVE_STATIC_VIEWER_RECEIPT_INVALID")
+            }
+            viewer = entry
+        } catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_STATIC_VIEWER_UNAVAILABLE") }
+    }
+    func closeViewer(id: String? = nil) async {
+        guard id == nil || viewerReservation?.id == id else { return }
+        viewerGeneration = UUID()
+        viewer = nil
+        guard !closingViewer, let reservation = viewerReservation else { return }
+        closingViewer = true
+        defer { closingViewer = false }
+        do {
+            try await reservation.close(reservation.id)
+            viewerReservation = nil
+        }
+        catch { failure = error as? BridgeFailure ?? BridgeFailure("NATIVE_STATIC_VIEWER_UNAVAILABLE") }
     }
     private func follow() {
         guard poll == nil else { return }
@@ -95,6 +144,7 @@ final class StaticExportModel: ObservableObject {
     }
     func cancelAndWait() async -> Bool {
         exportGeneration = UUID()
+        await closeViewer()
         if inspectingBudget { budgetInspection = nil }
         guard running else { return true }
         await cancelExport()
@@ -146,6 +196,9 @@ struct NativeStaticExportView: View {
                     Label(value.privateEditor == true ? "개인 사본 편집을 포함한 전시 파일 저장 완료" : "정적 전시 파일 저장 완료", systemImage: "checkmark.circle")
                     Text("파일 \(receipt.files)개 · \(ByteCountFormatter.string(fromByteCount: Int64(receipt.bytes), countStyle: .file))")
                     Text(receipt.output).textSelection(.enabled)
+                    Button("내보낸 전시 열기") { Task { await model.showViewer(value) } }
+                        .disabled(!model.canOpenViewer)
+                    if model.openingViewer { ProgressView("내보낸 전시 파일을 확인하고 있습니다…") }
                     Button("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: receipt.output)]) }
                     if value.privateEditor != true { Text("인터넷 공개 결과는 아래 온라인 공개에서 확인하세요.").foregroundStyle(.secondary) }
                     DisclosureGroup("확인한 저장본") { Text(receipt.publicationId).textSelection(.enabled); Text(receipt.manifestSha256).textSelection(.enabled) }
@@ -157,7 +210,12 @@ struct NativeStaticExportView: View {
                 }
             }
             if let failure = model.failure { Text(failure.localizedDescription); DisclosureGroup("오류 상세") { Text(failure.code).textSelection(.enabled) } }
+            if model.viewerClosePending { Button("전시 닫기 다시 시도") { Task { await model.closeViewer() } } }
             if !model.notice.isEmpty { Text(model.notice).foregroundStyle(.secondary) }
+        }
+        .sheet(item: $model.viewer) { entry in
+            NativeStaticViewerSheet(entry: entry) { Task { await model.closeViewer(id: entry.id) } }
+                .onDisappear { Task { await model.closeViewer(id: entry.id) } }
         }
     }
 }
