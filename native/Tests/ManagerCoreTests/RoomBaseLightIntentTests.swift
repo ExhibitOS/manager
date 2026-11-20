@@ -100,6 +100,12 @@ final class RoomBaseLightIntentTests: XCTestCase {
         XCTAssertThrowsError(try request(extra, draft))
         var settings = without(details(baseline), "lightId"); settings["angularProfile"] = angular
         XCTAssertThrowsError(try request(setCommand(draft, row: light(draft), settings: settings), draft))
+        let ordinarySpotEdit: DocumentValue = .object(["type": .string("set-light-object"), "lightId": spotID,
+            "light": .object(["roomId": room, "type": .string("spot"), "intensity": .integer(101)]),
+            "settings": without(without(spotDetail, "lightId"), "angularProfile")])
+        XCTAssertThrowsError(try request(ordinarySpotEdit, draft)) {
+            XCTAssertEqual(($0 as? AuthoringFailure)?.code, "LIGHT_FIELDS_INVALID")
+        }
 
         for (field, value) in [("kind", DocumentValue.string("unknown")), ("extra", .integer(1)),
                                ("softnessAngle", .number(1e-45)), ("cutoffAngle", .number(1.5))] {

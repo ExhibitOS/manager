@@ -128,7 +128,8 @@ public struct LightObjectRequest: Sendable {
               lights.filter({ Self.same($0["id"].string, id) }).count == 1,
               let original = lights.first(where: { Self.same($0["id"].string, id) }),
               let actualId = original["id"].string else { throw Self.invalid }
-        _ = try Self.rows(frame.draft.candidate, namespace: Self.details)
+        _ = try Self.rows(frame.draft.candidate, namespace: Self.details,
+                          retainingUpperFraming: type == "set-room-ceiling-fill-brightness")
         _ = try Self.rows(frame.draft.candidate, namespace: Self.attachments)
         let furnishings = try Self.furnishings(frame.draft.candidate)
         let existingTrackAim = NativeTrackSpotAim.binding(in: frame.draft, lightId: actualId)
@@ -446,7 +447,8 @@ public struct LightObjectRequest: Sendable {
         return abs(q.reduce(0) { $0 + pow($1.double ?? 0, 2) } - 1) <= 1e-6
     }
 
-    private static func rows(_ candidate: DocumentValue, namespace: String) throws -> [DocumentValue] {
+    private static func rows(_ candidate: DocumentValue, namespace: String,
+                             retainingUpperFraming: Bool = false) throws -> [DocumentValue] {
         guard case .object(let extensions) = candidate["extensions"] else {
             if candidate["extensions"] == .null { return [] }; throw invalid
         }
@@ -461,7 +463,7 @@ public struct LightObjectRequest: Sendable {
                   case .object(var fields) = row else { throw invalid }
             fields.removeValue(forKey: "lightId")
             if namespace == details {
-                if let angular = fields.removeValue(forKey: "angularProfile") {
+                if retainingUpperFraming, let angular = fields.removeValue(forKey: "angularProfile") {
                     try checkStoredUpperFraming(angular, trackAim: row["trackAim"], light: light, candidate: candidate)
                 }
                 try checkSettings(.object(fields))
