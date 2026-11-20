@@ -595,8 +595,9 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && crate::native_payload::official_r219_ephemeral_seat_transition(pair) {
-        // Reuse the bounded r219 limit. A later cold census must fit with its trial allowance.
-        return 5623 * 1024 * 1024;
+        // Stopped Closing census: 6,061,590,510 bytes plus one 16 MiB trial
+        // WAL segment, rounded up to a whole MiB (cold receipt 23e4d15e).
+        return 5797 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
@@ -3694,10 +3695,33 @@ mod tests {
             OFFICIAL_R219_SEAT_PREVIEW_TARGET};
         let source = OFFICIAL_R219_CLOSING_SELECTED_TARGET.2;
         let target = OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2;
-        assert_eq!(checkpoint_inventory_limit((source, target), None), 5_896_142_848);
+        let limit = checkpoint_inventory_limit((source, target), None);
+        let measured = 6_061_590_510_u64;
+        let mib = 1024 * 1024;
+        assert_eq!(limit, (measured + 16 * mib).div_ceil(mib) * mib);
+        assert_eq!(limit, 6_078_595_072);
+        assert_eq!(checkpoint_inventory_limit((OFFICIAL_R219_SEAT_PREVIEW_TARGET.2, source), None), 5_896_142_848);
         for denied in [(target, source), (target, target), (OFFICIAL_R219_SEAT_PREVIEW_TARGET.2, target)] {
             assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
         }
+
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap()
+            .join(format!("r219-ephemeral-seat-checkpoint-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let relative = Path::new("blobs/inventory");
+        let file = private_options().open(root.join(relative)).unwrap();
+        file.set_len(measured).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, 5_896_142_848).unwrap_err().code, invalid().code);
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap()[relative].bytes, measured);
+        file.set_len(limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
