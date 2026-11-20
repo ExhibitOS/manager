@@ -536,7 +536,8 @@ pub(crate) fn transition_source_ledger(payload: &crate::native_payload::Payload,
 fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancellation045>) -> u64 {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting)
-        || crate::native_payload::official_room_lighting_pending_transition(pair)) {
+        || crate::native_payload::official_room_lighting_pending_transition(pair)
+        || crate::native_payload::official_room_lighting_selected_transition(pair)) {
         return OFFICIAL_ROOM_LIGHTING_CHECKPOINT_MAX_BYTES;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2117,6 +2118,11 @@ fn check_official_room_lighting_head(
 
 #[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
 fn check_official_room_lighting_pending_journal(service: &LifecycleService, profile: &Path) -> Result<()> {
+    check_official_room_lighting_journal(service, profile, OFFICIAL_ROOM_LIGHTING_PENDING_JOURNAL)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", target_os = "macos"))]
+fn check_official_room_lighting_journal(service: &LifecycleService, profile: &Path, expected_sha256: &str) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
     let metadata = fs::symlink_metadata(profile).map_err(|_| invalid())?;
     if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != crate::native_payload::OFFICIAL_ROOM_LIGHTING_PROFILE_ID
@@ -2124,8 +2130,22 @@ fn check_official_room_lighting_pending_journal(service: &LifecycleService, prof
     { return Err(invalid()); }
     let journal = super::installations::native_document::document_filename(&service.root);
     let bytes = installation_backup::source_bytes(profile, &journal, MAX_MANIFEST as u64, true)?;
-    if digest(&bytes) != OFFICIAL_ROOM_LIGHTING_PENDING_JOURNAL { return Err(invalid()); }
+    if digest(&bytes) != expected_sha256 { return Err(invalid()); }
     Ok(())
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+fn check_official_r215_selected_head(service: &LifecycleService, profile: &Path,
+    document: &super::installations::native_document::DocumentState) -> Result<()> {
+    const ETAG: &str = ""studio-r215-4c96569af0cca07ee52acaa281e6b9c486962efb10f4d2955afa799e859fbeed"";
+    const JOURNAL: &str = "69b149533717f7248a2e7e3f689df6c6fd6c2f14385ca573a43ffbf5f8d03fa9";
+    if document.revision != 603 || document.saved_edit_version != Some(273)
+        || document.etag.as_deref() != Some(ETAG) || document.pending.is_some()
+        || document.draft.as_ref().and_then(|draft| draft["editVersion"].as_u64()) != Some(273)
+    {
+        return Err(invalid());
+    }
+    check_official_room_lighting_journal(service, profile, JOURNAL)
 }
 
 impl InstallationController {
@@ -2295,6 +2315,11 @@ impl InstallationController {
             if FurnishingTransition::from_manifests(pair) == Some(FurnishingTransition::OfficialRoomLighting) {
                 check_official_room_lighting_head(service, profile, document)?;
             }
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            if crate::native_payload::official_room_lighting_selected_transition(pair) {
+                if retained_saved_head.is_some() { return Err(invalid()); }
+                check_official_r215_selected_head(service, profile, document)?;
+            }
             let owner = service.personal_identity()?;
             if let Some(saved) = retained_saved_head {
                 check_retained_saved_head(pair, document, saved, (&owner.0, &owner.1, &owner.2))?;
@@ -2412,6 +2437,11 @@ impl InstallationController {
             } else if target_manifest == crate::native_payload::OFFICIAL_ROOM_LIGHTING_PENDING_TARGET.2 {
                 if !saved_workspace_host { return Err(invalid()); }
                 check_official_room_lighting_pending_journal(service, profile)?;
+            }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if target_manifest == crate::native_payload::OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET.2 {
+                if !saved_workspace_host { return Err(invalid()); }
+                check_official_r215_selected_head(service, profile, document)?;
             }
             #[cfg(not(all(feature = "workspace-v5-owner-validation", target_os = "macos")))]
             let _ = profile;
