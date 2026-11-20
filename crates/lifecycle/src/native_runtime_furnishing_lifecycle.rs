@@ -517,7 +517,6 @@ impl Binding {
         }
     }
 
-    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn matches_catalog_tuple(&self, catalog: u32, tuple: (&str, &str, &str)) -> bool {
         self.catalog == catalog && tuple == (
             self.source_commit.as_str(),
