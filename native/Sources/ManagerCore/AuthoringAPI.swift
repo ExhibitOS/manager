@@ -4450,6 +4450,7 @@ public actor AuthoringAPI {
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || supportsCurrentImageThumbnailRuntime(manifest: manifest)
+            || NativeFloorRuntime.supportsRecordedDefault(manifestSHA256: manifest)
         #else
         false
         #endif

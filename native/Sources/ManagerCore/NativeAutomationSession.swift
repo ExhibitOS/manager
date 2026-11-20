@@ -161,6 +161,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsWalkingCollisionRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsRenderedSculptureThumbnailOexRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsCurrentImageThumbnailRuntime(manifest: $0.manifestSHA256)
+                    || NativeFloorRuntime.supportsRecordedDefault(manifestSHA256: $0.manifestSHA256)
             } == true
         let firstArchitectureManifest = existingWorkspaceV5?.manifestSHA256
         let firstArchitectureSupported = firstArchitectureManifest == "9e74b420d6c2d232294443d6db1e96a5e73828dfe164c7a74cec4e638999eb02"
@@ -468,9 +469,13 @@ public actor NativeAutomationSession {
         }
         let admitsPreservationReadback = AuthoringAPI.supportsPreReadyPreservationReadback(manifest: config.manifestSha256)
             && session.nativeAuthoringProposalProfile == "saved-head-v1"
+        let admitsRecordedFloors = Self.admitsRecordedFloorOwner(manifest: config.manifestSha256, session: session)
+        if NativeFloorRuntime.supportsRecordedDefault(manifestSHA256: config.manifestSha256), !admitsRecordedFloors {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsPartialWallPortal || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
-                || admitsPreparedBudget || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
+                || admitsPreparedBudget || admitsRecordedFloors || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
@@ -561,6 +566,10 @@ public actor NativeAutomationSession {
         }
         if AuthoringAPI.supportsWalkingCollisionRuntime(manifest: manifest), !session.advertisesFurnishingWalkingCollision {
             throw AuthoringFailure("FURNISHING_WALKING_COLLISION_UNAVAILABLE")
+        }
+        if NativeFloorRuntime.supportsRecordedDefault(manifestSHA256: manifest),
+           !Self.admitsRecordedFloorOwner(manifest: manifest, session: session) {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard try profileIdentity() == directory, session.userId == current.principalId,
               try value(await bridge.documentState(reopened)) == value(current) else {
@@ -2117,6 +2126,11 @@ public actor NativeAutomationSession {
     }
 
     // Only observations used by the existing saved-head static export guards; no credentials or publication intent.
+    static func admitsRecordedFloorOwner(manifest: String, session: AuthoringSession) -> Bool {
+        NativeFloorRuntime.supportsRecordedDefault(manifestSHA256: manifest)
+            && session.advertisesRecordedFloorDefault && session.nativePublicationProfile == "bounded-local-v1"
+    }
+
     static func savedHeadStaticReadinessProjection(runtimeSupported: Bool, publicationProfile: String?,
         policy: NativeViewportPolicy) -> DocumentValue {
         let publicationAdmitted = publicationProfile == "bounded-local-v1"

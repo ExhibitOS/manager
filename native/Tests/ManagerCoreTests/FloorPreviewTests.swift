@@ -36,6 +36,28 @@ final class FloorPreviewTests: XCTestCase {
         XCTAssertFalse(NativePrivateFloorCatalog.supports(manifestSHA256: String(repeating: "0", count: 64), ready: true))
     }
 
+    func testRecordedFloorOwnerAndExportRequireTheExactOrdinaryRuntime() {
+        let recorded = "d39cb81496dd53b8c6da2036f71c600bb62ed9e5d78172d50301478e11b5b697"
+        let floorOnly = "46c3d7ef193e21eb8185e707cf886832ccd4d7942667407453e939b2f72ce111"
+        let incomplete = "17c735dac234962c24bce968a646f09f2a54d7df42c172679b264c60df09332f"
+        var owner = AuthoringSession(userId: "owner", tenantId: "tenant", role: "admin",
+            csrfToken: "test", expiresAt: "future")
+        owner.nativeSceneAuthoringProposalProfile = "saved-head-scene-v1"
+        owner.nativeRecordedFloorDefaultProfile = RecordedFloorCommand.profile
+        owner.nativePublicationProfile = "bounded-local-v1"
+        XCTAssertTrue(NativeAutomationSession.admitsRecordedFloorOwner(manifest: recorded, session: owner))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: recorded))
+        for rejected in [floorOnly, incomplete, recorded.uppercased(), String(repeating: "0", count: 64)] {
+            XCTAssertFalse(NativeAutomationSession.admitsRecordedFloorOwner(manifest: rejected, session: owner))
+            XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: rejected))
+        }
+        owner.nativePublicationProfile = nil
+        XCTAssertFalse(NativeAutomationSession.admitsRecordedFloorOwner(manifest: recorded, session: owner))
+        owner.nativePublicationProfile = "bounded-local-v1"
+        owner.nativeRecordedFloorDefaultProfile = nil
+        XCTAssertFalse(NativeAutomationSession.admitsRecordedFloorOwner(manifest: recorded, session: owner))
+    }
+
     func testRetainedHostFrameMustMatchCurrentPreviewAndScopeWithoutInventingEchoFields() throws {
         let base = try NativeExhibitionDraft.new(), epoch = UUID().uuidString, tenant = UUID().uuidString, principal = UUID().uuidString
         func frame(_ draft: NativeExhibitionDraft, disabled: Bool = true) -> ViewportFrame {
