@@ -606,6 +606,11 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         return 5797 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r219_authored_height_transition(pair) {
+        // The stopped Nine Lights receipt increased the measured recovery set.
+        return 5972 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
         || crate::native_payload::white_rail_opposite_clean_transition(pair)
@@ -2251,6 +2256,14 @@ const OFFICIAL_R219_NINE_LIGHTS_SOURCE_FILES: [(&str, u64, &str); 2] = [
 ];
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const OFFICIAL_R219_AUTHORED_HEIGHT_SOURCE_FILES: [(&str, u64, &str); 2] = [
+    ("native-current-run.json", 4096,
+     "44fb30fb63c9bdd8e747ba175edc4e19d5d011c45e8b9c23c64491550605e67c"),
+    ("native-runs/2e62ce15-9b9e-4dea-9366-e7923a90e292/state.json", 1_048_576,
+     "f09fd0fd2ef5a04c1458d0d4c8a3f33f9e183aaf1d3ac41acea79f7128172b9a"),
+];
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl InstallationController {
     fn check_official_selected_saved_head(&self, service: &LifecycleService, profile: &Path,
         target: &str, document: &super::installations::native_document::DocumentState) -> Result<()> {
@@ -2267,26 +2280,29 @@ impl InstallationController {
                 crate::native_payload::OFFICIAL_R219_SEAT_PREVIEW_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_CLOSING_SELECTED_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2,
-                crate::native_payload::OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2].contains(&target) {
+                crate::native_payload::OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2,
+                crate::native_payload::OFFICIAL_R219_AUTHORED_HEIGHT_TARGET.2].contains(&target) {
                 check_r219_wheat_saved_document(document)?;
-                let publication_digest = if [crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2,
-                    crate::native_payload::OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2].contains(&target) {
-                    let stopped_files = if target == crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2 {
-                        OFFICIAL_R219_EPHEMERAL_SEAT_SOURCE_FILES
-                    } else {
-                        OFFICIAL_R219_NINE_LIGHTS_SOURCE_FILES
-                    };
-                    for (file, limit, expected) in stopped_files {
-                        if digest(&installation_backup::source_bytes(&service.root, file, limit, true)?) != expected {
-                            return Err(invalid());
-                        }
-                    }
-                    "676907e6f12d2f9e97bcd174c5abd166660ae4a8015f1ad4e5b59a2d1c77fa9c"
-                } else if target == crate::native_payload::OFFICIAL_R219_WHEAT_FIT_TARGET.2 {
-                    "8ad024a51df02b17f8dbb36e7467f12a494b032e4cc5a0ccf4c686ed44ec9135"
-                } else {
-                    "01518e0335b19f6a8e06c7a852e2aad36ff76b89948c4ebd1133feb86c1a17da"
+                use crate::native_payload::{OFFICIAL_R219_AUTHORED_HEIGHT_TARGET, OFFICIAL_R219_EPHEMERAL_SEAT_TARGET,
+                    OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET, OFFICIAL_R219_WHEAT_FIT_TARGET};
+                let closing_digest = "676907e6f12d2f9e97bcd174c5abd166660ae4a8015f1ad4e5b59a2d1c77fa9c";
+                let (publication_digest, stopped_files): (_, &[(&str, u64, &str)]) = match target {
+                    value if value == OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2 =>
+                        (closing_digest, &OFFICIAL_R219_EPHEMERAL_SEAT_SOURCE_FILES),
+                    value if value == OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2 =>
+                        (closing_digest, &OFFICIAL_R219_NINE_LIGHTS_SOURCE_FILES),
+                    value if value == OFFICIAL_R219_AUTHORED_HEIGHT_TARGET.2 =>
+                        ("c509d23e5f97c4e11a73b0b8cb177b87f0d7a87ce0a639584ce0a4d041a548be",
+                         &OFFICIAL_R219_AUTHORED_HEIGHT_SOURCE_FILES),
+                    value if value == OFFICIAL_R219_WHEAT_FIT_TARGET.2 =>
+                        ("8ad024a51df02b17f8dbb36e7467f12a494b032e4cc5a0ccf4c686ed44ec9135", &[]),
+                    _ => ("01518e0335b19f6a8e06c7a852e2aad36ff76b89948c4ebd1133feb86c1a17da", &[]),
                 };
+                for &(file, limit, expected) in stopped_files {
+                    if digest(&installation_backup::source_bytes(&service.root, file, limit, true)?) != expected {
+                        return Err(invalid());
+                    }
+                }
                 (622, 282, r#""studio-r219-491d609d502991d106e9f14c4446f0884bea0ae3b49f00fbbbb3c2d188f02c07""#,
                  "c1573c92bd41a75a161227fd5b6c4794e596c002f6400b8f94f0536b4bd912a2",
                  publication_digest)
@@ -2505,7 +2521,8 @@ impl InstallationController {
                 || crate::native_payload::official_r219_seat_preview_transition(pair)
                 || crate::native_payload::official_r219_closing_selected_transition(pair)
                 || crate::native_payload::official_r219_ephemeral_seat_transition(pair)
-                || crate::native_payload::official_r219_nine_lights_selected_transition(pair) {
+                || crate::native_payload::official_r219_nine_lights_selected_transition(pair)
+                || crate::native_payload::official_r219_authored_height_transition(pair) {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, pair.1, document)?;
             }
@@ -2643,7 +2660,8 @@ impl InstallationController {
                 crate::native_payload::OFFICIAL_R219_SEAT_PREVIEW_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_CLOSING_SELECTED_TARGET.2,
                 crate::native_payload::OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2,
-                crate::native_payload::OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2].contains(&target_manifest.as_str()) {
+                crate::native_payload::OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2,
+                crate::native_payload::OFFICIAL_R219_AUTHORED_HEIGHT_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, target_manifest.as_str(), document)?;
             }
@@ -3756,6 +3774,19 @@ mod tests {
         let target = OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2;
         assert_eq!(checkpoint_inventory_limit((source, target), None), 6_078_595_072);
         for denied in [(target, source), (target, target), (OFFICIAL_R219_CLOSING_SELECTED_TARGET.2, target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r219_authored_height_cap_is_only_for_its_occupied_pair() {
+        use crate::native_payload::{OFFICIAL_R219_AUTHORED_HEIGHT_TARGET, OFFICIAL_R219_EPHEMERAL_SEAT_TARGET,
+            OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET};
+        let source = OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2;
+        let target = OFFICIAL_R219_AUTHORED_HEIGHT_TARGET.2;
+        assert_eq!(checkpoint_inventory_limit((source, target), None), 6_262_095_872);
+        for denied in [(target, source), (target, target), (source, source), (OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2, target)] {
             assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
         }
     }
