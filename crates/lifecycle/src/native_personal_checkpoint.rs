@@ -1654,7 +1654,7 @@ impl LifecycleService {
         check_committed_checkpoint_bindings(&binding, &record, &environment,
             checkpoint.saved_document_sha256.as_deref(), document)?;
         let trial = checkpoint.furnishing.as_ref().ok_or_else(invalid)?;
-        let reopen = trial.plan_official_room_lighting_reopen(self, transition)?;
+        let (reopen, writer) = trial.plan_official_room_lighting_reopen(self, transition)?;
         verify_room_lighting_content(&self.root, &checkpoint, 0)?;
         checkpoint.official_room_lighting_reopen = Some(reopen.clone());
         let proposed: Personal = serde_json::from_slice(&binding.new_record).map_err(|_| invalid())?;
@@ -1663,6 +1663,7 @@ impl LifecycleService {
         publish_pending(&self.root, &envelope)?;
         let pending = read_pending(&self.root)?;
         if pending.strip_prefix(PENDING_PREFIX) != Some(envelope.as_slice()) { return Err(invalid()); }
+        drop(writer);
         let mut session = crate::native_runtime::Session::new_transition_trial(self, target, proposed.ports, guard,
             TrialBinding { fields, pending_sha256: digest(&pending) })?.with_official_room_lighting_reopen(reopen);
         let checked = (|| {

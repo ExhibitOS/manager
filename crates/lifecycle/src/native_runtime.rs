@@ -1149,13 +1149,13 @@ impl FurnishingTransitionTrial {
         &self,
         service: &LifecycleService,
         transition: FurnishingTransition,
-    ) -> Result<OfficialRoomLightingReopen> {
+    ) -> Result<(OfficialRoomLightingReopen, FurnishingTransitionWriterGuard)> {
         if transition != FurnishingTransition::OfficialRoomLighting {
             return Err(err(furnishing_lifecycle::ERROR));
         }
         let (writer, predecessor) = self.hold(service, transition)?;
         self.check_committed_recovery(&service.root, &writer, transition)?;
-        Ok(OfficialRoomLightingReopen { predecessor, generation: Uuid::new_v4().to_string() })
+        Ok((OfficialRoomLightingReopen { predecessor, generation: Uuid::new_v4().to_string() }, writer))
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
