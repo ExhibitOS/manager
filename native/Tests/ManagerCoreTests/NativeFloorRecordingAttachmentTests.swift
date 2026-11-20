@@ -18,8 +18,13 @@ final class NativeFloorRecordingAttachmentTests: XCTestCase {
     private var command: DocumentValue {
         .object(["surfaceId": .string(surface), "materialId": .string("cc0bfbc1-b1c8-4250-9014-dfdb6467b810"),
                  "materialVersion": .integer(1), "audioId": .string(audio), "audioRevision": .integer(1),
-                 "expectedMediaAsset": .object(["id": .string(audio), "mime": .string("audio/wav"), "bytes": .integer(60_146),
-                    "sha256": .string("989659bd0b4e01e1cd80287e3c5932f2220cafa07485d6d1b1d23907dedcbce4")])])
+                 "expectedMediaAsset": .object(["id": .string(audio), "path": .string("media/\(audio)/audio.wav"),
+                    "mime": .string("audio/wav"), "bytes": .integer(60_146),
+                    "sha256": .string("989659bd0b4e01e1cd80287e3c5932f2220cafa07485d6d1b1d23907dedcbce4"),
+                    "rights": .object(["holder": .string("Synthetic owner"), "ownership": .string("owner"),
+                        "licenseId": .string("CC0-1.0"), "creditLine": .string("Synthetic fixture"),
+                        "permissions": .object(["display": .bool(true), "export": .bool(true),
+                                                "download": .bool(false), "commercial": .bool(false)])])])])
     }
 
     func testEntranceCandidatePreservesOtherRowsAndExactReplay() throws {
@@ -38,6 +43,110 @@ final class NativeFloorRecordingAttachmentTests: XCTestCase {
         var applied = original
         try applied.replaceCandidate(expected)
         XCTAssertEqual(try attachment.expectedCandidate(in: applied), expected)
+    }
+
+    private func withExplicitSound(_ draft: NativeExhibitionDraft, assets: [DocumentValue]) throws -> NativeExhibitionDraft {
+        var draft = draft, candidate = draft.candidate
+        let target = DocumentValue.object(["kind": .string("surface"), "surfaceId": .string(surface)])
+        let namespace = FloorSettings.namespace
+        var bindings = try XCTUnwrap(candidate["extensions"][namespace]["bindings"].items)
+        let index: Int
+        if let existing = bindings.firstIndex(where: { $0["target"] == target }) {
+            index = existing
+        } else {
+            var row = try XCTUnwrap(bindings.first)
+            row["target"] = target
+            index = bindings.count
+            bindings.append(row)
+        }
+        bindings[index]["sound"] = .object(["mode": .string("explicit"), "gain": .number(0.5), "assetIds": .array(assets)])
+        candidate["extensions"][namespace]["bindings"] = .array(bindings)
+        try draft.replaceCandidate(candidate)
+        return draft
+    }
+
+    @MainActor
+    func testIdenticalNoChangeRequestRechecksRevocationAndHeadWithoutStagingSave() async throws {
+        let attachment = try NativeFloorRecordingAttachment(command)
+        let base = try exactDraft()
+        var applied = base
+        try applied.replaceCandidate(attachment.expectedCandidate(in: base))
+        applied = try withExplicitSound(applied, assets: [.string(audio.uppercased())])
+        XCTAssertEqual(try attachment.expectedCandidate(in: applied), applied.candidate)
+        let other = "65e85388-eec5-49ee-8956-e00c26478d6e"
+        var conflict = applied
+        var candidate = conflict.candidate, otherMedia = command["expectedMediaAsset"]
+        otherMedia["id"] = .string(other)
+        otherMedia["path"] = .string("media/\(other)/audio.wav")
+        candidate["mediaAssets"] = .array(try XCTUnwrap(candidate["mediaAssets"].items) + [otherMedia])
+        try conflict.replaceCandidate(candidate)
+        conflict = try withExplicitSound(conflict, assets: [.string(audio), .string(other)])
+        XCTAssertThrowsError(try attachment.expectedCandidate(in: conflict)) { error in
+            XCTAssertEqual((error as? AuthoringFailure)?.code, "FLOOR_RECORDING_ALREADY_BOUND")
+        }
+
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["profile", "out", "tmp"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700])
+        }
+        let helper = root.appendingPathComponent("helper")
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/applied-draft-session-helper.py")
+        try FileManager.default.copyItem(at: fixture, to: helper)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: helper.path)
+        let manifest = "41e741a15bedf72750de1033c3afd462503fc5901100a1660caf14ce25a980a1"
+        let state = NativeDocumentState(format: 1, revision: 622,
+            workspaceId: "11111111-1111-4111-8111-111111111111", tenantId: "22222222-2222-4222-8222-222222222222",
+            principalId: "33333333-3333-4333-8333-333333333333", draft: applied,
+            etag: "\"studio-r219-" + String(repeating: "a", count: 64) + "\"",
+            savedEditVersion: applied.document["editVersion"].integer, pending: nil)
+        let decoder = JSONDecoder(), encoder = JSONEncoder()
+        let value = try decoder.decode(DocumentValue.self, from: encoder.encode(state))
+        try encoder.encode(DocumentValue.object(["document": value, "floorRecording": command, "manifest": .string(manifest)]))
+            .write(to: root.appendingPathComponent("fixture.json"))
+        let server = Process(); server.executableURL = helper; server.arguments = ["--serve"]
+        server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
+        try server.run()
+        defer { try? Data().write(to: root.appendingPathComponent("stop")); server.waitUntilExit() }
+        let readyPath = root.appendingPathComponent("server-ready.json"), end = ContinuousClock.now.advanced(by: .seconds(5))
+        while !FileManager.default.fileExists(atPath: readyPath.path), server.isRunning, ContinuousClock.now < end {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let ready = try decoder.decode(DocumentValue.self, from: Data(contentsOf: readyPath))
+        let port = UInt16(try XCTUnwrap(ready["web"].integer))
+        let ports: [String: UInt16] = ["web": port, "api": port == 18102 ? 18104 : 18102, "database": port == 18103 ? 18105 : 18103]
+        let owner: DocumentValue = .object(["workspaceId": .string(state.workspaceId), "tenantId": .string(state.tenantId),
+            "principalId": .string(state.principalId), "manifestSHA256": .string(manifest)])
+        let existing = try decoder.decode(NativeAutomationSession.ExistingWorkspaceV5.self, from: encoder.encode(owner))
+        let session = try NativeAutomationSession(helper: helper, profile: root.appendingPathComponent("profile"), ports: ports,
+            outputRoot: root.appendingPathComponent("out"), temporaryRoot: root.appendingPathComponent("tmp"), inputs: [:],
+            existingWorkspaceV5: existing)
+        do {
+            let opened = try await session.open()
+            var fields: [String: DocumentValue] = ["version": .integer(1), "requestId": .string(UUID().uuidString.lowercased()),
+                "operation": .string("floor-recording-attach-apply"), "retainSaveIntent": .bool(true),
+                "expectedRevision": value["revision"], "expectedEditVersion": value["draft"]["editVersion"], "command": command]
+            fields["command"]?["etag"] = value["etag"]
+            for key in ["workspaceId", "tenantId", "principalId", "capability"] { fields[key] = opened[key] }
+            let request = DocumentValue.object(fields)
+            let first = try await session.execute(request)
+            XCTAssertEqual(first, value)
+            try Data().write(to: root.appendingPathComponent("revoke-floor-recording"))
+            do { _ = try await session.execute(request); XCTFail("A revoked recording must refuse the identical request") }
+            catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "ROOM_AUDIO_TRACK_UNAVAILABLE") }
+            try Data().write(to: root.appendingPathComponent("advance-floor-head"))
+            do { _ = try await session.execute(request); XCTFail("A moved head must refuse the identical request") }
+            catch let failure as AuthoringFailure { XCTAssertEqual(failure.code, "EXHIBITION_COMPARISON_STALE") }
+            let stats = try decoder.decode(DocumentValue.self, from: Data(contentsOf: root.appendingPathComponent("server-state.json")))
+            XCTAssertEqual(stats["audioReads"], .integer(3))
+            XCTAssertEqual(stats["floorChecks"], .integer(1))
+            XCTAssertEqual(stats["puts"], .integer(0))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("helper-state.json").path))
+            try await session.close()
+        } catch { try? await session.close(); throw error }
     }
 
     func testRejectsWrongAssetAndMutesWithoutChangingDraft() throws {

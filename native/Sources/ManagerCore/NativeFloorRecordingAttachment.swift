@@ -39,7 +39,7 @@ struct NativeFloorRecordingAttachment: Sendable {
         }
         let sound = try FloorSettings.all(in: draft.candidate).first(where: { $0.target.key == target.key })?.value["sound"] ?? .null
         guard sound["mode"] != .string("none") else { throw AuthoringFailure("FLOOR_RECORDING_MUTED") }
-        guard sound["mode"] != .string("explicit") || sound["assetId"] == .string(audioID) else {
+        guard sound["mode"] != .string("explicit") || (sound["assetIds"].items?.map { $0.string?.lowercased() } == [audioID]) else {
             throw AuthoringFailure("FLOOR_RECORDING_ALREADY_BOUND")
         }
         var candidate = draft.candidate

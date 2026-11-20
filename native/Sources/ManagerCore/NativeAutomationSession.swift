@@ -3499,12 +3499,11 @@ public actor NativeAutomationSession {
             let (_, _, latest) = try await checked(request)
             guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
             try Task.checkCancellation()
-            if let draft {
-                let pending = try NativeAppliedDraftSave.stage(latest, draft: draft, requestId: id)
-                result = try value(await bridge.saveDocumentState(context, state: pending))
-            } else {
-                result = try value(latest)
-            }
+            // Only a staged Save intent has a durable result to replay.
+            // An unchanged retry must validate the current head and approval again.
+            guard let draft else { return try value(latest) }
+            let pending = try NativeAppliedDraftSave.stage(latest, draft: draft, requestId: id)
+            result = try value(await bridge.saveDocumentState(context, state: pending))
         case "room-audio-apply":
             try checkedRevision(request, current)
             let command = try NativeAutomationArtworkRules.command(request, keys: ["roomId", "etag", "settings"])
