@@ -1279,6 +1279,12 @@ pub(crate) const OFFICIAL_R219_WHEAT_FIT_TARGET: RuntimeTuple = (
     "9ed0fb60a165ea714be4ea8e034264fa50bd075fc52c2cc3d031ab50c270190d",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const OFFICIAL_R219_SEAT_PREVIEW_TARGET: RuntimeTuple = (
+    "130170fa31b78c07a899126abd713e4bc2954534",
+    "bcca4f34093fb69a6e8292280a35aebf499a39986d28641b8f96a3c984a59851",
+    "f3edcbff044b2660893dded7253d6176342ae6d69dbfd6f20d657fc4f76698ab",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const OFFICIAL_ROOM_LIGHTING_PROFILE_ID: (u64, u64) = (16777244, 42815025);
 const OFFICIAL_ROOM_LIGHTING_SQL: (&str, u64, &str) = (
     "platform/scripts/occupied-room-lighting-migration.sql", 2159,
@@ -1294,7 +1300,8 @@ pub(crate) fn official_room_lighting_catalog(tuple: (&str, &str, &str)) -> Optio
         if [OFFICIAL_ROOM_LIGHTING_TARGET, OFFICIAL_ROOM_LIGHTING_PENDING_TARGET,
             OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET, OFFICIAL_R215_ORIGINAL_REPAIR_TARGET,
             OFFICIAL_R216_SELECTED_TARGET, OFFICIAL_R217_PUBLIC_FINISHES_TARGET, OFFICIAL_R217_CANNON_TARGET,
-            OFFICIAL_R217_WHEAT_TARGET, OFFICIAL_R218_PAINTING_TARGET, OFFICIAL_R219_WHEAT_FIT_TARGET].contains(&tuple) {
+            OFFICIAL_R217_WHEAT_TARGET, OFFICIAL_R218_PAINTING_TARGET, OFFICIAL_R219_WHEAT_FIT_TARGET,
+            OFFICIAL_R219_SEAT_PREVIEW_TARGET].contains(&tuple) {
             return Some(WorkspaceFurnishingCatalog::DefaultCatalogue057);
         }
     }
@@ -1349,6 +1356,11 @@ pub(crate) fn official_r218_painting_transition(pair: (&str, &str)) -> bool {
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn official_r219_wheat_fit_transition(pair: (&str, &str)) -> bool {
     pair == (OFFICIAL_R218_PAINTING_TARGET.2, OFFICIAL_R219_WHEAT_FIT_TARGET.2)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn official_r219_seat_preview_transition(pair: (&str, &str)) -> bool {
+    pair == (OFFICIAL_R219_WHEAT_FIT_TARGET.2, OFFICIAL_R219_SEAT_PREVIEW_TARGET.2)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2154,7 +2166,8 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
     if [OFFICIAL_ROOM_LIGHTING_TARGET.2, OFFICIAL_ROOM_LIGHTING_PENDING_TARGET.2,
         OFFICIAL_ROOM_LIGHTING_SELECTED_TARGET.2, OFFICIAL_R215_ORIGINAL_REPAIR_TARGET.2,
         OFFICIAL_R216_SELECTED_TARGET.2, OFFICIAL_R217_PUBLIC_FINISHES_TARGET.2, OFFICIAL_R217_CANNON_TARGET.2,
-        OFFICIAL_R217_WHEAT_TARGET.2, OFFICIAL_R218_PAINTING_TARGET.2, OFFICIAL_R219_WHEAT_FIT_TARGET.2].contains(&manifest) {
+        OFFICIAL_R217_WHEAT_TARGET.2, OFFICIAL_R218_PAINTING_TARGET.2, OFFICIAL_R219_WHEAT_FIT_TARGET.2,
+        OFFICIAL_R219_SEAT_PREVIEW_TARGET.2].contains(&manifest) {
         return true;
     }
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
@@ -2382,6 +2395,11 @@ impl FurnishingTransition {
         if official_r219_wheat_fit_transition(pair) {
             return Some(Self::SameCatalog { source: OFFICIAL_R218_PAINTING_TARGET,
                 target: OFFICIAL_R219_WHEAT_FIT_TARGET, catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057 });
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if official_r219_seat_preview_transition(pair) {
+            return Some(Self::SameCatalog { source: OFFICIAL_R219_WHEAT_FIT_TARGET,
+                target: OFFICIAL_R219_SEAT_PREVIEW_TARGET, catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057 });
         }
         if let Some((source, target)) = r285_greek_thumbnail_trace_runtime_pair(pair) {
             return Some(Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -3480,6 +3498,35 @@ pub(crate) mod normal_oex_release_declaration_tests {
         }
         assert!(target.static_detail_export_resources(true).is_ok());
         assert!(target.static_detail_export_resources(false).is_err());
+        assert!(Payload::open_fresh_workspace_v7_validation(&target_path).is_err());
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(to.2));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires reviewed post-Wheat and forward viewport payloads"]
+    fn official_r219_seat_preview_only_admits_the_post_wheat_occupied_pair() {
+        let path = |name| PathBuf::from(std::env::var_os(name).unwrap());
+        let source_path = path("EXHIBITOS_TEST_R219_WHEAT_FIT_RUNTIME");
+        let target_path = path("EXHIBITOS_TEST_R219_SEAT_PREVIEW_RUNTIME");
+        let source = Payload::open_saved_workspace_transition(&source_path).unwrap();
+        let target = Payload::open_saved_workspace_transition(&target_path).unwrap();
+        let from = OFFICIAL_R219_WHEAT_FIT_TARGET;
+        let to = OFFICIAL_R219_SEAT_PREVIEW_TARGET;
+        let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+        assert_eq!(source.context().manifest_sha256, from.2);
+        assert_eq!(target.context().manifest_sha256, to.2);
+        assert_eq!(FurnishingTransition::from_manifests((from.2, to.2)),
+            Some(FurnishingTransition::SameCatalog { source: from, target: to, catalog }));
+        assert_eq!(target.workspace_furnishing_ledger(catalog).unwrap(), source.workspace_furnishing_ledger(catalog).unwrap());
+        assert_eq!(official_room_lighting_catalog((to.0, from.1, to.2)), None);
+        for denied in [(to.2, from.2), (to.2, to.2), (OFFICIAL_R218_PAINTING_TARGET.2, to.2),
+            (from.2, "c64537c2f33dd731270a0ec14d9466af459227bf0603af155ee31bd35e5196a0")] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        assert!(target.static_detail_export_resources(true).is_err());
+        assert!(target.static_detail_export_resources(false).is_err());
+        assert!(Payload::open_workspace_v5_validation(&target_path, true).is_err());
         assert!(Payload::open_fresh_workspace_v7_validation(&target_path).is_err());
         assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(to.2));
     }
