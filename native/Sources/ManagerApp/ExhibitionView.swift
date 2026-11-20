@@ -1418,7 +1418,7 @@ final class ExhibitionModel: ObservableObject {
         do { _ = try BenchSettings.list(in: draft); _ = try BenchViewpoint.list(in: draft); return true } catch { return false }
     }
     var canEditBench: Bool {
-        !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && viewportController.connected && viewportController.benchInspectorSupported && benchMetadataEditable
+        !entrancePreviewActive && !busy && !pending && !immutable && !placingArtwork && !formDirty && !positionDirty && !architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && !architectureApplying && viewportController.connected && viewportController.benchInspectorSupported && benchMetadataEditable
     }
     var canAddBench: Bool { canEditBench && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && benches.count < 32 && draft?.rooms.contains(where: { $0["id"].string == roomId }) == true }
     var canSelectBench: Bool { canSelectCatalog }
@@ -1439,6 +1439,10 @@ final class ExhibitionModel: ObservableObject {
         guard canEditBench, benchPreviewAccessID == viewportAccessID, let preview = benchPreview,
               preview.base == draft, selectedBenchId == preview.command.benchId else { return false }
         return (try? currentBenchCommand()) == preview.command
+    }
+    var canPreviewBenchSeat: Bool {
+        canApplyBench && benchPreview?.command.requiresViewpointTargetHeight == true
+            && viewportController.entranceSeatPreviewSupported && viewportPresentation == .threeD
     }
     @Published private(set) var selectedPlaqueId = ""
     @Published var plaque: PlaqueFormBuffer? { didSet { plaquePreview = nil; plaquePreviewAccessID = nil; plaqueStatus = "" } }
@@ -1855,14 +1859,26 @@ final class ExhibitionModel: ObservableObject {
     }
     func previewEntrance(_ action: EntrancePreviewAction = .show, thumbnails: Bool = false, systemReducedMotion: Bool) {
         guard !entranceCredentialRenewalPending, !busy, !pending, !placingArtwork, !architectureApplying, !entrancePreviewBusy, entranceEditable,
-              !surfaceMaterialPreviewing, !lightPreviewing, !benchPreviewing, !plaquePreviewing, !furnishingPreviewing, !spaceLightingPreviewing, !infoStandPreviewing,
+              !surfaceMaterialPreviewing, !lightPreviewing, !plaquePreviewing, !furnishingPreviewing, !spaceLightingPreviewing, !infoStandPreviewing,
               let base = draft else { return }
+        let seating = action == .seat
+        guard seating ? (canPreviewBenchSeat && !thumbnails) : !benchPreviewing else { return }
         do {
+            let seat: ViewportBenchSeatTarget?
+            let display: NativeExhibitionDraft
+            if seating, let preview = benchPreview {
+                seat = try ViewportBenchSeatTarget(preview: preview, draft: base,
+                                                  selectedBenchId: selectedBenchId, command: currentBenchCommand())
+                display = preview.displayDraft
+            } else {
+                seat = nil
+                display = try entrancePreviewDraft ?? appliedFields()
+            }
             entranceSystemReducedMotion = systemReducedMotion
-            let display = try entrancePreviewDraft ?? appliedFields()
             let access = viewportAccessID, generation = UUID()
             let thumbnailGeneration = entranceThumbnailGeneration
-            let device = entrancePreviewDevice, scenario = entrancePreviewScenario
+            let device: EntrancePreviewDevice = seating ? .desktop : entrancePreviewDevice
+            let scenario: EntrancePreviewScenario = seating ? .normal : entrancePreviewScenario
             let reduced = systemReducedMotion || entrancePreviewReducedMotion
             let locale = entrancePreviewLocale.isEmpty ? nil : entrancePreviewLocale
             entrancePreviewTask?.cancel(); entrancePreviewGeneration = generation
@@ -1876,12 +1892,17 @@ final class ExhibitionModel: ObservableObject {
                     guard self.entrancePreviewGeneration == generation, self.viewportAccessID == access,
                           self.draft == base, self.entrancePreviewDraft == display,
                           !thumbnails || self.entranceThumbnailGeneration == thumbnailGeneration,
-                          output.request.matchesContext(draft: display, device: self.entrancePreviewDevice, scenario: self.entrancePreviewScenario,
+                          seat == nil || (self.benchPreviewAccessID == access && self.selectedBenchId == seat?.benchId
+                              && self.benchPreview?.displayDraft == display
+                              && (try? self.currentBenchCommand()) == self.benchPreview?.command),
+                          output.request.matchesContext(draft: display, device: seating ? device : self.entrancePreviewDevice,
+                                                        scenario: seating ? scenario : self.entrancePreviewScenario,
                                                         reducedMotion: self.entranceSystemReducedMotion || self.entrancePreviewReducedMotion,
                                                         theme: theme, locale: self.entrancePreviewLocale.isEmpty ? nil : self.entrancePreviewLocale) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 }
                 func input(_ action: EntrancePreviewAction, theme: CoverEntryTheme? = nil) -> NativeEntrancePreviewInput {
-                    NativeEntrancePreviewInput(action: action, device: device, scenario: scenario, reducedMotion: reduced, theme: theme, locale: locale, draft: display)
+                    NativeEntrancePreviewInput(action: action, device: device, scenario: scenario, reducedMotion: reduced, theme: theme, locale: locale, draft: display,
+                                               seat: action == .seat ? seat : nil)
                 }
                 do {
                     if thumbnails {
@@ -1897,17 +1918,26 @@ final class ExhibitionModel: ObservableObject {
                     } else {
                         let output = try await self.viewportController.entrancePreview(input(action))
                         try check(output)
-                        self.entrancePreviewStatus = action == .walk ? "같은 전시를 관람하고 있습니다. 편집 복귀로 입력과 시점을 이어갑니다." : "관람객에게 보이는 실제 표지입니다. 미리보기는 저장하지 않습니다."
+                        switch action {
+                        case .seat: self.entrancePreviewStatus = "벤치에 앉은 시점을 보고 있습니다. 편집으로 돌아가면 벤치 입력을 이어서 확인할 수 있습니다."
+                        case .walk: self.entrancePreviewStatus = "같은 전시를 관람하고 있습니다. 편집 복귀로 입력과 시점을 이어갑니다."
+                        default: self.entrancePreviewStatus = "관람객에게 보이는 실제 표지입니다. 미리보기는 저장하지 않습니다."
+                        }
                     }
                 } catch {
                     if self.entrancePreviewGeneration == generation {
-                        self.entrancePreviewStatus = "미리보기를 준비하지 못했습니다. 입력은 유지됩니다. 편집 복귀 후 연결과 이미지 상태를 확인하세요."
+                        self.entrancePreviewStatus = seating
+                            ? "앉은 시점을 확인하지 못했습니다. 편집으로 돌아가 벤치 입력을 이어서 확인하세요."
+                            : "미리보기를 준비하지 못했습니다. 입력은 유지됩니다. 편집 복귀 후 연결과 이미지 상태를 확인하세요."
                         self.viewportController.diagnose("ENTRANCE", error)
                     }
                 }
                 if self.entrancePreviewGeneration == generation { self.entrancePreviewBusy = false; self.entrancePreviewTask = nil }
             }
-        } catch { entrancePreviewStatus = "표지 입력을 확인하세요. 숫자 범위와 이미지·언어 설정을 적용할 수 없습니다." }
+        } catch {
+            entrancePreviewStatus = seating ? "현재 벤치 미리보기를 다시 확인하세요."
+                : "표지 입력을 확인하세요. 숫자 범위와 이미지·언어 설정을 적용할 수 없습니다."
+        }
     }
     func closeEntrancePreview() {
         if entranceHostRecovering {
@@ -1920,9 +1950,12 @@ final class ExhibitionModel: ObservableObject {
             guard let self else { return }
             do {
                 guard let display else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-                let input = NativeEntrancePreviewInput(action: .close, device: self.entrancePreviewDevice, scenario: self.entrancePreviewScenario,
+                let seatReturn = self.benchPreview?.displayDraft == display
+                let input = NativeEntrancePreviewInput(action: .close, device: seatReturn ? .desktop : self.entrancePreviewDevice,
+                                                      scenario: seatReturn ? .normal : self.entrancePreviewScenario,
                                                       reducedMotion: self.entranceSystemReducedMotion || self.entrancePreviewReducedMotion,
-                                                      theme: nil, locale: self.entrancePreviewLocale.isEmpty ? nil : self.entrancePreviewLocale, draft: display)
+                                                      theme: nil, locale: self.entrancePreviewLocale.isEmpty ? nil : self.entrancePreviewLocale,
+                                                      draft: display, seatReturn: seatReturn)
                 _ = try await self.viewportController.entrancePreview(input)
             } catch {
                 if self.entrancePreviewGeneration == generation {
@@ -2785,7 +2818,7 @@ final class ExhibitionModel: ObservableObject {
         catch { failure = error as? AuthoringFailure ?? AuthoringFailure("BENCH_FIELDS_INVALID") }
     }
     func discardBench() {
-        guard !busy, !pending, !architectureApplying, !placingArtwork else { return }
+        guard !entrancePreviewActive, !busy, !pending, !architectureApplying, !placingArtwork else { return }
         if benchAdding { selectedBenchId = "" }
         syncBench()
     }

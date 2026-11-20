@@ -280,7 +280,7 @@ struct NativeExhibitionView: View {
                     .keyboardShortcut(.cancelAction)
             } else {
                 Button { model.previewEntrance(.walk, systemReducedMotion: reducedMotion) } label: { Label("걸어보기", systemImage: "figure.walk") }
-                    .labelStyle(.iconOnly).disabled(!ready || !model.viewportController.connected || !model.viewportController.entrancePreviewSupported || model.busy || model.pending || model.entrancePreviewBusy || model.infoStandPreviewing)
+                    .labelStyle(.iconOnly).disabled(!ready || !model.viewportController.connected || !model.viewportController.entrancePreviewSupported || model.busy || model.pending || model.entrancePreviewBusy || model.benchPreviewing || model.infoStandPreviewing)
             }
             Button { Task { if controller.editingContextActive || model.canRetryViewerBudgetPolicy { await model.save() } } } label: { Label(model.pending ? "저장 응답 다시 확인" : "전시 저장", systemImage: "square.and.arrow.down") }
                 .labelStyle(.iconOnly).disabled(saveLocked).keyboardShortcut("s", modifiers: .command)

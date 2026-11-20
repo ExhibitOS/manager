@@ -265,14 +265,37 @@ public struct ViewportAcceptance: Decodable, Sendable {
     public var supportsPlaqueInspector: Bool { accepted && capabilities?.contains("plaque-inspector-v1") == true }
     public var supportsSurfaceMaterialTextures: Bool { accepted && capabilities?.contains(SurfaceMaterialTextureBinding.capability) == true }
     public var supportsEntrancePreview: Bool { accepted && capabilities?.contains("entrance-preview-v1") == true }
+    public var supportsEntranceSeatPreview: Bool {
+        supportsEntrancePreview && boundedReadOnly == false && editingCapability == nil
+            && capabilities?.contains("entrance-seat-preview-v1") == true
+    }
     public var supportsPlan: Bool {
         accepted && presentations?.contains(.threeD) == true && presentations?.contains(.plan) == true
     }
 }
 
-public enum EntrancePreviewAction: String, Sendable { case show, replay, walk, thumbnail, close }
+public enum EntrancePreviewAction: String, Sendable { case show, replay, walk, thumbnail, close, seat }
 public enum EntrancePreviewDevice: String, CaseIterable, Sendable { case desktop, mobile }
 public enum EntrancePreviewScenario: String, CaseIterable, Sendable { case normal, slow, imageFailed = "image-failed" }
+
+public struct ViewportBenchSeatTarget: Equatable, Sendable {
+    public let benchId: String
+    public let viewpointId: String
+    fileprivate let displayDraft: NativeExhibitionDraft
+
+    public init(preview: BenchPreview, draft: NativeExhibitionDraft, selectedBenchId: String,
+                command: BenchCommand) throws {
+        guard draft == preview.base, command == preview.command,
+              case .setViewpointTargetHeight(let benchId, let viewpointId, _) = command,
+              selectedBenchId == benchId,
+              [benchId, viewpointId].allSatisfy({ UUID(uuidString: $0) != nil }) else {
+            throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+        }
+        self.benchId = benchId
+        self.viewpointId = viewpointId
+        displayDraft = preview.displayDraft
+    }
+}
 
 /// Read-only authoring signals. None are inserted into the draft or OEX data.
 public struct ViewportEntrancePreviewRequest: Sendable {
@@ -280,35 +303,55 @@ public struct ViewportEntrancePreviewRequest: Sendable {
     public let value: DocumentValue
     public let action: EntrancePreviewAction
     public let device: EntrancePreviewDevice
-    public init(frame: ViewportFrame, action: EntrancePreviewAction, device: EntrancePreviewDevice, scenario: EntrancePreviewScenario, reducedMotion: Bool, theme: CoverEntryTheme? = nil, locale: String? = nil) throws {
-        guard frame.sequence > 0, [frame.epoch, frame.tenantId, frame.principalId].allSatisfy({ UUID(uuidString: $0) != nil }) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+    private let seatReturn: Bool
+    public init(frame: ViewportFrame, action: EntrancePreviewAction, device: EntrancePreviewDevice, scenario: EntrancePreviewScenario, reducedMotion: Bool, theme: CoverEntryTheme? = nil, locale: String? = nil,
+                seat: ViewportBenchSeatTarget? = nil, seatReturn: Bool = false) throws {
+        let seatContext = seat != nil || seatReturn
+        guard (action == .seat) == (seat != nil), !seatReturn || action == .close,
+              !seatContext || (frame.disabled && frame.workspaceId == nil && frame.presentation == .threeD
+                  && device == .desktop && scenario == .normal && theme == nil),
+              seat == nil || seat?.displayDraft == frame.draft,
+              frame.sequence > 0, [frame.epoch, frame.tenantId, frame.principalId].allSatisfy({ UUID(uuidString: $0) != nil }) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
         if let locale {
             guard locale.utf16.count <= 35, locale.range(of: "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$", options: .regularExpression) != nil else { throw AuthoringFailure("VIEWER_ENTRANCE_INVALID") }
         }
-        self.frame = frame; self.action = action; self.device = device
-        value = .object([
+        self.frame = frame; self.action = action; self.device = device; self.seatReturn = seatReturn
+        var request: DocumentValue = .object([
             "version": .integer(1), "epoch": .string(frame.epoch), "sequence": .integer(Int64(frame.sequence)),
             "tenantId": .string(frame.tenantId), "principalId": .string(frame.principalId), "requestId": .string(UUID().uuidString.lowercased()),
             "type": .string(action.rawValue), "device": .string(device.rawValue), "scenario": .string(scenario.rawValue), "reducedMotion": .bool(reducedMotion),
             "theme": theme.map { .string($0.rawValue) } ?? .null, "locale": locale.map { .string($0) } ?? .null
         ])
+        if let seat {
+            request["benchId"] = .string(seat.benchId)
+            request["viewpointId"] = .string(seat.viewpointId)
+        }
+        value = request
     }
     public func checkedReply(_ reply: DocumentValue) throws -> ViewportEntrancePreviewReply {
         let binding: Set<String> = ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"]
         let extra: Set<String> = ["baseDraft", "theme", "locale", "device", "scenario", "reducedMotion", "status", "mode", "renderGeneration", "imageStatus", "viewport", "snapshotRect"]
-        guard case .object(let fields) = reply, Set(fields.keys) == binding.union(extra),
+        let seatBinding: Set<String> = action == .seat ? ["benchId", "viewpointId"] : []
+        guard case .object(let fields) = reply, Set(fields.keys) == binding.union(extra).union(seatBinding),
               try JSONEncoder().encode(reply).count <= 1_100_000 else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-        for key in binding { guard reply[key] == value[key] else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") } }
+        for key in binding.union(seatBinding) { guard reply[key] == value[key] else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") } }
         for key in ["theme", "locale", "device", "scenario", "reducedMotion"] { guard reply[key] == value[key] else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") } }
+        let mode: String
+        switch action {
+        case .close: mode = "editor"
+        case .walk: mode = "walk"
+        case .seat: mode = "seated"
+        case .show, .replay, .thumbnail: mode = "cover"
+        }
         guard reply["baseDraft"] == frame.draft.document, reply["status"].string == "ready",
-              reply["mode"].string == (action == .close ? "editor" : action == .walk ? "walk" : "cover"),
+              reply["mode"].string == mode,
               let renderGeneration = reply["renderGeneration"].integer, (1...9_007_199_254_740_991).contains(renderGeneration),
               ["absent", "ready", "failed"].contains(reply["imageStatus"].string ?? ""),
               case .object(let viewport) = reply["viewport"], Set(viewport.keys) == Set(["width", "height"]),
               let width = reply["viewport"]["width"].double, let height = reply["viewport"]["height"].double,
               width.isFinite, height.isFinite, (1...4096).contains(width), (1...4096).contains(height),
               device != .mobile || (width == 360 && height == 740),
-              device != .desktop || width >= 768,
+              device != .desktop || action == .seat || seatReturn || width >= 768,
               case .object(let rectangle) = reply["snapshotRect"], Set(rectangle.keys) == Set(["x", "y", "width", "height"]),
               let x = rectangle["x"]?.double, let y = rectangle["y"]?.double, let w = rectangle["width"]?.double, let h = rectangle["height"]?.double,
               [x, y, w, h].allSatisfy({ $0.isFinite }), x >= 0, y >= 0, w > 0, h > 0, x + w <= width, y + h <= height else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }

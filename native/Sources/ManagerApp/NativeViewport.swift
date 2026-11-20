@@ -13,6 +13,8 @@ struct NativeEntrancePreviewInput {
     let theme: CoverEntryTheme?
     let locale: String?
     let draft: NativeExhibitionDraft
+    var seat: ViewportBenchSeatTarget? = nil
+    var seatReturn = false
 }
 struct NativeEntrancePreviewOutput {
     let request: ViewportEntrancePreviewRequest
@@ -169,6 +171,8 @@ final class NativeViewportController: ObservableObject {
     @Published fileprivate(set) var plaqueInspectorSupported = false
     @Published fileprivate(set) var surfaceMaterialTexturesSupported = false
     @Published fileprivate(set) var entrancePreviewSupported = false
+    @Published fileprivate(set) var entranceSeatPreviewSupported = false
+    fileprivate var readyEntranceSceneDraft: NativeExhibitionDraft?
     fileprivate var acknowledgedFrame: ViewportFrame?
     @Published fileprivate(set) var displayReadout = ""
     @Published private(set) var readingDisplay = false
@@ -230,8 +234,13 @@ final class NativeViewportController: ObservableObject {
         // handshake before any preview request can name that frame.
         for _ in 0..<100 {
             try Task.checkCancellation()
-            if connected, acknowledgedFrame?.disabled == true, acknowledgedFrame?.draft == input.draft {
-                guard entrancePreviewSupported, let entrancePreviewAction else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+            if connected, let frame = acknowledgedFrame, frame.disabled, frame.draft == input.draft {
+                guard entrancePreviewSupported, let entrancePreviewAction,
+                      input.action != .seat || entranceSeatPreviewSupported else { throw AuthoringFailure("VIEWPORT_NOT_READY") }
+                if input.action == .seat, readyEntranceSceneDraft != frame.draft {
+                    try await Task.sleep(for: .milliseconds(50))
+                    continue
+                }
                 return try await entrancePreviewAction(input)
             }
             try await Task.sleep(for: .milliseconds(50))
@@ -548,7 +557,7 @@ struct NativeViewport: NSViewRepresentable {
             #if DEBUG
             if controller.owner == epoch { controller.snapshotPolicyObservation = nil }
             #endif
-            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }
+            if controller.owner == epoch { controller.entrancePreviewAction = nil; controller.entrancePreviewSupported = false; controller.entranceSeatPreviewSupported = false; controller.readyEntranceSceneDraft = nil; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }
             active = false; generation = UUID(); sendTask?.cancel()
             if controller.owner == epoch { controller.sharedFurnishingVisualsAction = nil; controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false }
             if controller.owner == epoch { controller.furnishingVisualsAction = nil; controller.furnishingThumbnailAction = nil; controller.spaceSettingsAction = nil; controller.viewingPlanAction = nil; controller.lightInspectorAction = nil; controller.lightObjectAction = nil; controller.wallFinishAction = nil; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.roomCeilingFillSupported = false; controller.wallFinishSupported = false; controller.benchInspectorAction = nil; controller.benchInspectorSupported = false; controller.plaqueInspectorAction = nil; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false }
@@ -586,7 +595,7 @@ struct NativeViewport: NSViewRepresentable {
                 controller.retireCameraInteraction()
                 controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil
                 controller.sharedFurnishingVisualsSupported = false; controller.plinthEnvelopeAlignSupported = false
-                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false
+                entranceOperation = nil; controller.entrancePreviewSupported = false; controller.entranceSeatPreviewSupported = false; controller.readyEntranceSceneDraft = nil; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false
                 controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.roomCeilingFillSupported = false; controller.wallFinishSupported = false; controller.benchInspectorSupported = false; controller.plaqueInspectorSupported = false; controller.surfaceMaterialTexturesSupported = false
                 installedToken = value.credentials.token
                 generation = UUID(); sequence = 0; sent = 0; fingerprint = nil; prepared = false
@@ -613,7 +622,10 @@ struct NativeViewport: NSViewRepresentable {
             controller.retireCameraInteraction()
             cameraResetFrame = nil
             fingerprint = hash; sequence += 1
-            if latest?.draft != value.draft { controller.sceneProgress = .preparing }
+            if latest?.draft != value.draft {
+                controller.readyEntranceSceneDraft = nil
+                controller.sceneProgress = .preparing
+            }
             if !controller.displayReadout.isEmpty { controller.displayReadout = "" }
             controller.connected = false
             controller.acknowledgedBoundedEdit = nil
@@ -654,7 +666,7 @@ struct NativeViewport: NSViewRepresentable {
             return .allow
         }
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? { nil }
-        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.retireCameraInteraction(); controller.cameraInteractionAction = nil; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.roomCeilingFillSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { guard active, controller.owner == epoch, webView === web else { return }; controller.retireCameraInteraction(); controller.cameraInteractionAction = nil; restoreSnapshotPolicy(); controller.sceneSnapshotSupported = false; controller.sceneSnapshotInspectionSupported = false; controller.sceneSnapshotAction = nil; controller.plinthEnvelopeAlignSupported = false; controller.sharedFurnishingVisualsSupported = false; entranceOperation = nil; if controller.owner == epoch { controller.entrancePreviewSupported = false; controller.entranceSeatPreviewSupported = false; controller.readyEntranceSceneDraft = nil; controller.acknowledgedFrame = nil; controller.acknowledgedBoundedEdit = nil; controller.displayReadoutAction = nil; controller.displayReadout = ""; controller.retireResourceUsage(); controller.resourceUsageAction = nil; controller.resourceUsageSupported = false }; endPlacement(); prepared = false; controller.connected = false; controller.planSupported = false; controller.thumbnailSupported = false; controller.renderedThumbnailSupported = false; controller.furnishingThumbnailSupported = false; controller.findSelectionSupported = false; controller.catalogDropSupported = false; controller.placementSupported = false; controller.furnishingVisualsSupported = false; controller.spaceSettingsSupported = false; controller.viewingPlanSupported = false; controller.lightInspectorSupported = false; controller.lightFixtureSupported = false; controller.lightObjectSupported = false; controller.roomBaseLightSupported = false; controller.roomCeilingFillSupported = false; controller.wallFinishSupported = false; controller.acceptedSequence = 0; controller.rendering = false; controller.sceneProgress = nil; controller.message = "3D 화면이 닫혔습니다. 입력은 유지됩니다. 편집 화면 다시 열기를 선택하세요." }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             guard active, controller.owner == epoch, webView === web else { return }
             controller.retireCameraInteraction()
@@ -732,6 +744,7 @@ struct NativeViewport: NSViewRepresentable {
                         self.controller.plaqueInspectorSupported = acceptance.supportsPlaqueInspector
                         self.controller.surfaceMaterialTexturesSupported = acceptance.supportsSurfaceMaterialTextures
                         self.controller.entrancePreviewSupported = acceptance.supportsEntrancePreview
+                        self.controller.entranceSeatPreviewSupported = frame.workspaceId == nil && acceptance.supportsEntranceSeatPreview
                         if frame.sequence == self.sequence {
                             self.controller.acceptCameraInteraction(acceptance)
                             // A current reset arriving while accept() was in flight
@@ -872,12 +885,14 @@ struct NativeViewport: NSViewRepresentable {
                       self.controller.entrancePreviewSupported, self.placementIntent == nil, !self.inspectorPending,
                       self.entranceOperation == nil || input.action == .close,
                       let web = self.web, let frame = self.latest, self.sent == frame.sequence,
-                      frame.draft == input.draft, frame.disabled else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                      frame.draft == input.draft, frame.disabled,
+                      input.action != .seat || self.controller.readyEntranceSceneDraft == frame.draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 let operation = UUID(), generation = self.generation
                 self.entranceOperation = operation
                 defer { if self.entranceOperation == operation { self.entranceOperation = nil } }
                 let request = try ViewportEntrancePreviewRequest(frame: frame, action: input.action, device: input.device, scenario: input.scenario,
-                                                               reducedMotion: input.reducedMotion, theme: input.theme, locale: input.locale)
+                                                               reducedMotion: input.reducedMotion, theme: input.theme, locale: input.locale, seat: input.seat,
+                                                               seatReturn: input.seatReturn)
                 let json = String(decoding: try JSONEncoder().encode(request.value), as: UTF8.self)
                 var acceptedViewport: CGSize?
                 var acceptedBackingScale: CGFloat?
@@ -1413,6 +1428,7 @@ struct NativeViewport: NSViewRepresentable {
                 controller.sceneProgress = ViewportSceneProgress.reported(ready: report.ready, failed: report.error == true,
                     loadedCount: report.loaded, failedCount: report.failed, total: total)
                 controller.rendering = report.ready && report.error != true
+                controller.readyEntranceSceneDraft = controller.rendering ? frame.draft : nil
                 controller.loaded = report.loaded; controller.failed = report.failed
                 if report.error == true {
                     controller.message = "편집 화면을 준비하지 못했습니다. 편집 화면을 다시 열어 보세요."

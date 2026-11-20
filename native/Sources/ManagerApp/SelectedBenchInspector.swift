@@ -32,6 +32,7 @@ struct SelectedBenchInspector: View {
     @State private var positionDetails = false
     @State private var materialDetails = false
     @State private var cameraDetails = false
+    @Environment(\.accessibilityReduceMotion) private var reducedMotion
     private var editable: Bool { ready && model.canEditBench && !model.benchRemoving && model.bench?.workspaceVisual == nil }
     private func field<Value>(_ key: WritableKeyPath<BenchFormBuffer, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { model.bench?[keyPath: key] ?? fallback }, set: { value in
@@ -145,8 +146,12 @@ struct SelectedBenchInspector: View {
                     Text("눈은 좌석 안쪽 위에 있어야 합니다. 미리보기는 저장 형식을 확인하며, 관람 중 앉기는 바닥·장애물·머리 공간을 다시 확인합니다.").font(.caption).foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 8) {
                         Button(model.benchRemoving ? "삭제 미리보기 다시 확인" : "벤치 미리보기") { Task { await model.previewBench() } }.disabled(!ready || !model.canPreviewBench)
+                        if controller.entranceSeatPreviewSupported && model.benchPreviewing && model.showsLinkedBenchTargetHeight {
+                            Button("앉은 시점 미리보기") { model.previewEntrance(.seat, systemReducedMotion: reducedMotion) }
+                                .disabled(!ready || !model.canPreviewBenchSeat)
+                        }
                         Button(model.benchRemoving ? "벤치 삭제 적용" : "벤치 적용") { Task { await model.applyBench() } }.disabled(!ready || !model.canApplyBench)
-                        Button("벤치 입력 취소") { model.discardBench() }.disabled(!model.benchDirty || model.busy || model.pending || model.architectureApplying)
+                        Button("벤치 입력 취소") { model.discardBench() }.disabled(!model.benchDirty || model.busy || model.pending || model.architectureApplying || model.entrancePreviewActive)
                         if !model.benchAdding {
                             Button("벤치 삭제 미리보기", role: .destructive) { Task { await model.previewBenchRemoval() } }.disabled(!ready || !model.canRemoveBench)
                             Text("벤치를 삭제해도 감상 시점은 남습니다. 적용한 삭제는 되돌리기로 취소할 수 있습니다.").font(.caption).foregroundStyle(.secondary)

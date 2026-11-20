@@ -75,6 +75,75 @@ final class BenchViewportRequestTests: XCTestCase {
         XCTAssertEqual(try preview.apply(to: base, selectedBenchId: benchId, command: applyCommand).candidate, preview.candidate)
         XCTAssertThrowsError(try preview.apply(to: disabled.draft, selectedBenchId: benchId, command: applyCommand))
     }
+    func testSeatPreviewBindsOnlyTheTransientBenchAndClosesToTheSameEditorDraft() throws {
+        let initial = try fixture(), f = initial.frame, benchId = initial.command.benchId
+        var base = f.draft
+        try base.replaceCandidate(initial.command.proposedCandidate(in: base, selectedBenchId: benchId))
+        let viewpointId = try XCTUnwrap(BenchSettings.list(in: base).first?.viewpointId)
+        let command = BenchCommand.setViewpointTargetHeight(benchId: benchId, viewpointId: viewpointId, targetY: 1.30)
+        let preview = try BenchPreview(candidate: command.proposedCandidate(in: base, selectedBenchId: benchId),
+                                       base: base, command: command, selectedBenchId: benchId)
+        let seat = try ViewportBenchSeatTarget(preview: preview, draft: base, selectedBenchId: benchId, command: command)
+        XCTAssertThrowsError(try ViewportBenchSeatTarget(preview: preview, draft: base, selectedBenchId: viewpointId, command: command))
+        XCTAssertThrowsError(try ViewportBenchSeatTarget(preview: preview, draft: preview.displayDraft, selectedBenchId: benchId, command: command))
+        let wrongLink = BenchCommand.setViewpointTargetHeight(benchId: benchId, viewpointId: benchId, targetY: 1.30)
+        XCTAssertThrowsError(try ViewportBenchSeatTarget(preview: preview, draft: base, selectedBenchId: benchId, command: wrongLink))
+
+        func frame(_ draft: NativeExhibitionDraft) -> ViewportFrame {
+            ViewportFrame(epoch: f.epoch, sequence: f.sequence + 1, tenantId: f.tenantId, principalId: f.principalId,
+                          draft: draft, selection: nil, mode: f.mode, view: f.view, disabled: true)
+        }
+        func request(_ action: EntrancePreviewAction, frame: ViewportFrame, seat: ViewportBenchSeatTarget? = nil) throws -> ViewportEntrancePreviewRequest {
+            try ViewportEntrancePreviewRequest(frame: frame, action: action, device: .desktop,
+                                               scenario: .normal, reducedMotion: true, seat: seat)
+        }
+        func response(_ request: ViewportEntrancePreviewRequest, mode: String) -> DocumentValue {
+            var reply: DocumentValue = .object(["mode": .string(mode), "status": .string("ready"),
+                "baseDraft": request.frame.draft.document, "renderGeneration": .integer(1), "imageStatus": .string("ready"),
+                "viewport": .object(["width": .integer(1024), "height": .integer(768)]),
+                "snapshotRect": .object(["x": .integer(0), "y": .integer(0), "width": .integer(1024), "height": .integer(768)])])
+            for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId", "theme", "locale",
+                        "device", "scenario", "reducedMotion"] { reply[key] = request.value[key] }
+            if request.action == .seat {
+                for key in ["benchId", "viewpointId"] { reply[key] = request.value[key] }
+            }
+            return reply
+        }
+        let display = frame(preview.displayDraft)
+        XCTAssertThrowsError(try request(.seat, frame: frame(base), seat: seat))
+        XCTAssertThrowsError(try request(.seat, frame: display))
+        XCTAssertThrowsError(try request(.close, frame: display, seat: seat))
+        let start = try request(.seat, frame: display, seat: seat)
+        XCTAssertEqual(start.value["benchId"], .string(benchId))
+        XCTAssertEqual(start.value["viewpointId"], .string(viewpointId))
+        XCTAssertNoThrow(try start.checkedReply(response(start, mode: "seated")))
+        XCTAssertThrowsError(try start.checkedReply(response(start, mode: "walk")))
+        for key in ["sequence", "benchId", "viewpointId", "baseDraft"] {
+            var wrong = response(start, mode: "seated")
+            wrong[key] = .string("stale")
+            XCTAssertThrowsError(try start.checkedReply(wrong))
+        }
+        let close = try ViewportEntrancePreviewRequest(frame: display, action: .close, device: .desktop, scenario: .normal,
+                                                       reducedMotion: true, seatReturn: true)
+        var compact = response(close, mode: "editor")
+        compact["viewport"]["width"] = .integer(650)
+        compact["snapshotRect"]["width"] = .integer(650)
+        XCTAssertNoThrow(try close.checkedReply(compact))
+        XCTAssertEqual(close.value["benchId"], .null)
+        XCTAssertEqual(close.value["viewpointId"], .null)
+        XCTAssertNoThrow(try close.checkedReply(response(close, mode: "editor")))
+        XCTAssertThrowsError(try close.checkedReply(response(start, mode: "seated")))
+        XCTAssertEqual(base, preview.base)
+        XCTAssertNotEqual(base, close.frame.draft)
+
+        let decoder = JSONDecoder()
+        let old = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"boundedReadOnly":false,"capabilities":["entrance-preview-v1"]}"#.utf8))
+        XCTAssertFalse(old.supportsEntranceSeatPreview)
+        let capable = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"boundedReadOnly":false,"capabilities":["entrance-preview-v1","entrance-seat-preview-v1"]}"#.utf8))
+        XCTAssertTrue(capable.supportsEntranceSeatPreview)
+        let readOnly = try decoder.decode(ViewportAcceptance.self, from: Data(#"{"accepted":true,"boundedReadOnly":true,"capabilities":["entrance-preview-v1","entrance-seat-preview-v1"]}"#.utf8))
+        XCTAssertFalse(readOnly.supportsEntranceSeatPreview)
+    }
     func testWrongScopeLateReplyExtraFieldsAndUnrelatedCandidateAreRefused() throws {
         let request = try fixture(), good = try reply(request)
         for key in ["version", "sequence", "epoch", "tenantId", "principalId", "requestId", "benchId"] {
