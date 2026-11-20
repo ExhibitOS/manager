@@ -36,6 +36,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeRecordedFloorDefaultProfile: String? = nil
     public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
+    public var nativeFloorRecordingAttachmentProfile: String? = nil
     public var nativeDoorPairAuthoringProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
@@ -4708,15 +4709,60 @@ public actor AuthoringAPI {
         return preview
     }
 
+    func prepareFloorRecordingAttachment(_ attachment: NativeFloorRecordingAttachment,
+                                         in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard nativeSession, !authenticationBusy, nativeRuntimeManifestSHA256 != nil,
+              let session, session.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1",
+              session.nativeFloorRecordingAttachmentProfile == NativeFloorRecordingAttachment.profile,
+              !document.dirty, document.pending == nil, let draft = document.draft,
+              let etag = document.etag, let revision = NativeAppliedDraftSave.Anchor.serverRevision(etag),
+              document.tenantId == tenant, document.principalId == session.userId else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let saved = try await exhibition(draft.id)
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard saved.draft == draft, saved.etag == etag, saved.revision == revision,
+              policy.exhibitionId == draft.id, policy.etag == etag, policy.revision == revision,
+              policy.confirmsOrdinaryDraft, generation == heldGeneration else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let expected = try attachment.expectedCandidate(in: draft)
+        let audio = try await roomAudioStatus(attachment.audioID, expectedMedia: attachment.expectedMedia, in: document)
+        guard audio.state == "approved" else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
+        try audio.requireAssignableRights()
+        let refreshedSession = try await verifyRetainedSession(session)
+        guard refreshedSession.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1",
+              refreshedSession.nativeFloorRecordingAttachmentProfile == NativeFloorRecordingAttachment.profile,
+              generation == heldGeneration else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+        let proposal = attachment.proposal(for: document)
+        let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: revision, etag: etag, proposal: proposal)
+        try attachment.checkReply(reply, proposal: proposal, expected: expected)
+        let currentAudio = try await roomAudioStatus(attachment.audioID, expectedMedia: attachment.expectedMedia, in: document)
+        guard currentAudio.value == audio.value else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
+        try currentAudio.requireAssignableRights()
+        try saved.requireSameComparison(await exhibition(draft.id))
+        let latestPolicy = try await nativeViewportPolicy(draft.id)
+        guard latestPolicy.exhibitionId == draft.id, latestPolicy.etag == etag, latestPolicy.revision == revision,
+              latestPolicy.confirmsOrdinaryDraft, generation == heldGeneration else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        guard expected != draft.candidate else { return nil }
+        var next = draft
+        try next.replaceCandidate(expected)
+        return next
+    }
+
     func nativeAuthoringProposal(exhibitionId: String, studioRevision: Int, etag: String,
                                  proposal: DocumentValue) async throws -> DocumentValue {
         let operation = proposal["type"].string ?? ""
         let recordedFloor = ["select-floor-material", "reset-floor-sound"].contains(operation)
+        let attachment = operation == NativeFloorRecordingAttachment.commandType
         let placementVoice = operation == "set-placement-voice"
         let lightObject = LightObjectAuthoring.commands.contains(operation)
         let fixture = ["set-furnishing-visual", "set-light-attachment"].contains(operation)
         let supplementalFill = operation == NativeAutomationScene.supplementalCeilingFillCommand
-        let scene = recordedFloor || supplementalFill || ["set-pedestal", "add-light", "set-light-details"].contains(operation)
+        let scene = recordedFloor || attachment || supplementalFill || ["set-pedestal", "add-light", "set-light-details"].contains(operation)
         let frameImageFit = operation == "reconcile-frame-image-fit"
         let budgetPolicy = operation == "set-viewer-budget-policy"
         let doorPair = operation == NativeDoorPairProposal.command
@@ -4729,6 +4775,7 @@ public actor AuthoringAPI {
         guard admitted,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session, !recordedFloor || session.advertisesRecordedFloorDefault,
+              !attachment || session.nativeFloorRecordingAttachmentProfile == NativeFloorRecordingAttachment.profile,
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
               operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
               operation != "set-room-ceiling-fill-brightness" || !RoomCeilingFill.usesDefault(proposal)

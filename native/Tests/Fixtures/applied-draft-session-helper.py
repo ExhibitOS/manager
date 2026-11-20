@@ -13,10 +13,15 @@ FIXTURE = json.loads((ROOT / "fixture.json").read_bytes())
 SOURCE = FIXTURE["document"]
 
 if sys.argv[1:] == ["--serve"]:
-    head = dict(revision=12, etag=SOURCE["etag"], draft=SOURCE["draft"])
+    floor = FIXTURE.get("floorRecording")
+    revision = int(SOURCE["etag"].split("-")[1][1:])
+    head = dict(revision=revision, etag=SOURCE["etag"], draft=SOURCE["draft"])
     receipt = None
     original = None
-    stats = dict(puts=0, commits=0, lastRequestId=None)
+    stats = dict(puts=0, commits=0, lastRequestId=None, audioReads=0, floorChecks=0)
+
+    def write_stats():
+        (ROOT / "server-state.json").write_text(json.dumps(stats))
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -43,11 +48,21 @@ if sys.argv[1:] == ["--serve"]:
                     nativeFurnishingWalkingCollisionProfile="furnishing-walking-collision-v1",
                     nativeAuthoringProposalProfile="saved-head-v1", nativePublicationProfile="bounded-local-v1",
                     nativeSceneAuthoringProposalProfile="saved-head-scene-v1",
-                    nativeFixtureAuthoringProposalProfile="saved-head-fixture-v1"))
+                    nativeFixtureAuthoringProposalProfile="saved-head-fixture-v1",
+                    nativeFloorRecordingAttachmentProfile="saved-head-floor-recording-attachment-v1"))
+            elif floor and self.path.endswith("/audio/" + floor["audioId"]):
+                stats["audioReads"] += 1
+                write_stats()
+                self.send_json(dict(id=floor["audioId"], state="approved", revision=1,
+                    revoked=(ROOT / "revoke-floor-recording").exists(), durationSeconds=0.6260625,
+                    mediaAsset=floor["expectedMediaAsset"]))
             elif self.path.endswith("/native-viewport-policy"):
                 self.send_json(dict(exhibitionId=SOURCE["draft"]["exhibitionId"], revision=head["revision"],
                     etag=head["etag"], boundedReadOnly=False, boundedProfile=False, boundedEditRequired=False), etag=head["etag"])
             elif self.path.endswith("/" + SOURCE["draft"]["exhibitionId"]):
+                if floor and (ROOT / "advance-floor-head").exists():
+                    etag = '"studio-r' + str(head["revision"] + 1) + '-' + "b" * 64 + '"'
+                    return self.send_json(dict(head, revision=head["revision"] + 1, etag=etag), etag=etag)
                 self.send_json(head, etag=head["etag"])
             else:
                 self.send_json(dict(error=dict(code="FIXTURE_UNEXPECTED_REQUEST")), 404)
@@ -55,13 +70,20 @@ if sys.argv[1:] == ["--serve"]:
         def do_POST(self):
             if not self.path.endswith("/native-authoring-proposal"):
                 return self.send_json(dict(error=dict(code="FIXTURE_UNEXPECTED_REQUEST")), 404)
-            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))["request"]
-            assert request["type"] == "set-furnishing-visual"
+            envelope = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            request = envelope["request"]
             candidate = copy.deepcopy(head["draft"]["candidate"])
+            reply = {key: request[key] for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"]}
+            if floor and request["type"] == "attach-floor-recording":
+                assert self.headers["If-Match"] == head["etag"]
+                assert all(request[key] == value for key, value in floor.items())
+                stats["floorChecks"] += 1
+                write_stats()
+                return self.send_json(dict(**reply, surfaceId=floor["surfaceId"], candidate=candidate), etag=head["etag"])
+            assert request["type"] == "set-furnishing-visual"
             candidate.setdefault("extensions", {})["org.exhibitos.studio/furnishing-visuals"] = dict(
                 version=1, assets=[FIXTURE["asset"]], bindings=[dict(hostKind="light", hostId=request["hostId"],
                     assetId=FIXTURE["asset"]["id"], pose=request["pose"])])
-            reply = {key: request[key] for key in ["version", "epoch", "sequence", "tenantId", "principalId", "requestId"]}
             self.send_json(dict(**reply, candidate=candidate), etag=head["etag"])
 
         def do_PUT(self):
@@ -80,7 +102,7 @@ if sys.argv[1:] == ["--serve"]:
                 original = intent
                 head = dict(revision=13, etag='"studio-r13-' + "b" * 64 + '"', draft=body["draft"])
                 receipt = copy.deepcopy(head)
-            (ROOT / "server-state.json").write_text(json.dumps(stats))
+            write_stats()
             self.send_json(receipt, etag=receipt["etag"])
 
     with HTTPServer(("127.0.0.1", 0), Handler) as server:
