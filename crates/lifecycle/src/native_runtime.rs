@@ -1973,6 +1973,8 @@ impl Session {
                         || crate::native_payload::official_r219_nine_lights_selected_transition(
                             (step.source().2, step.target().2))
                         || crate::native_payload::official_r219_authored_height_transition(
+                            (step.source().2, step.target().2))
+                        || crate::native_payload::official_r220_seven_lights_selected_transition(
                             (step.source().2, step.target().2)));
             #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
             let occupied_trial = false;
