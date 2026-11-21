@@ -71,6 +71,45 @@ final class FixtureFirstViewportWorkTests: XCTestCase {
         XCTAssertFalse(model.workBlocksViewportFrame)
     }
 
+    func testRoomLocalApplyRequiresAdmittedScopeAndExactDisabledPreview() throws {
+        let owner = UUID().uuidString.lowercased()
+        let api = try AuthoringAPI(port: 57841, tenantId: owner)
+        let session = try decode(AuthoringSession.self, [
+            "tenantId": owner, "userId": owner, "role": "admin", "csrfToken": "fixture",
+            "expiresAt": "2099-01-01T00:00:00Z"
+        ])
+        let draft = try NativeExhibitionDraft.new()
+        let access = UUID(), context = UUID()
+        let selection = ViewportSelection(kind: "light", id: owner)
+        let command: DocumentValue = .object([
+            "type": .string("set-room-ceiling-fill-brightness"), "lightId": .string(owner),
+            "spaceLightingMode": RoomCeilingFill.roomLocalMode, "intensity": .number(0.5)
+        ])
+        typealias Scope = ExhibitionModel.RoomLocalLightPreviewScope
+        func scope(context: UUID = context, epoch: String = owner, revision: UInt64 = 221,
+                   command: DocumentValue = command) -> Scope {
+            Scope(api: ObjectIdentifier(api), session: session, access: access, context: context,
+                  hostEpoch: epoch, selection: selection, savedETag: "\"studio-r221-\"",
+                  documentRevision: revision, command: command)
+        }
+        func acknowledged(disabled: Bool = true, acceptedSequence: Int = 2) -> Bool {
+            let frame = ViewportFrame(epoch: owner, sequence: 2, tenantId: owner, principalId: owner,
+                                      draft: draft, selection: selection, mode: "translate",
+                                      view: "isometric", disabled: disabled)
+            return frame.confirmsFloorPreview(ownerEpoch: owner, acceptedSequence: acceptedSequence,
+                                              expectedDraft: draft, tenantId: owner, principalId: owner)
+        }
+        let admitted = scope()
+        XCTAssertTrue(Scope.allowsApply(admitted: admitted, current: scope(), previewAcknowledged: acknowledged()))
+        XCTAssertFalse(Scope.allowsApply(admitted: nil, current: scope(), previewAcknowledged: acknowledged()))
+        XCTAssertFalse(Scope.allowsApply(admitted: admitted, current: nil, previewAcknowledged: acknowledged()))
+        XCTAssertFalse(Scope.allowsApply(admitted: admitted, current: scope(), previewAcknowledged: acknowledged(disabled: false)))
+        XCTAssertFalse(Scope.allowsApply(admitted: admitted, current: scope(), previewAcknowledged: acknowledged(acceptedSequence: 3)))
+        for changed in [scope(context: UUID()), scope(epoch: UUID().uuidString), scope(revision: 222), scope(command: .null)] {
+            XCTAssertFalse(Scope.allowsApply(admitted: admitted, current: changed, previewAcknowledged: acknowledged()))
+        }
+    }
+
     private func connectedModel() async throws -> ExhibitionModel {
         let model = ExhibitionModel()
         let owner = UUID().uuidString.lowercased()
