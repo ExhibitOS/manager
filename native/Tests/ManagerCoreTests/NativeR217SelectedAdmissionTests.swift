@@ -41,6 +41,11 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
                                  other: AuthoringAPI.r219ClosingSelectedManifest)
     }
 
+    func testIndependentR220SevenLightsCommandThroughExistingDispatch() throws {
+        try checkSelectedCommand("EXHIBITOS_TEST_R220_SEVEN_LIGHTS_COMMAND", expected: AuthoringAPI.r220SevenLightsSelectedManifest,
+                                 other: AuthoringAPI.r219NineLightsSelectedManifest)
+    }
+
     private func checkSelectedCommand(_ file: String, expected: String, other: String) throws {
         let sealed = try JSONDecoder().decode(DocumentValue.self, from: fixture(file))
         let manifest = try XCTUnwrap(sealed["runtimeManifestSha256"].string)
@@ -136,6 +141,28 @@ final class NativeR217SelectedAdmissionTests: XCTestCase {
         invalid.nativeOriginalAttempts = nil
         XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest,
             document: source, publication: invalid, requestID: fresh))
+    }
+
+    func testFreshR220SevenLightsRequiresLocalNineLightsAndRetainedClosingClaim() throws {
+        let manifest = AuthoringAPI.r220SevenLightsSelectedManifest
+        try checkFreshRequestPreservesHistory(manifest: manifest, publicationFixture: "EXHIBITOS_TEST_R220_NINE_LIGHTS_PUBLICATION",
+                                               documentFixture: "EXHIBITOS_TEST_R220_SAVED_DOCUMENT")
+        let decoder = JSONDecoder()
+        let source = try decoder.decode(NativeDocumentState.self, from: fixture("EXHIBITOS_TEST_R220_SAVED_DOCUMENT"))
+        let local = try decoder.decode(NativePublicationState.self, from: fixture("EXHIBITOS_TEST_R220_NINE_LIGHTS_PUBLICATION"))
+        let historical = try decoder.decode(NativePublicationState.self, from: fixture("EXHIBITOS_TEST_R219_CLOSING_PUBLICATION"))
+        let fresh = UUID().uuidString.lowercased()
+        XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest,
+            document: source, publication: historical, requestID: fresh))
+        var noClosing = local
+        noClosing.nativeOriginalAttempts?.removeValue(forKey: "47189574-fc69-47e5-ae91-2c9c64466c20")
+        XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest,
+            document: source, publication: noClosing, requestID: fresh))
+        var previousHead = source
+        previousHead.revision = 622
+        previousHead.etag = local.completed?.sourceEtag
+        XCTAssertThrowsError(try NativeAutomationSession.checkFreshOfficialOriginal(manifest: manifest,
+            document: previousHead, publication: local, requestID: fresh))
     }
 
     private func checkFreshRequestPreservesHistory(manifest: String, publicationFixture: String,

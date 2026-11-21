@@ -2334,6 +2334,34 @@ public actor NativeAutomationSession {
                     throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
                 }
             }
+        case AuthoringAPI.r220SevenLightsSelectedManifest:
+            expected = (626, 283)
+            // The authoring head advanced for the bench. The last local claim and
+            // the historical Closing projection both remain on r219.
+            let nineRequest = "e1a330b2-e539-4aca-a710-fd964fa208fc"
+            let closingRequest = "47189574-fc69-47e5-ae91-2c9c64466c20"
+            guard !document.dirty,
+                  document.workspaceId == "23b8c20f-2c3e-4c77-aa0c-6e4c6df015ef",
+                  document.tenantId == "3edee474-9a9f-48d1-b779-b8f71c4da86e",
+                  document.principalId == "0bbe4668-9a2b-4a53-8367-758b03fe5cb9",
+                  document.etag == #""studio-r220-d48d3de2ac7bc3875cb628f4464b3a846217ba2ccbf675ad113f3a61523bb25d""#,
+                  let draft = document.draft,
+                  publication.workspaceId == document.workspaceId, publication.tenantId == document.tenantId,
+                  publication.principalId == document.principalId, let closed = publication.completed,
+                  closed.mode == "native-original-v1", closed.sourceExhibitionId == draft.id,
+                  closed.snapshotExhibitionId == draft.id,
+                  closed.sourceEtag == #""studio-r219-491d609d502991d106e9f14c4446f0884bea0ae3b49f00fbbbb3c2d188f02c07""#,
+                  closed.publishRequestId == nineRequest,
+                  closed.publication.publicationId == "596276d4-b91d-4e7c-808a-6e042b66c87a",
+                  closed.publication.revisionSha256 == "5a4e1b3f8ec76f3c17a19a68d8094d5b97527218aa9ef13609ad15a68e1285e1",
+                  closed.publication.status == "published",
+                  closed.planBindingSha256 == "dd13c00ffe7b8cb798c4f89c72df04109de5d5c8fc141e39e3275e6229333ea5",
+                  let nine = publication.nativeOriginalAttempts?[nineRequest], nine.exportClaimed,
+                  nine.planBindingSha256 == closed.planBindingSha256,
+                  let closing = publication.nativeOriginalAttempts?[closingRequest], closing.exportClaimed,
+                  closing.planBindingSha256 == "3b48d97e63d9d45e375323eb4842dbaef5ac679c74cdc760b809843776ff0e69" else {
+                throw BridgeFailure("NATIVE_DETAIL_UNAVAILABLE")
+            }
         default: expected = (613, 279)
         }
         guard document.revision == expected.revision, document.savedEditVersion == expected.edit,

@@ -4337,10 +4337,12 @@ public actor AuthoringAPI {
 
     static let r219NineLightsSelectedManifest = "7f89c22f4fa9f31bc02bcbf8709b101d54c2acbc2347ea3ae9d3853fca77dc2a"
 
+    static let r220SevenLightsSelectedManifest = "f6c377e817e3866771c0b48e6df8fdd6382641961e21cf42d4e4228d9141fc81"
+
     nonisolated static func isFreshOfficialSelectedRuntime(manifest: String?) -> Bool {
         [r216SelectedFinishesManifest, r217PublicFinishesManifest, r217CannonManifest,
          r217WheatSelectedManifest, r218PaintingSelectedManifest, r219WheatFitSelectedManifest,
-         r219ClosingSelectedManifest, r219NineLightsSelectedManifest]
+         r219ClosingSelectedManifest, r219NineLightsSelectedManifest, r220SevenLightsSelectedManifest]
             .contains(manifest ?? "")
     }
 
