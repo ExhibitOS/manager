@@ -3,7 +3,7 @@ import XCTest
 import SwiftUI
 import AppKit
 import CryptoKit
-import ManagerCore
+@testable import ManagerCore
 @testable import ManagerApp
 
 #if DEBUG
@@ -35,6 +35,10 @@ final class SceneSnapshotHostTests: XCTestCase {
         let assetId: String, outputDirectory: String
         let position: [Double], target: [Double], fov: Double
     }
+    private struct PairedWallFixture: Decodable {
+        let app: String, profile: String, documentFile: String, documentSHA256: String
+        let manifestSHA256: String, surfaceId: String
+    }
     private func require(_ condition: Bool, _ code: String) throws {
         guard condition else { throw BridgeFailure(code) }
     }
@@ -60,6 +64,89 @@ final class SceneSnapshotHostTests: XCTestCase {
         }
         throw BridgeFailure("HOST_TEST_RUNTIME_TIMEOUT")
     }
+
+    func testPairedWallPreviewKeepsTheLiveFrameAndRejectsAChangedContext() async throws {
+        guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_NATIVE_PAIRED_WALL_HOST_FIXTURE"],
+              Bundle.main.bundleURL.pathExtension == "app", NSApp?.isRunning == true else {
+            throw XCTSkip("Requires a foreground application host and an explicitly owned isolated paired-wall fixture")
+        }
+        let fixture = try JSONDecoder().decode(PairedWallFixture.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        let profile = URL(fileURLWithPath: fixture.profile)
+        let documentURL = profile.appendingPathComponent(fixture.documentFile)
+        try require(profile == profile.resolvingSymlinksInPath() && documentURL.deletingLastPathComponent() == profile,
+                    "PAIRED_WALL_HOST_FIXTURE_PATH")
+        let original = try Data(contentsOf: documentURL)
+        try require(digest(original) == fixture.documentSHA256 && AuthoringAPI.supportsPairedWallCatalog052(manifest: fixture.manifestSHA256),
+                    "PAIRED_WALL_HOST_BASELINE_CHANGED")
+        let helper = URL(fileURLWithPath: fixture.app).appendingPathComponent("Contents/Helpers/exhibitos-native")
+        let bridge = try NativeBridge(helper: helper, profile: profile)
+        let context = try await bridge.context()
+        let initial = try await bridge.nativeStatus(context)
+        try require(!initial.needsShutdown && initial.configuration?.manifestSha256 == fixture.manifestSHA256,
+                    "PAIRED_WALL_HOST_NOT_COLD")
+        var failure: Error?
+        var window: NSWindow?
+        var staleRequest: Task<Void, Never>?
+        do {
+            _ = try await bridge.start(context)
+            let ready = try await waitForRuntime(bridge, context, ready: true)
+            let configuration = try XCTUnwrap(ready.configuration)
+            let credentials = try await bridge.authoringSession(context)
+            let api = try AuthoringAPI(port: configuration.ports.web, tenantId: credentials.tenantId,
+                                       nativeRuntimeManifestSHA256: configuration.manifestSha256)
+            let session = try await api.connect(credentials)
+            let local = try await bridge.documentState(context)
+            try require(!local.dirty && local.pending == nil && local.etag != nil, "PAIRED_WALL_HOST_NOT_SAVED")
+            let model = ExhibitionModel()
+            await model.connect(api: api, session: session, credentials: credentials,
+                                read: { try await bridge.documentState(context) },
+                                write: { _ in throw BridgeFailure("PAIRED_WALL_PREVIEW_MUST_NOT_WRITE") })
+            model.selectViewport(ViewportSelection(kind: "surface", id: fixture.surfaceId))
+            let controller = model.viewportController
+            let host = NSHostingView(rootView: NativeViewportArea(model: model, ready: true, controller: controller, workbench: true))
+            let visible = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 700),
+                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            visible.isReleasedWhenClosed = false
+            visible.contentView = host
+            visible.makeKeyAndOrderFront(nil)
+            window = visible
+            NSApp.activate(ignoringOtherApps: true)
+
+            func wait(_ condition: () -> Bool, code: String) async throws {
+                let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+                while !condition() {
+                    try require(ContinuousClock.now < deadline, code)
+                    try await Task.sleep(for: .milliseconds(5))
+                }
+            }
+            try await wait({ visible.occlusionState.contains(.visible) && model.canPreviewPairedWall }, code: "PAIRED_WALL_HOST_NOT_READY")
+            let target = try XCTUnwrap(model.pairedWallTargets.first)
+            try require(model.pairedWallTargets.count == 1 && target.extensionMeters == nil, "PAIRED_WALL_HOST_TARGET_CHANGED")
+            await model.previewPairedWall(target: target, extensionMeters: 0.11)
+            try require(model.failure == nil && model.pairedWallPreviewTarget == target.id, "PAIRED_WALL_PREVIEW_NOT_RETAINED")
+            try await wait({ model.canApplyPairedWall }, code: "PAIRED_WALL_PREVIEW_NOT_ACKNOWLEDGED")
+            model.cancelPairedWallPreview()
+            try await wait({ model.canPreviewPairedWall }, code: "PAIRED_WALL_BASELINE_NOT_ACKNOWLEDGED")
+
+            let pending = Task { await model.previewPairedWall(target: target, extensionMeters: 0.11) }
+            staleRequest = pending
+            try await wait({ model.busy }, code: "PAIRED_WALL_PREVIEW_NOT_IN_FLIGHT")
+            controller.editingContextActive = false
+            await pending.value
+            try require(model.failure?.code == "VIEWPORT_FRAME_STALE" && model.pairedWallPreviewTarget == nil,
+                        "PAIRED_WALL_STALE_PREVIEW_ACCEPTED")
+        } catch { failure = error }
+        staleRequest?.cancel()
+        if let staleRequest { await staleRequest.value }
+        window?.contentView = nil
+        window?.close()
+        _ = try await bridge.stop(context)
+        _ = try await waitForRuntime(bridge, context, ready: false)
+        try await bridge.close()
+        try require(try Data(contentsOf: documentURL) == original, "PAIRED_WALL_PREVIEW_CHANGED_DOCUMENT")
+        if let failure { throw failure }
+    }
+
     func testLiveInspectionCameraWithoutPanels() async throws {
         guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_NATIVE_SNAPSHOT_HOST_FIXTURE"] else {
             throw XCTSkip("Requires an explicitly owned isolated live native host fixture")

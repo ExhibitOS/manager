@@ -1240,7 +1240,7 @@ final class ExhibitionModel: ObservableObject {
 
     func previewPairedWall(target: NativePairedWallStructure.Target, extensionMeters: Double?) async {
         guard canPreviewPairedWall, pairedWallTargets.contains(target) else { return }
-        await work {
+        await work(viewport: .preserveAcknowledgedFrame) {
             guard let api, let document = state, let base = document.draft, let etag = document.etag else {
                 throw AuthoringFailure("EXHIBITION_NOT_SAVED")
             }
