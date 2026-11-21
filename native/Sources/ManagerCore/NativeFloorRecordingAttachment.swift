@@ -52,6 +52,15 @@ struct NativeFloorRecordingAttachment: Sendable {
         initializeMissingStoneRow = initialize == .bool(true)
     }
 
+    func checkClosingScope() throws {
+        guard surfaceID == "5537fdc6-44a8-45c2-a867-a3481a754796",
+              materialID == "5e97508e-ae16-4e54-a3a9-44c7bb30424d", materialVersion == 1,
+              expectedMedia["bytes"] == .integer(59_564),
+              expectedMedia["sha256"] == .string("9fb1851c98c8394c1639ace68e9a9091989cf3eac92ba2037b20798921e49226") else {
+            throw AuthoringFailure("FLOOR_RECORDING_TARGET_INVALID")
+        }
+    }
+
     func expectedCandidate(in draft: NativeExhibitionDraft) throws -> DocumentValue {
         let target = FloorSettings.Target(kind: .surface, id: surfaceID)
         let surfaces = draft.candidate["surfaces"].items?.filter { $0["id"].string?.lowercased() == surfaceID }

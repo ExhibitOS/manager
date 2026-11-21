@@ -65,20 +65,45 @@ public actor NativeAutomationSession {
         #endif
     }
 
-    static func checkEntranceRecordingOperation(manifest: String?, operation: String) throws {
-        if supportsEntranceRecordingRuntime(manifest: manifest) &&
+    static func supportsClosingRecordingRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "cedec8a0ee0d4eba1d81304a8f65a61c48b9f1a261aca5529547512210990e88"
+        #else
+        false
+        #endif
+    }
+
+    private static func supportsFloorRecordingRuntime(manifest: String?) -> Bool {
+        supportsEntranceRecordingRuntime(manifest: manifest) || supportsClosingRecordingRuntime(manifest: manifest)
+    }
+
+    static func checkFloorRecordingOperation(manifest: String?, operation: String) throws {
+        if supportsFloorRecordingRuntime(manifest: manifest) &&
             !["read", "room-audio-intake", "room-audio-status", "room-audio-approve",
               "floor-recording-attach-apply", "applied-draft-save-resume", "reopen-saved"].contains(operation) {
             throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
         }
     }
 
-    private static func checkEntranceRecordingSession(manifest: String, _ session: AuthoringSession) throws {
-        if supportsEntranceRecordingRuntime(manifest: manifest) &&
+    private static func checkFloorRecordingSession(manifest: String, _ session: AuthoringSession) throws {
+        if supportsFloorRecordingRuntime(manifest: manifest) &&
             (session.nativeSceneAuthoringProposalProfile != "saved-head-scene-v1" ||
              session.nativeFloorRecordingAttachmentProfile != NativeFloorRecordingAttachment.profile) {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
+    }
+
+    static func floorRecordingAttachment(_ request: DocumentValue, manifest: String?, etag: String) throws -> NativeFloorRecordingAttachment {
+        let closing = supportsClosingRecordingRuntime(manifest: manifest)
+        var keys: Set<String> = ["etag", "surfaceId", "materialId", "materialVersion", "audioId", "audioRevision", "expectedMediaAsset"]
+        if closing, case .object(let fields) = request["command"], fields["initializeMissingStoneRow"] != nil {
+            keys.insert("initializeMissingStoneRow")
+        }
+        let command = try NativeAutomationArtworkRules.command(request, keys: keys)
+        guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+        let attachment = try NativeFloorRecordingAttachment(command, scope: closing ? .selectedFloor : .entrance)
+        if closing { try attachment.checkClosingScope() }
+        return attachment
     }
 
     private var bridge: NativeBridge
@@ -176,7 +201,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
-                    || Self.supportsEntranceRecordingRuntime(manifest: $0.manifestSHA256)
+                    || Self.supportsFloorRecordingRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
@@ -469,8 +494,8 @@ public actor NativeAutomationSession {
         }
         let api = try AuthoringAPI(port: config.ports.web, tenantId: expected.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
         let session = try await api.connect(credentials)
-        try Self.checkEntranceRecordingSession(manifest: config.manifestSha256, session)
-        let admitsEntranceRecording = Self.supportsEntranceRecordingRuntime(manifest: config.manifestSha256)
+        try Self.checkFloorRecordingSession(manifest: config.manifestSha256, session)
+        let admitsFloorRecording = Self.supportsFloorRecordingRuntime(manifest: config.manifestSha256)
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
@@ -502,7 +527,7 @@ public actor NativeAutomationSession {
         }
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsPartialWallPortal || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
-                || admitsPreparedBudget || admitsRecordedFloors || admitsEntranceRecording
+                || admitsPreparedBudget || admitsRecordedFloors || admitsFloorRecording
                 || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
@@ -2197,7 +2222,7 @@ public actor NativeAutomationSession {
         }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
-        try Self.checkEntranceRecordingOperation(manifest: runtimeManifest, operation: operation)
+        try Self.checkFloorRecordingOperation(manifest: runtimeManifest, operation: operation)
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
@@ -3353,10 +3378,15 @@ public actor NativeAutomationSession {
                   UUID(uuidString: id)?.uuidString.lowercased() == id, let etag = current.etag else {
                 throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID")
             }
-            let command = try NativeAutomationArtworkRules.command(request,
-                keys: ["etag", "surfaceId", "materialId", "materialVersion", "audioId", "audioRevision", "expectedMediaAsset"])
-            guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
-            let attachment = try NativeFloorRecordingAttachment(command)
+            let closing = Self.supportsClosingRecordingRuntime(manifest: runtimeManifest)
+            if closing {
+                guard let owner = existingWorkspaceV5, owner.manifestSHA256 == runtimeManifest,
+                      owner.workspaceId == current.workspaceId, owner.tenantId == current.tenantId,
+                      owner.principalId == current.principalId, authoringSession?.userId == owner.principalId else {
+                    throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+                }
+            }
+            let attachment = try Self.floorRecordingAttachment(request, manifest: runtimeManifest, etag: etag)
             let draft = try await api.prepareFloorRecordingAttachment(attachment, in: current)
             let (_, _, latest) = try await checked(request)
             guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }

@@ -16,14 +16,42 @@ final class NativeFloorRecordingAttachmentTests: XCTestCase {
         XCTAssertFalse(NativeAutomationSession.supportsEntranceRecordingRuntime(manifest: String(target.dropLast()) + "0"))
         for operation in ["read", "room-audio-intake", "room-audio-status", "room-audio-approve",
                           "floor-recording-attach-apply", "applied-draft-save-resume", "reopen-saved"] {
-            XCTAssertNoThrow(try NativeAutomationSession.checkEntranceRecordingOperation(manifest: target, operation: operation))
+            XCTAssertNoThrow(try NativeAutomationSession.checkFloorRecordingOperation(manifest: target, operation: operation))
         }
         for operation in ["exhibition-new", "save", "room-audio-apply", "export-oex", "export-static", "light-object-apply"] {
-            XCTAssertThrowsError(try NativeAutomationSession.checkEntranceRecordingOperation(manifest: target, operation: operation)) {
+            XCTAssertThrowsError(try NativeAutomationSession.checkFloorRecordingOperation(manifest: target, operation: operation)) {
                 XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
             }
         }
-        XCTAssertNoThrow(try NativeAutomationSession.checkEntranceRecordingOperation(manifest: predecessor, operation: "save"))
+        XCTAssertNoThrow(try NativeAutomationSession.checkFloorRecordingOperation(manifest: predecessor, operation: "save"))
+    }
+    func testClosingDispatchRequiresItsExactRuntimeAndApprovedFixture() throws {
+        let closing = "cedec8a0ee0d4eba1d81304a8f65a61c48b9f1a261aca5529547512210990e88"
+        let entrance = "e22b8b0f69d45c29acf9883369c29825e8503f2c651893d07eb14f0f1826e0b8"
+        let etag = "saved-head"
+        var selected = command
+        selected["etag"] = .string(etag)
+        selected["surfaceId"] = .string("5537fdc6-44a8-45c2-a867-a3481a754796")
+        selected["materialId"] = .string("5e97508e-ae16-4e54-a3a9-44c7bb30424d")
+        selected["expectedMediaAsset"]["bytes"] = .integer(59_564)
+        selected["expectedMediaAsset"]["sha256"] = .string("9fb1851c98c8394c1639ace68e9a9091989cf3eac92ba2037b20798921e49226")
+        var request = DocumentValue.object(["command": selected])
+        XCTAssertFalse(try NativeAutomationSession.floorRecordingAttachment(request, manifest: closing, etag: etag).initializeMissingStoneRow)
+        request["command"]["initializeMissingStoneRow"] = .bool(true)
+        XCTAssertTrue(try NativeAutomationSession.floorRecordingAttachment(request, manifest: closing, etag: etag).initializeMissingStoneRow)
+        for manifest in [entrance, String(closing.dropLast()) + "0"] {
+            XCTAssertThrowsError(try NativeAutomationSession.floorRecordingAttachment(request, manifest: manifest, etag: etag))
+        }
+        for refused in [DocumentValue.bool(false), .null] {
+            request["command"]["initializeMissingStoneRow"] = refused
+            XCTAssertThrowsError(try NativeAutomationSession.floorRecordingAttachment(request, manifest: closing, etag: etag))
+        }
+        request["command"]["initializeMissingStoneRow"] = .bool(true)
+        XCTAssertThrowsError(try NativeAutomationSession.floorRecordingAttachment(request, manifest: closing, etag: "stale"))
+        request["command"]["materialVersion"] = .integer(2)
+        XCTAssertThrowsError(try NativeAutomationSession.floorRecordingAttachment(request, manifest: closing, etag: etag))
+        XCTAssertNoThrow(try NativeAutomationSession.checkFloorRecordingOperation(manifest: closing, operation: "floor-recording-attach-apply"))
+        XCTAssertThrowsError(try NativeAutomationSession.checkFloorRecordingOperation(manifest: closing, operation: "export-static"))
     }
     #endif
 
