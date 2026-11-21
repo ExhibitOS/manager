@@ -699,6 +699,7 @@ public actor AuthoringAPI {
         workspacePortalFinishRuntimeQualified = portalQualified || partialWallPortal || Self.supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
         workspaceFurnishingRuntimeQualified = portalQualified || framePreparationQualified || partialWallPortal
+            || Self.supportsMeasuredFrameCatalog052(manifest: manifest)
             || Self.supportsDefault119CleanFurnishingRuntime(manifest: manifest)
             || Self.supportsStraightMiterFrameRuntime(manifest: manifest)
             || workspaceInfoStandPreparationRuntimeQualified || Self.workspaceFurnishingManifestPins.contains(manifest)
@@ -3353,6 +3354,14 @@ public actor AuthoringAPI {
         guard (1...2_147_483_647).contains(version) else { throw AuthoringFailure("MATERIAL_DECLARATION") }
         return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version), catalogRead: catalogRead)
     }
+    nonisolated static func supportsMeasuredFrameCatalog052(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "4430a973077e933ba8486abd07ce0d1410546e08473b217807511db5d782bb25"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsOrdinaryPartialWallPortal(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "803ce4960489551e1a2ac9c84ca7f3a804c2f5e0324e719a590661c457ff2918"
@@ -3434,6 +3443,7 @@ public actor AuthoringAPI {
         admitsWorkspaceArtworkFrames && session?.advertisesWorkspaceArtworkFrameModels == true
             && session?.workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
             && (Self.supportsStraightMiterFrameRuntime(manifest: nativeRuntimeManifestSHA256 ?? "")
+                || Self.supportsMeasuredFrameCatalog052(manifest: nativeRuntimeManifestSHA256)
                 || Self.supportsDefault119CleanFurnishingRuntime(manifest: nativeRuntimeManifestSHA256 ?? ""))
     }
 
@@ -4467,6 +4477,7 @@ public actor AuthoringAPI {
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
             || supportsOrdinaryPartialWallPortal(manifest: manifest)
+            || supportsMeasuredFrameCatalog052(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)

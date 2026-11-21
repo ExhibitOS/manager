@@ -154,6 +154,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsMeasuredFrameCatalog052(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
@@ -449,6 +450,10 @@ public actor NativeAutomationSession {
         let admitsLargeModels = await api.admitsLargeModelPreparation
         let admitsInfoStandPreparation = await api.admitsWorkspaceInfoStandPreparation
         let admitsSavedHeadAuthoring = await api.admitsSavedHeadAuthoring
+        if AuthoringAPI.supportsMeasuredFrameCatalog052(manifest: config.manifestSha256),
+           !Self.admitsMeasuredFrameCatalog052Session(session) {
+            throw AuthoringFailure("FRAME_IMAGE_FIT_UNAVAILABLE")
+        }
         let admitsPartialWallPortal = AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: config.manifestSha256)
             ? await api.admitsWorkspacePortalFinish : false
         let admitsRenderedSculptureThumbnailOex = await api.admitsRenderedSculptureThumbnailOex
@@ -2148,10 +2153,27 @@ public actor NativeAutomationSession {
         ])
     }
 
+    static func admitsMeasuredFrameCatalog052Session(_ session: AuthoringSession) -> Bool {
+        session.advertisesWorkspaceArtworkFrameModels
+            && session.workspaceFurnishingReusableFitProfile == "source-bound-fit-v1"
+            && session.nativeAuthoringProposalProfile == "saved-head-v1"
+            && session.nativeFrameImageFitProposalProfile == FrameImageFitReconciliationRequest.profile
+            && session.nativeMeasuredFrameAttachmentProposalProfile == MeasuredFrameAttachmentRequest.profile
+    }
+
+    static func admitsMeasuredFrameCatalog052Operation(_ operation: String) -> Bool {
+        ["read", "workspace-frame-attach", "save", "reopen-saved",
+         "saved-head-static-readiness", "export-static-saved-head"].contains(operation)
+    }
+
     public func execute(_ request: DocumentValue) async throws -> DocumentValue {
         guard request["version"] == .integer(1), let id = request["requestId"].string, UUID(uuidString: id) != nil,
               let operation = request["operation"].string, case .object(let fields) = request,
               Set(fields.keys).isSubset(of: ["version", "requestId", "operation", "capability", "workspaceId", "tenantId", "principalId", "expectedRevision", "expectedEditVersion", "inputPath", "outputPath", "command", "proposalId", "archiveFormat", "retainSaveIntent"]) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+        if AuthoringAPI.supportsMeasuredFrameCatalog052(manifest: runtimeManifest),
+           !Self.admitsMeasuredFrameCatalog052Operation(operation) {
+            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
         if fields["retainSaveIntent"] != nil {
             guard NativeAppliedDraftSave.applyOperations.contains(operation),
                   request["retainSaveIntent"] == .bool(true) || request["retainSaveIntent"] == .bool(false),

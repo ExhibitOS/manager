@@ -20,7 +20,8 @@ public enum NativeJPEGImportRuntime {
     public static func supportsICC(manifestSHA256: String?, ready: Bool) -> Bool {
         guard ready, let manifestSHA256 else { return false }
         #if DEBUG && os(macOS)
-        if manifestSHA256 == "222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7" {
+        if manifestSHA256 == "222baa86a2febe5f3129a1adaccc5d554e9d8a92d073c01f875f570d1103a9e7"
+            || AuthoringAPI.supportsMeasuredFrameCatalog052(manifest: manifestSHA256) {
             return true
         }
         #endif
