@@ -68,7 +68,8 @@ public actor NativeAutomationSession {
     static func checkEntranceRecordingOperation(manifest: String?, operation: String) throws {
         if supportsEntranceRecordingRuntime(manifest: manifest) &&
             !["read", "room-audio-intake", "room-audio-status", "room-audio-approve",
-              "floor-recording-attach-apply", "applied-draft-save-resume", "reopen-saved"].contains(operation) {
+              "floor-recording-attach-apply", "applied-draft-save-resume", "reopen-saved",
+              NativeExhibitionCreditsEdit.operation].contains(operation) {
             throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
         }
     }
@@ -3344,6 +3345,27 @@ public actor NativeAutomationSession {
             } else {
                 result = try value(latest)
             }
+        case NativeExhibitionCreditsEdit.operation:
+            try checkedRevision(request, current)
+            let scope: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId",
+                "principalId", "expectedRevision", "expectedEditVersion", "retainSaveIntent", "command"]
+            guard Set(fields.keys) == scope, request["retainSaveIntent"] == .bool(true),
+                  let owner = existingWorkspaceV5, owner.manifestSHA256 == runtimeManifest,
+                  Self.supportsEntranceRecordingRuntime(manifest: runtimeManifest), selectedOEXFormat == nil,
+                  owner.workspaceId == current.workspaceId, owner.tenantId == current.tenantId,
+                  owner.principalId == current.principalId, authoringSession?.userId == owner.principalId,
+                  UUID(uuidString: id)?.uuidString.lowercased() == id,
+                  let etag = current.etag else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+            let command = try NativeAutomationArtworkRules.command(request, keys: ["etag", "credits"])
+            guard command["etag"] == .string(etag) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
+            let edit = try NativeExhibitionCreditsEdit(command["credits"])
+            let draft = try await api.prepareExhibitionCredits(edit, in: current)
+            let (_, _, latest) = try await checked(request)
+            guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            try Task.checkCancellation()
+            guard let draft else { return try value(latest) }
+            let pending = try NativeAppliedDraftSave.stage(latest, draft: draft, requestId: id)
+            result = try value(await bridge.saveDocumentState(context, state: pending))
         case "floor-recording-attach-apply":
             try checkedRevision(request, current)
             let scope: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId", "tenantId",

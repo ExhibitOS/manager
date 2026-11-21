@@ -7,7 +7,7 @@ enum NativeAppliedDraftSave {
     static let origin = "automation-applied-draft-v1"
     static let applyOperations: Set<String> = [
         "pedestal-apply", "light-apply", "fixture-apply", "light-attachment-apply", "light-object-apply",
-        "placement-voice-apply", "floor-recording-attach-apply"
+        "placement-voice-apply", "floor-recording-attach-apply", NativeExhibitionCreditsEdit.operation
     ]
 
     struct Anchor: Equatable, Sendable {

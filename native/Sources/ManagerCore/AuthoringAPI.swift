@@ -1643,6 +1643,30 @@ public actor AuthoringAPI {
         return draft
     }
 
+    func prepareExhibitionCredits(_ edit: NativeExhibitionCreditsEdit,
+                                  in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard NativeAutomationSession.supportsEntranceRecordingRuntime(manifest: nativeRuntimeManifestSHA256),
+              nativeSession, !authenticationBusy, let session,
+              session.nativeAuthoringProposalProfile == "saved-head-v1",
+              !document.dirty, document.pending == nil, let draft = document.draft, let etag = document.etag,
+              document.tenantId == tenant, document.principalId == session.userId else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let heldGeneration = generation
+        let saved = try await exhibition(draft.id)
+        let policy = try await nativeViewportPolicy(draft.id)
+        guard generation == heldGeneration, saved.draft == draft, saved.etag == etag,
+              policy.exhibitionId == draft.id, policy.revision == saved.revision, policy.etag == etag,
+              policy.confirmsOrdinaryDraft else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+        let next = try edit.applying(to: saved.draft)
+        let live = try await verifyRetainedSession(session)
+        try saved.requireSameComparison(await exhibition(draft.id))
+        guard generation == heldGeneration, live.nativeAuthoringProposalProfile == "saved-head-v1" else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        return next
+    }
+
     public func preparePlacedExitDoor(_ settings: PlacedExitDoorSettings, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
         guard supportsPlacedExitDoors, nativeSession, session?.userId == document.principalId,
               document.tenantId == tenant, !document.dirty, document.pending == nil,
