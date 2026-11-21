@@ -57,6 +57,30 @@ public actor NativeAutomationSession {
         }
     }
 
+    static func supportsEntranceRecordingRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "e22b8b0f69d45c29acf9883369c29825e8503f2c651893d07eb14f0f1826e0b8"
+        #else
+        false
+        #endif
+    }
+
+    static func checkEntranceRecordingOperation(manifest: String?, operation: String) throws {
+        if supportsEntranceRecordingRuntime(manifest: manifest) &&
+            !["read", "room-audio-intake", "room-audio-status", "room-audio-approve",
+              "floor-recording-attach-apply", "applied-draft-save-resume", "reopen-saved"].contains(operation) {
+            throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+        }
+    }
+
+    private static func checkEntranceRecordingSession(manifest: String, _ session: AuthoringSession) throws {
+        if supportsEntranceRecordingRuntime(manifest: manifest) &&
+            (session.nativeSceneAuthoringProposalProfile != "saved-head-scene-v1" ||
+             session.nativeFloorRecordingAttachmentProfile != NativeFloorRecordingAttachment.profile) {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+    }
+
     private var bridge: NativeBridge
     private var bridgeOpen = true
     private var closeFailure: Error?
@@ -152,6 +176,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsFreshImageRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsLargeModelRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
+                    || Self.supportsEntranceRecordingRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
@@ -444,6 +469,7 @@ public actor NativeAutomationSession {
         }
         let api = try AuthoringAPI(port: config.ports.web, tenantId: expected.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
         let session = try await api.connect(credentials)
+        try Self.checkEntranceRecordingSession(manifest: config.manifestSha256, session)
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
@@ -559,6 +585,7 @@ public actor NativeAutomationSession {
         let credentials = try await bridge.authoringSession(reopened)
         let reopenedAPI = try AuthoringAPI(port: config.ports.web, tenantId: current.tenantId, nativeRuntimeManifestSHA256: manifest)
         let session = try await reopenedAPI.connect(credentials)
+        try Self.checkEntranceRecordingSession(manifest: manifest, session)
         if (AuthoringAPI.supportsDefaultSeatRuntime(manifest: manifest)
                 || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: manifest)),
            !(await reopenedAPI.admitsWorkspaceDefaultSeatProposal) {
@@ -2168,6 +2195,7 @@ public actor NativeAutomationSession {
         }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
+        try Self.checkEntranceRecordingOperation(manifest: runtimeManifest, operation: operation)
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }

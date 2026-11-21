@@ -7,6 +7,26 @@ final class NativeFloorRecordingAttachmentTests: XCTestCase {
     private let surface = "bdedd1da-0a03-442d-a58d-181877fe0652"
     private let audio = "4657f277-fdf6-46f7-8fe5-6110555697c3"
 
+    #if DEBUG && os(macOS)
+    func testEntranceRecordingSDKOnlyAdmitsTheExactSealedTargetAndCommands() throws {
+        let target = "e22b8b0f69d45c29acf9883369c29825e8503f2c651893d07eb14f0f1826e0b8"
+        let predecessor = "3b35d0d81021b7118e7092c4406976307a0ec1d0ff0f58310a06b745f078dce1"
+        XCTAssertTrue(NativeAutomationSession.supportsEntranceRecordingRuntime(manifest: target))
+        XCTAssertFalse(NativeAutomationSession.supportsEntranceRecordingRuntime(manifest: predecessor))
+        XCTAssertFalse(NativeAutomationSession.supportsEntranceRecordingRuntime(manifest: String(target.dropLast()) + "0"))
+        for operation in ["read", "room-audio-intake", "room-audio-status", "room-audio-approve",
+                          "floor-recording-attach-apply", "applied-draft-save-resume", "reopen-saved"] {
+            XCTAssertNoThrow(try NativeAutomationSession.checkEntranceRecordingOperation(manifest: target, operation: operation))
+        }
+        for operation in ["exhibition-new", "save", "room-audio-apply", "export-oex", "export-static", "light-object-apply"] {
+            XCTAssertThrowsError(try NativeAutomationSession.checkEntranceRecordingOperation(manifest: target, operation: operation)) {
+                XCTAssertEqual(($0 as? BridgeFailure)?.code, "AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+        }
+        XCTAssertNoThrow(try NativeAutomationSession.checkEntranceRecordingOperation(manifest: predecessor, operation: "save"))
+    }
+    #endif
+
     private func exactDraft() throws -> NativeExhibitionDraft {
         guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_TEST_R219_WHEAT_FIT_JOURNAL"] else {
             throw XCTSkip("Requires the detached r219 journal fixture")
