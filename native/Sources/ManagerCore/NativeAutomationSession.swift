@@ -98,6 +98,7 @@ public actor NativeAutomationSession {
     private var frameImageFitProposals: [String: (FrameImageFitReconciliationPreview, DocumentValue)] = [:]
     private var proceduralFrameClearProposals: [String: (NativeProceduralFrameClear.Proposal, DocumentValue)] = [:]
     private var portalProposals: [String: NativeAutomationPortal.Proposal] = [:]
+    private var reciprocalDoorProposals: [String: (NativeReciprocalDoorEdit, DocumentValue, UInt64, String)] = [:]
     private var wallFinishProposals: [String: (WallFinishPreview, String)] = [:]
     private enum SceneProposal: Sendable {
         case scene(NativeAutomationScene.ScenePreview)
@@ -523,6 +524,7 @@ public actor NativeAutomationSession {
         runtimeStopped = true
         proposals.removeAll(); sharedBenchProposals.removeAll(); surfaceProposals.removeAll(); plaqueProposals.removeAll(); wallFinishProposals.removeAll()
         viewerBudgetProposals.removeAll(); sceneProposals.removeAll(); portalProposals.removeAll(); proceduralFrameClearProposals.removeAll(); frameImageFitProposals.removeAll()
+        reciprocalDoorProposals.removeAll()
         _ = try await bridge.stop(context)
         let stopped = try await waitReady()
         guard let runtime = stopped.runtime, runtime.state == "stopped", !runtime.hasOwnedProcesses,
@@ -2168,6 +2170,14 @@ public actor NativeAutomationSession {
         }
         try Self.checkPreservationOperation(operation, manifest: runtimeManifest, allowed: "read")
         try Self.checkPreparedBudgetReadbackOperation(manifest: runtimeManifest, operation: operation)
+        let reciprocalDoorOperation = NativeReciprocalDoorEdit.automationOperations.contains(operation)
+        if reciprocalDoorOperation {
+            guard existingWorkspaceV5 != nil, selectedOEXFormat == nil,
+                  authoringSession?.nativeDoorPairEditProfile == NativeReciprocalDoorEdit.profile else {
+                throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED")
+            }
+            try NativeReciprocalDoorEdit.checkAutomationEnvelope(operation, fields: Set(fields.keys), requestId: id)
+        }
         if installedAuthoringCLI {
             let allowed: Set<String> = ["workspace-frame-image-fit-prepare", "workspace-frame-image-fit-apply", "workspace-frame-image-fit-cancel", "procedural-frame-clear-prepare", "procedural-frame-clear-apply", "procedural-frame-clear-cancel", "workspace-furnishing-thumbnail-prepare", "workspace-furnishing-thumbnail-candidates", "workspace-furnishing-thumbnail-candidate", "workspace-furnishing-thumbnail-image", "workspace-furnishing-thumbnail-selection", "workspace-furnishing-thumbnail-select", "workspace-furnishing-thumbnail-selected-image", "read", "exhibition-new", "save", "reopen-saved", "plaque-prepare", "plaque-apply", "plaque-cancel", "pedestal-prepare", "pedestal-apply", "pedestal-cancel", "light-prepare", "light-apply", "light-cancel", "fixture-prepare", "fixture-apply", "fixture-cancel", "light-attachment-prepare", "light-attachment-apply", "light-attachment-cancel", "thumbnail-prepare", "thumbnail-status", "thumbnail-select", "required-model-original-discover", "required-model-original-status", "required-model-original-approve", "light-object-prepare", "light-object-apply", "light-object-cancel", "workspace-portal-prepare", "workspace-portal-apply", "workspace-portal-cancel", "viewer-budget-inspect", "viewer-budget-prepare", "viewer-budget-apply", "viewer-budget-cancel"]
             guard allowed.contains(operation) || operation == "architecture-apply" || Self.privateHostOperations.contains(operation) || Self.currentImageThumbnailOperations.contains(operation) || ["gpu-model-prepare", "gpu-model-status", "gpu-model-cancel", "gpu-model-retry", "gpu-model-review", "gpu-model-selection", "gpu-model-clear-cancelled", "gpu-model-clear-selected"].contains(operation) else { throw BridgeFailure("AUTOMATION_OPERATION_UNSUPPORTED") }
@@ -2266,6 +2276,14 @@ public actor NativeAutomationSession {
         let bytes = try encoder.encode(request)
         // Scope is checked even for replay: correlation is not authorization.
         let (context, api, current) = try await checked(request)
+        if reciprocalDoorOperation {
+            guard let owner = existingWorkspaceV5, owner.manifestSHA256 == runtimeManifest,
+                  owner.workspaceId == current.workspaceId, owner.tenantId == current.tenantId,
+                  owner.principalId == current.principalId, authoringSession?.userId == owner.principalId else {
+                throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
+            }
+            try checkedRevision(request, current)
+        }
         let independentFirstArchitecture = firstArchitectureEntry && AuthoringAPI.supportsOwnerLocalOriginalRuntime(manifest: runtimeManifest)
         if firstArchitectureEntry {
             let allowed = independentFirstArchitecture
@@ -2305,6 +2323,9 @@ public actor NativeAutomationSession {
             if operation == "viewer-budget-prepare", viewerBudgetProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "plaque-prepare", plaqueProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             if operation == "wall-finish-prepare", wallFinishProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
+            if operation == NativeReciprocalDoorEdit.automationPrepare, reciprocalDoorProposals[id] == nil {
+                throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED")
+            }
             if operation == "workspace-portal-prepare", portalProposals[id] == nil { throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED") }
             return prior
         }
@@ -3267,6 +3288,38 @@ public actor NativeAutomationSession {
                 selectedOEXFormat = nil
             }
             result = .object(["document": storedValue, "receipt": recorded])
+        case NativeReciprocalDoorEdit.automationPrepare:
+            let edit = try NativeReciprocalDoorEdit.automationCommand(request["command"])
+            guard let etag = current.etag, request["command"]["etag"] == .string(etag) else {
+                throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let draft = try await api.prepareReciprocalDoorEdit(edit, in: current)
+            let (_, _, latest) = try await checked(request)
+            guard try value(latest) == value(current) else { throw BridgeFailure("NATIVE_DOCUMENT_STATE_CHANGED") }
+            try Task.checkCancellation()
+            guard let draft else { return .object(["changed": .bool(false), "proposalId": .null]) }
+            reciprocalDoorProposals[id] = (edit, draft.candidate, current.revision, etag)
+            result = .object(["changed": .bool(true), "proposalId": .string(id), "candidate": draft.candidate])
+        case NativeReciprocalDoorEdit.automationApply, NativeReciprocalDoorEdit.automationCancel:
+            guard let proposalId = request["proposalId"].string,
+                  let (edit, candidate, revision, etag) = reciprocalDoorProposals[proposalId],
+                  current.revision == revision, current.etag == etag else {
+                throw BridgeFailure("AUTOMATION_PROPOSAL_EXPIRED")
+            }
+            if operation == NativeReciprocalDoorEdit.automationCancel {
+                result = .object(["cancelled": .bool(true)])
+            } else {
+                guard request["retainSaveIntent"] == .bool(true) else { throw BridgeFailure("AUTOMATION_PROTOCOL_INVALID") }
+                let draft = try await api.prepareReciprocalDoorEdit(edit, in: current)
+                let (_, _, latest) = try await checked(request)
+                guard let draft, draft.candidate == candidate, try value(latest) == value(current) else {
+                    throw BridgeFailure("EXHIBITION_COMPARISON_STALE")
+                }
+                try Task.checkCancellation()
+                let pending = try NativeAppliedDraftSave.stage(latest, draft: draft, requestId: id)
+                result = try value(await bridge.saveDocumentState(context, state: pending))
+            }
+            reciprocalDoorProposals.removeValue(forKey: proposalId)
         case "room-audio-intake", "room-audio-status", "room-audio-approve":
             try checkedRevision(request, current)
             let common: Set<String> = ["version", "requestId", "operation", "capability", "workspaceId",

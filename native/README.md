@@ -2325,3 +2325,22 @@ their bounds. The new runtime corrects source-bound multi-segment rail contact;
 actual Native check, rail-only Save, lighting, output and rendered appearance
 remain separate from source/artifact qualification. No F03 budget feature is
 included in this corrective runtime or Native source unit.
+
+### Edit an existing connected door pair
+
+A saved ordinary workspace that advertises `saved-head-reciprocal-door-edit-v1`
+can edit the two doors from either endpoint. Dimensions apply to both doors
+while retaining their wall-local horizontal centers and floor alignment.
+The server reports the affected opening or room and constraint if it rejects a
+proposal. Unpaired doors retain the existing single-opening editor.
+
+The existing-workspace SDK uses `reciprocal-door-prepare` with current native
+revisions and `command: {etag, openingId, dimensions?, frame?}`. Dimensions have
+`width` and `height` in meters. Frame selection uses `{furnishingId,
+furnishingVersion: 1}` from the approved catalogue and requires the portal
+finish capability. Omit `frame` to keep it or pass `null` to remove it. At least
+one change field is required. Apply through `reciprocal-door-apply` with the
+returned `proposalId` and `retainSaveIntent: true`, then use the existing
+`applied-draft-save-resume` with the original apply request ID before reopening.
+`reciprocal-door-cancel` drops an unused proposal. A rejection never stages a
+partial edit, and the SDK does not admit a runtime or owner via these commands.

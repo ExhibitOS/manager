@@ -466,13 +466,15 @@ struct WorkspaceFurnishingIntakeView: View {
                     case .ceiling(let attachment, let furnishingId):
                         try await api.verifyOrdinaryCeilingRailFit(attachment, furnishingId: furnishingId, in: document)
                     case .portal(let openingId, let furnishingId):
-                        _ = try await api.prepareWorkspacePortalFinish(openingId: openingId, furnishingId: furnishingId, in: document)
+                        _ = try await model.preparePortalFinish(openingId: openingId, furnishingId: furnishingId, api: api, document: document)
                     }
                 }
                 outcome = (true, "선택한 위치에 배치할 수 있습니다.")
             } catch let failure as AuthoringFailure {
                 try Task.checkCancellation()
-                if failure.code == "CEILING_RAIL_INVALID" {
+                if let violation = failure.doorPairViolation {
+                    outcome = (false, violation.message(in: document.draft))
+                } else if failure.code == "CEILING_RAIL_INVALID" {
                     outcome = (false, "이 위치에는 레일을 배치할 수 없습니다. 같은 공간의 천장과 가로·세로 위치, 방향, 간격을 확인하세요.")
                 } else if failure.code == "PORTAL_SIZE_UNSUPPORTED" || failure.code == "PORTAL_WALL_DEPTH_UNSUPPORTED" {
                     outcome = (false, "선택한 마감이 문에 맞지 않습니다. 문 크기, 벽 두께와 연결된 출입구를 확인하세요.")
@@ -545,19 +547,25 @@ struct WorkspaceFurnishingIntakeView: View {
                         }
                     }
                 }
+                let connected = NativeReciprocalDoorEdit.isConnectedDoor(portalOpening, in: draft)
+                let hasFinish = connected ? NativeReciprocalDoorEdit.hasFrame(portalOpening, in: draft)
+                    : WorkspacePortalFinish.hasAttachment(openingId: portalOpening, in: draft)
+                if connected {
+                    Text("연결된 어느 쪽 문을 선택해도 같은 문틀을 변경합니다.").foregroundStyle(.secondary)
+                }
                 if let target, target.kind == .portalFinish {
                     let check = portalOpening.isEmpty ? nil : PlacementCheck.portal(openingId: portalOpening, furnishingId: target.id)
-                    placementCheck(check, enabled: model.workspacePortalFinishAvailable, prompt: "마감을 연결할 저장된 문을 선택하세요.")
-                    Button("문에 마감 연결") {
+                    placementCheck(check, enabled: model.canEditPortalFinish(on: portalOpening), prompt: "마감을 연결할 저장된 문을 선택하세요.")
+                    Button(connected ? (hasFinish ? "문틀 교체" : "문틀 연결") : "문에 마감 연결") {
                         let opening = portalOpening
                         Task { await applyPortal(openingId: opening, furnishingId: target.id) }
-                    }.disabled(portalOpening.isEmpty || !model.canEditWorkspacePortalFinish || result(for: check)?.eligible == false)
+                    }.disabled(portalOpening.isEmpty || !model.canEditPortalFinish(on: portalOpening) || result(for: check)?.eligible == false)
                 }
-                if WorkspacePortalFinish.hasAttachment(openingId: portalOpening, in: draft) {
-                    Button("문에서 마감 해제") {
+                if hasFinish {
+                    Button(connected ? "연결 문에서 문틀 제거" : "문에서 마감 해제") {
                         let opening = portalOpening
                         Task { await applyPortal(openingId: opening, furnishingId: nil) }
-                    }.disabled(!model.canEditWorkspacePortalFinish)
+                    }.disabled(!model.canEditPortalFinish(on: portalOpening))
                 }
             }
         }
@@ -648,7 +656,9 @@ struct WorkspaceFurnishingIntakeView: View {
             }
         }
         catch {
-            message = (error as? AuthoringFailure)?.errorDescription ?? "비품 등록 또는 배치 상태를 다시 확인하세요."
+            let failure = error as? AuthoringFailure
+            message = failure?.doorPairViolation?.message(in: model.draft)
+                ?? failure?.errorDescription ?? "비품 등록 또는 배치 상태를 다시 확인하세요."
         }
     }
 

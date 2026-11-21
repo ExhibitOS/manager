@@ -37,6 +37,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeDoorPairAuthoringProfile: String? = nil
+    public var nativeDoorPairEditProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
     public var nativeFixtureFirstAuthoringProfile: String? = nil
@@ -268,9 +269,12 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     public let role: String?
     public let field: String?
     public let trackSpotAimDiagnostic: NativeTrackSpotAimDiagnostic?
+    public let doorPairViolation: NativeDoorPairViolation?
     public init(_ code: String, status: Int = 0, role: String? = nil, field: String? = nil,
-                trackSpotAimDiagnostic: NativeTrackSpotAimDiagnostic? = nil) {
+                trackSpotAimDiagnostic: NativeTrackSpotAimDiagnostic? = nil,
+                doorPairViolation: NativeDoorPairViolation? = nil) {
         self.trackSpotAimDiagnostic = trackSpotAimDiagnostic
+        self.doorPairViolation = doorPairViolation
         self.code = code; self.status = status
         self.role = role.flatMap(WorkspaceMaterialRole.init(rawValue:))?.rawValue
         self.field = Self.safeField(field) ? field : nil
@@ -287,6 +291,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "MODEL_PREPARATION_PROFILE_UNSUPPORTED": return "선택한 GLB의 구조가 이 파일 검사에서 지원하는 범위와 맞지 않습니다."
         case "MODEL_PREPARATION_DISPLAY_REFERENCE_INVALID": return "준비된 파일의 좌표와 임시 표시 기준을 확인하지 못했습니다."
         case "EXHIBITION_COMPARISON_STALE": return "저장본이 비교 후 바뀌었습니다. 현재 입력은 유지됩니다. 저장본을 다시 비교하세요."
+        case "DOOR_PAIR_EDIT_INVALID": return doorPairViolation?.message(in: nil) ?? "연결된 문의 크기와 문틀을 확인하세요."
         case "ARCHITECTURE_FIELDS_INVALID": return "공간 이름·크기·위치를 확인하세요. 크기는 0보다 큰 값, 위치는 숫자로 입력하세요."
         case "FURNISHING_FIELDS_INVALID": return "받침의 위치·회전·비례 크기를 확인하세요. 위치는 미터, 회전은 −180–180도, 비율은 0.1–4입니다. 입력과 기존 전시는 유지됩니다."
         case "FURNISHING_INVALID", "FURNISHING_CATALOG_INVALID": return "현재 지원하는 받침 정보를 확인하지 못했습니다. 기존 받침과 입력은 유지됩니다."
@@ -405,6 +410,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
     }
 }
 private struct APIErrorEnvelope: Decodable { let code: String; let role: String?; let field: String? }
+private struct DoorPairErrorEnvelope: Decodable { let doorPairViolation: NativeDoorPairViolation }
 private struct TrackSpotAimErrorMessage: Decodable { let message: String }
 private final class LocalRedirectBlocker: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
@@ -778,7 +784,7 @@ public actor AuthoringAPI {
     }
 
     private func request<T: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil, bodyFile: URL? = nil, bodyLength: Int? = nil, authenticated: Bool = true, contentType: String = "application/json", ifMatch: String? = nil, chunkSHA256: String? = nil, publicationProfile: String? = nil, timeout: TimeInterval = 15, catalogThumbnail: (stage: CatalogThumbnailStage, scope: CatalogThumbnailAuthority)? = nil, expectedResponseETag: String? = nil, requiresNativeReadCSRF: Bool = false, gpuApprovalFence: (generation: UInt64, authority: NativeGPUPreviewApprovalAuthority)? = nil,
-        trackSpotAimProposal: Bool = false) async throws -> T {
+        trackSpotAimProposal: Bool = false, doorPairEditProposal: Bool = false) async throws -> T {
         guard !(authenticated && authenticationBusy && path != "/api/v1/auth/logout") else { throw AuthoringFailure("AUTH_BUSY") }
         activeRequests += 1
         defer { activeRequests -= 1 }
@@ -852,8 +858,11 @@ public actor AuthoringAPI {
             if http.statusCode == 401 { generation &+= 1; clear() }
             let diagnostic = trackSpotAimProposal && http.statusCode == 422 && code == "AUTHORING_PROPOSAL_INVALID"
                 ? NativeTrackSpotAimDiagnostic.parse((try? JSONDecoder().decode(TrackSpotAimErrorMessage.self, from: data))?.message) : nil
+            let doorPairViolation = doorPairEditProposal && http.statusCode == 422 && code == "DOOR_PAIR_EDIT_INVALID"
+                ? (try? JSONDecoder().decode(DoorPairErrorEnvelope.self, from: data))?.doorPairViolation : nil
             throw AuthoringFailure(AuthoringFailure.safeCode(code) ? code : "REQUEST_FAILED", status: http.statusCode,
-                                   role: envelope?.role, field: envelope?.field, trackSpotAimDiagnostic: diagnostic)
+                                   role: envelope?.role, field: envelope?.field, trackSpotAimDiagnostic: diagnostic,
+                                   doorPairViolation: doorPairViolation)
         }
         catalogThumbnail?.stage.recordResponse(http.statusCode)
         if let expectedResponseETag, http.value(forHTTPHeaderField: "ETag") != expectedResponseETag {
@@ -4542,6 +4551,38 @@ public actor AuthoringAPI {
             && session?.nativeDoorPairAuthoringProfile == NativeDoorPairProposal.profile
     }
 
+    private var admitsReciprocalDoorEdit: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && session?.nativeDoorPairEditProfile == NativeReciprocalDoorEdit.profile
+    }
+
+    public func prepareReciprocalDoorEdit(_ edit: NativeReciprocalDoorEdit, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsReciprocalDoorEdit, let session, document.tenantId == tenant,
+              document.principalId == session.userId, !document.dirty, document.pending == nil,
+              let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let held = generation
+        let live = try await verifyRetainedSession(session)
+        guard generation == held, live.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1",
+              live.nativeDoorPairEditProfile == NativeReciprocalDoorEdit.profile,
+              !edit.frame.changes || (live.advertisesWorkspacePortalFinish && admitsWorkspacePortalFinish) else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft, generation == held else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        var registered: WorkspaceFurnishing?
+        if case .select(let id) = edit.frame { registered = try await workspaceFurnishing(id, version: 1) }
+        guard generation == held, admitsReciprocalDoorEdit else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let proposal = try edit.request(in: document, requestId: UUID().uuidString.lowercased())
+        let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal)
+        guard generation == held, admitsReciprocalDoorEdit else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try edit.checkedReply(reply, request: proposal, draft: draft, approvedFrame: registered)
+    }
+
     public var admitsFrameImageFitReconciliation: Bool {
         admitsWorkspaceArtworkFrames && nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
             && session?.nativeAuthoringProposalProfile == "saved-head-v1"
@@ -4716,7 +4757,8 @@ public actor AuthoringAPI {
         let frameImageFit = operation == "reconcile-frame-image-fit"
         let budgetPolicy = operation == "set-viewer-budget-policy"
         let doorPair = operation == NativeDoorPairProposal.command
-        let admitted = doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let reciprocalEdit = operation == NativeReciprocalDoorEdit.operation
+        let admitted = reciprocalEdit ? admitsReciprocalDoorEdit : doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
@@ -4733,7 +4775,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (doorPair || placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
+              (reciprocalEdit || doorPair || placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }
@@ -4741,7 +4783,7 @@ public actor AuthoringAPI {
         guard body.count <= 66_560 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
         let path = studioPrefix + "/exhibitions/" + (try identifier(exhibitionId)) + "/native-authoring-proposal"
         return try await request(path, method: "POST", body: body, ifMatch: etag, expectedResponseETag: etag,
-                                 trackSpotAimProposal: NativeTrackSpotAim.requiresCapability(proposal))
+                                 trackSpotAimProposal: NativeTrackSpotAim.requiresCapability(proposal), doorPairEditProposal: reciprocalEdit)
     }
 
     public func prepareWorkspaceArtworkFrame(_ command: WorkspaceArtworkFrameCommand,
