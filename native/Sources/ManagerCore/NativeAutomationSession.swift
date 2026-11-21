@@ -612,7 +612,7 @@ public actor NativeAutomationSession {
         let credentials = try await bridge.authoringSession(reopened)
         let reopenedAPI = try AuthoringAPI(port: config.ports.web, tenantId: current.tenantId, nativeRuntimeManifestSHA256: manifest)
         let session = try await reopenedAPI.connect(credentials)
-        try Self.checkEntranceRecordingSession(manifest: manifest, session)
+        try Self.checkFloorRecordingSession(manifest: manifest, session)
         if (AuthoringAPI.supportsDefaultSeatRuntime(manifest: manifest)
                 || AuthoringAPI.supportsCarriedRestoreBenchRuntime(manifest: manifest)),
            !(await reopenedAPI.admitsWorkspaceDefaultSeatProposal) {
