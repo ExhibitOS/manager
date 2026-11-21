@@ -37,6 +37,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var nativeViewerBudgetPolicyProfile: String? = nil
     public var nativeSceneAuthoringProposalProfile: String? = nil
     public var nativeDoorPairAuthoringProfile: String? = nil
+    public var nativePairedWallStructureProfile: String? = nil
     public var nativeFixtureAuthoringProposalProfile: String? = nil
     public var nativeLightObjectAuthoringProposalProfile: String? = nil
     public var nativeFixtureFirstAuthoringProfile: String? = nil
@@ -348,6 +349,7 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "FLOOR_RECORDING_UNASSIGNED": return "이 공간의 선택한 바닥 재질에 승인된 발소리 녹음이 연결되어 있지 않습니다."
         case "FLOOR_RECORDING_RESPONSE_INVALID": return "이 바닥의 발소리 연결을 확인하지 못했습니다. 설정은 적용되지 않았습니다."
         case "FLOOR_SETTINGS_INVALID", "FLOOR_PRESET_REQUIRED": return "바닥 재질과 변경할 항목을 선택하고 입력 범위를 확인하세요."
+        case "PAIRED_WALL_STRUCTURE_INVALID": return "연결된 문, 벽체 확장 거리와 통행 여유를 확인하세요."
         case "WALL_FINISH_INVALID", "WALL_FINISH_PREVIEW_FAILED": return "선택한 벽과 마감 수치를 확인하세요. 문·작품과의 여유 공간이 필요하며 기존 설정과 입력은 유지됩니다."
         case "FLOOR_TARGET_INVALID", "CONCRETE_FOOTSTEPS_INVALID": return "실제 바닥 표면을 선택하고 기존 발소리 설정을 확인하세요. 바닥 외관과 다른 소리는 유지됩니다."
         case "ROOM_AUDIO_SAVE_REQUIRED": return "편집 가능한 전시를 저장한 뒤 공간 소리를 설정하세요."
@@ -4542,6 +4544,34 @@ public actor AuthoringAPI {
             && session?.nativeDoorPairAuthoringProfile == NativeDoorPairProposal.profile
     }
 
+    private var admitsPairedWallStructure: Bool {
+        nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
+            && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && session?.nativePairedWallStructureProfile == NativePairedWallStructure.profile
+    }
+
+    public func preparePairedWallStructure(_ command: NativePairedWallStructure, in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        guard admitsPairedWallStructure, let session, document.tenantId == tenant,
+              document.principalId == session.userId, !document.dirty, document.pending == nil,
+              let draft = document.draft, let etag = document.etag else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let held = generation
+        let live = try await verifyRetainedSession(session)
+        guard generation == held, live.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1",
+              live.nativePairedWallStructureProfile == NativePairedWallStructure.profile else {
+            throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+        }
+        let saved = try await exhibition(draft.id)
+        guard saved.etag == etag, saved.draft == draft, generation == held else {
+            throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+        }
+        let proposal = command.request(in: document, requestId: UUID().uuidString.lowercased())
+        let reply = try await nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal)
+        guard generation == held, admitsPairedWallStructure else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        return try command.checkedReply(reply, request: proposal, draft: draft)
+    }
+
     public var admitsFrameImageFitReconciliation: Bool {
         admitsWorkspaceArtworkFrames && nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
             && session?.nativeAuthoringProposalProfile == "saved-head-v1"
@@ -4716,7 +4746,8 @@ public actor AuthoringAPI {
         let frameImageFit = operation == "reconcile-frame-image-fit"
         let budgetPolicy = operation == "set-viewer-budget-policy"
         let doorPair = operation == NativeDoorPairProposal.command
-        let admitted = doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
+        let pairedWall = operation == NativePairedWallStructure.set || operation == NativePairedWallStructure.remove
+        let admitted = pairedWall ? admitsPairedWallStructure : doorPair ? admitsNativeDoorPairProposal : budgetPolicy ? admitsViewerBudgetPolicy : frameImageFit ? admitsFrameImageFitReconciliation : lightObject ? admitsNativeLightObjectAuthoringProposal : fixture ? admitsNativeFixtureAuthoringProposal : scene
             ? nativeSession && !authenticationBusy && nativeRuntimeManifestSHA256 != nil
                 && session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
             : hasSavedHeadAuthoringAdmission()
@@ -4733,7 +4764,7 @@ public actor AuthoringAPI {
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),
               proposal["tenantId"].string == tenant, proposal["principalId"].string == session.userId,
-              (doorPair || placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
+              (pairedWall || doorPair || placementVoice || budgetPolicy || frameImageFit || lightObject || scene || fixture || ["add-plaque", "set-plaque", "set-wall-finish"].contains(operation)) else {
             throw AuthoringFailure("EXHIBITION_SCOPE_CHANGED")
         }
         struct Input: Encodable { let expectedRevision: Int; let request: DocumentValue }

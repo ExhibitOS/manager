@@ -78,6 +78,7 @@ struct ArchitectureSettingsView: View {
                 if !doors.isEmpty { PlacedExitDoorSettingsView(model: model, ready: ready, targets: doors) }
             }
             WallFinishSettingsView(model: model, viewport: model.viewportController, ready: ready)
+            PairedWallStructureSettingsView(model: model, ready: ready)
             if model.viewportSelection?.kind == "opening" { SharedFurnishingCatalogView(model: model, viewport: model.viewportController, ready: ready) }
             if let selection = model.viewportSelection, selection.kind == "surface",
                model.draft?.candidate["surfaces"].items?.contains(where: { $0["id"].string == selection.id && $0["type"].string == "floor" }) == true {
