@@ -623,6 +623,12 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
         return 6147 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r224_closing_recording_transition(pair) {
+        // The stopped r224 census (870aeb96) is 6,428,559,844 bytes.
+        // Add one existing 16 MiB trial WAL segment and round up to whole MiB.
+        return 6147 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
         || crate::native_payload::grouped_rail_contact_clean_transition(pair)
         || crate::native_payload::white_rail_opposite_clean_transition(pair)
@@ -3899,6 +3905,22 @@ mod tests {
         assert_eq!(checkpoint_inventory_limit((source, target), None),
             (6_428_480_402_u64 + 16 * mib).div_ceil(mib) * mib);
         for denied in [(target, source), (target, target), (OFFICIAL_R220_SEVEN_LIGHTS_SELECTED_TARGET.2, target)] {
+            assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
+        }
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r224_closing_recording_uses_only_its_measured_checkpoint_limit() {
+        use crate::native_payload::{OFFICIAL_R220_SHARED_ORDINARY_TARGET,
+            OFFICIAL_R223_ENTRANCE_RECORDING_TARGET, OFFICIAL_R224_CLOSING_RECORDING_TARGET};
+        let source = OFFICIAL_R223_ENTRANCE_RECORDING_TARGET.2;
+        let target = OFFICIAL_R224_CLOSING_RECORDING_TARGET.2;
+        let mib = 1024 * 1024;
+        assert_eq!(checkpoint_inventory_limit((source, target), None),
+            (6_428_559_844_u64 + 16 * mib).div_ceil(mib) * mib);
+        for denied in [(target, source), (target, target), (source, source),
+            (OFFICIAL_R220_SHARED_ORDINARY_TARGET.2, target)] {
             assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
         }
     }
