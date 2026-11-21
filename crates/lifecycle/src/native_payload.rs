@@ -1327,6 +1327,12 @@ pub(crate) const OFFICIAL_R223_ENTRANCE_RECORDING_TARGET: RuntimeTuple = (
     "e22b8b0f69d45c29acf9883369c29825e8503f2c651893d07eb14f0f1826e0b8",
 );
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const OFFICIAL_R224_CLOSING_RECORDING_TARGET: RuntimeTuple = (
+    "aad0d2619918e6268e9ecc6496baec33ddeeafb9",
+    "ca65a9921619a32dd56d0d6f32fe3825618b678d0c67192e5a65696b3cd5ee47",
+    "cedec8a0ee0d4eba1d81304a8f65a61c48b9f1a261aca5529547512210990e88",
+);
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const OFFICIAL_ROOM_LIGHTING_PROFILE_ID: (u64, u64) = (16777244, 42815025);
 const OFFICIAL_ROOM_LIGHTING_SQL: (&str, u64, &str) = (
     "platform/scripts/occupied-room-lighting-migration.sql", 2159,
@@ -1346,7 +1352,8 @@ pub(crate) fn official_room_lighting_catalog(tuple: (&str, &str, &str)) -> Optio
             OFFICIAL_R219_SEAT_PREVIEW_TARGET, OFFICIAL_R219_CLOSING_SELECTED_TARGET,
             OFFICIAL_R219_EPHEMERAL_SEAT_TARGET, OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET,
             OFFICIAL_R219_AUTHORED_HEIGHT_TARGET, OFFICIAL_R220_SEVEN_LIGHTS_SELECTED_TARGET,
-            OFFICIAL_R220_SHARED_ORDINARY_TARGET, OFFICIAL_R223_ENTRANCE_RECORDING_TARGET].contains(&tuple) {
+            OFFICIAL_R220_SHARED_ORDINARY_TARGET, OFFICIAL_R223_ENTRANCE_RECORDING_TARGET,
+            OFFICIAL_R224_CLOSING_RECORDING_TARGET].contains(&tuple) {
             return Some(WorkspaceFurnishingCatalog::DefaultCatalogue057);
         }
     }
@@ -1441,6 +1448,11 @@ pub(crate) fn official_r220_shared_ordinary_transition(pair: (&str, &str)) -> bo
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn official_r223_entrance_recording_transition(pair: (&str, &str)) -> bool {
     pair == (OFFICIAL_R220_SHARED_ORDINARY_TARGET.2, OFFICIAL_R223_ENTRANCE_RECORDING_TARGET.2)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn official_r224_closing_recording_transition(pair: (&str, &str)) -> bool {
+    pair == (OFFICIAL_R223_ENTRANCE_RECORDING_TARGET.2, OFFICIAL_R224_CLOSING_RECORDING_TARGET.2)
 }
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -2250,7 +2262,8 @@ pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
         OFFICIAL_R219_SEAT_PREVIEW_TARGET.2, OFFICIAL_R219_CLOSING_SELECTED_TARGET.2,
         OFFICIAL_R219_EPHEMERAL_SEAT_TARGET.2, OFFICIAL_R219_NINE_LIGHTS_SELECTED_TARGET.2,
         OFFICIAL_R219_AUTHORED_HEIGHT_TARGET.2, OFFICIAL_R220_SEVEN_LIGHTS_SELECTED_TARGET.2,
-        OFFICIAL_R220_SHARED_ORDINARY_TARGET.2, OFFICIAL_R223_ENTRANCE_RECORDING_TARGET.2].contains(&manifest) {
+        OFFICIAL_R220_SHARED_ORDINARY_TARGET.2, OFFICIAL_R223_ENTRANCE_RECORDING_TARGET.2,
+        OFFICIAL_R224_CLOSING_RECORDING_TARGET.2].contains(&manifest) {
         return true;
     }
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
@@ -2518,6 +2531,11 @@ impl FurnishingTransition {
         if official_r223_entrance_recording_transition(pair) {
             return Some(Self::SameCatalog { source: OFFICIAL_R220_SHARED_ORDINARY_TARGET,
                 target: OFFICIAL_R223_ENTRANCE_RECORDING_TARGET, catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057 });
+        }
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        if official_r224_closing_recording_transition(pair) {
+            return Some(Self::SameCatalog { source: OFFICIAL_R223_ENTRANCE_RECORDING_TARGET,
+                target: OFFICIAL_R224_CLOSING_RECORDING_TARGET, catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057 });
         }
         if let Some((source, target)) = r285_greek_thumbnail_trace_runtime_pair(pair) {
             return Some(Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
@@ -3830,6 +3848,22 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert_eq!(official_room_lighting_catalog(target), Some(catalog));
         assert_eq!(official_room_lighting_catalog((target.0, source.1, target.2)), None);
         for denied in [(target.2, source.2), (target.2, target.2), (OFFICIAL_R220_SEVEN_LIGHTS_SELECTED_TARGET.2, target.2)] {
+            assert!(!saved_workspace_transition_supported(denied));
+        }
+        assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn official_r224_closing_recording_only_admits_the_forward_catalog057_pair() {
+        let source = OFFICIAL_R223_ENTRANCE_RECORDING_TARGET;
+        let target = OFFICIAL_R224_CLOSING_RECORDING_TARGET;
+        let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+        assert_eq!(FurnishingTransition::from_manifests((source.2, target.2)),
+            Some(FurnishingTransition::SameCatalog { source, target, catalog }));
+        assert_eq!(official_room_lighting_catalog(target), Some(catalog));
+        assert_eq!(official_room_lighting_catalog((target.0, source.1, target.2)), None);
+        for denied in [(target.2, source.2), (target.2, target.2), (OFFICIAL_R220_SHARED_ORDINARY_TARGET.2, target.2)] {
             assert!(!saved_workspace_transition_supported(denied));
         }
         assert!(!crate::installations::native_static_export::saved_head_runtime_allowed(target.2));

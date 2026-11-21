@@ -2300,6 +2300,14 @@ const OFFICIAL_R223_ENTRANCE_RECORDING_SOURCE_FILES: [(&str, u64, &str); 2] = [
 ];
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const OFFICIAL_R224_CLOSING_RECORDING_SOURCE_FILES: [(&str, u64, &str); 2] = [
+    ("native-current-run.json", 4096,
+     "0cc3f74f49d17a416129ab1b77aec0d180021304d3048d52d72f0882ff155f15"),
+    ("native-runs/fc91540b-ca7a-4323-bcdf-21d42fdb3e1b/state.json", 1_048_576,
+     "9e6515c46d473942e60ad25b9454f83a486b8251b0a90c98e5eaad15ff03918f"),
+];
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 impl InstallationController {
     fn check_official_selected_saved_head(&self, service: &LifecycleService, profile: &Path,
         target: &str, document: &super::installations::native_document::DocumentState) -> Result<()> {
@@ -2312,6 +2320,15 @@ impl InstallationController {
                 (618, 281, r#""studio-r218-ea370957db37cfb1016cb296eb3843d2585de0cb4bb42b885f91ffdabcfa074e""#,
                  "a890979083b925fb5ee282923c8f59c58bf0a23823ee617d6ea4d9b0af36d492",
                  "7848f4a3e25c8687841391a97029722893d0c252c0af4d062003a6af611dbf14")
+            } else if target == crate::native_payload::OFFICIAL_R224_CLOSING_RECORDING_TARGET.2 {
+                for (file, limit, expected) in OFFICIAL_R224_CLOSING_RECORDING_SOURCE_FILES {
+                    if digest(&installation_backup::source_bytes(&service.root, file, limit, true)?) != expected {
+                        return Err(invalid());
+                    }
+                }
+                (644, 291, r#""studio-r224-9a650240993d0a7a211929bc2b3aa817f10a6c5565d0df5211d7c6d964d1bab3""#,
+                 "11c0e78069d48cb44f73d88d6e43991dd8335d1e4e803d48109c4445322c7588",
+                 "1e94d136a2d3b9987a419025df83e5412c6457f046c348bc3028cb585dc7870d")
             } else if target == crate::native_payload::OFFICIAL_R223_ENTRANCE_RECORDING_TARGET.2 {
                 for (file, limit, expected) in OFFICIAL_R223_ENTRANCE_RECORDING_SOURCE_FILES {
                     if digest(&installation_backup::source_bytes(&service.root, file, limit, true)?) != expected {
@@ -2584,7 +2601,8 @@ impl InstallationController {
                 || crate::native_payload::official_r219_authored_height_transition(pair)
                 || crate::native_payload::official_r220_seven_lights_selected_transition(pair)
                 || crate::native_payload::official_r220_shared_ordinary_transition(pair)
-                || crate::native_payload::official_r223_entrance_recording_transition(pair) {
+                || crate::native_payload::official_r223_entrance_recording_transition(pair)
+                || crate::native_payload::official_r224_closing_recording_transition(pair) {
                 if retained_saved_head.is_some() { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, pair.1, document)?;
             }
@@ -2726,7 +2744,8 @@ impl InstallationController {
                 crate::native_payload::OFFICIAL_R219_AUTHORED_HEIGHT_TARGET.2,
                 crate::native_payload::OFFICIAL_R220_SEVEN_LIGHTS_SELECTED_TARGET.2,
                 crate::native_payload::OFFICIAL_R220_SHARED_ORDINARY_TARGET.2,
-                crate::native_payload::OFFICIAL_R223_ENTRANCE_RECORDING_TARGET.2].contains(&target_manifest.as_str()) {
+                crate::native_payload::OFFICIAL_R223_ENTRANCE_RECORDING_TARGET.2,
+                crate::native_payload::OFFICIAL_R224_CLOSING_RECORDING_TARGET.2].contains(&target_manifest.as_str()) {
                 if !saved_workspace_host { return Err(invalid()); }
                 self.check_official_selected_saved_head(service, profile, target_manifest.as_str(), document)?;
             }
