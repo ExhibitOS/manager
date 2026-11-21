@@ -8,32 +8,56 @@ struct NativeFloorRecordingAttachment: Sendable {
     private static let entranceMaterial = "cc0bfbc1-b1c8-4250-9014-dfdb6467b810"
     private static let entranceRecording = "989659bd0b4e01e1cd80287e3c5932f2220cafa07485d6d1b1d23907dedcbce4"
 
+    enum Scope {
+        case entrance
+        case selectedFloor
+    }
+
     let surfaceID: String
     let materialID: String
+    let materialVersion: Int64
     let audioID: String
     let expectedMedia: DocumentValue
+    let initializeMissingStoneRow: Bool
 
-    init(_ command: DocumentValue) throws {
-        guard command["surfaceId"] == .string(Self.entranceSurface),
-              command["materialId"] == .string(Self.entranceMaterial),
-              command["materialVersion"] == .integer(1), command["audioRevision"] == .integer(1),
-              let audioID = command["audioId"].string, UUID(uuidString: audioID)?.uuidString.lowercased() == audioID,
-              case .object = command["expectedMediaAsset"],
-              command["expectedMediaAsset"]["id"] == .string(audioID),
-              command["expectedMediaAsset"]["sha256"] == .string(Self.entranceRecording),
-              command["expectedMediaAsset"]["bytes"] == .integer(60_146),
-              command["expectedMediaAsset"]["mime"] == .string("audio/wav") else {
-            throw AuthoringFailure("FLOOR_RECORDING_TARGET_INVALID")
+    init(_ command: DocumentValue, scope: Scope = .entrance) throws {
+        let invalid = AuthoringFailure("FLOOR_RECORDING_TARGET_INVALID")
+        guard case .object(let fields) = command,
+              let surfaceID = command["surfaceId"].string, let materialID = command["materialId"].string,
+              let audioID = command["audioId"].string,
+              [surfaceID, materialID, audioID].allSatisfy({ UUID(uuidString: $0)?.uuidString.lowercased() == $0 }),
+              let version = command["materialVersion"].integer, (1...Int64(Int32.max)).contains(version),
+              command["audioRevision"] == .integer(1),
+              case .object = command["expectedMediaAsset"] else { throw invalid }
+        let media = command["expectedMediaAsset"]
+        guard media["id"] == .string(audioID), media["mime"] == .string("audio/wav"),
+              let bytes = media["bytes"].integer, bytes > 0,
+              let digest = media["sha256"].string, nativeImportDigest(digest) else { throw invalid }
+        let initialize = fields["initializeMissingStoneRow"]
+        switch scope {
+        case .entrance:
+            guard initialize == nil, surfaceID == Self.entranceSurface, materialID == Self.entranceMaterial,
+                  version == 1, digest == Self.entranceRecording, bytes == 60_146 else { throw invalid }
+        case .selectedFloor:
+            guard initialize == nil || initialize == .bool(true),
+                  media["path"] == .string("media/\(audioID)/audio.wav"),
+                  media["rights"]["permissions"]["display"] == .bool(true),
+                  media["rights"]["permissions"]["export"] == .bool(true) else { throw invalid }
         }
-        surfaceID = Self.entranceSurface
-        materialID = Self.entranceMaterial
+        self.surfaceID = surfaceID
+        self.materialID = materialID
+        materialVersion = version
         self.audioID = audioID
-        expectedMedia = command["expectedMediaAsset"]
+        expectedMedia = media
+        initializeMissingStoneRow = initialize == .bool(true)
     }
 
     func expectedCandidate(in draft: NativeExhibitionDraft) throws -> DocumentValue {
         let target = FloorSettings.Target(kind: .surface, id: surfaceID)
-        guard try FloorSettings.targets(in: draft.candidate).contains(where: { $0.key == target.key }),
+        let surfaces = draft.candidate["surfaces"].items?.filter { $0["id"].string?.lowercased() == surfaceID }
+        guard surfaces?.count == 1, surfaces?.first?["id"] == .string(surfaceID),
+              surfaces?.first?["type"] == .string("floor"),
+              try FloorSettings.targets(in: draft.candidate).contains(where: { $0.key == target.key }),
               FloorSettings.isActive(target, in: draft.candidate) else {
             throw AuthoringFailure("FLOOR_RECORDING_TARGET_INVALID")
         }
@@ -44,12 +68,13 @@ struct NativeFloorRecordingAttachment: Sendable {
         }
         var candidate = draft.candidate
         let materials = candidate["extensions"][WorkspaceFloorMaterialBinding.namespace]
-        let bindings = materials["bindings"].items?.filter { $0["surfaceId"] == .string(surfaceID) }
+        let bindings = materials["bindings"].items?.filter { $0["surfaceId"].string?.lowercased() == surfaceID }
         guard materials["version"] == .integer(1), bindings?.count == 1,
+              bindings?.first?["surfaceId"] == .string(surfaceID),
               bindings?.first?["materialId"] == .string(materialID),
-              bindings?.first?["materialVersion"] == .integer(1),
+              bindings?.first?["materialVersion"] == .integer(materialVersion),
               let descriptors = materials["materials"].items,
-              descriptors.filter({ $0["id"] == .string(materialID) && $0["version"] == .integer(1)
+              descriptors.filter({ $0["id"] == .string(materialID) && $0["version"] == .integer(materialVersion)
                   && $0["kind"] == .string("floor") }).count == 1 else {
             throw AuthoringFailure("FLOOR_RECORDING_TARGET_INVALID")
         }
@@ -61,12 +86,17 @@ struct NativeFloorRecordingAttachment: Sendable {
             throw AuthoringFailure("FLOOR_RECORDING_TARGET_INVALID")
         }
         let matches = footsteps.indices.filter { footsteps[$0]["surfaceId"].string?.lowercased() == surfaceID }
-        guard matches.count == 1, let index = matches.first,
-              footsteps[index]["surfaceId"] == .string(surfaceID), footsteps[index]["material"] == .string("stone"),
-              footsteps[index]["bank"] == .null else { throw AuthoringFailure("FLOOR_RECORDING_ALREADY_BOUND") }
-        let previousAsset = footsteps[index]["assetId"]
-        guard previousAsset == .null || previousAsset == .string(audioID) else {
-            throw AuthoringFailure("FLOOR_RECORDING_ALREADY_BOUND")
+        let conflict = AuthoringFailure("FLOOR_RECORDING_ALREADY_BOUND")
+        var previousAsset = DocumentValue.null
+        if let index = matches.first {
+            guard matches.count == 1, footsteps[index]["surfaceId"] == .string(surfaceID),
+                  footsteps[index]["material"] == .string("stone"), footsteps[index]["bank"] == .null else { throw conflict }
+            previousAsset = footsteps[index]["assetId"]
+            guard previousAsset == .null || previousAsset == .string(audioID) else { throw conflict }
+            footsteps[index]["assetId"] = .string(audioID)
+        } else {
+            guard initializeMissingStoneRow else { throw conflict }
+            footsteps.append(.object(["surfaceId": .string(surfaceID), "material": .string("stone"), "assetId": .string(audioID)]))
         }
         let existing = media.filter { $0["id"].string?.lowercased() == audioID }
         guard existing.isEmpty || existing == [expectedMedia] else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
@@ -74,7 +104,6 @@ struct NativeFloorRecordingAttachment: Sendable {
             guard previousAsset == .null, media.count < 32 else { throw AuthoringFailure("AUDIO_APPROVAL_CHANGED") }
             media.append(expectedMedia)
         }
-        footsteps[index]["assetId"] = .string(audioID)
         experience["footsteps"] = .array(footsteps)
         candidate["mediaAssets"] = .array(media)
         candidate["extensions"][namespace] = experience
@@ -83,11 +112,13 @@ struct NativeFloorRecordingAttachment: Sendable {
     }
 
     func proposal(for document: NativeDocumentState) -> DocumentValue {
-        .object(["version": .integer(1), "epoch": .string(UUID().uuidString.lowercased()), "sequence": .integer(1),
+        var proposal: DocumentValue = .object(["version": .integer(1), "epoch": .string(UUID().uuidString.lowercased()), "sequence": .integer(1),
                  "tenantId": .string(document.tenantId), "principalId": .string(document.principalId),
                  "requestId": .string(UUID().uuidString.lowercased()), "type": .string(Self.commandType),
-                 "surfaceId": .string(surfaceID), "materialId": .string(materialID), "materialVersion": .integer(1),
+                 "surfaceId": .string(surfaceID), "materialId": .string(materialID), "materialVersion": .integer(materialVersion),
                  "audioId": .string(audioID), "audioRevision": .integer(1), "expectedMediaAsset": expectedMedia])
+        if initializeMissingStoneRow { proposal["initializeMissingStoneRow"] = .bool(true) }
+        return proposal
     }
 
     func checkReply(_ reply: DocumentValue, proposal: DocumentValue, expected: DocumentValue) throws {

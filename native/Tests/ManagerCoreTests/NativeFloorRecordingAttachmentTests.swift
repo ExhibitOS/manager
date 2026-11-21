@@ -65,6 +65,42 @@ final class NativeFloorRecordingAttachmentTests: XCTestCase {
         XCTAssertEqual(try attachment.expectedCandidate(in: applied), expected)
     }
 
+    func testSelectedClosingRequiresExplicitInitializationAndPreservesOtherRows() throws {
+        guard let path = ProcessInfo.processInfo.environment["EXHIBITOS_TEST_R224_RECORDING_JOURNAL"] else {
+            throw XCTSkip("Requires the detached r224 recording journal fixture")
+        }
+        let base = try XCTUnwrap(JSONDecoder().decode(NativeDocumentState.self,
+            from: Data(contentsOf: URL(fileURLWithPath: path))).draft)
+        let closing = "5537fdc6-44a8-45c2-a867-a3481a754796"
+        var selected = command
+        selected["surfaceId"] = .string(closing)
+        selected["materialId"] = .string("5e97508e-ae16-4e54-a3a9-44c7bb30424d")
+        selected["expectedMediaAsset"]["sha256"] = .string("9fb1851c98c8394c1639ace68e9a9091989cf3eac92ba2037b20798921e49226")
+        selected["expectedMediaAsset"]["bytes"] = .integer(59_564)
+        XCTAssertThrowsError(try NativeFloorRecordingAttachment(selected))
+        let omitted = try NativeFloorRecordingAttachment(selected, scope: .selectedFloor)
+        XCTAssertThrowsError(try omitted.expectedCandidate(in: base))
+        selected["initializeMissingStoneRow"] = .bool(false)
+        XCTAssertThrowsError(try NativeFloorRecordingAttachment(selected, scope: .selectedFloor))
+        selected["initializeMissingStoneRow"] = .bool(true)
+        let attachment = try NativeFloorRecordingAttachment(selected, scope: .selectedFloor)
+        let experience = ConcreteFootsteps.experienceNamespace
+        let prior = try XCTUnwrap(base.candidate["extensions"][experience]["footsteps"].items)
+        let priorMedia = try XCTUnwrap(base.candidate["mediaAssets"].items)
+        var expected = base.candidate
+        expected["extensions"][experience]["footsteps"] = .array(prior + [.object([
+            "surfaceId": .string(closing), "material": .string("stone"), "assetId": .string(audio)
+        ])])
+        expected["mediaAssets"] = .array(priorMedia + [selected["expectedMediaAsset"]])
+        XCTAssertEqual(try attachment.expectedCandidate(in: base), expected)
+        var reopened = base
+        try reopened.replaceCandidate(expected)
+        XCTAssertEqual(try attachment.expectedCandidate(in: reopened), expected)
+        selected["materialVersion"] = .integer(2)
+        let wrongVersion = try NativeFloorRecordingAttachment(selected, scope: .selectedFloor)
+        XCTAssertThrowsError(try wrongVersion.expectedCandidate(in: base))
+    }
+
     private func withExplicitSound(_ draft: NativeExhibitionDraft, assets: [DocumentValue]) throws -> NativeExhibitionDraft {
         var draft = draft, candidate = draft.candidate
         let target = DocumentValue.object(["kind": .string("surface"), "surfaceId": .string(surface)])
