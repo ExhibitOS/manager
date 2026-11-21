@@ -607,11 +607,14 @@ fn checkpoint_inventory_limit(pair: (&str, &str), proof: Option<&StartupCancella
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::official_r219_authored_height_transition(pair)
-        || crate::native_payload::official_r220_seven_lights_selected_transition(pair)
-        || crate::native_payload::official_r220_shared_ordinary_transition(pair)) {
-        // These r220 transitions retain the existing 5972 MiB ceiling.
-        // A current cold proof must confirm capacity before activation.
+        || crate::native_payload::official_r220_seven_lights_selected_transition(pair)) {
         return 5972 * 1024 * 1024;
+    }
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    if proof.is_none() && crate::native_payload::official_r220_shared_ordinary_transition(pair) {
+        // The post-publication stopped inventory (cold proof ff9cf45c) is
+        // 6,428,013,443 bytes. Add one 16 MiB trial WAL segment and round up.
+        return 6147 * 1024 * 1024;
     }
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     if proof.is_none() && (crate::native_payload::authored_shadow_track_clean_transition(pair)
@@ -3846,12 +3849,39 @@ mod tests {
     fn official_r220_shared_ordinary_cap_is_only_for_its_occupied_pair() {
         use crate::native_payload::{OFFICIAL_R219_AUTHORED_HEIGHT_TARGET, OFFICIAL_R220_SHARED_ORDINARY_TARGET,
             OFFICIAL_R220_SEVEN_LIGHTS_SELECTED_TARGET};
+        let predecessor = OFFICIAL_R219_AUTHORED_HEIGHT_TARGET.2;
         let source = OFFICIAL_R220_SEVEN_LIGHTS_SELECTED_TARGET.2;
         let target = OFFICIAL_R220_SHARED_ORDINARY_TARGET.2;
-        assert_eq!(checkpoint_inventory_limit((source, target), None), 6_262_095_872);
-        for denied in [(target, source), (target, target), (source, source), (OFFICIAL_R219_AUTHORED_HEIGHT_TARGET.2, target)] {
+        let limit = checkpoint_inventory_limit((source, target), None);
+        let mib = 1024 * 1024;
+        assert_eq!(limit, (6_428_013_443_u64 + 16 * mib).div_ceil(mib) * mib);
+        assert_eq!(limit, 6_445_596_672);
+        assert_eq!(checkpoint_inventory_limit((predecessor, source), None), 6_262_095_872);
+        for denied in [(target, source), (target, target), (source, source), (predecessor, target)] {
             assert_eq!(checkpoint_inventory_limit(denied, None), MAX_BYTES);
         }
+        let proof = StartupCancellation045 {
+            failed_generation: Uuid::new_v4().to_string(),
+            hayes_job_id: Uuid::new_v4().to_string(),
+            hayes_completion_frame_sha256: "a".repeat(64),
+            saved_etag: "\"studio-r220-fixture\"".into(),
+            transfer_sha256: "b".repeat(64),
+        };
+        assert_eq!(checkpoint_inventory_limit((source, target), Some(&proof)), MAX_BYTES);
+
+        let root = fs::canonicalize(std::env::temp_dir()).unwrap()
+            .join(format!("r220-shared-ordinary-capacity-{}", Uuid::new_v4()));
+        installations::new_directory(&root).unwrap();
+        for name in DATA_DIRECTORIES {
+            installations::new_directory(&root.join(name)).unwrap();
+        }
+        for name in [RECORD, ENVIRONMENT] {
+            private_options().open(root.join(name)).unwrap();
+        }
+        let file = private_options().open(root.join("blobs/inventory")).unwrap();
+        file.set_len(limit + 1).unwrap();
+        assert_eq!(inventory_with_limit(&root, false, limit).unwrap_err().code, invalid().code);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
