@@ -470,6 +470,7 @@ public actor NativeAutomationSession {
         let api = try AuthoringAPI(port: config.ports.web, tenantId: expected.tenantId, nativeRuntimeManifestSHA256: config.manifestSha256)
         let session = try await api.connect(credentials)
         try Self.checkEntranceRecordingSession(manifest: config.manifestSha256, session)
+        let admitsEntranceRecording = Self.supportsEntranceRecordingRuntime(manifest: config.manifestSha256)
         let admitsMaterials = await api.admitsWorkspaceMaterials
         let admitsFreshImages = await api.admitsFreshImagePreparation
         let admitsLargeModels = await api.admitsLargeModelPreparation
@@ -501,7 +502,8 @@ public actor NativeAutomationSession {
         }
         guard admitsMaterials || admitsFreshImages || admitsLargeModels || admitsInfoStandPreparation || admitsSavedHeadAuthoring
                 || admitsPartialWallPortal || admitsRenderedSculptureThumbnailOex || admitsNativePublication || admitsPreservationReadback || admitsWalkingCollision
-                || admitsPreparedBudget || admitsRecordedFloors || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
+                || admitsPreparedBudget || admitsRecordedFloors || admitsEntranceRecording
+                || (requiresDefaultSeatProfile && admitsDefaultSeats) else {
             throw AuthoringFailure("WORKSPACE_MATERIAL_UNAVAILABLE")
         }
         let stored = try await api.exhibition(draft.id)
