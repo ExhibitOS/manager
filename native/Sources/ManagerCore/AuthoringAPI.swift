@@ -3740,12 +3740,29 @@ public actor AuthoringAPI {
 
     public func workspaceFurnishings(cursor: String? = nil) async throws -> AuthoringPage<WorkspaceFurnishingSummary> {
         let page: AuthoringPage<WorkspaceFurnishingSummary> = try await furnishingPage("furnishings", cursor: cursor)
-        let version = supportedFurnishingExtensionVersion
-        guard page.items.allSatisfy({ $0.isValid && $0.kind.minimumExtensionVersion <= version }),
+        return try Self.checkedWorkspaceFurnishingPage(page, manifest: nativeRuntimeManifestSHA256,
+                                                      version: supportedFurnishingExtensionVersion)
+    }
+
+    nonisolated static func checkedWorkspaceFurnishingPage(_ page: AuthoringPage<WorkspaceFurnishingSummary>,
+        manifest: String?, version: Int64) throws -> AuthoringPage<WorkspaceFurnishingSummary> {
+        guard page.items.allSatisfy(\.isValid),
               Set(page.items.map(\.id)).count == page.items.count else {
             throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
         }
-        return page
+        let measuredFrameCatalog = supportsMeasuredFrameCatalog052(manifest: manifest)
+        let admitted = try page.items.filter { item in
+            if item.kind.minimumExtensionVersion <= version { return true }
+            // Catalog052 also lists this installed rail, whose detail and placement need a newer host.
+            guard measuredFrameCatalog, item.id == "92c555ea-e0e8-5ff5-9a41-695cf38394e2",
+                  item.kind == .ceilingRail, item.name == "Closing Straight Rail 6m", item.installedCatalog == true,
+                  item.installedThumbnailProfile == nil, item.rightsAvailability.display,
+                  item.rightsAvailability.download, item.rightsAvailability.export else {
+                throw AuthoringFailure("FURNISHING_RESPONSE_INVALID")
+            }
+            return false
+        }
+        return AuthoringPage(items: admitted, nextCursor: page.nextCursor)
     }
 
     private func workspaceFurnishingVersionPath(_ id: String, version: Int) throws -> String {

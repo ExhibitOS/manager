@@ -10,6 +10,35 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
     private let placementId = "10000000-0000-4000-8000-000000000004"
     private let modelSHA256 = String(repeating: "a", count: 64)
 
+    #if DEBUG && os(macOS)
+    func testMeasuredFrameCatalogKeepsOakAndValidatesTheUnadmittedRailRow() throws {
+        let manifest = "4430a973077e933ba8486abd07ce0d1410546e08473b217807511db5d782bb25"
+        let oak = "4ddff48b-c2b2-5166-9e35-cd1c7aabb5b3"
+        let rail = "92c555ea-e0e8-5ff5-9a41-695cf38394e2"
+        let rights: [String: Bool] = ["display": true, "download": true, "export": true]
+        let oakRow: [String: Any] = ["id": oak, "version": 1, "kind": "artwork-frame", "name": "Wheat Matte Oak Frame",
+                                     "rightsAvailability": rights, "installedCatalog": true]
+        let railRow: [String: Any] = ["id": rail, "version": 1, "kind": "ceiling-rail", "name": "Closing Straight Rail 6m",
+                                      "rightsAvailability": rights, "installedCatalog": true]
+        func checked(_ rows: [[String: Any]], _ runtime: String? = nil) throws -> AuthoringPage<WorkspaceFurnishingSummary> {
+            let bytes = try JSONSerialization.data(withJSONObject: ["items": rows, "nextCursor": "next_1"])
+            let page = try JSONDecoder().decode(AuthoringPage<WorkspaceFurnishingSummary>.self, from: bytes)
+            return try AuthoringAPI.checkedWorkspaceFurnishingPage(page, manifest: runtime ?? manifest, version: 10)
+        }
+        let page = try checked([railRow, oakRow])
+        XCTAssertEqual(page.items.map(\.id), [oak])
+        XCTAssertEqual(page.nextCursor, "next_1")
+        XCTAssertThrowsError(try checked([railRow, oakRow], String(manifest.dropLast()) + "0"))
+        XCTAssertThrowsError(try checked([railRow, oakRow, railRow]))
+        var malformed = railRow
+        malformed["version"] = 2
+        XCTAssertThrowsError(try checked([malformed, oakRow]))
+        malformed = railRow
+        malformed["name"] = "Another ceiling rail"
+        XCTAssertThrowsError(try checked([malformed, oakRow]))
+    }
+    #endif
+
     private func fixture() throws -> DocumentValue {
         try JSONDecoder().decode(DocumentValue.self, from: Data("""
             {
