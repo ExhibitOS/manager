@@ -50,3 +50,64 @@ struct WallFinishSettingsView: View {
         } else if !model.wallFinishStatus.isEmpty { Section("벽 마감") { Text(model.wallFinishStatus).foregroundStyle(.secondary) } }
     }
 }
+
+struct PairedWallStructureSettingsView: View {
+    @ObservedObject var model: ExhibitionModel
+    let ready: Bool
+
+    var body: some View {
+        ForEach(model.pairedWallTargets) { target in
+            PairedWallStructureRow(model: model, viewport: model.viewportController, target: target, ready: ready)
+        }
+    }
+}
+
+private struct PairedWallStructureRow: View {
+    @ObservedObject var model: ExhibitionModel
+    @ObservedObject var viewport: NativeViewportController
+    let target: NativePairedWallStructure.Target
+    let ready: Bool
+    @State private var depth = ""
+
+    private var meters: Double? {
+        guard let millimeters = Double(depth.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: Locale.current.decimalSeparator ?? ".", with: ".")),
+              millimeters.isFinite, millimeters > 0,
+              millimeters / 1000 <= NativePairedWallStructure.maximumExtensionMeters else { return nil }
+        return millimeters / 1000
+    }
+
+    var body: some View {
+        Section("연결 벽체") {
+            LabeledContent("연결된 공간", value: target.peerRoomName)
+            if let extent = target.extensionMeters {
+                LabeledContent("현재 확장", value: (extent * 1000).formatted() + " mm")
+            }
+            TextField("이 공간 쪽 확장 (mm, 최대 120)", text: $depth)
+                .textFieldStyle(.roundedBorder)
+                .disabled(!ready || !model.canPreviewPairedWall)
+            if model.pairedWallPreviewTarget == target.id {
+                HStack {
+                    Button("벽체 변경 적용") { Task { await model.applyPairedWall() } }
+                        .disabled(!ready || !viewport.connected || !model.canApplyPairedWall)
+                    Button("미리보기 취소") { model.cancelPairedWallPreview() }
+                        .disabled(model.busy)
+                }
+            } else {
+                HStack {
+                    Button("확장 미리보기") {
+                        guard let meters else { return }
+                        Task { await model.previewPairedWall(target: target, extensionMeters: meters) }
+                    }
+                    .disabled(!ready || !model.canPreviewPairedWall || meters == nil)
+                    if target.extensionMeters != nil {
+                        Button("확장 제거 미리보기") {
+                            Task { await model.previewPairedWall(target: target, extensionMeters: nil) }
+                        }
+                        .disabled(!ready || !model.canPreviewPairedWall)
+                    }
+                }
+            }
+        }
+    }
+}

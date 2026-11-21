@@ -848,6 +848,7 @@ final class ExhibitionModel: ObservableObject {
         if let value = benchPreview?.displayDraft { return value }
         if let value = lightPreview?.displayDraft { return value }
         if let value = lightObjectDisplayDraft { return value }
+        if let preview = pairedWallPreview, preview.base == draft { return preview.display }
         if let value = wallFinishPreview?.displayDraft { return value }
         if let value = surfaceMaterialPreview?.displayDraft { return value }
         if let value = surfaceMaterialTexturePreview?.displayDraft { return value }
@@ -869,7 +870,9 @@ final class ExhibitionModel: ObservableObject {
     @Published private(set) var viewportCameraSequence = 0
     @Published var viewportTransparent = true
     func requestViewportView(_ view: String) { guard !entrancePreviewActive, !placingArtwork else { return }; viewportView = view; viewportCameraSequence += 1 }
-    @Published var viewportSelection: ViewportSelection?
+    @Published var viewportSelection: ViewportSelection? {
+        didSet { if oldValue != viewportSelection { pairedWallPreview = nil } }
+    }
     @Published var architecture: ArchitectureFormBuffer?
     private var architectureBaseline: ArchitectureFormBuffer?
     @Published private(set) var architectureStatus = ""
@@ -1189,7 +1192,98 @@ final class ExhibitionModel: ObservableObject {
     private var wallFinishPreviewHost: String?
     @Published private(set) var wallFinishStatus = ""
     var wallFinishDirty: Bool { wallFinish != wallFinishBaseline }
-    var wallFinishPreviewing: Bool { wallFinishPreview != nil }
+    var wallFinishPreviewing: Bool { wallFinishPreview != nil || pairedWallPreview != nil }
+
+    private struct PairedWallPreview {
+        let command: NativePairedWallStructure
+        let base: NativeExhibitionDraft
+        let display: NativeExhibitionDraft
+        let revision: UInt64
+        let etag: String
+        let access: UUID
+        let context: UUID
+        let host: String?
+    }
+    @Published private var pairedWallPreview: PairedWallPreview?
+
+    var pairedWallTargets: [NativePairedWallStructure.Target] {
+        guard !ordinaryBoundedRuntime, !selectedBoundedPolicy,
+              session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1",
+              session?.nativePairedWallStructureProfile == NativePairedWallStructure.profile,
+              let draft, let selection = viewportSelection, selection.kind == "surface" else { return [] }
+        return NativePairedWallStructure.targets(in: draft, surfaceId: selection.id)
+    }
+
+    private var pairedWallContextEditable: Bool {
+        wallFinishContextEditable && !wallFinishDirty && wallFinishPreview == nil
+            && state?.dirty == false && state?.etag != nil && !pairedWallTargets.isEmpty
+    }
+
+    var canPreviewPairedWall: Bool {
+        pairedWallContextEditable && pairedWallPreview == nil && !busy && !architectureApplying
+    }
+
+    var pairedWallPreviewTarget: String? { pairedWallPreview?.command.target.id }
+
+    private func matchesPairedWallPreview(_ preview: PairedWallPreview) -> Bool {
+        pairedWallContextEditable && draft == preview.base && state?.revision == preview.revision && state?.etag == preview.etag
+            && pairedWallTargets.contains(preview.command.target) && viewportAccessID == preview.access
+            && viewportController.editingContextGeneration == preview.context && viewportController.hostEpoch == preview.host
+    }
+
+    var canApplyPairedWall: Bool {
+        guard !busy, let preview = pairedWallPreview, matchesPairedWallPreview(preview),
+              let credentials = viewportCredentials else { return false }
+        return viewportController.confirmsMetadataPreview(preview.display, tenantId: credentials.tenantId,
+                                                           principalId: credentials.principalId)
+    }
+
+    func previewPairedWall(target: NativePairedWallStructure.Target, extensionMeters: Double?) async {
+        guard canPreviewPairedWall, pairedWallTargets.contains(target) else { return }
+        await work {
+            guard let api, let document = state, let base = document.draft, let etag = document.etag else {
+                throw AuthoringFailure("EXHIBITION_NOT_SAVED")
+            }
+            let command = try NativePairedWallStructure(target: target, extensionMeters: extensionMeters)
+            let access = viewportAccessID, context = viewportController.editingContextGeneration
+            let host = viewportController.hostEpoch
+            guard let display = try await api.preparePairedWallStructure(command, in: document) else {
+                notice = "저장된 벽체 확장과 같은 상태입니다."
+                return
+            }
+            let preview = PairedWallPreview(command: command, base: base, display: display, revision: document.revision,
+                                            etag: etag, access: access, context: context, host: host)
+            try Task.checkCancellation()
+            guard self.api === api, matchesPairedWallPreview(preview) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            pairedWallPreview = preview
+        }
+    }
+
+    func applyPairedWall() async {
+        guard canApplyPairedWall, let preview = pairedWallPreview else { return }
+        await work(viewport: .preserveAcknowledgedFrame) {
+            guard let api, var document = state, let credentials = viewportCredentials,
+                  matchesPairedWallPreview(preview) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            let fresh = try await api.preparePairedWallStructure(preview.command, in: document)
+            try Task.checkCancellation()
+            guard self.api === api, pairedWallPreview?.display == preview.display, matchesPairedWallPreview(preview),
+                  fresh?.candidate == preview.display.candidate,
+                  viewportController.confirmsMetadataPreview(preview.display, tenantId: credentials.tenantId,
+                                                              principalId: credentials.principalId) else {
+                throw AuthoringFailure("VIEWPORT_FRAME_STALE")
+            }
+            document.draft = preview.display
+            try await persist(document)
+            pairedWallPreview = nil
+            syncFields()
+            notice = "벽체 변경을 이 Mac에 보관했습니다. 전시를 저장하세요."
+        }
+    }
+
+    func cancelPairedWallPreview() {
+        guard !busy else { return }
+        pairedWallPreview = nil
+    }
     private var wallFinishContextEditable: Bool {
         !entrancePreviewActive && !pending && !immutable && !placingArtwork && viewingPointInput == nil
             && !floorDirty && !nonFloorFormDirty && !positionDirty && !architectureGeometryDirty
@@ -1198,7 +1292,7 @@ final class ExhibitionModel: ObservableObject {
             && viewportController.connected && viewportController.wallFinishSupported
             && viewportSelection?.kind == "surface" && viewportSelection?.id == wallFinish?.surfaceId && wallFinish != nil
     }
-    var canEditWallFinish: Bool { !busy && !architectureApplying && wallFinishContextEditable }
+    var canEditWallFinish: Bool { !busy && !architectureApplying && pairedWallPreview == nil && wallFinishContextEditable }
     var canPreviewWallFinish: Bool { canEditWallFinish && wallFinishDirty && wallFinishPreview == nil }
     private var checkedWallFinishPreview: WallFinishPreview? {
         guard wallFinishContextEditable, let preview = wallFinishPreview, preview.base == draft,
@@ -1534,7 +1628,7 @@ final class ExhibitionModel: ObservableObject {
     // A staged wall command blocks ordinary native/3D edits, while its own
     // negotiated auxiliary request still needs the unchanged editable frame.
     var viewportFormDirty: Bool { viewingPointInput != nil || floorDirty || nonFloorFormDirty }
-    var formDirty: Bool { viewportFormDirty || wallFinishDirty || infoStandPreviewing }
+    var formDirty: Bool { viewportFormDirty || wallFinishDirty || pairedWallPreview != nil || infoStandPreviewing }
     private var nonFloorFormDirty: Bool {
         guard let draft else { return false }
         let entranceDirty = (entranceEditable && ((try? draft.viewerEntranceSettings()) != entrance || coverEntry.isDirty)) || installationDirty || publicationWatermark.isDirty
@@ -1767,7 +1861,7 @@ final class ExhibitionModel: ObservableObject {
         if state?.etag != nil { storedImmutable = true }
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { pendingCatalogThumbnail = nil; clearWallFinishPreview(); sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; lightObjectPreview = nil; lightObjectDisplayDraft = nil; lightObjectPreviewAccessID = nil; lightObjectSharedForm = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogImageSelections = [:]; catalogPreviewFailures = [] }
+        if accessChanged { pairedWallPreview = nil; pendingCatalogThumbnail = nil; clearWallFinishPreview(); sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; lightObjectPreview = nil; lightObjectDisplayDraft = nil; lightObjectPreviewAccessID = nil; lightObjectSharedForm = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogImageSelections = [:]; catalogPreviewFailures = [] }
         floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
         if accessChanged {
             floorImages = [:]; floorImageAttempts = []
@@ -3881,6 +3975,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     private func appliedFields(allowPosition: Bool = false) throws -> NativeExhibitionDraft {
+        guard pairedWallPreview == nil else { throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED") }
         guard !floorDirty else { throw AuthoringFailure("FLOOR_APPLY_REQUIRED") }
         guard !architectureDirty, !architectureApplying else { throw AuthoringFailure("ARCHITECTURE_APPLY_REQUIRED") }
         guard !positionDirty || allowPosition else { throw AuthoringFailure("PLACEMENT_APPLY_REQUIRED") }
@@ -4482,6 +4577,7 @@ final class ExhibitionModel: ObservableObject {
         }
     }
     func syncFields() {
+        pairedWallPreview = nil
         clearInfoStandPreview()
         resetViewingPointInput()
         let selected = viewportSelection
