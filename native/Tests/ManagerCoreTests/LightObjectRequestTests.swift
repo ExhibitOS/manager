@@ -585,6 +585,56 @@ final class LightObjectRequestTests: XCTestCase {
         }
     }
 
+    func testExistingSpotShadowPreferencePreservesRetainedUpperFraming() throws {
+        var draft = try fixture(visual: false)
+        var candidate = droppingExtension(draft.candidate, template)
+        candidate = SpaceLightingFormBuffer.addingRoomLocal(to: candidate)
+        var lights = try XCTUnwrap(candidate["lights"].items)
+        candidate["placements"] = .array([.object(["id": .string(clone), "roomId": lights[0]["roomId"]])])
+        lights[0]["targetPlacementId"] = .string(clone)
+        candidate["lights"] = .array(lights)
+        var settings = try XCTUnwrap(candidate["extensions"][details]["lights"].items)
+        let profile: DocumentValue = .object(["version": .integer(1), "kind": .string("upper-framing"),
+            "cutoffAngle": .number(0.16), "softnessAngle": .number(0.25)])
+        settings[0]["aim"] = .object(["kind": .string("placement-center")])
+        settings[1] = .object(["lightId": .string(other), "fixture": .string("none"), "angularProfile": profile,
+            "trackAim": .object(["version": .integer(1), "profile": .string(NativeTrackSpotAim.profile),
+                "mount": .object(["railPlacementId": .string(surface), "position": .vector([0, 0, 0]), "yaw": .integer(0)]),
+                "aim": .object(["kind": .string("placement-center"), "placementId": .string(clone), "offset": .vector([0, 0, 0])])])])
+        candidate["extensions"][details]["lights"] = .array(settings)
+        try draft.replaceCandidate(candidate)
+
+        var form = try LightFormBuffer(draft: draft, selectedLightId: source)
+        form.shadowPreference = true
+        let edit = try form.command()
+        let command: DocumentValue = .object(["type": .string("set-light-object"), "lightId": .string(source),
+            "light": try edit.encodedLight(in: draft, selectedLightId: source), "settings": try edit.detailsSettings(in: draft)])
+        let request = try LightObjectRequest(command: command, frame: frame(draft))
+        var expected = candidate
+        lights[0]["castsShadow"] = .bool(true)
+        expected["lights"] = .array(lights)
+        XCTAssertEqual(try request.checkedReply(reply(request, candidate: expected)).apply(to: draft).candidate, expected)
+
+        var injected = command, broaderEdit = command
+        injected["settings"]["angularProfile"] = profile
+        broaderEdit["light"]["intensity"] = .number(120)
+        for rejected in [injected, broaderEdit] {
+            XCTAssertThrowsError(try LightObjectRequest(command: rejected, frame: frame(draft))) {
+                XCTAssertEqual(($0 as? AuthoringFailure)?.code, "LIGHT_FIELDS_INVALID")
+            }
+        }
+        var tampered = expected
+        settings[1]["angularProfile"]["softnessAngle"] = .number(0.30)
+        tampered["extensions"][details]["lights"] = .array(settings)
+        XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: tampered)))
+
+        var invalid = draft, invalidCandidate = candidate
+        settings[1]["angularProfile"]["softnessAngle"] = .integer(0)
+        invalidCandidate["extensions"][details]["lights"] = .array(settings)
+        try invalid.replaceCandidate(invalidCandidate)
+        XCTAssertThrowsError(try LightObjectRequest(command: command, frame: frame(invalid)))
+    }
+
     func testKnownFixtureSelectionBindsExactServerMintedAssetOnly() throws {
         let base = try fixture(visual: false)
         let visual: DocumentValue = .object(["catalogId": .string("museum-track-spot"), "catalogVersion": .integer(1), "pose": pose])

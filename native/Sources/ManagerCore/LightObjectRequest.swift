@@ -8,6 +8,7 @@ public struct LightObjectRequest: Sendable {
     public let command: DocumentValue
     public let value: DocumentValue
     public let sourceLightId: String
+    private let preservesShadowDetails: Bool
 
     private static let details = NativeLightFixture.namespace
     private static let attachments = "org.exhibitos.studio/light-attachments"
@@ -121,6 +122,7 @@ public struct LightObjectRequest: Sendable {
             self.command = command
             self.sourceLightId = ""
             self.value = try Self.wire(fields, frame: frame)
+            self.preservesShadowDetails = false
             return
         }
         guard let id = command["lightId"].string, Self.uuid(id),
@@ -132,8 +134,10 @@ public struct LightObjectRequest: Sendable {
             && command["spaceLightingMode"] == RoomCeilingFill.roomLocalMode
             && RoomCeilingFill.usesDefault(command)
             && command["brightness"].double == RoomCeilingFill.initialBrightness
+        let shadowPreferenceOnly = type == "set-light-object"
+            && Self.enablesExistingSpotShadow(fields, original: original, candidate: frame.draft.candidate)
         let retainedDetails = try Self.rows(frame.draft.candidate, namespace: Self.details,
-                                            allowRetainedUpperFraming: roomLocalDefault)
+                                            allowRetainedUpperFraming: roomLocalDefault || shadowPreferenceOnly)
         _ = try Self.rows(frame.draft.candidate, namespace: Self.attachments)
         let furnishings = try Self.furnishings(frame.draft.candidate)
         let existingTrackAim = NativeTrackSpotAim.binding(in: frame.draft, lightId: actualId)
@@ -179,7 +183,7 @@ public struct LightObjectRequest: Sendable {
             if command["settings"]["trackAim"] != .null {
                 guard existingTrackAim != .null, command["light"]["type"] == .string("spot") else { throw Self.invalid }
             }
-            let old = try Self.rows(frame.draft.candidate, namespace: Self.details).first { Self.same($0["lightId"].string, actualId) }
+            let old = retainedDetails.first { Self.same($0["lightId"].string, actualId) }
             if let purpose = settings["purpose"] { guard purpose == (old?["purpose"] ?? .null) else { throw Self.invalid } }
             if let placement = settings["basePlacement"] { guard placement == (old?["basePlacement"] ?? .null) else { throw Self.invalid } }
             if let fill = settings["ceilingFill"], fill != old?["ceilingFill"] { throw Self.invalid }
@@ -217,6 +221,25 @@ public struct LightObjectRequest: Sendable {
         }
         self.frame = frame; self.command = command; self.sourceLightId = actualId
         self.value = try Self.wire(fields, frame: frame)
+        self.preservesShadowDetails = shadowPreferenceOnly && retainedDetails.contains { $0["angularProfile"] != .null }
+    }
+
+    private static func enablesExistingSpotShadow(_ command: [String: DocumentValue], original: DocumentValue,
+                                                   candidate: DocumentValue) -> Bool {
+        let templateState = candidate["extensions"][template]
+        guard Set(command.keys) == ["type", "lightId", "light", "settings"],
+              templateState == .null || templateState["modified"] == .bool(true),
+              case .object(var light) = original, original["type"] == .string("spot"),
+              original["castsShadow"] == .bool(false), let target = original["targetPlacementId"].string,
+              candidate["placements"].items?.filter({ same($0["id"].string, target) && $0["roomId"] == original["roomId"] }).count == 1,
+              let id = original["id"].string,
+              let savedSettings = candidate["extensions"][details]["lights"].items?.first(where: { same($0["lightId"].string, id) }),
+              case .object(var settings) = savedSettings, settings["angularProfile"] == nil,
+              savedSettings["aim"]["kind"] == .string("placement-center") else { return false }
+        light.removeValue(forKey: "id")
+        light["castsShadow"] = .bool(true)
+        settings.removeValue(forKey: "lightId")
+        return command["light"] == .object(light) && command["settings"] == .object(settings)
     }
 
     private static func wire(_ fields: [String: DocumentValue], frame: ViewportFrame) throws -> DocumentValue {
@@ -324,6 +347,7 @@ public struct LightObjectRequest: Sendable {
                 try copySolvedTransform(from: reply, into: &row)
             }
             lights[index] = row; next["lights"] = .array(lights)
+            if preservesShadowDetails { break }
             let mounted: Bool
             if case .object(let fields) = command { mounted = fields["attachment"].map { $0 != .null } ?? false } else { mounted = false }
             var settings = try RoomBaseLightIntent.settingsForEdit(command["settings"], light: row, original: original, base: base, mounted: mounted)
@@ -469,7 +493,7 @@ public struct LightObjectRequest: Sendable {
                   case .object(var fields) = row else { throw invalid }
             fields.removeValue(forKey: "lightId")
             if namespace == details {
-                // A marker-only change reads saved optics without granting a command permission to write them.
+                // These commands read saved optics without granting permission to write them.
                 if allowRetainedUpperFraming, let profile = fields.removeValue(forKey: "angularProfile") {
                     try checkRetainedUpperFraming(profile, trackAim: row["trackAim"])
                 }
