@@ -4,6 +4,34 @@ import XCTest
 @testable import ManagerCore
 
 final class NativeSavedHeadStaticReadinessTests: XCTestCase {
+    #if DEBUG && os(macOS)
+    func testPairedWallCatalog052AdmissionRequiresExactSealAndBothLiveProposals() {
+        let manifest = "ce44cdc5d7a6788298329ebfcb8361ad3c276826cf916653c3881bd9a0149f6f"
+        let neighbor = "ce44cdc5d7a6788298329ebfcb8361ad3c276826cf916653c3881bd9a0149f6e"
+        XCTAssertTrue(AuthoringAPI.supportsPairedWallCatalog052(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsPairedWallCatalog052(manifest: neighbor))
+        XCTAssertFalse(AuthoringAPI.supportsPairedWallCatalog052(manifest: nil))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: neighbor))
+
+        let owner = "10000000-0000-4000-8000-000000000001"
+        var session = AuthoringSession(userId: owner, tenantId: owner, role: "artist",
+                                       csrfToken: "test", expiresAt: "2030-01-01T00:00:00Z")
+        session.nativeAuthoringProposalProfile = "saved-head-v1"
+        session.nativeSceneAuthoringProposalProfile = "saved-head-scene-v1"
+        session.nativeDoorPairAuthoringProfile = NativeDoorPairProposal.profile
+        XCTAssertFalse(NativeAutomationSession.admitsPairedWallCatalog052Session(session))
+        session.nativePairedWallStructureProfile = NativePairedWallStructure.profile
+        XCTAssertTrue(NativeAutomationSession.admitsPairedWallCatalog052Session(session))
+        session.nativeDoorPairAuthoringProfile = nil
+        XCTAssertFalse(NativeAutomationSession.admitsPairedWallCatalog052Session(session))
+        XCTAssertTrue(NativeAutomationSession.admitsPairedWallCatalog052Operation("workspace-door-pair-create"))
+        XCTAssertTrue(NativeAutomationSession.admitsPairedWallCatalog052Operation("export-static-saved-head"))
+        XCTAssertFalse(NativeAutomationSession.admitsPairedWallCatalog052Operation("workspace-frame-attach"))
+        XCTAssertFalse(NativeAutomationSession.admitsPairedWallCatalog052Operation("export-static-native-original-publication"))
+    }
+    #endif
+
     private func policy(bounded: DocumentValue, required: DocumentValue, readOnly: Bool = false) throws -> NativeViewportPolicy {
         let value: DocumentValue = .object(["exhibitionId": .string("10000000-0000-4000-8000-000000000001"),
             "revision": .integer(117), "etag": .string("saved-etag"), "boundedReadOnly": .bool(readOnly),

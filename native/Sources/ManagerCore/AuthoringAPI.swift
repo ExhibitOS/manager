@@ -3353,6 +3353,14 @@ public actor AuthoringAPI {
         guard (1...2_147_483_647).contains(version) else { throw AuthoringFailure("MATERIAL_DECLARATION") }
         return try workspaceMaterialPath("materials/" + identifier(id) + "/versions/" + String(version), catalogRead: catalogRead)
     }
+    nonisolated static func supportsPairedWallCatalog052(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "ce44cdc5d7a6788298329ebfcb8361ad3c276826cf916653c3881bd9a0149f6f"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsOrdinaryPartialWallPortal(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "803ce4960489551e1a2ac9c84ca7f3a804c2f5e0324e719a590661c457ff2918"
@@ -4467,6 +4475,7 @@ public actor AuthoringAPI {
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
             || supportsOrdinaryPartialWallPortal(manifest: manifest)
+            || supportsPairedWallCatalog052(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
