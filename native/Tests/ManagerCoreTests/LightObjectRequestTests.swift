@@ -539,6 +539,52 @@ final class LightObjectRequestTests: XCTestCase {
         XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: missing)))
     }
 
+    func testRoomLocalDefaultPreservesRetainedUpperFraming() throws {
+        var draft = try NativeExhibitionDraft.new(roomBaseLight: true, defaultCeilingFill: true)
+        var candidate = draft.candidate
+        let baseLight = try XCTUnwrap(candidate["lights"].items?.first)
+        let lightID = try XCTUnwrap(baseLight["id"].string)
+        var spot = try XCTUnwrap(fixture(visual: false).candidate["lights"].items?.last)
+        spot["roomId"] = baseLight["roomId"]
+        candidate["lights"] = .array([baseLight, spot])
+        var detailsRows = try XCTUnwrap(candidate["extensions"][details]["lights"].items)
+        let profile: DocumentValue = .object(["version": .integer(1), "kind": .string("upper-framing"),
+            "cutoffAngle": .number(0.16), "softnessAngle": .number(0.25)])
+        let aim: DocumentValue = .object(["version": .integer(1), "profile": .string(NativeTrackSpotAim.profile),
+            "mount": .object(["railPlacementId": .string(surface), "position": .vector([0, 0, 0]), "yaw": .integer(0)]),
+            "aim": .object(["kind": .string("placement-center"), "placementId": .string(clone), "offset": .vector([0, 0, 0])])])
+        detailsRows.append(.object(["lightId": .string(other), "fixture": .string("none"), "trackAim": aim, "angularProfile": profile]))
+        candidate["extensions"][details]["lights"] = .array(detailsRows)
+        try draft.replaceCandidate(candidate)
+
+        let command: DocumentValue = .object(["type": .string("set-room-ceiling-fill-brightness"), "lightId": .string(lightID),
+            "brightness": .number(0.5), "mode": .string("default"), "spaceLightingMode": RoomCeilingFill.roomLocalMode])
+        let request = try LightObjectRequest(command: command, frame: frame(draft))
+        let expected = SpaceLightingFormBuffer.addingRoomLocal(to: candidate)
+        XCTAssertNotEqual(expected, candidate)
+        XCTAssertEqual(try request.checkedReply(reply(request, candidate: expected, lightId: lightID)).apply(to: draft).candidate, expected)
+
+        var tampered = expected, tamperedRows = detailsRows
+        tamperedRows[1]["angularProfile"]["cutoffAngle"] = .number(0.17)
+        tampered["extensions"][details]["lights"] = .array(tamperedRows)
+        XCTAssertThrowsError(try request.checkedReply(reply(request, candidate: tampered, lightId: lightID)))
+
+        var injected = command
+        injected["angularProfile"] = profile
+        XCTAssertThrowsError(try LightObjectRequest(command: injected, frame: frame(draft)))
+        XCTAssertThrowsError(try LightObjectRequest(command: .object(["type": .string("remove-light-object"), "lightId": .string(other)]), frame: frame(draft)))
+        var outOfRange = detailsRows[1], unexpectedField = detailsRows[1]
+        outOfRange["angularProfile"]["softnessAngle"] = .number(0)
+        unexpectedField["angularProfile"]["unsupported"] = .bool(true)
+        let malformedRows = [without(detailsRows[1], "trackAim"), outOfRange, unexpectedField]
+        for malformed in malformedRows {
+            var invalid = draft, invalidCandidate = candidate
+            invalidCandidate["extensions"][details]["lights"] = .array([detailsRows[0], malformed])
+            try invalid.replaceCandidate(invalidCandidate)
+            XCTAssertThrowsError(try LightObjectRequest(command: command, frame: frame(invalid)))
+        }
+    }
+
     func testKnownFixtureSelectionBindsExactServerMintedAssetOnly() throws {
         let base = try fixture(visual: false)
         let visual: DocumentValue = .object(["catalogId": .string("museum-track-spot"), "catalogVersion": .integer(1), "pose": pose])
