@@ -6,8 +6,8 @@ import XCTest
 final class NativeSavedHeadStaticReadinessTests: XCTestCase {
     #if DEBUG && os(macOS)
     func testPairedWallCatalog052AdmissionRequiresExactSealAndBothLiveProposals() {
-        let manifest = "ce44cdc5d7a6788298329ebfcb8361ad3c276826cf916653c3881bd9a0149f6f"
-        let neighbor = "ce44cdc5d7a6788298329ebfcb8361ad3c276826cf916653c3881bd9a0149f6e"
+        let manifest = "4b4bcae8a1a471012db922048be51f6693cf8867c334c2e8927a1c9577176c05"
+        let neighbor = "4b4bcae8a1a471012db922048be51f6693cf8867c334c2e8927a1c9577176c04"
         XCTAssertTrue(AuthoringAPI.supportsPairedWallCatalog052(manifest: manifest))
         XCTAssertFalse(AuthoringAPI.supportsPairedWallCatalog052(manifest: neighbor))
         XCTAssertFalse(AuthoringAPI.supportsPairedWallCatalog052(manifest: nil))

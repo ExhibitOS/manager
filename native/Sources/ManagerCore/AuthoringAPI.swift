@@ -3355,7 +3355,7 @@ public actor AuthoringAPI {
     }
     nonisolated static func supportsPairedWallCatalog052(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
-        manifest == "ce44cdc5d7a6788298329ebfcb8361ad3c276826cf916653c3881bd9a0149f6f"
+        manifest == "4b4bcae8a1a471012db922048be51f6693cf8867c334c2e8927a1c9577176c05"
         #else
         false
         #endif

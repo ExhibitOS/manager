@@ -907,8 +907,8 @@ pub(crate) const PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET: RuntimeTuple = (
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) const PAIRED_WALL_CATALOG052_TARGET: RuntimeTuple = (
     "a13b6acd850b727a6113c4bf7ad32ce30ae73260",
-    "6dab1415d60552224c63f6855c3d256be2f32b774827055da0956e6f23071ae6",
-    "ce44cdc5d7a6788298329ebfcb8361ad3c276826cf916653c3881bd9a0149f6f",
+    "93cbc6f4cc2aa0857c59f3dcde0eff4b945126c466d11ac5a2de305b52288a36",
+    "4b4bcae8a1a471012db922048be51f6693cf8867c334c2e8927a1c9577176c05",
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
