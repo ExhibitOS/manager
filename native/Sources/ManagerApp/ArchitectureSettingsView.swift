@@ -52,20 +52,34 @@ struct ArchitectureSettingsView: View {
                         TextField("높이 · m", text: field(\.height))
                         if fields.selection.kind == "room" { TextField("깊이 · m", text: field(\.depth)) }
                         if fields.selection.kind == "opening" {
-                            TextField("벽 기준 가로 위치 · m", text: field(\.x))
-                            TextField("벽 기준 세로 위치 · m", text: field(\.y))
+                            if model.selectedConnectedDoor {
+                                if !model.connectedDoorRooms.isEmpty {
+                                    Text(model.connectedDoorRooms.joined(separator: " ↔ ")).foregroundStyle(.secondary)
+                                }
+                                Text("두 문의 크기를 함께 바꿉니다. 가로 중심과 바닥 높이는 유지됩니다.").foregroundStyle(.secondary)
+                            } else {
+                                TextField("벽 기준 가로 위치 · m", text: field(\.x))
+                                TextField("벽 기준 세로 위치 · m", text: field(\.y))
+                            }
                         } else {
                             Text(fields.selection.kind == "room" ? "공간 위치 · 전시 좌표" : "표면 위치 · 공간 좌표").foregroundStyle(.secondary)
                             TextField("가로 위치 · m", text: field(\.x))
                             TextField("높이 위치 · m", text: field(\.y))
                             TextField("깊이 위치 · m", text: field(\.z))
                         }
-                    }.disabled(!editable || model.surfaceMaterialDirty)
+                    }.disabled(!editable || model.surfaceMaterialDirty || (model.selectedConnectedDoor && !model.reciprocalDoorHeadReady))
+                    if model.selectedConnectedDoor && !model.reciprocalDoorEditAvailable {
+                        Text("현재 작업 환경에서 연결된 두 문의 크기를 편집할 수 없습니다.").foregroundStyle(.secondary)
+                    } else if model.selectedConnectedDoor && !model.reciprocalDoorHeadReady {
+                        Text("연결된 두 문의 크기를 바꾸려면 먼저 전시를 저장하세요.").foregroundStyle(.secondary)
+                    }
                     if fields.selection.kind == "room" {
                         Text("공간의 기준 치수만 바뀝니다. 벽과 작품은 자동으로 늘어나거나 이동하지 않습니다.").foregroundStyle(.secondary)
                     }
                     HStack {
-                        Button("공간 변경 적용") { Task { await model.applyArchitecture() } }.disabled(!ready || !model.canApplyArchitecture)
+                        Button(model.selectedConnectedDoor ? "두 문에 변경 적용" : "공간 변경 적용") {
+                            Task { await model.applyArchitecture() }
+                        }.disabled(!ready || !model.canApplyArchitecture)
                         Button("입력 취소") { model.discardArchitecture() }.disabled(!model.architectureGeometryDirty || model.architectureApplying)
                     }
                     if model.architectureGeometryDirty { Text("적용하거나 입력을 취소한 뒤 다른 대상을 선택하세요. 적용 전 입력은 아직 보관되지 않았습니다.").foregroundStyle(.secondary) }
@@ -78,7 +92,9 @@ struct ArchitectureSettingsView: View {
                 if !doors.isEmpty { PlacedExitDoorSettingsView(model: model, ready: ready, targets: doors) }
             }
             WallFinishSettingsView(model: model, viewport: model.viewportController, ready: ready)
-            if model.viewportSelection?.kind == "opening" { SharedFurnishingCatalogView(model: model, viewport: model.viewportController, ready: ready) }
+            if model.viewportSelection?.kind == "opening", !model.selectedConnectedDoor {
+                SharedFurnishingCatalogView(model: model, viewport: model.viewportController, ready: ready)
+            }
             if let selection = model.viewportSelection, selection.kind == "surface",
                model.draft?.candidate["surfaces"].items?.contains(where: { $0["id"].string == selection.id && $0["type"].string == "floor" }) == true {
                 NativeFloorSettingsInspector(model: model, viewport: model.viewportController, ready: ready)

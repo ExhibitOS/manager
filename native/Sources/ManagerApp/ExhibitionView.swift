@@ -1509,7 +1509,26 @@ final class ExhibitionModel: ObservableObject {
         guard let fields = surfaceMaterial, let texture = surfaceMaterialTexture else { throw AuthoringFailure("SURFACE_MATERIAL_TEXTURE_INVALID") }
         return .init(surfaceId: fields.surfaceId, material: try fields.command().material, texture: try texture.binding())
     }
-    var canApplyArchitecture: Bool { !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty && viewportController.connected }
+    var reciprocalDoorEditAvailable: Bool {
+        session?.nativeSceneAuthoringProposalProfile == "saved-head-scene-v1"
+            && session?.nativeDoorPairEditProfile == NativeReciprocalDoorEdit.profile
+    }
+    var reciprocalDoorHeadReady: Bool {
+        reciprocalDoorEditAvailable && state?.dirty == false && state?.etag != nil
+    }
+    var selectedConnectedDoor: Bool {
+        guard let selected = viewportSelection, selected.kind == "opening", let draft else { return false }
+        return NativeReciprocalDoorEdit.isConnectedDoor(selected.id, in: draft)
+    }
+    var connectedDoorRooms: [String] {
+        guard selectedConnectedDoor, let selected = viewportSelection, let draft else { return [] }
+        return NativeReciprocalDoorEdit.rooms(selected.id, in: draft)
+    }
+    var canApplyArchitecture: Bool {
+        !busy && !pending && !immutable && !formDirty && !positionDirty && !architectureApplying && architectureGeometryDirty
+            && !surfaceMaterialDirty && !lightDirty && !benchDirty && !plaqueDirty && !furnishingDirty && !spaceLightingDirty
+            && viewportController.connected && (!selectedConnectedDoor || reciprocalDoorHeadReady)
+    }
     @Published private(set) var viewportAccessID = UUID() {
         didSet {
             furnishingThumbnails.removeAll()
@@ -2367,11 +2386,23 @@ final class ExhibitionModel: ObservableObject {
             return true
         }
     }
+    func preparePortalFinish(openingId: String, furnishingId: String?, api: AuthoringAPI,
+                             document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
+        if let draft = document.draft, NativeReciprocalDoorEdit.isConnectedDoor(openingId, in: draft) {
+            let frame = furnishingId.map(NativeReciprocalDoorEdit.Frame.select) ?? .remove
+            return try await api.prepareReciprocalDoorEdit(.init(openingId: openingId, frame: frame), in: document)
+        }
+        return try await api.prepareWorkspacePortalFinish(openingId: openingId, furnishingId: furnishingId, in: document)
+    }
+    func canEditPortalFinish(on openingId: String) -> Bool {
+        guard canEditWorkspacePortalFinish, let draft else { return false }
+        return !NativeReciprocalDoorEdit.isConnectedDoor(openingId, in: draft) || reciprocalDoorEditAvailable
+    }
     func applyWorkspacePortalFinish(openingId: String, furnishingId: String?, access: UUID) async throws -> Bool {
-        guard canEditWorkspacePortalFinish else { throw AuthoringFailure("PORTAL_SAVED_DRAFT_REQUIRED") }
+        guard canEditPortalFinish(on: openingId) else { throw AuthoringFailure("PORTAL_SAVED_DRAFT_REQUIRED") }
         return try await withWorkspaceFurnishingAccess(access) { api in
             guard var current = state else { throw AuthoringFailure("PORTAL_SAVED_DRAFT_REQUIRED") }
-            let next = try await api.prepareWorkspacePortalFinish(openingId: openingId, furnishingId: furnishingId, in: current)
+            let next = try await preparePortalFinish(openingId: openingId, furnishingId: furnishingId, api: api, document: current)
             guard access == viewportAccessID, state?.revision == current.revision, state?.draft == current.draft,
                   !formDirty, !positionDirty, !architectureDirty, !viewingPlanDirty, !immutable,
                   viewportController.editingContextActive else { throw AuthoringFailure("PORTAL_TARGET_STALE") }
@@ -3413,11 +3444,48 @@ final class ExhibitionModel: ObservableObject {
         guard canApplyArchitecture, let fields = architecture, let draft else { return }
         do {
             let command = try fields.command()
+            if case .opening(let id, let width, let height, _) = command,
+               NativeReciprocalDoorEdit.isConnectedDoor(id, in: draft) {
+                let edit = try NativeReciprocalDoorEdit(openingId: id, dimensions: .init(width: width, height: height))
+                await applyReciprocalDoor(edit, fields: fields)
+                return
+            }
             _ = try command.encodedValue(in: draft, selected: viewportSelection)
             architectureApplying = true
             defer { architectureApplying = false }
             await viewportController.perform(.architecture(command), model: self)
         } catch { failure = error as? AuthoringFailure ?? AuthoringFailure("ARCHITECTURE_FIELDS_INVALID") }
+    }
+    private func applyReciprocalDoor(_ edit: NativeReciprocalDoorEdit, fields: ArchitectureFormBuffer) async {
+        guard canApplyArchitecture else { return }
+        await work(viewport: .preserveAcknowledgedFrame) {
+            guard reciprocalDoorEditAvailable, let api,
+                  var current = state, let base = current.draft, architecture == fields else {
+                throw AuthoringFailure("EXHIBITION_COMPARISON_STALE")
+            }
+            let access = viewportAccessID
+            architectureApplying = true
+            defer { architectureApplying = false }
+            do {
+                let result = try await api.prepareReciprocalDoorEdit(edit, in: current)
+                try Task.checkCancellation()
+                guard self.api === api, viewportAccessID == access, viewportSelection == fields.selection,
+                      architecture == fields, state?.revision == current.revision, state?.etag == current.etag,
+                      state?.draft == base else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
+                if let result {
+                    current.draft = result
+                    try await persist(current)
+                    syncFields()
+                    notice = "연결된 두 문의 변경을 보관했습니다. 전시를 저장하세요."
+                } else {
+                    syncArchitecture()
+                    architectureStatus = "두 문의 치수가 이미 이 상태입니다."
+                }
+            } catch let failure as AuthoringFailure {
+                guard let violation = failure.doorPairViolation else { throw failure }
+                architectureStatus = violation.message(in: base)
+            }
+        }
     }
     private func refreshInstallationPreview() {
         guard installationEditable, var preview = draft, !placementId.isEmpty else { installationPreview = nil; return }
