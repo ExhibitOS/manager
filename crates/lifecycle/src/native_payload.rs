@@ -8935,7 +8935,10 @@ impl Payload {
             self.root.join("platform/apps/web/dist-static"),
         ))
     }
-    pub(crate) fn static_room_indirect_export_resources(&self) -> Result<(PathBuf, PathBuf)> {
+    pub(crate) fn static_room_indirect_export_resources(
+        &self,
+    ) -> Result<((PathBuf, PathBuf), installations::native_static_export::RoomIndirectBinding)> {
+        use installations::native_static_export::{ORIGINAL_VIEWER_BUILD_ID, RoomIndirectBinding};
         let inputs = [
             ("platform/scripts/native-static-export.mjs", "9a1865570f602c5bfe8f63a8c7ee3ea5da7c160fcde461e94998568e3a6671fb"),
             ("platform/scripts/export-static-publication.mjs", "54b0e92dd901f0a9de83688896e898a95e312a349a7f8b5e8624b2d009c027c6"),
@@ -8952,7 +8955,8 @@ impl Payload {
             return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
         }
         self.recheck()?;
-        self.static_export_resources(false)
+        let binding = RoomIndirectBinding::from_worker_rows([inputs[2].1, inputs[3].1], ORIGINAL_VIEWER_BUILD_ID);
+        Ok((self.static_export_resources(false)?, binding))
     }
 
     pub(crate) fn static_publication_reader(&self) -> Result<PathBuf> {

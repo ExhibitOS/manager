@@ -7,6 +7,7 @@ mod diagnostics;
 #[path = "native_static_export_room_indirect.rs"]
 mod room_indirect;
 pub use room_indirect::{IndirectBake, RoomIndirect};
+pub(crate) use room_indirect::{ORIGINAL_VIEWER_BUILD_ID, RoomIndirectBinding};
 use crate::{
     maintenance_source::DirectoryPin, native_payload::Payload, native_runtime::{Session, StaticDetailAuthority},
 };
@@ -238,6 +239,11 @@ fn read_room_indirect<'de, D: serde::Deserializer<'de>>(
 ) -> std::result::Result<Option<RoomIndirect>, D::Error> {
     RoomIndirect::deserialize(input).map(Some)
 }
+fn read_room_indirect_binding<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> std::result::Result<Option<RoomIndirectBinding>, D::Error> {
+    RoomIndirectBinding::deserialize(input).map(Some)
+}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Receipt {
@@ -269,6 +275,9 @@ pub struct Status {
     pub private_editor: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_indirect: Option<RoomIndirect>,
+    // Existing #641 records omit this field and may only use their original pair.
+    #[serde(default, deserialize_with = "read_room_indirect_binding", skip_serializing_if = "Option::is_none")]
+    pub(crate) room_indirect_binding: Option<RoomIndirectBinding>,
     pub receipt: Option<Receipt>,
     pub error_code: Option<String>,
 }
@@ -572,7 +581,8 @@ fn verify_export_controls(
     {
         return Err(bad());
     }
-    room_indirect::verify(status.room_indirect, status.private_editor, manifest, &html, &index, read)
+    room_indirect::verify(status.room_indirect, status.room_indirect_binding.as_ref(),
+        status.private_editor, manifest, &html, &index, read)
 }
 
 const DETAIL_UNCONFIRMED: &str = "NATIVE_STATIC_DETAIL_CLEANUP_UNCONFIRMED";
@@ -2097,6 +2107,8 @@ impl InstallationController {
                     || !hash_valid(&value.revision_sha256)
                     || !value.output.is_absolute()
                     || (value.room_indirect.is_some() && (value.private_editor || value.output_parent_identity.is_none()))
+                    || value.room_indirect_binding.as_ref().is_some_and(|binding|
+                        value.room_indirect.is_none() || !binding.valid())
                     || value.receipt.as_ref().is_some_and(|receipt| receipt.indirect_bake.is_some() != value.room_indirect.is_some())
                     || !matches!(
                         value.state.as_str(),
@@ -2272,6 +2284,7 @@ impl Exporter {
         } else {
             None
         };
+        let indirect_binding = indirect_resources.as_ref().map(|(_, binding)| binding);
         let current = self.status(&token)?;
         if (self.active() && !input.saved_head_verified) || self.detail_held(&token)? {
             return Err(err("BUSY"));
@@ -2312,6 +2325,11 @@ impl Exporter {
             && status.workspace_id == workspace_id && status.tenant_id == tenant_id
             && status.principal_id == principal_id
         {
+            let matches_binding = indirect_binding.map_or(status.room_indirect_binding.is_none(),
+                |binding| binding.matches_persisted(status.room_indirect_binding.as_ref()));
+            if !matches_binding {
+                return Err(bad());
+            }
             if status.state == "completed" && status.receipt.as_ref() != Some(&verify_output(&status)?) {
                 return Err(bad());
             }
@@ -2340,9 +2358,10 @@ impl Exporter {
         {
             return Err(bad());
         }
+        let room_indirect_binding = indirect_binding.cloned();
         let (script, viewer) = if detail {
             payload.static_detail_export_resources(input.private_editor)?
-        } else if let Some(resources) = indirect_resources {
+        } else if let Some((resources, _)) = indirect_resources {
             resources
         } else {
             payload.static_export_resources(input.private_editor)?
@@ -2360,6 +2379,7 @@ impl Exporter {
             state: "running".into(),
             private_editor: input.private_editor,
             room_indirect: input.room_indirect,
+            room_indirect_binding,
             receipt: None,
             error_code: None,
         };
@@ -2951,6 +2971,7 @@ mod detail_tests {
             state: "running".into(),
             private_editor: false,
             room_indirect: None,
+            room_indirect_binding: None,
             receipt: None,
             error_code: None,
         };

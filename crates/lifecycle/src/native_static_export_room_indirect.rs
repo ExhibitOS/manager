@@ -5,16 +5,49 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 const META_NAME: &str = "exhibitos-static-room-indirect";
+const VIEWER_META_NAME: &str = "exhibitos-viewer-build-id";
+#[cfg(test)]
 const META_PREFIX: &str = "meta name=\"exhibitos-static-room-indirect\" content=\"";
 const FORMAT: &str = "exhibitos-static-room-indirect-v1";
 const RECIPE: &str = "room-diffuse-one-bounce-rgba8-v1";
-const RECIPE_SHA256: &str = "598b2c4a92b70a031760a7ca950067de64afaacd9bf84ed91315a42d97a8b03a";
+const LEGACY_RECIPE_SHA256: &str = "598b2c4a92b70a031760a7ca950067de64afaacd9bf84ed91315a42d97a8b03a";
+pub(crate) const ORIGINAL_VIEWER_BUILD_ID: &str =
+    "f62384be916179e278514c828e3af21d2aa161b4d9f44ef4125191b6ecba0fe8";
 const BUDGET: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 pub enum RoomIndirect {
     #[serde(rename = "room-diffuse-one-bounce-rgba8-v1")]
     DiffuseOneBounceRgba8V1,
+}
+
+/// Authoritative expectations from the admitted runtime, never from the export.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RoomIndirectBinding {
+    recipe_sha256: String,
+    viewer_build_id: String,
+}
+
+impl RoomIndirectBinding {
+    pub(crate) fn from_worker_rows(ordered_hashes: [&str; 2], viewer_build_id: &str) -> Self {
+        let encoded = serde_json::to_vec(&ordered_hashes).expect("string array serializes");
+        Self {
+            recipe_sha256: digest(&encoded),
+            viewer_build_id: viewer_build_id.into(),
+        }
+    }
+
+    pub(super) fn valid(&self) -> bool {
+        hash_valid(&self.recipe_sha256) && hash_valid(&self.viewer_build_id)
+    }
+
+    pub(super) fn matches_persisted(&self, persisted: Option<&Self>) -> bool {
+        persisted.map_or_else(
+            || self.recipe_sha256 == LEGACY_RECIPE_SHA256 && self.viewer_build_id == ORIGINAL_VIEWER_BUILD_ID,
+            |binding| self == binding,
+        )
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -122,21 +155,29 @@ struct Dimensions {
 
 pub(super) fn verify(
     mode: Option<RoomIndirect>,
+    binding: Option<&RoomIndirectBinding>,
     private_editor: bool,
     manifest: &Manifest,
     html: &str,
     index: &[u8],
     mut read: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<Option<IndirectBake>> {
-    let descriptor = descriptor_pin(html)?;
+    let descriptor = head_pin(html, META_NAME)?;
     if mode.is_none() {
-        return if descriptor.is_some() {
+        return if descriptor.is_some() || binding.is_some() {
             Err(bad())
         } else {
             Ok(None)
         };
     }
-    if private_editor {
+    if private_editor || binding.is_some_and(|binding| !binding.valid()) {
+        return Err(bad());
+    }
+    let (recipe_sha, viewer_build_id) = binding.map_or(
+        (LEGACY_RECIPE_SHA256, ORIGINAL_VIEWER_BUILD_ID),
+        |binding| (binding.recipe_sha256.as_str(), binding.viewer_build_id.as_str()),
+    );
+    if head_pin(html, VIEWER_META_NAME)? != Some(viewer_build_id) {
         return Err(bad());
     }
     let Some(descriptor_sha256) = descriptor else {
@@ -161,7 +202,7 @@ pub(super) fn verify(
     let source = descriptor.source;
     if descriptor.format != FORMAT
         || descriptor.recipe.id != RECIPE
-        || descriptor.recipe.sha256 != RECIPE_SHA256
+        || descriptor.recipe.sha256 != recipe_sha
         || source.publication_id != manifest.publication_id
         || source.revision_sha256 != manifest.revision_sha256
         || source.index_sha256 != manifest.index_sha256
@@ -256,13 +297,14 @@ pub(super) fn verify(
 
 // The tracked static shell emits an explicit head and one canonical meta tag.
 // Only inspect named meta elements there; title and cover copy are display text.
-fn descriptor_pin(html: &str) -> Result<Option<&str>> {
+fn head_pin<'a>(html: &'a str, name: &str) -> Result<Option<&'a str>> {
     let Some((mut head, _)) = html
         .split_once("<head>")
         .and_then(|(_, tail)| tail.split_once("</head>"))
     else {
         return Ok(None);
     };
+    let prefix = format!("meta name=\"{name}\" content=\"");
     let mut pin = None;
     while let Some((_, after)) = head.split_once('<') {
         if let Some(comment) = after.strip_prefix("!--") {
@@ -280,11 +322,11 @@ fn descriptor_pin(html: &str) -> Result<Option<&str>> {
                 .map_or("", |(_, rest)| rest);
             continue;
         }
-        if !is_indirect_meta(element) {
+        if !is_named_meta(element, name) {
             continue;
         }
         let (digest, _) = element
-            .strip_prefix(META_PREFIX)
+            .strip_prefix(prefix.as_str())
             .and_then(|tail| tail.split_once("\">"))
             .ok_or_else(bad)?;
         if !hash_valid(digest) || pin.replace(digest).is_some() {
@@ -304,7 +346,7 @@ fn starts_with_tag(element: &str, name: &str) -> bool {
             .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
 }
 
-fn is_indirect_meta(element: &str) -> bool {
+fn is_named_meta(element: &str, meta_name: &str) -> bool {
     if !starts_with_tag(element, "meta") {
         return false;
     }
@@ -335,7 +377,7 @@ fn is_indirect_meta(element: &str) -> bool {
                 value.split_at(end)
             }
         };
-        if name.eq_ignore_ascii_case("name") && value == META_NAME {
+        if name.eq_ignore_ascii_case("name") && value == meta_name {
             return true;
         }
         attrs = rest;
@@ -409,13 +451,15 @@ mod tests {
                 "publicationId": publication_id, "revisionSha256": revision_sha,
                 "bodySha256": body_sha, "indexSha256": index_sha
             },
-            "recipe": {"id": RECIPE, "sha256": RECIPE_SHA256},
+            "recipe": {"id": RECIPE, "sha256": LEGACY_RECIPE_SHA256},
             "rooms": [{"roomId": "room", "charts": charts}]
         });
         let attempt = |descriptor: &serde_json::Value,
                        html_suffix: &str,
                        tex: &[u8],
-                       private_editor| {
+                       private_editor,
+                       binding: Option<&RoomIndirectBinding>,
+                       viewer_build_id: &str| {
             let descriptor = serde_json::to_vec(descriptor).unwrap();
             let descriptor_sha = digest(&descriptor);
             let files = BTreeMap::from([
@@ -438,10 +482,11 @@ mod tests {
                     .collect(),
             };
             let html = format!(
-                "<head><title>{META_NAME}</title><{META_PREFIX}{descriptor_sha}\">{html_suffix}</head><body>{META_NAME}</body>"
+                "<head><meta name=\"{VIEWER_META_NAME}\" content=\"{viewer_build_id}\"><title>{META_NAME}</title><{META_PREFIX}{descriptor_sha}\">{html_suffix}</head><body>{META_NAME}</body>"
             );
             verify(
                 Some(RoomIndirect::DiffuseOneBounceRgba8V1),
+                binding,
                 private_editor,
                 &manifest,
                 &html,
@@ -455,7 +500,7 @@ mod tests {
                 },
             )
         };
-        let baked = attempt(&descriptor, "", &tile, false).unwrap().unwrap();
+        let baked = attempt(&descriptor, "", &tile, false, None, ORIGINAL_VIEWER_BUILD_ID).unwrap().unwrap();
         assert_eq!(
             baked,
             IndirectBake::Baked {
@@ -470,14 +515,27 @@ mod tests {
                 &descriptor,
                 "<meta name=\"exhibitos-static-room-indirect\">",
                 &tile,
-                false
+                false,
+                None,
+                ORIGINAL_VIEWER_BUILD_ID
             )
             .is_err()
         );
-        assert!(attempt(&descriptor, "", &[1, 2, 3, 0], false).is_err());
-        assert!(attempt(&descriptor, "", &tile, true).is_err());
+        assert!(attempt(&descriptor, "", &[1, 2, 3, 0], false, None, ORIGINAL_VIEWER_BUILD_ID).is_err());
+        assert!(attempt(&descriptor, "", &tile, true, None, ORIGINAL_VIEWER_BUILD_ID).is_err());
+        let viewer = "e".repeat(64);
+        let worker_hashes = ["a".repeat(64), "b".repeat(64)];
+        let successor = RoomIndirectBinding::from_worker_rows(
+            [&worker_hashes[0], &worker_hashes[1]], &viewer,
+        );
+        assert!(attempt(&descriptor, "", &tile, false, Some(&successor), &viewer).is_err());
+        let mut successor_descriptor = descriptor.clone();
+        successor_descriptor["recipe"]["sha256"] = json!(successor.recipe_sha256);
+        assert!(attempt(&successor_descriptor, "", &tile, false, Some(&successor), &viewer).is_ok());
+        assert!(attempt(&successor_descriptor, "", &tile, false, Some(&successor), ORIGINAL_VIEWER_BUILD_ID).is_err());
+        assert!(attempt(&successor_descriptor, "", &tile, false, None, ORIGINAL_VIEWER_BUILD_ID).is_err());
         descriptor["rooms"][0]["charts"][0]["surfaceId"] = json!("unowned-surface");
-        assert!(attempt(&descriptor, "", &tile, false).is_err());
+        assert!(attempt(&descriptor, "", &tile, false, None, ORIGINAL_VIEWER_BUILD_ID).is_err());
     }
 
     #[test]
@@ -493,14 +551,17 @@ mod tests {
         fn read(_: &str) -> Result<Vec<u8>> {
             panic!("fallback must not read a bake descriptor");
         }
-        assert_eq!(verify(None, true, &manifest, "", b"", read).unwrap(), None);
+        assert_eq!(verify(None, None, true, &manifest, "", b"", read).unwrap(), None);
+        let old_head = format!("<head><meta name=\"{VIEWER_META_NAME}\" content=\"{ORIGINAL_VIEWER_BUILD_ID}\"></head>");
+        assert!(verify(mode, None, false, &manifest, "", b"", read).is_err());
         assert_eq!(
-            verify(mode, false, &manifest, "", b"", read).unwrap(),
+            verify(mode, None, false, &manifest, &old_head, b"", read).unwrap(),
             Some(IndirectBake::LiveFallback)
         );
-        assert!(verify(mode, true, &manifest, "", b"", read).is_err());
+        assert!(verify(mode, None, true, &manifest, "", b"", read).is_err());
         assert_eq!(
             verify(
+                None,
                 None,
                 false,
                 &manifest,
@@ -513,20 +574,36 @@ mod tests {
         );
         let text = "<head><title>exhibitos-static-room-indirect</title><meta name=\"description\" content=\"exhibitos-static-room-indirect\"><!-- <meta name=\"exhibitos-static-room-indirect\"> --></head><body>&lt;meta name=&quot;exhibitos-static-room-indirect&quot;&gt;</body>";
         assert_eq!(
-            verify(None, false, &manifest, text, b"", read).unwrap(),
+            verify(None, None, false, &manifest, text, b"", read).unwrap(),
             None
         );
         assert_eq!(
-            verify(None, true, &manifest, text, b"", read).unwrap(),
+            verify(None, None, true, &manifest, text, b"", read).unwrap(),
             None
         );
+        let text_with_viewer = text.replacen("<head>", old_head.trim_end_matches("</head>"), 1);
         assert_eq!(
-            verify(mode, false, &manifest, text, b"", read).unwrap(),
+            verify(mode, None, false, &manifest, &text_with_viewer, b"", read).unwrap(),
             Some(IndirectBake::LiveFallback)
         );
+        let viewer = "e".repeat(64);
+        let successor = RoomIndirectBinding::from_worker_rows([&"a".repeat(64), &"b".repeat(64)], &viewer);
+        let successor_head = old_head.replace(ORIGINAL_VIEWER_BUILD_ID, &viewer);
+        assert_eq!(
+            verify(mode, Some(&successor), false, &manifest, &successor_head, b"", read).unwrap(),
+            Some(IndirectBake::LiveFallback)
+        );
+        assert!(verify(mode, Some(&successor), false, &manifest, &old_head, b"", read).is_err());
+        assert!(!successor.matches_persisted(None));
+        assert!(successor.matches_persisted(Some(&successor)));
+        let swapped = RoomIndirectBinding::from_worker_rows([&"b".repeat(64), &"a".repeat(64)], &viewer);
+        assert!(!successor.matches_persisted(Some(&swapped)));
+        let shape: RoomIndirectBinding = serde_json::from_value(serde_json::to_value(&successor).unwrap()).unwrap();
+        assert_eq!(shape, successor);
+
         let bad_meta =
             "<head><META content='wrong' name = 'exhibitos-static-room-indirect'></head>";
-        assert!(verify(None, false, &manifest, bad_meta, b"", read).is_err());
-        assert!(verify(mode, false, &manifest, bad_meta, b"", read).is_err());
+        assert!(verify(None, None, false, &manifest, bad_meta, b"", read).is_err());
+        assert!(verify(mode, None, false, &manifest, bad_meta, b"", read).is_err());
     }
 }

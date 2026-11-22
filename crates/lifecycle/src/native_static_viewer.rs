@@ -163,6 +163,7 @@ mod tests {
             state: "completed".into(),
             private_editor: false,
             room_indirect: None,
+            room_indirect_binding: None,
             receipt: Some(receipt),
             error_code: None,
         };
