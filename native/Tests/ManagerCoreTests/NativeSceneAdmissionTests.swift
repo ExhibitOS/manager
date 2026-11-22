@@ -39,6 +39,39 @@ final class NativeSceneAdmissionTests: XCTestCase {
         XCTAssertFalse(AuthoringAPI.matchesInitialImageApproval(unrelated, full: full, coarse: coarse))
     }
 
+    func testCatalog057InitialImageIntakeRequiresExactRuntimeAndLiveProfile() async throws {
+        let runtime = "cd821e1710d12ff5342431e537fde7b576426dfc1d3361ea004175ab51bc8899"
+        let profile = NativeProductImagePreparationIntent.profileID
+        let otherCatalog057 = "eee0808ab66919d15341327acb80f0055d00224ca12d984926efa526827a4109"
+        defer { SceneAdmissionProtocol.reset() }
+        for (manifest, activeProfile, expected) in [
+            (runtime, profile, true),
+            (runtime, nil, false),
+            (runtime, "ordinary-image-preparation-v1", false),
+            (otherCatalog057, profile, false),
+            (String(runtime.dropLast()) + "0", profile, false)
+        ] {
+            var fields = ["tenantId": owner, "userId": owner, "role": "admin",
+                "csrfToken": "synthetic-csrf", "expiresAt": "2099-01-01T00:00:00Z"]
+            fields["nativeInitialProductImagePreparationProfile"] = activeProfile
+            SceneAdmissionProtocol.configure(try JSONSerialization.data(withJSONObject: fields))
+            let api = try AuthoringAPI(port: 18091, tenantId: owner, nativeRuntimeManifestSHA256: manifest,
+                                       protocolClasses: [SceneAdmissionProtocol.self])
+            let beforeConnect = await api.admitsInitialProductImagePreparation
+            XCTAssertFalse(beforeConnect)
+            _ = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner,
+                origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+            let admitted = await api.admitsInitialProductImagePreparation
+            let coarseDetail = await api.admitsOwnerLocalOriginalImageCoarse
+            XCTAssertEqual(admitted, expected)
+            XCTAssertFalse(coarseDetail)
+            XCTAssertEqual(SceneAdmissionProtocol.methods(), ["GET"])
+            await api.endLocalAuthoringSession()
+            let afterDisconnect = await api.admitsInitialProductImagePreparation
+            XCTAssertFalse(afterDisconnect)
+        }
+    }
+
     func testInitialProductPairPurposeIsClosedAndDistinctFromFreshAndReplacement() throws {
         let initial = NativeProductImagePreparationIntent(artworkRevision: 1, initialApproval: true)
         let encoded = try JSONEncoder().encode(initial)
