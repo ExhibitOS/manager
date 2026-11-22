@@ -3377,6 +3377,7 @@ public actor AuthoringAPI {
         #if DEBUG && os(macOS)
         manifest == "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98"
             || manifest == "eee0808ab66919d15341327acb80f0055d00224ca12d984926efa526827a4109"
+            || manifest == "cd821e1710d12ff5342431e537fde7b576426dfc1d3361ea004175ab51bc8899"
         #else
         return false
         #endif
@@ -4043,12 +4044,14 @@ public actor AuthoringAPI {
         let next = try placement.applying(furnishing, to: draft, supportedExtensionVersion: supportedFurnishingExtensionVersion)
         _ = try await workspaceFurnishingModel(furnishing)
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        if let next, admitsWorkspaceDefaultSeatProposal,
-           BenchSettings.isDefaultSeatModel(furnishing.details.model, kind: furnishing.details.kind) {
-            guard let seated = try await defaultSeatProposal(placementIds: [placement.id], prospective: next, base: draft) else {
-                throw BenchSettings.invalid()
+        if let next, admitsWorkspaceDefaultSeatProposal {
+            let installedBackedBench = WorkspaceDefaultSeatProposal.isInstalledBackedBench(placement)
+            if installedBackedBench || BenchSettings.isDefaultSeatModel(furnishing.details.model, kind: furnishing.details.kind) {
+                let seated = try await defaultSeatProposal(placementIds: [placement.id], prospective: next, base: draft,
+                                                           requireInstalledBackedBench: installedBackedBench)
+                if seated == nil && !installedBackedBench { throw BenchSettings.invalid() }
+                return seated ?? next
             }
-            return seated
         }
         return next
     }
@@ -4163,15 +4166,37 @@ public actor AuthoringAPI {
     }
 
     private func defaultSeatProposal(placementIds: [String], prospective: NativeExhibitionDraft,
-                                     base: NativeExhibitionDraft) async throws -> NativeExhibitionDraft? {
+                                     base: NativeExhibitionDraft,
+                                     requireInstalledBackedBench: Bool = false) async throws -> NativeExhibitionDraft? {
         let heldGeneration = generation
         let proposal = try WorkspaceDefaultSeatProposal(draft: prospective, placementIds: placementIds)
+        var installedBackedBenchAuthorized = false
+        if try proposal.needsInstalledBackedBenchAuthorization() {
+            installedBackedBenchAuthorized = try await hasInstalledBackedBench()
+        }
+        try Task.checkCancellation()
+        guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        if requireInstalledBackedBench && !installedBackedBenchAuthorized { return nil }
         let body = try encoded(proposal)
         guard body.count <= 1_048_576 else { throw AuthoringFailure("EXHIBITION_SIZE_LIMIT") }
         let response: DocumentValue = try await request(studioPrefix + "/native-default-seat-proposal", method: "POST", body: body)
         try Task.checkCancellation()
         guard generation == heldGeneration else { throw AuthoringFailure("ACCOUNT_CHANGED") }
-        return try proposal.applying(response, to: base)
+        return try proposal.applying(response, to: base, installedBackedBenchAuthorized: installedBackedBenchAuthorized)
+    }
+
+    private func hasInstalledBackedBench() async throws -> Bool {
+        var cursor: String?
+        var seen = Set<String>()
+        repeat {
+            let page = try await workspaceFurnishings(cursor: cursor)
+            if let item = page.items.first(where: { $0.id == WorkspaceDefaultSeatProposal.installedBackedBenchId }) {
+                return item.installedCatalog == true && item.version == 1 && item.kind == .bench && item.rightsAvailability.display
+            }
+            cursor = page.nextCursor
+            if let cursor, !seen.insert(cursor).inserted { throw AuthoringFailure("FURNISHING_RESPONSE_INVALID") }
+        } while cursor != nil
+        return false
     }
 
     func prepareWorkspaceDefaultSeatRetrofit(placementIds: [String], in document: NativeDocumentState) async throws -> NativeExhibitionDraft? {
