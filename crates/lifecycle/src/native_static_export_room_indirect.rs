@@ -317,9 +317,11 @@ fn head_pin<'a>(html: &'a str, name: &str) -> Result<Option<&'a str>> {
             .into_iter()
             .find(|name| starts_with_tag(element, name))
         {
-            head = after
-                .split_once(&format!("</{name}>"))
-                .map_or("", |(_, rest)| rest);
+            let close = format!("</{name}>");
+            let close_start = after.as_bytes().windows(close.len())
+                .position(|candidate| candidate.eq_ignore_ascii_case(close.as_bytes()))
+                .ok_or_else(bad)?;
+            head = &after[close_start + close.len()..];
             continue;
         }
         if !is_named_meta(element, name) {
@@ -536,6 +538,22 @@ mod tests {
         assert!(attempt(&successor_descriptor, "", &tile, false, None, ORIGINAL_VIEWER_BUILD_ID).is_err());
         descriptor["rooms"][0]["charts"][0]["surfaceId"] = json!("unowned-surface");
         assert!(attempt(&descriptor, "", &tile, false, None, ORIGINAL_VIEWER_BUILD_ID).is_err());
+    }
+
+    #[test]
+    fn head_pin_rejects_duplicates_after_mixed_case_raw_text() {
+        for name in [META_NAME, VIEWER_META_NAME] {
+            let meta = format!("<meta name=\"{name}\" content=\"{ORIGINAL_VIEWER_BUILD_ID}\">");
+            for (opening, closing) in [("SCRIPT", "ScRiPt"), ("STYLE", "StYlE"), ("TITLE", "TiTlE")] {
+                let closed = format!("<head>{meta}<{opening}>{meta}</{closing}>");
+                let unique = format!("{closed}</head>");
+                assert_eq!(head_pin(&unique, name).unwrap(), Some(ORIGINAL_VIEWER_BUILD_ID));
+                let duplicate = format!("{closed}{meta}</head>");
+                assert!(head_pin(&duplicate, name).is_err());
+                let unclosed = format!("<head>{meta}<{opening}>text</head>");
+                assert!(head_pin(&unclosed, name).is_err());
+            }
+        }
     }
 
     #[test]
