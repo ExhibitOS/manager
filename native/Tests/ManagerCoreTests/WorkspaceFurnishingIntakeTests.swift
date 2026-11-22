@@ -717,6 +717,42 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertThrowsError(try attach(scale: 1.1))
     }
 
+    func testDefaultSeatProposalRequiresInstalledIdentityAndHostFacingForBackedBench() throws {
+        let stockId = WorkspaceDefaultSeatProposal.installedBackedBenchId
+        var descriptor = try registered()["furnishing"]
+        descriptor["kind"] = .string("bench")
+        descriptor["id"] = .string(stockId)
+        let furnishing = try JSONDecoder().decode(WorkspaceFurnishing.self, from: JSONEncoder().encode(descriptor))
+        let draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first?["id"].string)
+        let placement = WorkspaceFurnishingPlacement(id: placementId, roomId: room, furnishingId: stockId,
+            furnishingVersion: 1, position: [1, 0, 2], yaw: .pi / 2, scale: 1)
+        let placed = try XCTUnwrap(placement.applying(furnishing, to: draft))
+        let proposal = try WorkspaceDefaultSeatProposal(draft: placed, placementIds: [placementId])
+        let target = try XCTUnwrap(proposal.targets.first)
+        let seat = try BenchSettings(id: target.benchId, name: furnishing.details.name, roomId: room, kind: .backed,
+            position: placement.position, yaw: placement.yaw, width: 1.5, depth: 0.70, height: 0.45,
+            material: .defaults(.wood), viewpointId: target.viewpointId,
+            workspaceVisual: .init(placementId: placementId, modelSha256: modelSHA256, modelForward: .positiveZ))
+        let view = try BenchViewpoint(id: target.viewpointId, name: furnishing.details.name, roomId: room,
+            position: [1, 1.15, 2], target: [-1, 1.15, 2], fov: 50)
+        let addition: DocumentValue = .object(["placementId": .string(placementId), "bench": seat.value, "viewpoint": view.value])
+        let response: DocumentValue = .object(["additions": .array([addition])])
+        XCTAssertTrue(try proposal.needsInstalledBackedBenchAuthorization())
+        XCTAssertThrowsError(try proposal.applying(response, to: draft))
+        let linked = try XCTUnwrap(proposal.applying(response, to: draft, installedBackedBenchAuthorized: true))
+        XCTAssertEqual(try BenchSettings.list(in: linked), [seat])
+        XCTAssertEqual(try BenchViewpoint.list(in: linked), [view])
+
+        var wrongFacing = addition
+        wrongFacing["viewpoint"]["target"] = .vector([3, 1.15, 2])
+        XCTAssertThrowsError(try proposal.applying(.object(["additions": .array([wrongFacing])]),
+                                                   to: draft, installedBackedBenchAuthorized: true))
+        let repeated = try WorkspaceDefaultSeatProposal(draft: linked, placementIds: [placementId])
+        XCTAssertFalse(try repeated.needsInstalledBackedBenchAuthorization())
+        XCTAssertNil(try repeated.applying(.object(["additions": .array([])]), to: linked))
+    }
+
     func testDefaultSeatProposalCombinesProspectivePlacementAndPreservesExistingLink() throws {
         let hash = "6caca94361b540fb007c6fc605e519e436462eda43f2ec5f99da6a63108bfc60"
         var descriptor = try registered()["furnishing"]
