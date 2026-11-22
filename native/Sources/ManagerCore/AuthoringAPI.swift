@@ -360,6 +360,8 @@ public struct AuthoringFailure: Error, LocalizedError, Sendable {
         case "WALL_FINISH_INVALID", "WALL_FINISH_PREVIEW_FAILED": return "선택한 벽과 마감 수치를 확인하세요. 문·작품과의 여유 공간이 필요하며 기존 설정과 입력은 유지됩니다."
         case "FLOOR_TARGET_INVALID", "CONCRETE_FOOTSTEPS_INVALID": return "실제 바닥 표면을 선택하고 기존 발소리 설정을 확인하세요. 바닥 외관과 다른 소리는 유지됩니다."
         case "ROOM_AUDIO_SAVE_REQUIRED": return "편집 가능한 전시를 저장한 뒤 공간 소리를 설정하세요."
+        case "AUDIO_SOURCE_INVALID": return "MP3 또는 PCM16 WAV 파일과 길이를 확인하세요."
+        case "AUDIO_DECLARATION_INVALID": return "오디오의 권리자, 라이선스와 전시·내보내기 권한을 확인하세요."
         case "ROOM_AUDIO_TRACK_UNAVAILABLE": return "이 전시에서 공개 재생과 내보내기를 허용한 승인 WAV를 선택하세요."
         case "ROOM_AUDIO_MEDIA_LIMIT": return "전시에 연결할 수 있는 오디오 파일 수를 초과했습니다."
         case "FLOOR_SOUND_CONFLICT": return "선택한 바닥에 재질 소리 설정이 있습니다. 기존 설정을 바꾸지 않고 콘크리트 발소리 선택을 중단했습니다."
@@ -1747,6 +1749,12 @@ public actor AuthoringAPI {
     /// change rights on replay or infer that a track was approved.
     public func intakeRoomAudio(_ file: ImportFileSnapshot, requestId: String, rights: DocumentValue,
                                 in document: NativeDocumentState) async throws -> NativeRoomAudioReceipt {
+        try await intakeRoomAudio(file, requestId: requestId, rights: rights, in: document, classifyDeclarationFailure: false)
+    }
+
+    private func intakeRoomAudio(_ file: ImportFileSnapshot, requestId: String, rights: DocumentValue,
+                                 in document: NativeDocumentState,
+                                 classifyDeclarationFailure: Bool) async throws -> NativeRoomAudioReceipt {
         let held = generation
         let draft = try await roomAudioHead(document)
         guard file.mime == "audio/wav", (44...12_582_912).contains(file.data.count),
@@ -1765,9 +1773,13 @@ public actor AuthoringAPI {
             "sha256": .string(file.sha256), "rights": rights])
         guard ApprovedRoomAudioTrack.CatalogItem(id: placeholder, state: "approved", revision: 1,
             revoked: false, mediaAsset: expected).eligible(at: Date()) != nil else {
-            throw AuthoringFailure("ROOM_AUDIO_TRACK_UNAVAILABLE")
+            throw AuthoringFailure(classifyDeclarationFailure ? "AUDIO_DECLARATION_INVALID" : "ROOM_AUDIO_TRACK_UNAVAILABLE")
         }
-        let created: DocumentValue = try await request(prefix, method: "POST", body: encoded(payload))
+        let created: DocumentValue
+        do { created = try await request(prefix, method: "POST", body: encoded(payload)) }
+        catch let error as AuthoringFailure where classifyDeclarationFailure && error.status == 422 && error.code == "AUDIO_INVALID" {
+            throw AuthoringFailure("AUDIO_DECLARATION_INVALID")
+        }
         let record = try NativeRoomAudioReceipt(created)
         var media = expected; media["id"] = .string(record.id); media["path"] = .string("media/\(record.id)/audio.wav")
         _ = try NativeRoomAudioReceipt(created, expectedId: record.id, expectedMedia: media)
@@ -1787,6 +1799,32 @@ public actor AuthoringAPI {
         }
         try current.requireAssignableRights()
         return current
+    }
+
+    /// The local inspector and the automation entry use the same private
+    /// preparation and server intake contracts.
+    public func intakeLocalRoomAudio(_ file: ImportFileSnapshot, profile: URL, requestId: String,
+                                     rights: ArtworkMetadata.Rights,
+                                     in document: NativeDocumentState) async throws -> NativeRoomAudioReceipt {
+        let rightsValue = try JSONDecoder().decode(DocumentValue.self, from: JSONEncoder().encode(rights))
+        if file.mime != "audio/mpeg" {
+            guard file.mime == "audio/wav", NativeRoomAudioPreparation.isCanonicalWAV(file.data) else {
+                throw AuthoringFailure("AUDIO_SOURCE_INVALID")
+            }
+            return try await intakeRoomAudio(file, requestId: requestId, rights: rightsValue, in: document, classifyDeclarationFailure: true)
+        }
+        let held = generation
+        let draft = try await roomAudioHead(document)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        let scope: DocumentValue = .object([
+            "workspaceId": .string(document.workspaceId), "tenantId": .string(document.tenantId),
+            "principalId": .string(document.principalId), "exhibitionId": .string(draft.id), "rights": rightsValue
+        ])
+        let prepared = try NativeRoomAudioPreparation.prepare(file, profile: profile, requestID: requestId, scope: scope)
+        let receipt = try await intakeRoomAudio(prepared.wav, requestId: requestId, rights: rightsValue, in: document, classifyDeclarationFailure: true)
+        guard generation == held else { throw AuthoringFailure("ACCOUNT_CHANGED") }
+        try prepared.record(receipt)
+        return receipt
     }
 
     public func roomAudioStatus(_ id: String, expectedMedia: DocumentValue? = nil,

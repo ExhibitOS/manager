@@ -1,9 +1,54 @@
 // SPDX-License-Identifier: Apache-2.0
 import XCTest
+import CryptoKit
 @testable import ManagerCore
 
 final class RoomAudioSettingsTests: XCTestCase {
     private let trackId = "5fd33e2b-a4ab-480d-986d-d82e17de175a"
+
+    func testMP3RetryUsesRetainedFilesAndRejectsChangedPins() throws {
+        let profile = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: profile, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: profile) }
+        let requestId = UUID().uuidString.lowercased()
+        let directory = profile.appendingPathComponent("native-room-audio-" + requestId)
+        let scope: DocumentValue = .object(["exhibitionId": .string(UUID().uuidString)])
+        // A prepared checkpoint, independent of the system MP3 decoder.
+        let original = Data([0xff, 0xfb, 0x90, 0x64])
+        let wav = Data([
+            82, 73, 70, 70, 38, 0, 0, 0, 87, 65, 86, 69, 102, 109, 116, 32,
+            16, 0, 0, 0, 1, 0, 1, 0, 64, 31, 0, 0, 128, 62, 0, 0,
+            2, 0, 16, 0, 100, 97, 116, 97, 2, 0, 0, 0, 0, 0
+        ])
+        func digest(_ data: Data) -> String {
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        let hash = digest(original)
+        XCTAssertNil(try NativeRoomAudioPreparation.resume(profile: profile, requestID: requestId,
+                                                           scope: scope, originalHash: hash))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        let retainedOriginal = directory.appendingPathComponent("original.mp3")
+        try original.write(to: retainedOriginal)
+        try wav.write(to: directory.appendingPathComponent("prepared.wav"))
+        let checkpoint: DocumentValue = .object([
+            "binding": .object(["recipe": .string("core-audio-mp3-pcm16le-source-format-v1"),
+                                "scope": scope, "originalSha256": .string(hash), "originalBytes": .integer(4)]),
+            "wavSha256": .string(digest(wav))
+        ])
+        try JSONEncoder().encode(checkpoint).write(to: directory.appendingPathComponent("preparation.json"))
+        let retained = try NativeRoomAudioPreparation.resume(profile: profile, requestID: requestId,
+                                                             scope: scope, originalHash: hash)
+        XCTAssertEqual(retained?.wav.data, wav)
+        XCTAssertThrowsError(try NativeRoomAudioPreparation.resume(profile: profile, requestID: requestId,
+                                                                  scope: .object([:]), originalHash: hash))
+        XCTAssertThrowsError(try NativeRoomAudioPreparation.resume(profile: profile, requestID: requestId,
+                                                                  scope: scope, originalHash: digest(wav)))
+        try Data([0xff, 0xfb, 0x90, 0x65]).write(to: retainedOriginal)
+        XCTAssertThrowsError(try NativeRoomAudioPreparation.resume(profile: profile, requestID: requestId,
+                                                                  scope: scope, originalHash: hash))
+    }
 
     func testRoomEditPreservesOtherExperienceAndDistinguishesNoTrackFromOmission() throws {
         var draft = try NativeExhibitionDraft.new()
