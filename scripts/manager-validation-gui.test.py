@@ -345,6 +345,84 @@ class InternalPublicationTests(unittest.TestCase):
             os.chmod(alias, 0o700, follow_symlinks=False)
         return app, candidate, profile, pins
 
+    def test_publish_signed_cross_profile_stage_preserves_or_restores_predecessor(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            app, candidate, profile, pins = self.fixture(root)
+            old_profile = root / "previous-profile"
+            old_profile.mkdir()
+            old_anchor = hashlib.sha256(os.fsencode(old_profile)).hexdigest()
+            old_lease = root / f".exhibitos-profile-session-{old_anchor}.lock"
+            target_anchor = hashlib.sha256(os.fsencode(profile)).hexdigest()
+            target_lease = root / f".exhibitos-profile-session-{target_anchor}.lock"
+            old_lease.touch(mode=0o600)
+            (old_profile / "profile-session.lock").touch(mode=0o600)
+            pins["runtimeManifest"] = "e" * 64
+            for bundle, bound_profile in ((app, old_profile), (candidate, profile)):
+                info = bundle / launcher.INFO
+                metadata = plistlib.loads(info.read_bytes())
+                metadata["ExhibitOSValidationProfile"] = str(bound_profile)
+                if bundle == candidate:
+                    metadata["ExhibitOSValidationInputs"] = pins
+                info.chmod(0o600)
+                info.write_bytes(plistlib.dumps(metadata))
+            previous_pins = plistlib.loads((app / launcher.INFO).read_bytes())["ExhibitOSValidationInputs"]
+            launch_receipt = root / "previous-launch.json"
+            launch_receipt.write_text(json.dumps(dict(
+                app=str(app), bundleId=launcher.BUNDLE_ID, profile=str(old_profile),
+                pins=previous_pins, pid=123, owner="Native validation")))
+            stage_sha = launcher.signed_stage_sha(candidate)
+            receipt_sha = launcher.sha(launch_receipt)
+            old_inode, stage_inode = app.stat().st_ino, candidate.stat().st_ino
+            verification_failed = False
+
+            def verify_bundle(bundle, bound_profile, expected_pins):
+                info = plistlib.loads((bundle / launcher.INFO).read_bytes())
+                self.assertEqual(info["ExhibitOSValidationProfile"], str(bound_profile))
+                self.assertEqual(info["ExhibitOSValidationInputs"], expected_pins)
+                if bundle == app and bound_profile == profile:
+                    for lease in (old_lease, target_lease):
+                        with lease.open("r") as probe, self.assertRaises(BlockingIOError):
+                            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if verification_failed:
+                        raise launcher.ValidationError("installed signature check failed")
+
+            def publish(stage_pin=stage_sha, receipt_pin=receipt_sha):
+                return launcher.publish_stage(candidate, profile, pins, stage_pin, launch_receipt, receipt_pin)
+
+            with patch.object(launcher, "APP", app), \
+                 patch.object(launcher, "verify_bundle", side_effect=verify_bundle), \
+                 patch.object(launcher, "pids", return_value=set()) as running, \
+                 patch.object(launcher, "launch_services_has_app", return_value=False), \
+                 patch.object(launcher, "clone_publication") as clone, \
+                 patch.object(launcher, "output") as signer:
+                with self.assertRaisesRegex(launcher.ValidationError, "stage differs"):
+                    publish(stage_pin="0" * 64)
+                with self.assertRaisesRegex(launcher.ValidationError, "receipt differs"):
+                    publish(receipt_pin="0" * 64)
+                running.return_value = {123}
+                with self.assertRaisesRegex(launcher.ValidationError, "still registered"):
+                    publish()
+                running.return_value = set()
+                verification_failed = True
+                with self.assertRaisesRegex(launcher.ValidationError, "installed signature check failed"):
+                    publish()
+                self.assertEqual(app.stat().st_ino, old_inode)
+                self.assertEqual(candidate.stat().st_ino, stage_inode)
+                self.assertFalse(list(root.glob("retained-*.app")))
+                with target_lease.open("r") as competing:
+                    fcntl.flock(competing, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with self.assertRaisesRegex(launcher.ValidationError, "profile lease is still held"):
+                        publish()
+                verification_failed = False
+                result = publish()
+                self.assertEqual(result["signedStageSha256"], stage_sha)
+                self.assertEqual(app.stat().st_ino, stage_inode)
+                self.assertEqual(Path(result["retainedPredecessor"]).stat().st_ino, old_inode)
+                self.assertFalse(candidate.exists())
+                clone.assert_not_called()
+                signer.assert_not_called()
+
     def test_real_clone_and_atomic_replacement_preserve_fixed_and_match_signed_stage(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve(); app, candidate, profile, pins = self.fixture(root)

@@ -3,7 +3,7 @@
 """Prepare and launch the approved, fixed local Manager validation app."""
 import argparse
 import ctypes
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
 import json
@@ -180,11 +180,19 @@ def valid_owner(owner):
 
 
 def check_return(bundle, profile, pins, receipt_path):
+    with returned_profile(bundle, profile, pins, receipt_path) as receipt:
+        return receipt
+
+
+@contextmanager
+def returned_profile(bundle, profile, pins, receipt_path, receipt_sha=None):
     preflight(bundle, profile, pins)
     with os.fdopen(os.open(receipt_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as receipt_file:
         require(stat.S_ISREG(os.fstat(receipt_file.fileno()).st_mode), "Use a regular fixed launch receipt.")
         receipt_bytes = receipt_file.read(8193)
     require(len(receipt_bytes) <= 8192, "The fixed launch receipt exceeds 8 KiB.")
+    require(receipt_sha is None or hashlib.sha256(receipt_bytes).hexdigest() == receipt_sha,
+            "The previous launch receipt differs from the reviewed SHA-256.")
     receipt = json.loads(receipt_bytes)
     require(isinstance(receipt, dict) and receipt.get("app") == str(bundle)
             and receipt.get("bundleId") == BUNDLE_ID and receipt.get("profile") == str(profile)
@@ -197,12 +205,22 @@ def check_return(bundle, profile, pins, receipt_path):
                 "The fixed GUI or its helper is still registered. Have the owner finish normal Quit.")
 
     verify_exited()
+    with profile_leases(profile, before_verify=verify_exited):
+        yield {**receipt, "returnVerified": True, "innerProfileLeasesAvailable": True}
+
+
+@contextmanager
+def profile_leases(profile, allow_empty=False, before_verify=None):
     anchor = hashlib.sha256(os.fsencode(profile)).hexdigest()
     paths = (profile.parent / f".exhibitos-profile-session-{anchor}.lock", profile / "profile-session.lock")
+    profile_info = profile.stat()
     with ExitStack() as locks:
         held = []
-        for path in paths:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+
+        def take(path, create=False):
+            flags = os.O_NOFOLLOW | os.O_NONBLOCK
+            flags |= os.O_RDWR | os.O_CREAT if create else os.O_RDONLY
+            fd = os.open(path, flags, 0o600)
             locks.callback(os.close, fd)
             info = os.fstat(fd)
             require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
@@ -211,16 +229,26 @@ def check_return(bundle, profile, pins, receipt_path):
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
-                raise ValidationError("The fixed profile lease is still held. Wait for its normal return.") from error
+                raise ValidationError("The validation profile lease is still held. Wait for its normal return.") from error
             held.append((path, info))
-        verify_exited()
+
+        take(paths[0], create=allow_empty and not any(profile.iterdir()))
+        current_profile = profile.lstat()
+        require(stat.S_ISDIR(current_profile.st_mode)
+                and (current_profile.st_dev, current_profile.st_ino) == (profile_info.st_dev, profile_info.st_ino),
+                "The held profile directory no longer matches its original identity.")
+        # A new owner must acquire the same stable anchor before initializing.
+        if not allow_empty or any(profile.iterdir()):
+            take(paths[1])
+        if before_verify is not None:
+            before_verify()
         for path, info in held:
             named = path.lstat()
             require(stat.S_ISREG(named.st_mode) and stat.S_IMODE(named.st_mode) == 0o600
                     and named.st_uid == os.geteuid() and named.st_nlink == 1
                     and (named.st_dev, named.st_ino) == (info.st_dev, info.st_ino),
                     "The held profile lease no longer matches the named file.")
-    return {**receipt, "returnVerified": True, "innerProfileLeasesAvailable": True}
+        yield
 
 
 def bundle_inventory(bundle):
@@ -599,22 +627,76 @@ def prepare(profile, pins, gui, helper, runtime, legal=None, inventory=None, sce
             candidate = publication
         require(not pids() and not launch_services_has_app(),
                 "The validation app opened during preparation. Quit it normally before installing the signed bundle.")
-        previous = None
-        if APP.exists():
-            previous = APP.parent / ("retained-" + str(uuid.uuid4()) + ".app")
-            APP.rename(previous)
-        try:
-            candidate.rename(APP)
-        except OSError:
-            if previous is not None and not APP.exists():
-                previous.rename(APP)
-            raise
+        install_candidate(candidate)
         if publication_root is not None:
             try:
                 publication_root.rmdir()  # Empty after the successful rename.
             except OSError:
                 raise ValidationError("The verified fixed bundle was published and its predecessor retained; "
                                       f"only empty publication-directory cleanup failed: {publication_root}") from None
+
+
+def install_candidate(candidate, verify_installed=None):
+    previous = None
+    if APP.exists():
+        previous = APP.parent / ("retained-" + str(uuid.uuid4()) + ".app")
+        APP.rename(previous)
+    try:
+        candidate.rename(APP)
+    except OSError:
+        if previous is not None and not APP.exists():
+            previous.rename(APP)
+        raise
+    if verify_installed is not None:
+        try:
+            verify_installed(APP)
+        except (ValidationError, OSError, ValueError, subprocess.CalledProcessError):
+            APP.rename(candidate)
+            if previous is not None:
+                previous.rename(APP)
+            raise
+    return previous
+
+
+def signed_stage_sha(bundle):
+    return hashlib.sha256(b"".join(bytes.fromhex(sha(bundle / path)) for path in (
+        INFO, GUI, HELPER, Path("Contents/_CodeSignature/CodeResources")))).hexdigest()
+
+
+def publish_stage(candidate, profile, pins, stage_sha, launch_receipt, launch_receipt_sha):
+    check_fixed_path(APP)
+    require(candidate.is_absolute() and candidate.resolve(strict=True) == candidate
+            and candidate != APP and APP not in candidate.parents and candidate not in APP.parents
+            and candidate.is_dir(),
+            "Use a canonical signed stage outside the fixed app.")
+    require(candidate.stat().st_dev == APP.parent.stat().st_dev,
+            "Signed stage publication requires the same filesystem as the fixed app.")
+    sites = (candidate.parent.stat(), APP.parent.stat())
+    require(all(site.st_uid == os.geteuid() and stat.S_IMODE(site.st_mode) == 0o700 for site in sites)
+            and candidate.stat().st_uid == os.geteuid(),
+            "Use owned private directories for the signed stage and fixed app.")
+    require(profile.is_absolute() and profile.resolve(strict=True) == profile and profile.is_dir()
+            and candidate not in profile.parents and APP not in profile.parents,
+            "Use the canonical existing target validation profile outside both app bundles.")
+
+    def verify_candidate(bundle):
+        verify_bundle(bundle, profile, pins)
+        require(signed_stage_sha(bundle) == stage_sha, "Signed stage differs from the reviewed SHA-256.")
+
+    verify_candidate(candidate)
+    require(APP.is_dir() and APP.resolve(strict=True) == APP, "The fixed predecessor must be present.")
+    old = plistlib.loads((APP / INFO).read_bytes())
+    old_profile = old.get("ExhibitOSValidationProfile")
+    old_pins = old.get("ExhibitOSValidationInputs")
+    require(isinstance(old_profile, str) and Path(old_profile).is_absolute()
+            and isinstance(old_pins, dict), "The fixed predecessor is missing its signed profile or pins.")
+    old_profile = Path(old_profile)
+    require(old_profile.resolve(strict=True) == old_profile and old_profile != profile,
+            "Signed stage publication requires a different, canonical profile.")
+    with profile_leases(profile, allow_empty=True), \
+         returned_profile(APP, old_profile, old_pins, launch_receipt, launch_receipt_sha):
+        previous = install_candidate(candidate, verify_candidate)
+    return {"retainedPredecessor": str(previous), "signedStageSha256": stage_sha}
 
 
 def preflight(bundle, profile, pins):
@@ -735,7 +817,7 @@ def capture(bundle, profile, pins, path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "verify", "launch", "attach", "capture", "return-check"))
+    parser.add_argument("action", choices=("prepare", "verify", "launch", "attach", "capture", "return-check", "publish-stage"))
     parser.add_argument("--app", type=Path, default=APP)
     parser.add_argument("--profile", type=Path, required=True)
     for option in ("gui-sha", "helper-sha", "runtime-manifest-sha"):
@@ -754,6 +836,9 @@ def main():
     parser.add_argument("--scene-capture-cli", action="store_true")
     parser.add_argument("--staging-root", type=Path, help="Prepare only: private assembly storage; same-runtime clone publication.")
     parser.add_argument("--staged-app", type=Path, help="Prepare only: reuse the signed app already retained in that staging root.")
+    parser.add_argument("--publish-stage-app", type=Path, help="Publish-stage only: complete reviewed signed stage.")
+    parser.add_argument("--signed-stage-sha", help="SHA-256 of the concatenated binary SHA-256 digests of signed Info.plist, GUI, Helper and CodeResources, in order.")
+    parser.add_argument("--launch-receipt-sha", help="Publish-stage only: SHA-256 of the preceding fixed launch receipt.")
     args = parser.parse_args()
     try:
         require(args.staging_root is None or args.action == "prepare", "--staging-root is prepare-only.")
@@ -763,8 +848,18 @@ def main():
         require((args.request is not None) == (args.action == "capture"), "Only capture requires --request.")
         require(args.owner is None or (args.action == "launch" and valid_owner(args.owner)),
                 "A named owner is accepted only on launch.")
-        require((args.launch_receipt is not None) == (args.action == "return-check"),
-                "Only return-check requires --launch-receipt.")
+        publishing = args.action == "publish-stage"
+        require((args.launch_receipt is not None) == (args.action in ("return-check", "publish-stage")),
+                "Return-check and publish-stage require --launch-receipt.")
+        publication_inputs = (args.publish_stage_app, args.signed_stage_sha, args.launch_receipt_sha)
+        require(all(publication_inputs) if publishing else not any(publication_inputs),
+                "Publish-stage requires its signed app and both reviewed SHA-256 pins.")
+        if publishing:
+            require(all(re.fullmatch(r"[0-9a-f]{64}", pin)
+                        for pin in (args.signed_stage_sha, args.launch_receipt_sha)),
+                    "Provide the reviewed signed stage and launch receipt SHA-256 pins.")
+            require(not any((args.gui, args.helper, args.runtime)),
+                    "Publish-stage uses only the existing signed app.")
         require((args.retirement_plan is None) == (args.retirement_plan_sha is None),
                 "Supply the retirement plan and its reviewed SHA-256 together.")
         require(args.retirement_plan is None or (args.action == "return-check"
@@ -800,7 +895,10 @@ def main():
                 prepare(args.profile, pins, args.gui, args.helper, args.runtime, *legal_paths,
                         scene_capture_cli=args.scene_capture_cli, staging_root=args.staging_root, staged_app=args.staged_app)
             result = dict(app=str(APP), bundleId=BUNDLE_ID, profile=str(args.profile), pins=pins)
-            if args.action == "capture":
+            if publishing:
+                result.update(publish_stage(args.publish_stage_app, args.profile, pins, args.signed_stage_sha,
+                                            args.launch_receipt, args.launch_receipt_sha))
+            elif args.action == "capture":
                 result = capture(args.app, args.profile, pins, args.request)
             elif args.action == "launch":
                 result["pid"] = launch(args.app, args.profile, pins)
