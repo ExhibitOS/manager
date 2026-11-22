@@ -1247,6 +1247,13 @@ const CURRENT_DEFAULT_CATALOGUE_PAIR: (RuntimeTuple, (u64, &str)) = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const STOCK_V6_DEFAULT_CATALOGUE_RUNTIME: RuntimeTuple = (
+    "c21392114ec7465f9f88ed22291f333b14377929",
+    "9d675f6b50a0f774f071454182246524aec99ff7db3706421b1e00d97bfa0f52",
+    "cd821e1710d12ff5342431e537fde7b576426dfc1d3361ea004175ab51bc8899",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ORDINARY_RAIL_INSERTION_CHECK_RUNTIME: RuntimeTuple = (
     "c041df9e082a89e31e059572fe6057048333609d",
     "2891b3d62617615a2de409c478b867b349f7feb5b8efb8b2ddd4ca7558b943e7",
@@ -1263,6 +1270,7 @@ const RECORDED_FLOOR_DEFAULT_RUNTIME: RuntimeTuple = (
 pub(crate) fn current_default_catalogue_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CURRENT_DEFAULT_CATALOGUE_PAIR.0 == tuple
+        || STOCK_V6_DEFAULT_CATALOGUE_RUNTIME == tuple
         || RECORDED_FLOOR_DEFAULT_RUNTIME == tuple
         || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -1275,6 +1283,7 @@ pub(crate) fn current_default_catalogue_host_matches(tuple: (&str, &str, &str)) 
 pub(crate) fn current_default_catalogue_manifest_matches(manifest: &str) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CURRENT_DEFAULT_CATALOGUE_PAIR.0.2 == manifest
+        || STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2 == manifest
         || RECORDED_FLOOR_DEFAULT_RUNTIME.2 == manifest
         || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME.2 == manifest;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -3092,6 +3101,12 @@ pub(crate) mod normal_oex_release_declaration_tests {
         payload.workspace_v5_validation = true;
         assert!(payload.workspace_furnishing_catalog().is_err());
         payload.workspace_v5_validation = false;
+        let source = std::mem::replace(&mut payload.manifest.source_commit, "0".repeat(40));
+        assert!(payload.workspace_furnishing_catalog().is_err());
+        payload.manifest.source_commit = source;
+        let producer = std::mem::replace(&mut payload.manifest.producer_sha256, "0".repeat(64));
+        assert!(payload.workspace_furnishing_catalog().is_err());
+        payload.manifest.producer_sha256 = producer;
         payload.manifest_sha256 = COMBINED_THUMBNAIL_TARGET.2.into();
         assert!(payload.workspace_furnishing_catalog().is_err());
     }

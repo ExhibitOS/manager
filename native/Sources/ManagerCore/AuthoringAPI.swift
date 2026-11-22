@@ -3377,6 +3377,7 @@ public actor AuthoringAPI {
         #if DEBUG && os(macOS)
         manifest == "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98"
             || manifest == "eee0808ab66919d15341327acb80f0055d00224ca12d984926efa526827a4109"
+            || manifest == "cd821e1710d12ff5342431e537fde7b576426dfc1d3361ea004175ab51bc8899"
         #else
         return false
         #endif
