@@ -152,6 +152,11 @@ final class LightObjectRequestTests: XCTestCase {
         mutated = result
         mutated["candidate"]["lights"] = .array(lights)
         XCTAssertThrowsError(try request.checkedReply(mutated))
+        mutated = result
+        lights = expected["lights"].items!
+        lights[0]["transform"]["position"] = .vector([0, 3.1, 0])
+        mutated["candidate"]["lights"] = .array(lights)
+        XCTAssertThrowsError(try request.checkedReply(mutated))
         var mixedEdit = command
         mixedEdit["light"]["intensity"] = .integer(220)
         XCTAssertThrowsError(try LightObjectRequest(command: mixedEdit, frame: frame(draft)))
@@ -234,7 +239,8 @@ final class LightObjectRequestTests: XCTestCase {
 
     func testBeamFitPreservesSavedArticulatedAimAndUpperFraming() throws {
         var draft = try fixture(visual: false), base = draft.candidate
-        base["placements"] = .array([.object(["id": .string(clone), "roomId": draft.rooms[0]["id"]])])
+        base["placements"] = .array([.object(["id": .string(clone), "roomId": draft.rooms[0]["id"],
+            "transform": .object(["position": .vector([1.5, 1.5, -1.919])])])])
         let aim: DocumentValue = .object(["version": .integer(1), "profile": .string(NativeTrackSpotAim.profile),
             "mount": .object(["railPlacementId": .string(surface), "position": .vector([0, 0, 0]), "yaw": .integer(0)]),
             "aim": .object(["kind": .string("placement-center"), "placementId": .string(clone), "offset": .vector([0, 0, 0])])])
@@ -262,7 +268,8 @@ final class LightObjectRequestTests: XCTestCase {
         result["beamFit"] = .object(["placementId": .string(clone), "bounds": .string("display-plane"),
             "maxDistanceMeters": .number(2), "maxPolarAngleRadians": .number(0.2),
             "minImageIncidence": .number(1), "floorSpill": .string("unknown")])
-        XCTAssertEqual(try request.checkedReply(result).apply(to: draft).candidate, expected)
+        var fitted = try request.checkedReply(result).apply(to: draft)
+        XCTAssertEqual(fitted.candidate, expected)
 
         var changedMask = command
         changedMask["settings"]["angularProfile"]["cutoffAngle"] = .number(0.17)
@@ -271,9 +278,31 @@ final class LightObjectRequestTests: XCTestCase {
         var changedReply = result
         changedReply["candidate"]["extensions"][details]["lights"] = .array(rows)
         XCTAssertThrowsError(try request.checkedReply(changedReply))
-        lights[0]["transform"]["position"] = .vector([0, 3.1, 0])
+        lights[0]["transform"]["rotation"] = .vector([0, 0, 0, 2])
         result["candidate"]["lights"] = .array(lights)
         XCTAssertThrowsError(try request.checkedReply(result))
+
+        var moved = fitted.candidate, placements = try XCTUnwrap(moved["placements"].items)
+        placements[0]["transform"]["position"] = .vector([1.5, 1.62, -1.919])
+        moved["placements"] = .array(placements)
+        try fitted.replaceCandidate(moved)
+        let refitCommand = try LightObjectRequest.beamFitCommand(lightId: source, placementId: clone, in: fitted)
+        XCTAssertEqual(refitCommand["light"]["beamAngle"], .number(0.66))
+        XCTAssertEqual(refitCommand["settings"]["trackAim"], aim)
+        let refitRequest = try LightObjectRequest(command: refitCommand, frame: frame(fitted))
+        var refitCandidate = moved
+        lights = try XCTUnwrap(moved["lights"].items)
+        lights[0]["beamAngle"] = .number(0.71)
+        lights[0]["transform"]["position"] = .vector([0, 3.00075, -0.0013])
+        lights[0]["transform"]["rotation"] = .vector([-0.4946986459514279, 0, 0, 0.8690645831546835])
+        refitCandidate["lights"] = .array(lights)
+        var refitReply = reply(refitRequest, candidate: refitCandidate)
+        refitReply["beamFit"] = result["beamFit"]
+        XCTAssertEqual(try refitRequest.checkedReply(refitReply).apply(to: fitted).candidate, refitCandidate)
+        var changedAim = refitReply, alteredDetails = try XCTUnwrap(moved["extensions"][details]["lights"].items)
+        alteredDetails[0]["trackAim"]["aim"]["offset"] = .vector([0.1, 0, 0])
+        changedAim["candidate"]["extensions"][details]["lights"] = .array(alteredDetails)
+        XCTAssertThrowsError(try refitRequest.checkedReply(changedAim))
     }
 
     func testNativeTransportBindsOrdinaryACKWithoutInventingWebCapability() throws {
