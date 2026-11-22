@@ -2523,8 +2523,7 @@ public actor NativeAutomationSession {
                     guard await api.admitsNativeTrackSpotAim else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
                 }
                 let proposal = try LightObjectRequest(command: command, frame: frame)
-                let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
-                let checked = try proposal.checkedReply(reply)
+                let checked = try await api.prepareNativeLightObject(proposal, in: current, saved: saved)
                 preview = .lightObject(checked); candidate = checked.candidate
             } else if operation == "fixture-prepare" || operation == "light-attachment-prepare" {
                 guard await api.admitsNativeFixtureAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
@@ -2582,7 +2581,10 @@ public actor NativeAutomationSession {
                   try value(refreshed) == value(current) else { throw BridgeFailure("EXHIBITION_COMPARISON_STALE") }
             sceneProposals[id] = (preview, etag, operation)
             var response: [String: DocumentValue] = ["proposalId": .string(id), "candidate": candidate]
-            if case .lightObject(let object) = preview { response["lightId"] = .string(object.lightId) }
+            if case .lightObject(let object) = preview {
+                response["lightId"] = .string(object.lightId)
+                response["beamFit"] = object.beamFit?.value
+            }
             if case .supplementalCeilingFill(_, let lightId) = preview { response["lightId"] = .string(lightId) }
             result = .object(response)
         case "pedestal-apply", "light-apply", "pedestal-cancel", "light-cancel", "fixture-apply", "fixture-cancel", "light-attachment-apply", "light-attachment-cancel", "light-object-apply", "light-object-cancel":
@@ -2595,6 +2597,10 @@ public actor NativeAutomationSession {
             } else {
                 if operation == "light-object-apply" {
                     guard await api.admitsNativeLightObjectAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                    if case .lightObject(let object) = preview, object.beamFit != nil,
+                       !(await api.admitsNativeSpotBeamFit) {
+                        throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+                    }
                     if case .lightObject(let object) = preview,
                        NativeTrackSpotAim.requiresCapability(object.command)
                         || NativeTrackSpotAim.binding(in: object.base, lightId: object.lightId) != .null {

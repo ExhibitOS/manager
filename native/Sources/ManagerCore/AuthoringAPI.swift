@@ -45,6 +45,11 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
         nativeFixtureFirstAuthoringProfile == LightObjectAuthoring.fixtureFirstProfile
     }
     public var nativeTrackSpotAimProfile: String? = nil
+    public var nativeSpotBeamFitProfile: String? = nil
+
+    public var advertisesSpotBeamFit: Bool {
+        nativeSpotBeamFitProfile == "saved-head-spot-beam-fit-v1"
+    }
     public var nativeFrameImageFitProposalProfile: String? = nil
     public var nativeDefaultSeatProposalProfile: String? = nil
     public var nativeFurnishingWalkingCollisionProfile: String? = nil
@@ -1246,11 +1251,20 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsCatalog057InitialProductImageRuntime(manifest: String?) -> Bool {
+        #if DEBUG && os(macOS)
+        manifest == "cd821e1710d12ff5342431e537fde7b576426dfc1d3361ea004175ab51bc8899"
+        #else
+        false
+        #endif
+    }
+
     var admitsInitialProductImagePreparation: Bool {
         nativeSession && !authenticationBusy
             && (Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
                 || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256)
-                || Self.supportsR285SettledHayesRuntime(manifest: nativeRuntimeManifestSHA256))
+                || Self.supportsR285SettledHayesRuntime(manifest: nativeRuntimeManifestSHA256)
+                || Self.supportsCatalog057InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256))
             && session?.nativeInitialProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
     }
 
@@ -4684,6 +4698,10 @@ public actor AuthoringAPI {
         admitsNativeLightObjectAuthoringProposal && session?.advertisesFixtureFirstAuthoring == true
     }
 
+    public var admitsNativeSpotBeamFit: Bool {
+        admitsNativeLightObjectAuthoringProposal && session?.advertisesSpotBeamFit == true
+    }
+
     public var admitsNativeTrackSpotAim: Bool {
         admitsNativeLightObjectAuthoringProposal && session?.nativeTrackSpotAimProfile == NativeTrackSpotAim.profile
     }
@@ -4806,6 +4824,7 @@ public actor AuthoringAPI {
         guard admitted,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session, !recordedFloor || session.advertisesRecordedFloorDefault,
+              proposal["fitBeam"] == .null || (operation == "set-light-object" && admitsNativeSpotBeamFit),
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
               operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
               operation != "set-room-ceiling-fill-brightness" || !RoomCeilingFill.usesDefault(proposal)
