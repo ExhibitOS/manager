@@ -476,6 +476,17 @@ struct Current {
     #[serde(default, deserialize_with = "read_furnishing_binding", skip_serializing_if = "Option::is_none")]
     furnishing: Option<Binding>,
 }
+pub(crate) fn catalog52_carried_checkpoint_sha256(value: &Value) -> Result<String> {
+    let invalid = || err(furnishing_lifecycle::ERROR);
+    let binding: Binding = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+    if binding.catalog != 52 || binding.phase != Phase::Clean || binding.admission_kind != Admission::CleanReopen
+        || !binding.restore.as_ref().is_some_and(|restore| restore.carried_provenance.is_some())
+    {
+        return Err(invalid());
+    }
+    binding.sha256()
+}
+
 fn read_furnishing_binding<'de, D: serde::Deserializer<'de>>(input: D) -> std::result::Result<Option<Binding>, D::Error> {
     Binding::deserialize(input).map(Some)
 }

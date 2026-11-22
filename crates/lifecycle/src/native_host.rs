@@ -1133,7 +1133,9 @@ impl Host {
                 UiCommand::NativeBackup { .. } => !recovery,
                 UiCommand::NativeMaintenance { maintenance: Input::CreateKey { .. }, .. } => !recovery,
                 UiCommand::NativeMaintenance { maintenance: Input::CreateRecovery { .. }
-                    | Input::StageRestore { carried_restore: None, .. } | Input::ActivateRestore { .. }, .. } => recovery,
+                    | Input::ActivateRestore { .. }, .. } => recovery,
+                UiCommand::NativeMaintenance { maintenance: Input::StageRestore { carried_restore, .. }, .. } =>
+                    recovery && (carried_restore.is_none() || super::installations::native_restore::catalog52_source_pinned()),
                 _ => false,
             };
             if !permitted { return Err(err("NATIVE_PROTOCOL_INVALID")); }
