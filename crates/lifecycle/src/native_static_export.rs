@@ -53,7 +53,8 @@ pub(crate) fn saved_head_runtime_allowed(manifest: &str) -> bool {
 }
 fn room_indirect_saved_head_runtime_allowed(manifest: &str) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return manifest == crate::native_payload::ROOM_INDIRECT_ORDINARY_TARGET.2;
+    return [crate::native_payload::ROOM_INDIRECT_ORDINARY_TARGET.2,
+        crate::native_payload::ROOM_INDIRECT_PAIRED_DOOR_TARGET.2].contains(&manifest);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = manifest; false }
 }
