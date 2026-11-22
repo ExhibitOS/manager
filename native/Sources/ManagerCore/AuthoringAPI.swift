@@ -73,6 +73,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var roomBaseLightPlacementProfile: String? = nil
     public var roomCeilingFillProfile: String? = nil
     public var nativeRoomCeilingFillDefaultProfile: String? = nil
+    public var nativeRoomCeilingFillRoomLocalProfile: String? = nil
     public var roomSupplementalCeilingFillProfile: String? = nil
 
     public var advertisesFurnishingWalkingCollision: Bool {
@@ -93,6 +94,9 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     }
     public var advertisesRoomCeilingFillDefault: Bool {
         advertisesRoomCeilingFill && nativeRoomCeilingFillDefaultProfile == RoomCeilingFill.defaultProfile
+    }
+    public var advertisesRoomLocalCeilingFill: Bool {
+        advertisesRoomCeilingFillDefault && nativeRoomCeilingFillRoomLocalProfile == RoomCeilingFill.roomLocalProfile
     }
     public var advertisesRoomSupplementalCeilingFill: Bool {
         advertisesRoomCeilingFill && roomSupplementalCeilingFillProfile == RoomCeilingFill.supplementalProfile
@@ -4770,7 +4774,9 @@ public actor AuthoringAPI {
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
               operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
               operation != "set-room-ceiling-fill-brightness" || !RoomCeilingFill.usesDefault(proposal)
-                  || session.advertisesRoomCeilingFillDefault else {
+                  || session.advertisesRoomCeilingFillDefault,
+              operation != "set-room-ceiling-fill-brightness" || proposal["spaceLightingMode"] == .null
+                  || session.advertisesRoomLocalCeilingFill else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),

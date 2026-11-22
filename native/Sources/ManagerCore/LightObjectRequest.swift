@@ -128,7 +128,12 @@ public struct LightObjectRequest: Sendable {
               lights.filter({ Self.same($0["id"].string, id) }).count == 1,
               let original = lights.first(where: { Self.same($0["id"].string, id) }),
               let actualId = original["id"].string else { throw Self.invalid }
-        _ = try Self.rows(frame.draft.candidate, namespace: Self.details)
+        let roomLocalDefault = type == "set-room-ceiling-fill-brightness"
+            && command["spaceLightingMode"] == RoomCeilingFill.roomLocalMode
+            && RoomCeilingFill.usesDefault(command)
+            && command["brightness"].double == RoomCeilingFill.initialBrightness
+        let retainedDetails = try Self.rows(frame.draft.candidate, namespace: Self.details,
+                                            allowRetainedUpperFraming: roomLocalDefault)
         _ = try Self.rows(frame.draft.candidate, namespace: Self.attachments)
         let furnishings = try Self.furnishings(frame.draft.candidate)
         let existingTrackAim = NativeTrackSpotAim.binding(in: frame.draft, lightId: actualId)
@@ -187,11 +192,15 @@ public struct LightObjectRequest: Sendable {
                   let value = command["basePlacement"].string, let placement = RoomBaseLightPlacement(rawValue: value) else { throw Self.invalid }
             _ = try RoomBaseLightIntent.setPlacement(placement, lightId: actualId, in: frame.draft.candidate)
         case "set-room-ceiling-fill-brightness":
-            guard Set(fields.keys).subtracting(["mode"]) == ["type", "lightId", "brightness"],
+            guard Set(fields.keys).subtracting(["mode", "spaceLightingMode"]) == ["type", "lightId", "brightness"],
+                  fields["spaceLightingMode"] == nil || fields["spaceLightingMode"] == RoomCeilingFill.roomLocalMode,
                   fields["mode"] == nil || command["mode"] == .string("default"), let brightness = command["brightness"].double,
                   brightness.isFinite, (0...1).contains(brightness) else { throw Self.invalid }
-            _ = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, usesDefault: RoomCeilingFill.usesDefault(command),
-                                                                lightId: actualId, in: frame.draft.candidate)
+            let candidate = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, usesDefault: RoomCeilingFill.usesDefault(command),
+                roomLocal: command["spaceLightingMode"] == RoomCeilingFill.roomLocalMode, lightId: actualId, in: frame.draft.candidate)
+            if retainedDetails.contains(where: { $0["angularProfile"] != .null }) {
+                guard candidate == SpaceLightingFormBuffer.addingRoomLocal(to: frame.draft.candidate) else { throw Self.invalid }
+            }
         case "set-light-fixture":
             guard Set(fields.keys) == ["type", "lightId", "visual"] else { throw Self.invalid }
             if command["visual"] != .null {
@@ -330,7 +339,7 @@ public struct LightObjectRequest: Sendable {
         case "set-room-ceiling-fill-brightness":
             guard let brightness = command["brightness"].double else { throw Self.changed }
             next = try RoomBaseLightIntent.setCeilingFillBrightness(brightness, usesDefault: RoomCeilingFill.usesDefault(command),
-                                                                   lightId: sourceLightId, in: next)
+                                                                   roomLocal: command["spaceLightingMode"] == RoomCeilingFill.roomLocalMode, lightId: sourceLightId, in: next)
         case "set-light-fixture":
             let visual = command["visual"]
             var settings = try NativeLightFixture.settings(in: frame.draft, lightId: sourceLightId)
@@ -446,7 +455,7 @@ public struct LightObjectRequest: Sendable {
         return abs(q.reduce(0) { $0 + pow($1.double ?? 0, 2) } - 1) <= 1e-6
     }
 
-    private static func rows(_ candidate: DocumentValue, namespace: String) throws -> [DocumentValue] {
+    private static func rows(_ candidate: DocumentValue, namespace: String, allowRetainedUpperFraming: Bool = false) throws -> [DocumentValue] {
         guard case .object(let extensions) = candidate["extensions"] else {
             if candidate["extensions"] == .null { return [] }; throw invalid
         }
@@ -459,10 +468,25 @@ public struct LightObjectRequest: Sendable {
                   candidate["lights"].items?.filter({ same($0["id"].string, id) }).count == 1,
                   case .object(var fields) = row else { throw invalid }
             fields.removeValue(forKey: "lightId")
-            if namespace == details { try checkSettings(.object(fields)) }
-            else { try checkAttachment(.object(fields)) }
+            if namespace == details {
+                // A marker-only change reads saved optics without granting a command permission to write them.
+                if allowRetainedUpperFraming, let profile = fields.removeValue(forKey: "angularProfile") {
+                    try checkRetainedUpperFraming(profile, trackAim: row["trackAim"])
+                }
+                try checkSettings(.object(fields))
+            } else { try checkAttachment(.object(fields)) }
         }
         return rows
+    }
+    private static func checkRetainedUpperFraming(_ value: DocumentValue, trackAim: DocumentValue) throws {
+        guard case .object(let fields) = value, Set(fields.keys) == ["version", "kind", "cutoffAngle", "softnessAngle"],
+              value["version"] == .integer(1), value["kind"] == .string("upper-framing"),
+              trackAim["aim"]["kind"] == .string("placement-center"),
+              let cutoff = value["cutoffAngle"].double, let softness = value["softnessAngle"].double,
+              cutoff.isFinite, softness.isFinite, cutoff > -.pi / 2, cutoff < .pi / 2,
+              softness > 0, cutoff + softness <= .pi / 2 else { throw invalid }
+        let inverse = Float(1 / sin(softness))
+        guard inverse.isFinite, inverse > 0 else { throw invalid }
     }
     private static func writeRows(_ rows: [DocumentValue], namespace: String, in candidate: inout DocumentValue) {
         if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }

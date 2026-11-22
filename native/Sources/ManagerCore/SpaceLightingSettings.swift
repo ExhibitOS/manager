@@ -13,6 +13,25 @@ public enum NativeSpaceLightingPreset: String, CaseIterable, Sendable {
 /// space-lighting admission belong to the shared Platform validator.
 public struct SpaceLightingFormBuffer: Equatable, Sendable {
     public static let namespace = "org.exhibitos.studio/space-lighting"
+    private static let intensityKeys: Set<String> = ["version", "baselineIntensity", "reflectionIntensity"]
+    private var roomLocal = false
+
+    public static func canAddRoomLocal(to candidate: DocumentValue) -> Bool {
+        if case .object(let extensions) = candidate["extensions"] { return extensions[namespace] == nil }
+        return candidate["extensions"] == .null
+    }
+
+    static func addingRoomLocal(to candidate: DocumentValue) -> DocumentValue {
+        guard canAddRoomLocal(to: candidate) else { return candidate }
+        var next = candidate
+        if next["extensions"] == .null { next["extensions"] = .object([:]) }
+        next["extensions"][namespace] = .object([
+            "version": .integer(1), "baselineIntensity": .number(0), "reflectionIntensity": .number(0),
+            "mode": RoomCeilingFill.roomLocalMode
+        ])
+        return next
+    }
+
     public var usesOverride: Bool
     public var baselineIntensity: String
     public var reflectionIntensity: String
@@ -24,12 +43,18 @@ public struct SpaceLightingFormBuffer: Equatable, Sendable {
         guard let value = extensions[Self.namespace] else {
             usesOverride = false; baselineIntensity = ""; reflectionIntensity = ""; return
         }
-        guard case .object(let fields) = value, Set(fields.keys) == Set(["version", "baselineIntensity", "reflectionIntensity"]), value["version"] == .integer(1),
-              let baseline = value["baselineIntensity"].double, let reflection = value["reflectionIntensity"].double else { throw AuthoringFailure("SPACE_LIGHTING_INVALID") }
+        guard case .object(let fields) = value, value["version"] == .integer(1),
+              let baseline = value["baselineIntensity"].double, let reflection = value["reflectionIntensity"].double,
+              baseline.isFinite, reflection.isFinite, (0...1).contains(baseline), (0...1).contains(reflection)
+        else { throw AuthoringFailure("SPACE_LIGHTING_INVALID") }
+        let keys = Set(fields.keys)
+        roomLocal = keys == Self.intensityKeys.union(["mode"]) && fields["mode"] == RoomCeilingFill.roomLocalMode
+            && baseline == 0 && reflection == 0
+        guard roomLocal || keys == Self.intensityKeys else { throw AuthoringFailure("SPACE_LIGHTING_INVALID") }
         usesOverride = true; baselineIntensity = String(baseline); reflectionIntensity = String(reflection)
     }
     public mutating func selectPreset(_ preset: NativeSpaceLightingPreset) {
-        usesOverride = true; baselineIntensity = preset.baseline; reflectionIntensity = preset.reflection
+        roomLocal = false; usesOverride = true; baselineIntensity = preset.baseline; reflectionIntensity = preset.reflection
     }
     public var preset: NativeSpaceLightingPreset? {
         guard usesOverride else { return nil }
@@ -41,7 +66,10 @@ public struct SpaceLightingFormBuffer: Equatable, Sendable {
             guard let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)), value.isFinite, (0...1).contains(value) else { throw AuthoringFailure("SPACE_LIGHTING_FIELDS_INVALID") }
             return .number(value)
         }
-        return try SpaceLightingCommand(settings: .object(["version": .integer(1), "baselineIntensity": number(baselineIntensity), "reflectionIntensity": number(reflectionIntensity)]))
+        let baseline = try number(baselineIntensity), reflection = try number(reflectionIntensity)
+        var fields: [String: DocumentValue] = ["version": .integer(1), "baselineIntensity": baseline, "reflectionIntensity": reflection]
+        if roomLocal, baseline.double == 0, reflection.double == 0 { fields["mode"] = RoomCeilingFill.roomLocalMode }
+        return SpaceLightingCommand(settings: .object(fields))
     }
 }
 

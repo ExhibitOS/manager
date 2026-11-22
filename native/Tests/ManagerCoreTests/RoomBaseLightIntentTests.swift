@@ -111,6 +111,44 @@ final class RoomBaseLightIntentTests: XCTestCase {
         XCTAssertEqual(try RoomBaseLightIntent.setPlacement(.auto, lightId: lightId, in: manual), draft.candidate)
     }
 
+    func testRoomLocalDefaultCanOptInWithoutRetuningAndKeepsExplicitZero() throws {
+        let original = try NativeExhibitionDraft.new(roomBaseLight: true, defaultCeilingFill: true)
+        let local = try NativeExhibitionDraft.new(roomBaseLight: true, roomLocalCeilingFill: true)
+        let namespace = SpaceLightingFormBuffer.namespace, lightId = try id(original)
+        XCTAssertEqual(light(original)["intensity"], light(local)["intensity"])
+        XCTAssertEqual(light(original)["transform"], light(local)["transform"])
+        let switched = try RoomBaseLightIntent.setCeilingFillBrightness(0.5, usesDefault: true, roomLocal: true,
+            lightId: lightId, in: original.candidate)
+        XCTAssertEqual(switched["lights"], original.candidate["lights"])
+        XCTAssertEqual(switched["extensions"][namespace], local.candidate["extensions"][namespace])
+        XCTAssertThrowsError(try RoomBaseLightIntent.setCeilingFillBrightness(0, usesDefault: true, roomLocal: true,
+            lightId: lightId, in: original.candidate))
+        let off = try RoomBaseLightIntent.setCeilingFillBrightness(0, lightId: lightId, in: switched)
+        XCTAssertEqual(off["extensions"][namespace], switched["extensions"][namespace])
+        var explicitZero = original.candidate
+        explicitZero["extensions"][namespace] = .object([
+            "version": .integer(1), "baselineIntensity": .integer(0), "reflectionIntensity": .integer(0)
+        ])
+        XCTAssertEqual(try RoomBaseLightIntent.setCeilingFillBrightness(0.5, usesDefault: true, roomLocal: true,
+            lightId: lightId, in: explicitZero), explicitZero)
+    }
+
+    func testRoomLocalEnsureRequiresExactCandidateAndIsIdempotent() throws {
+        var draft = try NativeExhibitionDraft.new()
+        let room = try XCTUnwrap(draft.rooms.first), roomId = try XCTUnwrap(room["id"].string)
+        let selection = ViewportSelection(kind: "room", id: roomId)
+        let action = RoomBaseLightAction.ensure(roomId: roomId, roomLocalCeilingFill: true)
+        XCTAssertEqual(try action.encodedValue(in: draft, selected: selection)["ceilingFillProfile"],
+                       .string(RoomCeilingFill.roomLocalProfile))
+        let lightId = UUID().uuidString.lowercased()
+        let legacy = try RoomBaseLightAction.appendingLight(to: draft.candidate, room: room,
+            lightId: lightId, defaultCeilingFill: true)
+        XCTAssertThrowsError(try action.apply(legacy, to: &draft, selected: selection))
+        let expected = SpaceLightingFormBuffer.addingRoomLocal(to: legacy)
+        XCTAssertTrue(try action.apply(expected, to: &draft, selected: selection))
+        XCTAssertFalse(try action.apply(expected, to: &draft, selected: selection))
+    }
+
     func testUnsupportedDefaultEnsureDoesNotGenerateAPointLight() throws {
         var draft = try NativeExhibitionDraft.new()
         var candidate = draft.candidate

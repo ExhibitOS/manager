@@ -1272,7 +1272,7 @@ final class ExhibitionModel: ObservableObject {
         return (try? fields.command()) == preview.command
     }
     @Published private(set) var selectedLightId = ""
-    @Published var light: LightFormBuffer? { didSet { spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; lightObjectPreview = nil; lightObjectDisplayDraft = nil; lightObjectPreviewAccessID = nil; lightObjectSharedForm = nil; lightStatus = "" } }
+    @Published var light: LightFormBuffer? { didSet { spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; clearLightObjectPreview(); lightStatus = "" } }
     private var lightBaseline: LightFormBuffer?
     @Published private var lightPreview: LightPreview?
     private var lightPreviewAccessID: UUID?
@@ -1280,6 +1280,23 @@ final class ExhibitionModel: ObservableObject {
     @Published private var lightObjectDisplayDraft: NativeExhibitionDraft?
     private var lightObjectPreviewAccessID: UUID?
     private var lightObjectSharedForm: SharedFurnishingFormBuffer?
+    struct RoomLocalLightPreviewScope: Equatable {
+        let api: ObjectIdentifier
+        let session: AuthoringSession
+        let access: UUID
+        let context: UUID
+        let hostEpoch: String
+        let selection: ViewportSelection?
+        let savedETag: String
+        let documentRevision: UInt64
+        let command: DocumentValue
+
+        static func allowsApply(admitted: Self?, current: Self?, previewAcknowledged: Bool) -> Bool {
+            guard previewAcknowledged, let admitted, let current else { return false }
+            return admitted == current
+        }
+    }
+    private var roomLocalLightPreviewScope: RoomLocalLightPreviewScope?
     @Published var lightMountSurfaceId = ""
     @Published var lightMountAnchorX = "0"
     @Published var lightMountAnchorY = "0"
@@ -1374,6 +1391,7 @@ final class ExhibitionModel: ObservableObject {
     }
     private func clearLightObjectPreview() {
         lightObjectPreview = nil; lightObjectDisplayDraft = nil; lightObjectPreviewAccessID = nil; lightObjectSharedForm = nil
+        roomLocalLightPreviewScope = nil
     }
     var canSelectLight: Bool { canSelectCatalog }
     var canPreviewLight: Bool {
@@ -1391,6 +1409,7 @@ final class ExhibitionModel: ObservableObject {
                 && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !plaqueDirty && lightObjectFurnishingInputMatches
                 && !spaceLightingDirty && !architectureApplying && lightObjectPreviewAccessID == viewportAccessID
                 && preview.base == draft && !editingLocked(acknowledging: display) && lightObjectDisplayAcknowledged(display)
+                && (preview.command["spaceLightingMode"] == .null || lightObjectCommandAvailable(preview.command, applyingPreview: true))
         }
         // The renderer acknowledges the temporary light document while the
         // saved draft and the preview's base remain the source of edit authority.
@@ -1786,7 +1805,7 @@ final class ExhibitionModel: ObservableObject {
         if state?.etag != nil { storedImmutable = true }
         let accessChanged = viewportCredentials?.token != credentials.token || viewportCredentials?.origin != credentials.origin
         viewportCredentials = credentials
-        if accessChanged { pendingCatalogThumbnail = nil; clearWallFinishPreview(); sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; lightObjectPreview = nil; lightObjectDisplayDraft = nil; lightObjectPreviewAccessID = nil; lightObjectSharedForm = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogImageSelections = [:]; catalogPreviewFailures = [] }
+        if accessChanged { pendingCatalogThumbnail = nil; clearWallFinishPreview(); sharedFurnishingCatalogReady = false; sharedFurnishingCatalog = []; sharedFurnishingCatalogAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; entrancePreviewTask?.cancel(); entrancePreviewGeneration = UUID(); entrancePreviewDraft = nil; entrancePreviewBase = nil; entranceHostRecovering = false; entranceRecoveryEpoch = nil; entrancePreviewBusy = false; entrancePreviewStatus = ""; invalidateEntranceThumbnails(); viewportAccessID = UUID(); furnishingCatalogReady = false; furnishingCatalogAccessID = nil; furnishingCatalogStatus = ""; furnishingImage = nil; furnishingImageAttempted = false; surfaceMaterialPreview = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; clearLightObjectPreview(); benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil; catalogTask?.cancel(); catalogEntries = [:]; catalogFailures = []; catalogImages = [:]; catalogImageOrder = []; catalogImageSelections = [:]; catalogPreviewFailures = [] }
         floorPreviewAccessID = nil; floorPreviewContext = nil; floorPreviewHostEpoch = nil
         if accessChanged {
             floorImages = [:]; floorImageAttempts = []
@@ -1800,7 +1819,7 @@ final class ExhibitionModel: ObservableObject {
         // account/origin. Keep text, but never apply a prior binding's preview.
         clearSurfaceMaterialPreview()
         if accessChanged { surfaceMaterialImages = [:]; surfaceMaterialCatalog = nil; surfaceMaterialCatalogAccessID = nil; surfaceMaterialCatalogRequestID = nil; surfaceMaterialCatalogLoading = false; surfaceMaterialCatalogStatus = "" }
-        furnishingPreview = nil; furnishingPreviewAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; lightObjectPreview = nil; lightObjectDisplayDraft = nil; lightObjectPreviewAccessID = nil; lightObjectSharedForm = nil; benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil
+        furnishingPreview = nil; furnishingPreviewAccessID = nil; sharedFurnishingPreview = nil; sharedFurnishingPreviewAccessID = nil; spaceLightingPreview = nil; spaceLightingPreviewAccessID = nil; lightPreview = nil; lightPreviewAccessID = nil; clearLightObjectPreview(); benchPreview = nil; benchPreviewAccessID = nil; plaquePreview = nil; plaquePreviewAccessID = nil
         await work {
             if state == nil {
                 let stored = try await read()
@@ -2542,6 +2561,9 @@ final class ExhibitionModel: ObservableObject {
     var canUseDefaultRoomCeilingFill: Bool {
         canUseRoomCeilingFill && session?.advertisesRoomCeilingFillDefault == true && viewportController.defaultRoomCeilingFillSupported
     }
+    var canUseRoomLocalCeilingFill: Bool {
+        canUseDefaultRoomCeilingFill && session?.advertisesRoomLocalCeilingFill == true && viewportController.roomLocalCeilingFillSupported
+    }
     var canEnsureRoomBaseLight: Bool {
         canUseRoomBaseLight && !roomId.isEmpty && viewportSelection == ViewportSelection(kind: "room", id: roomId)
     }
@@ -2549,10 +2571,11 @@ final class ExhibitionModel: ObservableObject {
                                       action: RoomBaseLightAction, access: UUID) async {
         await work {
             guard canUseRoomBaseLight, !action.requestsCeilingFill || canUseRoomCeilingFill,
-                  !action.requestsDefaultCeilingFill || canUseDefaultRoomCeilingFill, access == viewportAccessID, !pending, !formDirty, !positionDirty,
+                  !action.requestsDefaultCeilingFill || canUseDefaultRoomCeilingFill,
+                  !action.requestsRoomLocalCeilingFill || canUseRoomLocalCeilingFill, access == viewportAccessID, !pending, !formDirty, !positionDirty,
                   !architectureDirty, !architectureApplying, !placingArtwork,
                   draft == base, var value = state, var next = draft else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
-            if case .ensure(let target, _, _) = action, target != roomId { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+            if case .ensure(let target, _, _, _) = action, target != roomId { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             guard try action.apply(candidate, to: &next, selected: viewportSelection) else {
                 notice = action.requestsDefaultCeilingFill ? "이 공간의 기본 조명을 변경하지 않았습니다." : "이 공간에는 이미 기본 조명이 있습니다."
                 return
@@ -3246,8 +3269,11 @@ final class ExhibitionModel: ObservableObject {
         guard canApplyLight else { return }
         if let preview = lightObjectPreview {
             let access = viewportAccessID, context = viewportController.editingContextGeneration
+            let requiresRoomLocalScope = preview.command["spaceLightingMode"] != .null
+            let displaySequence = viewportController.acceptedSequence
             await work {
-                guard lightObjectAuthorityAvailable, lightObjectCommandAvailable(preview.command), lightObjectPreviewAccessID == access, viewportAccessID == access,
+                guard lightObjectAuthorityAvailable, lightObjectCommandAvailable(preview.command, applyingPreview: true),
+                      lightObjectPreviewAccessID == access, viewportAccessID == access,
                       let api, await api.admitsNativeLightObjectAuthoringProposal,
                       let base = draft, preview.base == base, let etag = state?.etag,
                       let display = lightObjectDisplayDraft, !editingLocked(acknowledging: display), lightObjectDisplayAcknowledged(display) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
@@ -3257,9 +3283,12 @@ final class ExhibitionModel: ObservableObject {
                 guard !policy.immutable, self.api === api, viewportAccessID == access, draft == base, state?.etag == etag,
                       viewportController.editingContextGeneration == context, lightObjectDisplayAcknowledged(display),
                       lightObjectAuthorityAvailable, lightObjectPreviewAccessID == access, lightObjectFurnishingInputMatches,
+                      !requiresRoomLocalScope
+                        || (viewportController.acceptedSequence == displaySequence && lightObjectCommandAvailable(preview.command, applyingPreview: true)),
                       let currentPreview = lightObjectPreview, currentPreview.command == preview.command,
                       var value = state else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
                 value.draft = try preview.apply(to: base)
+                if requiresRoomLocalScope { try Task.checkCancellation() }
                 try await persist(value)
                 if preview.command["type"] == .string("remove-light-object") { selectedLightId = ""; viewportSelection = nil }
                 else { selectedLightId = preview.lightId; viewportSelection = ViewportSelection(kind: "light", id: preview.lightId) }
@@ -3290,22 +3319,42 @@ final class ExhibitionModel: ObservableObject {
         await previewLightObject(.object(["type": .string("set-room-base-light-placement"),
             "lightId": .string(selectedLightId), "basePlacement": .string(placement.rawValue)]))
     }
+    var canOptIntoRoomLocalCeilingFill: Bool {
+        canUseRoomLocalCeilingFill && draft.map { SpaceLightingFormBuffer.canAddRoomLocal(to: $0.candidate) } == true
+    }
     func previewRoomCeilingFillBrightness(_ brightness: Double, useDefault: Bool = false) async {
+        let optsIntoRoomLocal = useDefault && canOptIntoRoomLocalCeilingFill
         guard canPreviewLightObjectAction, session?.advertisesRoomCeilingFill == true,
               let light, let savedBrightness = light.ceilingFillBrightness,
-              savedBrightness != brightness || light.ceilingFillUsesDefault != useDefault,
+              savedBrightness != brightness || light.ceilingFillUsesDefault != useDefault || optsIntoRoomLocal,
               !useDefault || (session?.advertisesRoomCeilingFillDefault == true && brightness == RoomCeilingFill.initialBrightness),
               brightness.isFinite, (0...1).contains(brightness) else { return }
         var command: DocumentValue = .object(["type": .string("set-room-ceiling-fill-brightness"),
             "lightId": .string(selectedLightId), "brightness": .number(brightness)])
         if useDefault { command["mode"] = .string("default") }
+        if optsIntoRoomLocal { command["spaceLightingMode"] = RoomCeilingFill.roomLocalMode }
         await previewLightObject(command)
     }
-    private func lightObjectCommandAvailable(_ command: DocumentValue) -> Bool {
+    private func currentRoomLocalLightPreviewScope(_ command: DocumentValue) -> RoomLocalLightPreviewScope? {
+        guard command["spaceLightingMode"] == RoomCeilingFill.roomLocalMode,
+              let api, let session, session.advertisesRoomLocalCeilingFill,
+              let epoch = viewportController.hostEpoch, let state, let etag = state.etag else { return nil }
+        return RoomLocalLightPreviewScope(api: ObjectIdentifier(api), session: session,
+            access: viewportAccessID, context: viewportController.editingContextGeneration,
+            hostEpoch: epoch, selection: viewportSelection, savedETag: etag,
+            documentRevision: state.revision, command: command)
+    }
+    private func lightObjectCommandAvailable(_ command: DocumentValue, applyingPreview: Bool = false) -> Bool {
         let needsAim = NativeTrackSpotAim.requiresCapability(command) || selectedLightUsesTrackAim
-        return (!needsAim || trackSpotAimAvailable)
-            && (command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true)
-            && (command["type"] != .string("set-room-ceiling-fill-brightness") || session?.advertisesRoomCeilingFill == true)
+        guard !needsAim || trackSpotAimAvailable,
+              command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true,
+              command["type"] != .string("set-room-ceiling-fill-brightness") || session?.advertisesRoomCeilingFill == true else { return false }
+        if command["spaceLightingMode"] == .null { return true }
+        if !applyingPreview { return canUseRoomLocalCeilingFill }
+        // The disabled preview frame cannot renegotiate editable room-base capabilities.
+        return RoomLocalLightPreviewScope.allowsApply(admitted: roomLocalLightPreviewScope,
+            current: currentRoomLocalLightPreviewScope(command),
+            previewAcknowledged: lightObjectDisplayDraft.map(lightObjectDisplayAcknowledged) == true)
     }
     func previewLightObjectAction(_ type: String) async {
         guard canPreviewLightObjectAction,
@@ -3358,6 +3407,10 @@ final class ExhibitionModel: ObservableObject {
                   selectedLightId == selected, light == fields, trackSpotAimForm == aimForm, preview.base == base,
                   sharedForm == nil || sharedFurnishing == sharedForm else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
             let display = try preview.apply(to: base)
+            if command["spaceLightingMode"] != .null {
+                guard let scope = currentRoomLocalLightPreviewScope(command) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                roomLocalLightPreviewScope = scope
+            } else { roomLocalLightPreviewScope = nil }
             lightObjectPreview = preview; lightObjectDisplayDraft = display; lightObjectPreviewAccessID = access
             lightObjectSharedForm = sharedForm
             lightStatus = "조명 변경을 미리 보고 있습니다. 적용하거나 입력 취소를 선택하세요. 전시 저장은 별도로 진행합니다."
@@ -3787,7 +3840,8 @@ final class ExhibitionModel: ObservableObject {
             guard !ordinaryBoundedRuntime, !pending, var value = state else { throw AuthoringFailure("EXHIBITION_PENDING") }
             value.draft = try NativeExhibitionDraft.new(roomBaseLight: session?.advertisesRoomBaseLightPlacement == true,
                 ceilingFill: session?.advertisesRoomCeilingFill == true,
-                defaultCeilingFill: session?.advertisesRoomCeilingFillDefault == true)
+                defaultCeilingFill: session?.advertisesRoomCeilingFillDefault == true,
+                roomLocalCeilingFill: session?.advertisesRoomLocalCeilingFill == true)
             value.etag = nil; value.savedEditVersion = nil
             try await persist(value); storedImmutable = false; reusablePublicationId = nil; comparison = nil; syncFields()
             notice = "새 전시를 이 Mac에 보관했습니다. 공간과 작품을 구성한 뒤 전시를 저장하세요."
