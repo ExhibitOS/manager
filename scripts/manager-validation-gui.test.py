@@ -353,6 +353,8 @@ class InternalPublicationTests(unittest.TestCase):
             old_profile.mkdir()
             old_anchor = hashlib.sha256(os.fsencode(old_profile)).hexdigest()
             old_lease = root / f".exhibitos-profile-session-{old_anchor}.lock"
+            target_anchor = hashlib.sha256(os.fsencode(profile)).hexdigest()
+            target_lease = root / f".exhibitos-profile-session-{target_anchor}.lock"
             old_lease.touch(mode=0o600)
             (old_profile / "profile-session.lock").touch(mode=0o600)
             pins["runtimeManifest"] = "e" * 64
@@ -379,8 +381,9 @@ class InternalPublicationTests(unittest.TestCase):
                 self.assertEqual(info["ExhibitOSValidationProfile"], str(bound_profile))
                 self.assertEqual(info["ExhibitOSValidationInputs"], expected_pins)
                 if bundle == app and bound_profile == profile:
-                    with old_lease.open("r") as probe, self.assertRaises(BlockingIOError):
-                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    for lease in (old_lease, target_lease):
+                        with lease.open("r") as probe, self.assertRaises(BlockingIOError):
+                            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     if verification_failed:
                         raise launcher.ValidationError("installed signature check failed")
 
@@ -407,6 +410,10 @@ class InternalPublicationTests(unittest.TestCase):
                 self.assertEqual(app.stat().st_ino, old_inode)
                 self.assertEqual(candidate.stat().st_ino, stage_inode)
                 self.assertFalse(list(root.glob("retained-*.app")))
+                with target_lease.open("r") as competing:
+                    fcntl.flock(competing, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    with self.assertRaisesRegex(launcher.ValidationError, "profile lease is still held"):
+                        publish()
                 verification_failed = False
                 result = publish()
                 self.assertEqual(result["signedStageSha256"], stage_sha)

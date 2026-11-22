@@ -213,13 +213,14 @@ def returned_profile(bundle, profile, pins, receipt_path, receipt_sha=None):
 def profile_leases(profile, allow_empty=False, before_verify=None):
     anchor = hashlib.sha256(os.fsencode(profile)).hexdigest()
     paths = (profile.parent / f".exhibitos-profile-session-{anchor}.lock", profile / "profile-session.lock")
-    if allow_empty and not any(profile.iterdir()) and not os.path.lexists(paths[0]):
-        yield
-        return
+    profile_info = profile.stat()
     with ExitStack() as locks:
         held = []
-        for path in paths:
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+
+        def take(path, create=False):
+            flags = os.O_NOFOLLOW | os.O_NONBLOCK
+            flags |= os.O_RDWR | os.O_CREAT if create else os.O_RDONLY
+            fd = os.open(path, flags, 0o600)
             locks.callback(os.close, fd)
             info = os.fstat(fd)
             require(stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
@@ -228,8 +229,17 @@ def profile_leases(profile, allow_empty=False, before_verify=None):
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
-                raise ValidationError("The fixed profile lease is still held. Wait for its normal return.") from error
+                raise ValidationError("The validation profile lease is still held. Wait for its normal return.") from error
             held.append((path, info))
+
+        take(paths[0], create=allow_empty and not any(profile.iterdir()))
+        current_profile = profile.lstat()
+        require(stat.S_ISDIR(current_profile.st_mode)
+                and (current_profile.st_dev, current_profile.st_ino) == (profile_info.st_dev, profile_info.st_ino),
+                "The held profile directory no longer matches its original identity.")
+        # A new owner must acquire the same stable anchor before initializing.
+        if not allow_empty or any(profile.iterdir()):
+            take(paths[1])
         if before_verify is not None:
             before_verify()
         for path, info in held:
