@@ -73,6 +73,7 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     public var roomBaseLightPlacementProfile: String? = nil
     public var roomCeilingFillProfile: String? = nil
     public var nativeRoomCeilingFillDefaultProfile: String? = nil
+    public var nativeRoomCeilingFillRoomLocalProfile: String? = nil
     public var roomSupplementalCeilingFillProfile: String? = nil
 
     public var advertisesFurnishingWalkingCollision: Bool {
@@ -93,6 +94,9 @@ public struct AuthoringSession: Decodable, Equatable, Sendable {
     }
     public var advertisesRoomCeilingFillDefault: Bool {
         advertisesRoomCeilingFill && nativeRoomCeilingFillDefaultProfile == RoomCeilingFill.defaultProfile
+    }
+    public var advertisesRoomLocalCeilingFill: Bool {
+        advertisesRoomCeilingFillDefault && nativeRoomCeilingFillRoomLocalProfile == RoomCeilingFill.roomLocalProfile
     }
     public var advertisesRoomSupplementalCeilingFill: Bool {
         advertisesRoomCeilingFill && roomSupplementalCeilingFillProfile == RoomCeilingFill.supplementalProfile
@@ -4468,12 +4472,21 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsPrivateRoomIndirectRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "4e89c5f57c1d1efaa302e829b7347f3c569e8ae167ec8412e77f4f3abf72fa9b"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsOrdinarySavedHeadStaticRuntime(manifest: String) -> Bool {
         #if DEBUG
         // Its debug admission is scoped to the ordinary catalogue and thumbnails.
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
             || supportsOrdinaryPartialWallPortal(manifest: manifest)
+            || supportsPrivateRoomIndirectRuntime(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)
@@ -4770,7 +4783,9 @@ public actor AuthoringAPI {
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
               operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
               operation != "set-room-ceiling-fill-brightness" || !RoomCeilingFill.usesDefault(proposal)
-                  || session.advertisesRoomCeilingFillDefault else {
+                  || session.advertisesRoomCeilingFillDefault,
+              operation != "set-room-ceiling-fill-brightness" || proposal["spaceLightingMode"] == .null
+                  || session.advertisesRoomLocalCeilingFill else {
             throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
         }
         guard (1...Int(Int32.max)).contains(studioRevision), etag.hasPrefix("\"studio-r\(studioRevision)-"),

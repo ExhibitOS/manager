@@ -905,6 +905,20 @@ pub(crate) const PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const ROOM_INDIRECT_ORDINARY_TARGET: RuntimeTuple = (
+    "4c965908747d81d5a3fd01623bf4bc0daac770bb",
+    "4109ae9fc095ed921f5415cec430655c638ecde4de6ee10870d93d2e58a35237",
+    "4e89c5f57c1d1efaa302e829b7347f3c569e8ae167ec8412e77f4f3abf72fa9b",
+);
+
+fn room_indirect_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    return tuple == ROOM_INDIRECT_ORDINARY_TARGET;
+    #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+    { let _ = tuple; false }
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     RECTANGLE_FIXED64_TARGET,
     FIXED64_PUBLICATION_REPAIR_TARGET,
@@ -914,6 +928,7 @@ const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     BENCH_BASECOLOR_PREPARATION_TARGET,
     ROOM_CEILING_FILL_TARGET,
     PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET,
+    ROOM_INDIRECT_ORDINARY_TARGET,
 ];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ROOM_CEILING_FILL_TARGET: RuntimeTuple = (
@@ -1041,7 +1056,8 @@ pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)
     if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET,
         ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET,
         R285_ROOM_FILL_EXIT_TARGET, R285_SUPPLEMENTAL_FILL_TARGET, R285_INITIAL_PRODUCT_IMAGE_TARGET,
-        R285_CLOSING_ARTICULATION_TARGET, PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET].contains(&tuple) { return true; }
+        R285_CLOSING_ARTICULATION_TARGET, PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET,
+        ROOM_INDIRECT_ORDINARY_TARGET].contains(&tuple) { return true; }
     if r285_hayes_preopen_terminal_host_matches(tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
@@ -3266,6 +3282,47 @@ pub(crate) mod normal_oex_release_declaration_tests {
         invalid.manifest.producer_sha256 = "f".repeat(64);
         assert!(!invalid.fresh_catalog52_constructor());
         assert!(!combined_thumbnail_ordinary_host_matches((target.0, &invalid.manifest.producer_sha256, target.2)));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires the exact sealed room-indirect runtime; read-only payload openers"]
+    fn room_indirect_payload_admits_only_exact_ordinary_fresh_and_reopen_modes() {
+        let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_ROOM_INDIRECT_RUNTIME").unwrap());
+        let target = ROOM_INDIRECT_ORDINARY_TARGET;
+        let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let fresh = Payload::open_fresh_workspace_v7_validation(&root).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
+        let ledger = fresh.workspace_furnishing_ledger(catalog).unwrap();
+        assert_eq!(ordinary.context().manifest_sha256, target.2);
+        assert_eq!(ordinary.workspace_furnishing_catalog().unwrap(), Some(catalog));
+        assert_eq!(ordinary.workspace_furnishing_ledger(catalog).unwrap(), ledger);
+        assert_eq!(ledger.lines().count(), 47);
+        assert_eq!(digest(ledger.as_bytes()), "7f824bace4e88291111abe0032644712f08718f85573d21e6fb271098e7871e5");
+        assert!(fresh.fresh_catalog52_constructor());
+        assert!(fresh.workspace_import_version().is_none());
+        assert!(!ordinary.fresh_catalog52_constructor());
+        assert!(!ordinary.current_rail_payload());
+        assert!(!workspace_v5_validation_matches(&ordinary.manifest, target.2, true));
+        assert!(!saved_workspace_transition_target(target.2));
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
+        assert!(ordinary.static_export_resources(true).is_ok());
+        assert!(ordinary.static_detail_export_resources(true).is_err());
+        assert!(ordinary.static_room_indirect_export_resources().is_ok());
+        assert!(Payload::classify_workspace_import_validation(ordinary, WorkspaceImport::V7, true).is_err());
+
+        let retained_official_manifest = "3b35d0d81021b7118e7092c4406976307a0ec1d0ff0f58310a06b745f078dce1";
+        for denied in [
+            (target.0, target.1, retained_official_manifest),
+            (target.0, PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET.1, target.2),
+            (PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET.0, target.1, target.2),
+        ] {
+            assert!(!room_indirect_ordinary_host_matches(denied));
+            assert!(!combined_thumbnail_fresh_host_matches(denied));
+        }
+        let mut invalid = fresh;
+        invalid.manifest.files.retain(|row| row.path != CURRENT_IMAGE_THUMBNAIL_SCHEMA.0);
+        assert!(invalid.workspace_furnishing_ledger(catalog).is_err());
     }
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -8878,6 +8935,26 @@ impl Payload {
             self.root.join("platform/apps/web/dist-static"),
         ))
     }
+    pub(crate) fn static_room_indirect_export_resources(&self) -> Result<(PathBuf, PathBuf)> {
+        let inputs = [
+            ("platform/scripts/native-static-export.mjs", "9a1865570f602c5bfe8f63a8c7ee3ea5da7c160fcde461e94998568e3a6671fb"),
+            ("platform/scripts/export-static-publication.mjs", "54b0e92dd901f0a9de83688896e898a95e312a349a7f8b5e8624b2d009c027c6"),
+            ("platform/scripts/prepare-room-indirect.mjs", "4fc4e6597856d1ee761fbdac8818116a68b9d81a48db3be27aab617206bfae20"),
+            ("platform/scripts/room-indirect-irradiance.mjs", "5d5b8129b6077d069faa8150ccee3e03502ca488d9b0fc381dd49fc0e7cb10e6"),
+        ];
+        let tuple = (self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str());
+        if !room_indirect_ordinary_host_matches(tuple)
+            || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CombinedThumbnails052)
+            || !inputs.into_iter().all(|(path, sha)| self.manifest.files.iter().any(|file|
+            file.path == path && file.link.is_none() && file.executable == Some(false)
+                && file.sha256.as_deref() == Some(sha)))
+        {
+            return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
+        }
+        self.recheck()?;
+        self.static_export_resources(false)
+    }
+
     pub(crate) fn static_publication_reader(&self) -> Result<PathBuf> {
         let name = "platform/scripts/local-static-publication-source.mjs";
         if !self.manifest.files.iter().any(|file| file.path == name && file.link.is_none()

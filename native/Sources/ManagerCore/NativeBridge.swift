@@ -322,11 +322,13 @@ public actor NativeBridge {
                               nativeOriginalDetail: nativeOriginalDetail, outputParentIdentity: outputParentIdentity, savedHead: nil)
     }
     func startStaticExport(_ context: Context, publicationId: String, output: URL, privateEditor: Bool, nativeOriginalDetail: Bool,
-                           outputParentIdentity: (dev_t, ino_t)?, savedHead: DocumentValue?) throws -> NativeStaticExportStatus {
+                           outputParentIdentity: (dev_t, ino_t)?, savedHead: DocumentValue?,
+                           roomIndirect: NativeRoomIndirectRecipe? = nil) throws -> NativeStaticExportStatus {
         guard output.isFileURL else { throw BridgeFailure("NATIVE_STATIC_OUTPUT_INVALID") }
         var export: [String: Any] = ["publicationId": publicationId, "output": output.path]
         if privateEditor { export["privateEditor"] = true }
         if nativeOriginalDetail { export["detailMode"] = "native-detail-v1" }
+        if let roomIndirect { export["roomIndirect"] = roomIndirect.rawValue }
         if let (device, inode) = outputParentIdentity {
             export["outputParentIdentity"] = ["device": UInt64(bitPattern: Int64(device)), "inode": UInt64(inode)]
         }

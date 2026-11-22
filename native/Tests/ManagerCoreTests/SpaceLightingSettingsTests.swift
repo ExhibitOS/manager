@@ -59,6 +59,26 @@ final class SpaceLightingSettingsTests: XCTestCase {
         XCTAssertNil(extensions[namespace], "Removal is absence, never a null-valued extension")
         XCTAssertEqual(candidate["extensions"]["future-extension"], base.candidate["extensions"]["future-extension"])
     }
+    func testRoomLocalMarkerRoundTripsOnlyWithExactZeroSettings() throws {
+        var draft = try fixture()
+        var candidate = SpaceLightingFormBuffer.addingRoomLocal(to: draft.candidate)
+        try draft.replaceCandidate(candidate)
+        var form = try SpaceLightingFormBuffer(draft: draft)
+        let settings = candidate["extensions"][namespace]
+        XCTAssertEqual(settings["mode"], .string("room-local"))
+        XCTAssertEqual(try form.command().proposedCandidate(in: draft), candidate)
+        form.selectPreset(.calm)
+        XCTAssertEqual(try form.command().settings["mode"], .null)
+        let invalidFields: [(String, DocumentValue)] = [("mode", .string("unknown")),
+            ("mode", .null), ("baselineIntensity", .number(0.1)), ("extra", .bool(true))]
+        for (key, value) in invalidFields {
+            candidate["extensions"][namespace] = settings
+            candidate["extensions"][namespace][key] = value
+            try draft.replaceCandidate(candidate)
+            XCTAssertThrowsError(try SpaceLightingFormBuffer(draft: draft))
+        }
+    }
+
     func testSharedReplyRejectsUnrelatedChangesAndChangedBase() throws {
         let base = try fixture(), command = try explicit(base)
         var candidate = try command.proposedCandidate(in: base); candidate["title"] = .string("tampered")
