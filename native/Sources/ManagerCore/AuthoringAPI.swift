@@ -4472,12 +4472,21 @@ public actor AuthoringAPI {
         #endif
     }
 
+    nonisolated static func supportsPrivateRoomIndirectRuntime(manifest: String) -> Bool {
+        #if DEBUG
+        manifest == "4e89c5f57c1d1efaa302e829b7347f3c569e8ae167ec8412e77f4f3abf72fa9b"
+        #else
+        false
+        #endif
+    }
+
     nonisolated static func supportsOrdinarySavedHeadStaticRuntime(manifest: String) -> Bool {
         #if DEBUG
         // Its debug admission is scoped to the ordinary catalogue and thumbnails.
         guard manifest != "25e23515bfb51b634c34410fd3806d8e0d94443cad3c8baf57fda3335a7e8aae" else { return false }
         return manifest == workspaceInfoStandPreparationManifestPin
             || supportsOrdinaryPartialWallPortal(manifest: manifest)
+            || supportsPrivateRoomIndirectRuntime(manifest: manifest)
             || supportsR285PlainBaseboardRuntime(manifest: manifest)
             || supportsBenchBaseColorPreparationRuntime(manifest: manifest)
             || supportsSelectedArtworkThumbnailRuntime(manifest: manifest)

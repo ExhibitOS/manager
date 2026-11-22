@@ -155,6 +155,7 @@ public actor NativeAutomationSession {
                     || AuthoringAPI.supportsInfoStandPreparationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsSavedHeadAuthoringRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryPartialWallPortal(manifest: $0.manifestSHA256)
+                    || AuthoringAPI.supportsPrivateRoomIndirectRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsPreReadyPreservationReadback(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsOrdinaryNativePublicationRuntime(manifest: $0.manifestSHA256)
                     || AuthoringAPI.supportsDefaultSeatRuntime(manifest: $0.manifestSHA256)
@@ -1187,6 +1188,9 @@ public actor NativeAutomationSession {
         try checkedRevision(request, comparison)
         let command = request["command"]
         let roomIndirect = try NativeSavedHeadExportComparison.roomIndirect(command, protecting: protected)
+        guard roomIndirect == nil || AuthoringAPI.supportsPrivateRoomIndirectRuntime(manifest: manifest) else {
+            throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE")
+        }
         guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag,
               command["etag"] == .string(etag), let path = request["outputPath"].string else {
             throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
