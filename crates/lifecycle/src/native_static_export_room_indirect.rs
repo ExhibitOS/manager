@@ -4,7 +4,8 @@ use super::{Manifest, ManifestFile, Result, bad, digest, hash_valid};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-const MARKER: &str = "exhibitos-static-room-indirect";
+const META_NAME: &str = "exhibitos-static-room-indirect";
+const META_PREFIX: &str = "meta name=\"exhibitos-static-room-indirect\" content=\"";
 const FORMAT: &str = "exhibitos-static-room-indirect-v1";
 const RECIPE: &str = "room-diffuse-one-bounce-rgba8-v1";
 const RECIPE_SHA256: &str = "598b2c4a92b70a031760a7ca950067de64afaacd9bf84ed91315a42d97a8b03a";
@@ -127,8 +128,9 @@ pub(super) fn verify(
     index: &[u8],
     mut read: impl FnMut(&str) -> Result<Vec<u8>>,
 ) -> Result<Option<IndirectBake>> {
+    let descriptor = descriptor_pin(html)?;
     if mode.is_none() {
-        return if html.contains(MARKER) {
+        return if descriptor.is_some() {
             Err(bad())
         } else {
             Ok(None)
@@ -137,20 +139,9 @@ pub(super) fn verify(
     if private_editor {
         return Err(bad());
     }
-    let mut markers = html.match_indices(MARKER);
-    let Some((at, _)) = markers.next() else {
+    let Some(descriptor_sha256) = descriptor else {
         return Ok(Some(IndirectBake::LiveFallback));
     };
-    let (descriptor_sha256, _) = html[at..]
-        .strip_prefix("exhibitos-static-room-indirect\" content=\"")
-        .and_then(|tail| tail.split_once("\">"))
-        .ok_or_else(bad)?;
-    if !hash_valid(descriptor_sha256)
-        || markers.next().is_some()
-        || !html[..at].ends_with("<meta name=\"")
-    {
-        return Err(bad());
-    }
 
     // The caller verifies each manifest entry's bytes. These reads additionally
     // bind the receipt's references to that exact manifest and body.
@@ -263,6 +254,94 @@ pub(super) fn verify(
     }))
 }
 
+// The tracked static shell emits an explicit head and one canonical meta tag.
+// Only inspect named meta elements there; title and cover copy are display text.
+fn descriptor_pin(html: &str) -> Result<Option<&str>> {
+    let Some((mut head, _)) = html
+        .split_once("<head>")
+        .and_then(|(_, tail)| tail.split_once("</head>"))
+    else {
+        return Ok(None);
+    };
+    let mut pin = None;
+    while let Some((_, after)) = head.split_once('<') {
+        if let Some(comment) = after.strip_prefix("!--") {
+            head = comment.split_once("-->").map_or("", |(_, rest)| rest);
+            continue;
+        }
+        head = after;
+        let element = after.split('<').next().unwrap_or_default();
+        if let Some(name) = ["title", "script", "style"]
+            .into_iter()
+            .find(|name| starts_with_tag(element, name))
+        {
+            head = after
+                .split_once(&format!("</{name}>"))
+                .map_or("", |(_, rest)| rest);
+            continue;
+        }
+        if !is_indirect_meta(element) {
+            continue;
+        }
+        let (digest, _) = element
+            .strip_prefix(META_PREFIX)
+            .and_then(|tail| tail.split_once("\">"))
+            .ok_or_else(bad)?;
+        if !hash_valid(digest) || pin.replace(digest).is_some() {
+            return Err(bad());
+        }
+    }
+    Ok(pin)
+}
+
+fn starts_with_tag(element: &str, name: &str) -> bool {
+    element
+        .get(..name.len())
+        .is_some_and(|tag| tag.eq_ignore_ascii_case(name))
+        && element
+            .as_bytes()
+            .get(name.len())
+            .is_some_and(|byte| byte.is_ascii_whitespace() || matches!(byte, b'>' | b'/'))
+}
+
+fn is_indirect_meta(element: &str) -> bool {
+    if !starts_with_tag(element, "meta") {
+        return false;
+    }
+    let mut attrs = &element[4..];
+    loop {
+        attrs = attrs.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        let end = attrs
+            .find(|c: char| c.is_ascii_whitespace() || matches!(c, '=' | '>' | '/'))
+            .unwrap_or(attrs.len());
+        if end == 0 {
+            return false;
+        }
+        let name = &attrs[..end];
+        attrs = attrs[end..].trim_start_matches(|c: char| c.is_ascii_whitespace());
+        let Some(value) = attrs.strip_prefix('=') else {
+            continue;
+        };
+        let value = value.trim_start_matches(|c: char| c.is_ascii_whitespace());
+        let (value, rest) = match value.as_bytes().first() {
+            Some(b'\'' | b'"') => {
+                let quote = value.as_bytes()[0] as char;
+                value[1..].split_once(quote).unwrap_or((&value[1..], ""))
+            }
+            _ => {
+                let end = value
+                    .find(|c: char| c.is_ascii_whitespace() || c == '>')
+                    .unwrap_or(value.len());
+                value.split_at(end)
+            }
+        };
+        if name.eq_ignore_ascii_case("name") && value == META_NAME {
+            return true;
+        }
+        attrs = rest;
+    }
+}
+
 fn chart_size_matches(pixels: u64, metres: f64) -> bool {
     (1..=64).contains(&pixels) && (metres / 0.25).ceil() == pixels as f64
 }
@@ -333,46 +412,49 @@ mod tests {
             "recipe": {"id": RECIPE, "sha256": RECIPE_SHA256},
             "rooms": [{"roomId": "room", "charts": charts}]
         });
-        let attempt =
-            |descriptor: &serde_json::Value, html_suffix: &str, tex: &[u8], private_editor| {
-                let descriptor = serde_json::to_vec(descriptor).unwrap();
-                let descriptor_sha = digest(&descriptor);
-                let files = BTreeMap::from([
-                    (body_path.clone(), body.clone()),
-                    (tile_path.clone(), tile.clone()),
-                    (format!("data/{descriptor_sha}.json"), descriptor.clone()),
-                ]);
-                let manifest = Manifest {
-                    format: "exhibitos-static-publication-v1".into(),
-                    publication_id: publication_id.into(),
-                    revision_sha256: revision_sha.clone(),
-                    index_sha256: index_sha.clone(),
-                    files: files
-                        .iter()
-                        .map(|(path, bytes)| ManifestFile {
-                            path: path.clone(),
-                            bytes: bytes.len() as u64,
-                            sha256: digest(bytes),
-                        })
-                        .collect(),
-                };
-                let html =
-                    format!("<meta name=\"{MARKER}\" content=\"{descriptor_sha}\">{html_suffix}");
-                verify(
-                    Some(RoomIndirect::DiffuseOneBounceRgba8V1),
-                    private_editor,
-                    &manifest,
-                    &html,
-                    &index,
-                    |name| {
-                        if name == tile_path {
-                            Ok(tex.to_vec())
-                        } else {
-                            files.get(name).cloned().ok_or_else(bad)
-                        }
-                    },
-                )
+        let attempt = |descriptor: &serde_json::Value,
+                       html_suffix: &str,
+                       tex: &[u8],
+                       private_editor| {
+            let descriptor = serde_json::to_vec(descriptor).unwrap();
+            let descriptor_sha = digest(&descriptor);
+            let files = BTreeMap::from([
+                (body_path.clone(), body.clone()),
+                (tile_path.clone(), tile.clone()),
+                (format!("data/{descriptor_sha}.json"), descriptor.clone()),
+            ]);
+            let manifest = Manifest {
+                format: "exhibitos-static-publication-v1".into(),
+                publication_id: publication_id.into(),
+                revision_sha256: revision_sha.clone(),
+                index_sha256: index_sha.clone(),
+                files: files
+                    .iter()
+                    .map(|(path, bytes)| ManifestFile {
+                        path: path.clone(),
+                        bytes: bytes.len() as u64,
+                        sha256: digest(bytes),
+                    })
+                    .collect(),
             };
+            let html = format!(
+                "<head><title>{META_NAME}</title><{META_PREFIX}{descriptor_sha}\">{html_suffix}</head><body>{META_NAME}</body>"
+            );
+            verify(
+                Some(RoomIndirect::DiffuseOneBounceRgba8V1),
+                private_editor,
+                &manifest,
+                &html,
+                &index,
+                |name| {
+                    if name == tile_path {
+                        Ok(tex.to_vec())
+                    } else {
+                        files.get(name).cloned().ok_or_else(bad)
+                    }
+                },
+            )
+        };
         let baked = attempt(&descriptor, "", &tile, false).unwrap().unwrap();
         assert_eq!(
             baked,
@@ -383,7 +465,15 @@ mod tests {
             }
         );
         assert_eq!(serde_json::to_value(baked).unwrap()["textureBytes"], 24);
-        assert!(attempt(&descriptor, MARKER, &tile, false).is_err());
+        assert!(
+            attempt(
+                &descriptor,
+                "<meta name=\"exhibitos-static-room-indirect\">",
+                &tile,
+                false
+            )
+            .is_err()
+        );
         assert!(attempt(&descriptor, "", &[1, 2, 3, 0], false).is_err());
         assert!(attempt(&descriptor, "", &tile, true).is_err());
         descriptor["rooms"][0]["charts"][0]["surfaceId"] = json!("unowned-surface");
@@ -409,6 +499,34 @@ mod tests {
             Some(IndirectBake::LiveFallback)
         );
         assert!(verify(mode, true, &manifest, "", b"", read).is_err());
-        assert!(verify(None, false, &manifest, MARKER, b"", read).is_err());
+        assert_eq!(
+            verify(
+                None,
+                false,
+                &manifest,
+                "exhibitos-static-room-indirect",
+                b"",
+                read
+            )
+            .unwrap(),
+            None
+        );
+        let text = "<head><title>exhibitos-static-room-indirect</title><meta name=\"description\" content=\"exhibitos-static-room-indirect\"><!-- <meta name=\"exhibitos-static-room-indirect\"> --></head><body>&lt;meta name=&quot;exhibitos-static-room-indirect&quot;&gt;</body>";
+        assert_eq!(
+            verify(None, false, &manifest, text, b"", read).unwrap(),
+            None
+        );
+        assert_eq!(
+            verify(None, true, &manifest, text, b"", read).unwrap(),
+            None
+        );
+        assert_eq!(
+            verify(mode, false, &manifest, text, b"", read).unwrap(),
+            Some(IndirectBake::LiveFallback)
+        );
+        let bad_meta =
+            "<head><META content='wrong' name = 'exhibitos-static-room-indirect'></head>";
+        assert!(verify(None, false, &manifest, bad_meta, b"", read).is_err());
+        assert!(verify(mode, false, &manifest, bad_meta, b"", read).is_err());
     }
 }
