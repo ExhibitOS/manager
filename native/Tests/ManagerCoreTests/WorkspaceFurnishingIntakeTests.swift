@@ -658,6 +658,23 @@ final class WorkspaceFurnishingIntakeTests: XCTestCase {
         XCTAssertEqual(linked.candidate, expected)
         XCTAssertEqual(linked.document["editVersion"].integer, (placed.document["editVersion"].integer ?? 0) + 1)
         XCTAssertNil(try attachment.applying(furnishing, to: linked))
+
+        let facing = try WorkspaceBenchModelForward(value: .object([
+            "benchId": .string(host.id), "placementId": .string(placementId),
+            "furnishingId": .string(furnishing.id), "furnishingVersion": .integer(1),
+            "modelSha256": .string(modelSHA256), "expectedModelForward": .string("negative-z"),
+            "modelForward": .string("positive-z"),
+        ]))
+        var authored = try XCTUnwrap(facing.applying(to: linked))
+        var authoredCandidate = authored.candidate
+        authoredCandidate["extensions"]["org.exhibitos.studio/furnishing-walking-collision"] = .object([
+            "version": .integer(1), "overrides": .array([
+                .object(["kind": .string("workspace"), "id": .string(placementId), "enabled": .bool(false)]),
+            ]),
+        ])
+        try authored.replaceCandidate(authoredCandidate)
+        XCTAssertNil(try attachment.applying(furnishing, to: authored))
+
         XCTAssertThrowsError(try attachment.applying(furnishing, to: placing(yaw: 0)))
         XCTAssertThrowsError(try attachment.applying(furnishing, to: placing(scale: 0.8)))
         XCTAssertThrowsError(try command(depth: 0.68).applying(furnishing, to: placed))

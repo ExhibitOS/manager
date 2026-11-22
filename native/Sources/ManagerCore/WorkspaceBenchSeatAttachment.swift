@@ -47,14 +47,16 @@ public struct WorkspaceBenchSeatAttachment: Sendable {
         let selected = selectedIndex.map { existing[$0] }
         let attached = existing.filter { $0.workspaceVisual?.placementId == visual.placementId }
         if let selectedIndex, let selected, selected.kind == .backed {
+            let linkedVisual = selected.workspaceVisual
+            let sameLink = linkedVisual?.placementId == visual.placementId && linkedVisual?.modelSha256 == visual.modelSha256
             guard selected.id == benchId, kind == .bench, viewpoint == nil, viewpointId == selected.viewpointId,
                   width == selected.width, depth == selected.depth, height == selected.height,
                   placement.roomId == selected.roomId, placement.position == selected.position, placement.yaw == selected.yaw,
-                  selected.workspaceVisual == nil ? attached.isEmpty : selected.workspaceVisual == visual && attached == [selected],
+                  linkedVisual == nil ? attached.isEmpty : sameLink && attached == [selected],
                   var rows = draft.candidate["extensions"][BenchSettings.namespace]["benches"].items else {
                 throw AuthoringFailure("BENCH_SELECTION_CHANGED")
             }
-            if selected.workspaceVisual == visual { return nil }
+            if linkedVisual != nil { return nil }
             rows[selectedIndex]["workspaceVisual"] = visual.value
             var candidate = draft.candidate
             candidate["extensions"][BenchSettings.namespace]["benches"] = .array(rows)
