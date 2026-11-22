@@ -84,6 +84,28 @@ public struct LightObjectRequest: Sendable {
             workspaceId: document.workspaceId, baseETag: etag)
     }
 
+    /// Request a fitted width using the saved light and its existing aim.
+    public static func beamFitCommand(lightId: String, placementId: String, in draft: NativeExhibitionDraft) throws -> DocumentValue {
+        guard case .object(var light) = draft.candidate["lights"].items?
+            .first(where: { same($0["id"].string, lightId) }) ?? .null,
+              let id = light.removeValue(forKey: "id") else { throw invalid }
+        let settings = try beamFitSettings(lightId: lightId, in: draft)
+        let fit: DocumentValue = .object(["placementId": .string(placementId)])
+        try checkFit(fit, light: .object(light), settings: settings, draft: draft)
+        return .object(["type": .string("set-light-object"), "lightId": id, "light": .object(light),
+                        "settings": settings, "fitBeam": fit])
+    }
+
+    private static func beamFitSettings(lightId: String, in draft: NativeExhibitionDraft) throws -> DocumentValue {
+        let rows = try rows(draft.candidate, namespace: details, allowRetainedUpperFraming: true)
+        guard let prior = rows.first(where: { same($0["lightId"].string, lightId) }) else {
+            return .object(["fixture": .string("none")])
+        }
+        guard case .object(var settings) = prior else { throw invalid }
+        settings.removeValue(forKey: "lightId")
+        return .object(settings)
+    }
+
     /// Construct the coupled command with the existing admitted ceiling-mount
     /// adapter's transform. Detach is explicit and does not move or retune light.
     public static func mountCommand(lightId: String, attachment: DocumentValue, frame: ViewportFrame) throws -> DocumentValue {
@@ -174,8 +196,9 @@ public struct LightObjectRequest: Sendable {
             && command["spaceLightingMode"] == RoomCeilingFill.roomLocalMode
             && RoomCeilingFill.usesDefault(command)
             && command["brightness"].double == RoomCeilingFill.initialBrightness
+        let fitsBeam = type == "set-light-object" && fields["fitBeam"] != nil
         let retainedDetails = try Self.rows(frame.draft.candidate, namespace: Self.details,
-                                            allowRetainedUpperFraming: roomLocalDefault)
+                                            allowRetainedUpperFraming: roomLocalDefault || fitsBeam)
         _ = try Self.rows(frame.draft.candidate, namespace: Self.attachments)
         let furnishings = try Self.furnishings(frame.draft.candidate)
         let existingTrackAim = NativeTrackSpotAim.binding(in: frame.draft, lightId: actualId)
@@ -217,11 +240,18 @@ public struct LightObjectRequest: Sendable {
                     throw Self.invalid
                 }
             }
-            try Self.checkSettings(command["settings"])
+            if fitsBeam {
+                guard case .object(var savedFields) = original else { throw Self.invalid }
+                savedFields.removeValue(forKey: "id")
+                guard fields["attachment"] == nil, command["light"] == .object(savedFields),
+                      try command["settings"] == Self.beamFitSettings(lightId: actualId, in: frame.draft) else { throw Self.invalid }
+            } else {
+                try Self.checkSettings(command["settings"])
+            }
             if command["settings"]["trackAim"] != .null {
                 guard existingTrackAim != .null, command["light"]["type"] == .string("spot") else { throw Self.invalid }
             }
-            let old = try Self.rows(frame.draft.candidate, namespace: Self.details).first { Self.same($0["lightId"].string, actualId) }
+            let old = retainedDetails.first { Self.same($0["lightId"].string, actualId) }
             if let purpose = settings["purpose"] { guard purpose == (old?["purpose"] ?? .null) else { throw Self.invalid } }
             if let placement = settings["basePlacement"] { guard placement == (old?["basePlacement"] ?? .null) else { throw Self.invalid } }
             if let fill = settings["ceilingFill"], fill != old?["ceilingFill"] { throw Self.invalid }
@@ -395,6 +425,7 @@ public struct LightObjectRequest: Sendable {
                 let solved = reply["lights"].items?.filter { $0["id"] == original["id"] } ?? []
                 guard solved.count == 1, let width = solved[0]["beamAngle"].double,
                       width > 0, width <= .pi / 2 else { throw Self.changed }
+                guard RoomBaseLightIntent.samePose(row["transform"], original["transform"]) else { throw Self.changed }
                 row["beamAngle"] = solved[0]["beamAngle"]
             }
             lights[index] = row; next["lights"] = .array(lights)
@@ -402,7 +433,8 @@ public struct LightObjectRequest: Sendable {
             if case .object(let fields) = command { mounted = fields["attachment"].map { $0 != .null } ?? false } else { mounted = false }
             var settings = try RoomBaseLightIntent.settingsForEdit(command["settings"], light: row, original: original, base: base, mounted: mounted)
             settings["lightId"] = original["id"]
-            try Self.upsert(settings, id: sourceLightId, namespace: Self.details, in: &next)
+            try Self.upsert(settings, id: sourceLightId, namespace: Self.details, in: &next,
+                            allowRetainedUpperFraming: command["fitBeam"] != .null)
             if case .object(let fields) = command, let attachment = fields["attachment"] {
                 if attachment == .null { try Self.removeRow(sourceLightId, namespace: Self.attachments, in: &next) }
                 else { var row = attachment; row["lightId"] = original["id"]; try Self.upsert(row, id: sourceLightId, namespace: Self.attachments, in: &next) }
@@ -543,7 +575,7 @@ public struct LightObjectRequest: Sendable {
                   case .object(var fields) = row else { throw invalid }
             fields.removeValue(forKey: "lightId")
             if namespace == details {
-                // A marker-only change reads saved optics without granting a command permission to write them.
+                // These operations may retain the validated saved mask byte for byte.
                 if allowRetainedUpperFraming, let profile = fields.removeValue(forKey: "angularProfile") {
                     try checkRetainedUpperFraming(profile, trackAim: row["trackAim"])
                 }
@@ -566,8 +598,9 @@ public struct LightObjectRequest: Sendable {
         if candidate["extensions"] == .null { candidate["extensions"] = .object([:]) }
         candidate["extensions"][namespace] = .object(["version": .integer(1), "lights": .array(rows)])
     }
-    private static func upsert(_ row: DocumentValue, id: String, namespace: String, in candidate: inout DocumentValue) throws {
-        var rows = try Self.rows(candidate, namespace: namespace)
+    private static func upsert(_ row: DocumentValue, id: String, namespace: String, in candidate: inout DocumentValue,
+                               allowRetainedUpperFraming: Bool = false) throws {
+        var rows = try Self.rows(candidate, namespace: namespace, allowRetainedUpperFraming: allowRetainedUpperFraming)
         if let index = rows.firstIndex(where: { same($0["lightId"].string, id) }) { rows[index] = row }
         else { rows.append(row) }
         guard rows.count <= 32 else { throw invalid }; writeRows(rows, namespace: namespace, in: &candidate)

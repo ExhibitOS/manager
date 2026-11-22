@@ -4689,6 +4689,10 @@ public actor AuthoringAPI {
         admitsNativeLightObjectAuthoringProposal && session?.advertisesFixtureFirstAuthoring == true
     }
 
+    public var admitsNativeSpotBeamFit: Bool {
+        admitsNativeLightObjectAuthoringProposal && session?.advertisesSpotBeamFit == true
+    }
+
     public var admitsNativeTrackSpotAim: Bool {
         admitsNativeLightObjectAuthoringProposal && session?.nativeTrackSpotAimProfile == NativeTrackSpotAim.profile
     }
@@ -4811,7 +4815,7 @@ public actor AuthoringAPI {
         guard admitted,
               !NativeTrackSpotAim.requiresCapability(proposal) || admitsNativeTrackSpotAim,
               let session, !recordedFloor || session.advertisesRecordedFloorDefault,
-              proposal["fitBeam"] == .null || (operation == "set-light-object" && session.advertisesSpotBeamFit),
+              proposal["fitBeam"] == .null || (operation == "set-light-object" && admitsNativeSpotBeamFit),
               operation != "set-room-base-light-placement" || session.advertisesRoomBaseLightPlacement,
               operation != "set-room-ceiling-fill-brightness" || session.advertisesRoomCeilingFill,
               operation != "set-room-ceiling-fill-brightness" || !RoomCeilingFill.usesDefault(proposal)

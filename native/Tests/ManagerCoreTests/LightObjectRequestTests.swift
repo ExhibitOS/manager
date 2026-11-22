@@ -118,21 +118,17 @@ final class LightObjectRequestTests: XCTestCase {
         let placement = UUID().uuidString.lowercased()
         var initial = draft.candidate
         initial["placements"] = .array([.object(["id": .string(placement), "roomId": draft.rooms[0]["id"]])])
-        try draft.replaceCandidate(initial)
-        let row = initial["lights"].items![0]
-        var settings = try NativeLightFixture.settings(in: draft, lightId: source)
         let point: DocumentValue = .object(["kind": .string("point"), "position": .vector([0, 1.3, 2.6])])
-        settings["aim"] = point
-        let request = try makeRequest("set-light-object", draft, fields: [
-            "light": without(row, "id"), "settings": settings, "fitBeam": .object(["placementId": .string(placement)])
-        ])
+        var detailsRows = try XCTUnwrap(initial["extensions"][details]["lights"].items)
+        detailsRows[0]["aim"] = point
+        initial["extensions"][details]["lights"] = .array(detailsRows)
+        try draft.replaceCandidate(initial)
+        let command = try LightObjectRequest.beamFitCommand(lightId: source, placementId: placement, in: draft)
+        let request = try LightObjectRequest(command: command, frame: frame(draft))
         var expected = changed(initial)
         var lights = expected["lights"].items!
         lights[0]["beamAngle"] = .number(0.65)
         expected["lights"] = .array(lights)
-        var detailsRows = expected["extensions"][details]["lights"].items!
-        detailsRows[0]["aim"] = point
-        expected["extensions"][details]["lights"] = .array(detailsRows)
         var result = reply(request, candidate: expected)
         XCTAssertThrowsError(try request.checkedReply(result))
         result["beamFit"] = .object(["placementId": .string(placement), "bounds": .string("display-plane"),
@@ -156,10 +152,128 @@ final class LightObjectRequestTests: XCTestCase {
         mutated = result
         mutated["candidate"]["lights"] = .array(lights)
         XCTAssertThrowsError(try request.checkedReply(mutated))
-        settings["aim"] = .object(["kind": .string("placement-center")])
-        XCTAssertThrowsError(try makeRequest("set-light-object", draft, fields: [
-            "light": without(row, "id"), "settings": settings, "fitBeam": .object(["placementId": .string(placement)])
-        ]))
+        var mixedEdit = command
+        mixedEdit["light"]["intensity"] = .integer(220)
+        XCTAssertThrowsError(try LightObjectRequest(command: mixedEdit, frame: frame(draft)))
+        mixedEdit = command
+        mixedEdit["settings"]["aim"] = .object(["kind": .string("placement-center")])
+        XCTAssertThrowsError(try LightObjectRequest(command: mixedEdit, frame: frame(draft)))
+
+        let fitted = try request.checkedReply(result).apply(to: draft)
+        var manual = command
+        manual = without(manual, "fitBeam")
+        manual["light"]["beamAngle"] = .number(0.44)
+        let manualRequest = try LightObjectRequest(command: manual, frame: frame(fitted))
+        XCTAssertEqual(manualRequest.value["fitBeam"], .null)
+        var manualCandidate = expected
+        lights = expected["lights"].items!
+        lights[0]["beamAngle"] = .number(0.44)
+        manualCandidate["lights"] = .array(lights)
+        let manualResult = reply(manualRequest, candidate: manualCandidate)
+        XCTAssertNil(try manualRequest.checkedReply(manualResult).beamFit)
+        let manuallyAdjusted = try manualRequest.checkedReply(manualResult).apply(to: fitted)
+        let refit = try LightObjectRequest.beamFitCommand(lightId: source, placementId: placement, in: manuallyAdjusted)
+        XCTAssertEqual(refit["fitBeam"], command["fitBeam"])
+        XCTAssertEqual(refit["light"]["beamAngle"], .number(0.44))
+    }
+
+    @MainActor
+    func testBeamFitRequiresExactNegotiatedProfileBeforeTransport() async throws {
+        var draft = try fixture(), base = draft.candidate
+        base["placements"] = .array([.object(["id": .string(clone), "roomId": draft.rooms[0]["id"]])])
+        var settings = try XCTUnwrap(base["extensions"][details]["lights"].items)
+        settings[0]["aim"] = .object(["kind": .string("point"), "position": .vector([0, 1, 2])])
+        base["extensions"][details]["lights"] = .array(settings)
+        try draft.replaceCandidate(base)
+        let owner = UUID().uuidString.lowercased(), epoch = UUID().uuidString.lowercased()
+        let etag = "\"studio-r1-" + String(repeating: "a", count: 64) + "\""
+        let document = NativeDocumentState(format: 1, revision: 1, workspaceId: UUID().uuidString.lowercased(),
+            tenantId: owner, principalId: owner, draft: draft, etag: etag,
+            savedEditVersion: draft.document["editVersion"].integer, pending: nil)
+        let ack = ViewportFrame(epoch: epoch, sequence: 1, tenantId: owner, principalId: owner,
+            draft: draft, selection: nil, mode: "translate", view: "isometric", disabled: false)
+        let bound = try LightObjectRequest.nativeFrame(acknowledged: ack, document: document, ownerEpoch: epoch,
+            acceptedSequence: 1, readOnly: false, boundedEdit: nil)
+        let command = try LightObjectRequest.beamFitCommand(lightId: source, placementId: clone, in: draft)
+        let request = try LightObjectRequest(command: command, frame: bound)
+        let saved = NativeStudioResponse(revision: 1, etag: etag, draft: draft)
+        var expected = changed(base), lights = try XCTUnwrap(base["lights"].items)
+        lights[0]["beamAngle"] = .number(0.63)
+        expected["lights"] = .array(lights)
+        var response = reply(request, candidate: expected)
+        response["beamFit"] = .object(["placementId": .string(clone), "bounds": .string("display-plane"),
+            "maxDistanceMeters": .number(2), "maxPolarAngleRadians": .number(0.2),
+            "minImageIncidence": .number(1), "floorSpill": .string("unknown")])
+
+        let supported = "saved-head-spot-beam-fit-v1"
+        defer { LightTransportProtocol.reset() }
+        for profile: String? in [nil, supported + "-unknown", supported] {
+            try LightTransportProtocol.configure(owner: owner, reply: response, etag: etag, profile: true, fitProfile: profile)
+            let api = try AuthoringAPI(port: 18091, tenantId: owner, nativeRuntimeManifestSHA256: String(repeating: "b", count: 64),
+                                       protocolClasses: [LightTransportProtocol.self])
+            _ = try await api.connect(LocalAuthoringSession(tenantId: owner, principalId: owner,
+                origin: "http://127.0.0.1:18091", token: String(repeating: "a", count: 43)))
+            do {
+                let preview = try await api.prepareNativeLightObject(request, in: document, saved: saved)
+                XCTAssertEqual(profile, supported)
+                XCTAssertEqual(preview.candidate, expected)
+            } catch let failure as AuthoringFailure {
+                XCTAssertNotEqual(profile, supported)
+                XCTAssertEqual(failure.code, "NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
+            }
+            let calls = LightTransportProtocol.requests()
+            XCTAssertEqual(calls.map(\.httpMethod), profile == supported ? ["GET", "POST"] : ["GET"])
+            if profile == supported {
+                XCTAssertEqual(calls.last?.value(forHTTPHeaderField: "If-Match"), etag)
+                let body = try JSONDecoder().decode(DocumentValue.self, from: LightTransportProtocol.body())
+                XCTAssertEqual(body["request"]["fitBeam"], command["fitBeam"])
+            }
+            await api.endLocalAuthoringSession()
+        }
+    }
+
+    func testBeamFitPreservesSavedArticulatedAimAndUpperFraming() throws {
+        var draft = try fixture(visual: false), base = draft.candidate
+        base["placements"] = .array([.object(["id": .string(clone), "roomId": draft.rooms[0]["id"]])])
+        let aim: DocumentValue = .object(["version": .integer(1), "profile": .string(NativeTrackSpotAim.profile),
+            "mount": .object(["railPlacementId": .string(surface), "position": .vector([0, 0, 0]), "yaw": .integer(0)]),
+            "aim": .object(["kind": .string("placement-center"), "placementId": .string(clone), "offset": .vector([0, 0, 0])])])
+        let profile: DocumentValue = .object(["version": .integer(1), "kind": .string("upper-framing"),
+            "cutoffAngle": .number(0.16), "softnessAngle": .number(0.25)])
+        var rows = try XCTUnwrap(base["extensions"][details]["lights"].items)
+        rows[0] = without(rows[0], "aim")
+        rows[0]["fixture"] = .string("none")
+        rows[0]["trackAim"] = aim
+        rows[0]["angularProfile"] = profile
+        base["extensions"][details]["lights"] = .array(rows)
+        base["extensions"][attachments]["lights"] = .array([try XCTUnwrap(base["extensions"][attachments]["lights"].items?.last)])
+        base["extensions"][visuals] = .object(["version": .integer(1),
+            "assets": .array([try SharedFurnishingCatalog.asset(catalogId: NativeTrackSpotAim.catalogue, id: asset)]),
+            "bindings": .array([.object(["hostKind": .string("light"), "hostId": .string(source),
+                "assetId": .string(asset), "pose": NativeTrackSpotAim.pose])])])
+        try draft.replaceCandidate(base)
+        let command = try LightObjectRequest.beamFitCommand(lightId: source, placementId: clone, in: draft)
+        XCTAssertEqual(command["settings"]["angularProfile"], profile)
+        let request = try LightObjectRequest(command: command, frame: frame(draft))
+        var expected = changed(base), lights = try XCTUnwrap(base["lights"].items)
+        lights[0]["beamAngle"] = .number(0.66)
+        expected["lights"] = .array(lights)
+        var result = reply(request, candidate: expected)
+        result["beamFit"] = .object(["placementId": .string(clone), "bounds": .string("display-plane"),
+            "maxDistanceMeters": .number(2), "maxPolarAngleRadians": .number(0.2),
+            "minImageIncidence": .number(1), "floorSpill": .string("unknown")])
+        XCTAssertEqual(try request.checkedReply(result).apply(to: draft).candidate, expected)
+
+        var changedMask = command
+        changedMask["settings"]["angularProfile"]["cutoffAngle"] = .number(0.17)
+        XCTAssertThrowsError(try LightObjectRequest(command: changedMask, frame: frame(draft)))
+        rows[0]["angularProfile"]["cutoffAngle"] = .number(0.17)
+        var changedReply = result
+        changedReply["candidate"]["extensions"][details]["lights"] = .array(rows)
+        XCTAssertThrowsError(try request.checkedReply(changedReply))
+        lights[0]["transform"]["position"] = .vector([0, 3.1, 0])
+        result["candidate"]["lights"] = .array(lights)
+        XCTAssertThrowsError(try request.checkedReply(result))
     }
 
     func testNativeTransportBindsOrdinaryACKWithoutInventingWebCapability() throws {
@@ -799,11 +913,13 @@ private final class LightTransportProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) private static var observed: [URLRequest] = []
     nonisolated(unsafe) private static var postedBody = Data()
     nonisolated(unsafe) private static var postStatus = 200
-    static func configure(owner: String, reply value: DocumentValue, etag responseETag: String, profile: Bool, aimProfile: String? = nil, postStatus: Int = 200) throws {
+    static func configure(owner: String, reply value: DocumentValue, etag responseETag: String, profile: Bool, aimProfile: String? = nil,
+                          fitProfile: String? = nil, postStatus: Int = 200) throws {
         var fields = ["tenantId": owner, "userId": owner, "role": "owner", "csrfToken": "synthetic-csrf",
             "expiresAt": "2099-01-01T00:00:00Z", "nativeSceneAuthoringProposalProfile": "saved-head-scene-v1"]
         if profile { fields["nativeLightObjectAuthoringProposalProfile"] = LightObjectAuthoring.profile }
         fields["nativeTrackSpotAimProfile"] = aimProfile
+        fields["nativeSpotBeamFitProfile"] = fitProfile
         let sessionData = try JSONSerialization.data(withJSONObject: fields), replyData = try JSONEncoder().encode(value)
         lock.lock(); defer { lock.unlock() }
         session = sessionData; reply = replyData; etag = responseETag; observed = []; postedBody = Data(); self.postStatus = postStatus

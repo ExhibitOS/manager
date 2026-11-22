@@ -117,6 +117,40 @@ struct SelectedLightInspector: View {
             TextField("선형 파랑 B", text: field(\.blue))
         }
     }
+    private func beamFitControl(for row: DocumentValue) -> some View {
+        let targets = aimTargets.filter { target in
+            guard let draft = model.draft else { return false }
+            return (try? LightObjectRequest.beamFitCommand(lightId: model.selectedLightId, placementId: target.id, in: draft)) != nil
+        }
+        return SpotBeamFitControl(model: model, enabled: ready && model.canPreviewSpotBeamFit, targets: targets)
+            .id(row["id"].string)
+    }
+
+    private struct SpotBeamFitControl: View {
+        @ObservedObject var model: ExhibitionModel
+        let enabled: Bool
+        let targets: [AimTarget]
+        @State private var selectedTarget = ""
+        var body: some View {
+            if let first = targets.first {
+                let target = targets.count == 1 ? first.id : selectedTarget
+                VStack(alignment: .leading, spacing: 8) {
+                    if targets.count > 1 {
+                        Picker("빔 폭을 맞출 작품", selection: $selectedTarget) {
+                            Text("작품을 선택하세요").tag("")
+                            ForEach(targets) { Text($0.title).tag($0.id) }
+                        }.disabled(!enabled)
+                    }
+                    Button("빔 폭 맞춤 미리보기") { Task { await model.previewSpotBeamFit(placementId: target) } }
+                        .disabled(!enabled || !targets.contains { $0.id == target })
+                        .accessibilityHint("저장된 작품 배치에 맞춥니다. 작품을 이동한 뒤 저장하고 이 버튼을 다시 누르면 빔 폭을 다시 맞춥니다.")
+                    if let angle = model.spotBeamFitPreviewDegrees {
+                        LabeledContent("맞춘 빔 폭 · °", value: angle.formatted(.number.precision(.fractionLength(0...2))))
+                    }
+                }
+            }
+        }
+    }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -124,6 +158,9 @@ struct SelectedLightInspector: View {
                 if let row = selected {
                     let room = model.draft?.rooms.first { $0["id"] == row["roomId"] }?["name"].string ?? "공간"
                     Text(room).font(.title3.weight(.semibold))
+                    if model.spotBeamFitAvailable, row["type"] == .string("spot") {
+                        beamFitControl(for: row)
+                    }
                     TrackSpotAimInspector(model: model, ready: ready, light: row, canApply: ready && model.canApplyLight)
                     if model.selectedLightUsesTrackAim {
                         Text("조준 조절형 기구는 레일에 연결됩니다. 기구 숨기기나 다른 외형으로 전환은 지원되지 않습니다.")

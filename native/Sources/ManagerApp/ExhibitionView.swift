@@ -1409,7 +1409,8 @@ final class ExhibitionModel: ObservableObject {
                 && !architectureGeometryDirty && !surfaceMaterialDirty && !benchDirty && !plaqueDirty && lightObjectFurnishingInputMatches
                 && !spaceLightingDirty && !architectureApplying && lightObjectPreviewAccessID == viewportAccessID
                 && preview.base == draft && !editingLocked(acknowledging: display) && lightObjectDisplayAcknowledged(display)
-                && (preview.command["spaceLightingMode"] == .null || lightObjectCommandAvailable(preview.command, applyingPreview: true))
+                && ((preview.command["spaceLightingMode"] == .null && preview.beamFit == nil)
+                    || lightObjectCommandAvailable(preview.command, applyingPreview: true))
         }
         // The renderer acknowledges the temporary light document while the
         // saved draft and the preview's base remain the source of edit authority.
@@ -3220,6 +3221,26 @@ final class ExhibitionModel: ObservableObject {
             && light == lightBaseline && trackSpotAimForm != nil && trackSpotAimForm != trackSpotAimBaseline
             && !lightPreviewing
     }
+    var spotBeamFitAvailable: Bool {
+        lightObjectProposalAvailable && session?.advertisesSpotBeamFit == true
+            && (!selectedLightUsesTrackAim || trackSpotAimAvailable)
+    }
+    var canPreviewSpotBeamFit: Bool { spotBeamFitAvailable && canPreviewLightObjectAction }
+    var spotBeamFitPreviewDegrees: Double? {
+        guard let preview = lightObjectPreview, preview.beamFit != nil,
+              let row = preview.candidate["lights"].items?.first(where: { $0["id"].string == preview.lightId }),
+              let radians = row["beamAngle"].double else { return nil }
+        return radians * 180 / .pi
+    }
+    func previewSpotBeamFit(placementId: String) async {
+        guard canPreviewSpotBeamFit, let draft else { return }
+        do {
+            let command = try LightObjectRequest.beamFitCommand(lightId: selectedLightId, placementId: placementId, in: draft)
+            await previewLightObject(command)
+        } catch {
+            failure = error as? AuthoringFailure ?? AuthoringFailure("LIGHT_FIELDS_INVALID")
+        }
+    }
     func previewTrackSpotAim() async {
         guard canPreviewTrackSpotAim, let form = trackSpotAimForm, let draft else { return }
         do {
@@ -3277,12 +3298,16 @@ final class ExhibitionModel: ObservableObject {
                       let api, await api.admitsNativeLightObjectAuthoringProposal,
                       let base = draft, preview.base == base, let etag = state?.etag,
                       let display = lightObjectDisplayDraft, !editingLocked(acknowledging: display), lightObjectDisplayAcknowledged(display) else { throw AuthoringFailure("VIEWPORT_FRAME_STALE") }
+                if preview.beamFit != nil {
+                    guard await api.admitsNativeSpotBeamFit else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
+                }
                 let saved = try await api.exhibition(base.id)
                 guard saved.draft == base, saved.etag == etag else { throw AuthoringFailure("EXHIBITION_COMPARISON_STALE") }
                 let policy = try await publishedEditingAccess(base.id, api: api, expected: saved)
                 guard !policy.immutable, self.api === api, viewportAccessID == access, draft == base, state?.etag == etag,
                       viewportController.editingContextGeneration == context, lightObjectDisplayAcknowledged(display),
                       lightObjectAuthorityAvailable, lightObjectPreviewAccessID == access, lightObjectFurnishingInputMatches,
+                      preview.beamFit == nil || lightObjectCommandAvailable(preview.command, applyingPreview: true),
                       !requiresRoomLocalScope
                         || (viewportController.acceptedSequence == displaySequence && lightObjectCommandAvailable(preview.command, applyingPreview: true)),
                       let currentPreview = lightObjectPreview, currentPreview.command == preview.command,
@@ -3347,6 +3372,7 @@ final class ExhibitionModel: ObservableObject {
     private func lightObjectCommandAvailable(_ command: DocumentValue, applyingPreview: Bool = false) -> Bool {
         let needsAim = NativeTrackSpotAim.requiresCapability(command) || selectedLightUsesTrackAim
         guard !needsAim || trackSpotAimAvailable,
+              command["fitBeam"] == .null || spotBeamFitAvailable,
               command["type"] != .string("set-room-base-light-placement") || session?.advertisesRoomBaseLightPlacement == true,
               command["type"] != .string("set-room-ceiling-fill-brightness") || session?.advertisesRoomCeilingFill == true else { return false }
         if command["spaceLightingMode"] == .null { return true }

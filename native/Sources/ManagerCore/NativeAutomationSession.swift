@@ -2523,8 +2523,7 @@ public actor NativeAutomationSession {
                     guard await api.admitsNativeTrackSpotAim else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
                 }
                 let proposal = try LightObjectRequest(command: command, frame: frame)
-                let reply = try await api.nativeAuthoringProposal(exhibitionId: draft.id, studioRevision: saved.revision, etag: etag, proposal: proposal.value)
-                let checked = try proposal.checkedReply(reply)
+                let checked = try await api.prepareNativeLightObject(proposal, in: current, saved: saved)
                 preview = .lightObject(checked); candidate = checked.candidate
             } else if operation == "fixture-prepare" || operation == "light-attachment-prepare" {
                 guard await api.admitsNativeFixtureAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
@@ -2599,7 +2598,7 @@ public actor NativeAutomationSession {
                 if operation == "light-object-apply" {
                     guard await api.admitsNativeLightObjectAuthoringProposal else { throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE") }
                     if case .lightObject(let object) = preview, object.beamFit != nil,
-                       authoringSession?.advertisesSpotBeamFit != true {
+                       !(await api.admitsNativeSpotBeamFit) {
                         throw AuthoringFailure("NATIVE_AUTHORING_PROPOSAL_UNAVAILABLE")
                     }
                     if case .lightObject(let object) = preview,
