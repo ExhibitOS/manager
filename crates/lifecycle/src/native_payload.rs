@@ -8938,7 +8938,7 @@ impl Payload {
     pub(crate) fn static_room_indirect_export_resources(&self) -> Result<(PathBuf, PathBuf)> {
         let inputs = [
             ("platform/scripts/native-static-export.mjs", "9a1865570f602c5bfe8f63a8c7ee3ea5da7c160fcde461e94998568e3a6671fb"),
-            ("platform/scripts/export-static-publication.mjs", "54b0e92dd901f0a9de83688896e898a95e312a349a7f8e8624b2d009c027c6"),
+            ("platform/scripts/export-static-publication.mjs", "54b0e92dd901f0a9de83688896e898a95e312a349a7f8b5e8624b2d009c027c6"),
             ("platform/scripts/prepare-room-indirect.mjs", "4fc4e6597856d1ee761fbdac8818116a68b9d81a48db3be27aab617206bfae20"),
             ("platform/scripts/room-indirect-irradiance.mjs", "5d5b8129b6077d069faa8150ccee3e03502ca488d9b0fc381dd49fc0e7cb10e6"),
         ];
