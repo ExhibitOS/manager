@@ -148,6 +148,7 @@ mod tests {
             files: 2,
             bytes: 42,
             output: PathBuf::from("/exports/contained"),
+            indirect_bake: None,
         };
         let mut status = Status {
             format: 1,
@@ -161,6 +162,7 @@ mod tests {
             output_parent_identity: None,
             state: "completed".into(),
             private_editor: false,
+            room_indirect: None,
             receipt: Some(receipt),
             error_code: None,
         };

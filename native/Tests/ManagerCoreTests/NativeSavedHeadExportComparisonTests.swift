@@ -38,6 +38,19 @@ final class NativeSavedHeadExportComparisonTests: XCTestCase {
             savedEditVersion: selected.savedEditVersion, pending: nil)
         rejects(host, foreign)
     }
+    func testRoomIndirectRequiresExactRecipeAndAnOrdinarySavedHead() throws {
+        let etag: DocumentValue = .string("saved-etag")
+        let recipe = NativeRoomIndirectRecipe.diffuseOneBounceRGBA8V1
+        XCTAssertNil(try NativeSavedHeadExportComparison.roomIndirect(.object(["etag": etag]), protecting: nil))
+        let requested: DocumentValue = .object(["etag": etag, "roomIndirect": .string(recipe.rawValue)])
+        XCTAssertEqual(try NativeSavedHeadExportComparison.roomIndirect(requested, protecting: nil), recipe)
+        XCTAssertThrowsError(try NativeSavedHeadExportComparison.roomIndirect(requested, protecting: state("Protected", revision: 9)))
+        XCTAssertThrowsError(try NativeSavedHeadExportComparison.roomIndirect(
+            .object(["etag": etag, "roomIndirect": .null]), protecting: nil))
+        XCTAssertThrowsError(try NativeSavedHeadExportComparison.roomIndirect(
+            .object(["etag": etag, "roomIndirect": .string("unknown")]), protecting: nil))
+    }
+
     func testOrdinarySavedHeadPreservesExistingWireAndExactRuntimeGate() throws {
         let host = try state("Saved", revision: 17)
         let head = try NativeSavedHeadExportComparison.head(current: host, protecting: nil,

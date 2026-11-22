@@ -4,6 +4,9 @@
 use super::*;
 #[path = "native_static_export_diagnostics.rs"]
 mod diagnostics;
+#[path = "native_static_export_room_indirect.rs"]
+mod room_indirect;
+pub use room_indirect::{IndirectBake, RoomIndirect};
 use crate::{
     maintenance_source::DirectoryPin, native_payload::Payload, native_runtime::{Session, StaticDetailAuthority},
 };
@@ -103,6 +106,8 @@ pub struct Input {
     pub output: PathBuf,
     #[serde(default)]
     pub private_editor: bool,
+    #[serde(default, deserialize_with = "read_room_indirect")]
+    pub room_indirect: Option<RoomIndirect>,
     #[serde(default, deserialize_with = "read_detail_mode")]
     pub detail_mode: Option<DetailMode>,
     output_parent_identity: Option<DirectoryIdentity>,
@@ -134,11 +139,25 @@ impl ProtectedDocument {
     }
 }
 impl Input {
+    fn check_saved_head_mode(&self) -> Result<()> {
+        let Some(head) = &self.saved_head else {
+            return if self.room_indirect.is_some() {
+                Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"))
+            } else {
+                Ok(())
+            };
+        };
+        if self.private_editor != self.room_indirect.is_none() || self.detail_mode.is_some()
+            || self.output_parent_identity.is_none() || (self.room_indirect.is_some() && head.isolated())
+        {
+            return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn verify_saved_head_receipt(&mut self, session: &mut Session) -> Result<()> {
+        self.check_saved_head_mode()?;
         if let Some(head) = &self.saved_head {
-            if !self.private_editor || self.detail_mode.is_some() || self.output_parent_identity.is_none() {
-                return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
-            }
             session.confirm_saved_head_publication(head, &self.publication_id)?;
             self.saved_head_verified = true;
         }
@@ -207,6 +226,11 @@ fn read_detail_mode<'de, D: serde::Deserializer<'de>>(
 ) -> std::result::Result<Option<DetailMode>, D::Error> {
     DetailMode::deserialize(input).map(Some)
 }
+fn read_room_indirect<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> std::result::Result<Option<RoomIndirect>, D::Error> {
+    RoomIndirect::deserialize(input).map(Some)
+}
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Receipt {
@@ -217,6 +241,8 @@ pub struct Receipt {
     pub files: u64,
     pub bytes: u64,
     pub output: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indirect_bake: Option<IndirectBake>,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -234,6 +260,8 @@ pub struct Status {
     pub state: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub private_editor: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_indirect: Option<RoomIndirect>,
     pub receipt: Option<Receipt>,
     pub error_code: Option<String>,
 }
@@ -395,7 +423,7 @@ mod cache_policy_tests {
         fs::write(root.join("static-cache-policy.json"), &marker).unwrap();
         let manifest = serde_json::to_vec(&serde_json::json!({"format":"exhibitos-static-publication-v1","publicationId":Uuid::new_v4().to_string(),"revisionSha256":"a".repeat(64),"indexSha256":index_hash,"files":[{"path":path,"bytes":payload.len(),"sha256":payload_hash},{"path":"static-publication-index.json","bytes":index.len(),"sha256":index_hash},{"path":"static-cache-policy.json","bytes":marker.len(),"sha256":digest(marker.as_bytes())}]})).unwrap();
         fs::write(root.join("static-export-manifest.json"), &manifest).unwrap();
-        let receipt = Receipt { publication_id: Uuid::new_v4().to_string(), revision_sha256:"a".repeat(64), index_sha256:index_hash, manifest_sha256:digest(&manifest), files:4, bytes:0, output:root.clone() };
+        let receipt = Receipt { publication_id: Uuid::new_v4().to_string(), revision_sha256:"a".repeat(64), index_sha256:index_hash, manifest_sha256:digest(&manifest), files:4, bytes:0, output:root.clone(), indirect_bake: None };
         assert_eq!(cache_marker_sha256(&receipt).unwrap(), Some(policy));
         fs::write(root.join("static-cache-policy.json"), b"tampered").unwrap();
         assert!(cache_marker_sha256(&receipt).is_err());
@@ -485,7 +513,8 @@ fn verify_export(status: &Status, check: &impl Fn() -> Result<()>) -> Result<Rec
     {
         return Err(bad());
     }
-    verify_export_controls(status, &manifest, |name| {
+    let indirect_bake = verify_export_controls(status, &manifest, |name| {
+        check()?;
         bounded(&status.output, name, 1024 * 1024)
     })?;
     if let Some(parent) = parent { parent.check().map_err(|_| bad())?; }
@@ -497,6 +526,7 @@ fn verify_export(status: &Status, check: &impl Fn() -> Result<()>) -> Result<Rec
         files: expected.len() as u64,
         bytes,
         output: status.output.clone(),
+        indirect_bake,
     })
 }
 fn export_manifest(status: &Status, raw: &[u8]) -> Result<Manifest> {
@@ -517,8 +547,9 @@ fn verify_export_controls(
     status: &Status,
     manifest: &Manifest,
     mut read: impl FnMut(&str) -> Result<Vec<u8>>,
-) -> Result<()> {
-    if digest(&read("static-publication-index.json")?) != manifest.index_sha256 {
+) -> Result<Option<IndirectBake>> {
+    let index = read("static-publication-index.json")?;
+    if digest(&index) != manifest.index_sha256 {
         return Err(bad());
     }
     let html = read("index.html")?;
@@ -534,7 +565,7 @@ fn verify_export_controls(
     {
         return Err(bad());
     }
-    Ok(())
+    room_indirect::verify(status.room_indirect, status.private_editor, manifest, &html, &index, read)
 }
 
 const DETAIL_UNCONFIRMED: &str = "NATIVE_STATIC_DETAIL_CLEANUP_UNCONFIRMED";
@@ -1292,9 +1323,10 @@ fn verify_detail_stage(
     {
         return Err(bad());
     }
-    verify_export_controls(&journal.status, &manifest, |name| {
+    let indirect_bake = verify_export_controls(&journal.status, &manifest, |name| {
         verifier.controls.remove(name).ok_or_else(bad)
     })?;
+    if indirect_bake.is_some() { return Err(bad()); }
     check()?;
     stage
         .wrapper
@@ -1309,6 +1341,7 @@ fn verify_detail_stage(
             files: manifest.files.len() as u64 + 1,
             bytes,
             output: journal.status.output.clone(),
+            indirect_bake: None,
         },
         tree,
     ))
@@ -2056,6 +2089,8 @@ impl InstallationController {
                     || !uuid(&value.publication_id)
                     || !hash_valid(&value.revision_sha256)
                     || !value.output.is_absolute()
+                    || (value.room_indirect.is_some() && (value.private_editor || value.output_parent_identity.is_none()))
+                    || value.receipt.as_ref().is_some_and(|receipt| receipt.indirect_bake.is_some() != value.room_indirect.is_some())
                     || !matches!(
                         value.state.as_str(),
                         "running" | "completed" | "cancelled" | "failed" | "interrupted"
@@ -2222,6 +2257,14 @@ impl Exporter {
             }
             Ok(())
         })?;
+        let indirect_resources = if input.room_indirect.is_some() {
+            if !input.saved_head_verified {
+                return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
+            }
+            Some(payload.static_room_indirect_export_resources()?)
+        } else {
+            None
+        };
         let current = self.status(&token)?;
         if (self.active() && !input.saved_head_verified) || self.detail_held(&token)? {
             return Err(err("BUSY"));
@@ -2258,7 +2301,8 @@ impl Exporter {
         if input.saved_head_verified && let Some(status) = current
             && status.publication_id == input.publication_id && status.revision_sha256 == revision_sha256
             && status.output == input.output && status.output_parent_identity == input.output_parent_identity
-            && status.private_editor && status.workspace_id == workspace_id && status.tenant_id == tenant_id
+            && status.private_editor == input.private_editor && status.room_indirect == input.room_indirect
+            && status.workspace_id == workspace_id && status.tenant_id == tenant_id
             && status.principal_id == principal_id
         {
             if status.state == "completed" && status.receipt.as_ref() != Some(&verify_output(&status)?) {
@@ -2284,12 +2328,15 @@ impl Exporter {
         // inventory. An older runtime is refused instead of searching PATH.
         let detail = input.detail_mode == Some(DetailMode::NativeDetailV1);
         if detail != detail_authority.is_some()
-            || (input.output_parent_identity.is_some() && (detail || !input.private_editor))
+            || (input.output_parent_identity.is_some()
+                && (detail || (!input.private_editor && input.room_indirect.is_none())))
         {
             return Err(bad());
         }
         let (script, viewer) = if detail {
             payload.static_detail_export_resources(input.private_editor)?
+        } else if let Some(resources) = indirect_resources {
+            resources
         } else {
             payload.static_export_resources(input.private_editor)?
         };
@@ -2305,6 +2352,7 @@ impl Exporter {
             output_parent_identity: input.output_parent_identity,
             state: "running".into(),
             private_editor: input.private_editor,
+            room_indirect: input.room_indirect,
             receipt: None,
             error_code: None,
         };
@@ -2445,7 +2493,9 @@ impl Exporter {
                                     viewer.as_os_str(),
                                     worker.output.as_os_str(),
                                 ]);
-                        if value.private_editor {
+                        if value.room_indirect.is_some() {
+                            command.arg("--private-room-indirect-v1");
+                        } else if value.private_editor {
                             command.arg("--private-editor");
                         }
                         let mut child = OwnedChild(
@@ -2577,6 +2627,32 @@ mod detail_tests {
     use std::io::Cursor;
 
     const JOB: &str = "30a37355-6bc3-4a94-af50-8eafcc7c77e2";
+
+    #[test]
+    fn room_indirect_mode_requires_an_ordinary_saved_head_and_viewer_only_output() {
+        let mut wire = serde_json::json!({
+            "publicationId": JOB, "output": "/tmp/export",
+            "roomIndirect": "room-diffuse-one-bounce-rgba8-v1",
+        });
+        let parse = |value: &serde_json::Value| serde_json::from_value::<Input>(value.clone()).unwrap();
+        assert!(parse(&wire).check_saved_head_mode().is_err());
+        wire["savedHead"] = serde_json::json!({
+            "exhibitionId": JOB, "requestId": JOB, "etag": format!("\"studio-r6-{}\"", "a".repeat(64)),
+            "revision": 18, "editVersion": 6, "revisionSha256": "b".repeat(64)
+        });
+        assert!(parse(&wire).check_saved_head_mode().is_err());
+        wire["outputParentIdentity"] = serde_json::json!({"device": 1, "inode": 2});
+        assert!(parse(&wire).check_saved_head_mode().is_ok());
+        wire["privateEditor"] = true.into();
+        assert!(parse(&wire).check_saved_head_mode().is_err());
+        wire["privateEditor"] = false.into();
+        wire["savedHead"]["protectedDocument"] = serde_json::json!({
+            "exhibitionId": JOB, "etag": "\"protected\"", "revision": 301, "editVersion": 20
+        });
+        assert!(parse(&wire).check_saved_head_mode().is_err());
+        wire["roomIndirect"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<Input>(wire).is_err());
+    }
 
     #[test]
     fn saved_head_receipt_uses_the_exact_ordinary_request_and_rejects_caller_proof() {
@@ -2824,6 +2900,7 @@ mod detail_tests {
             files: 1,
             bytes: 7,
             output: stage.worker.output.clone(),
+            indirect_bake: None,
         };
         fs::rename(&destination, &moved).unwrap();
         let _replacement = create_detail_directory(&root_file, OsStr::new("destination")).unwrap();
@@ -2866,6 +2943,7 @@ mod detail_tests {
             output_parent_identity: None,
             state: "running".into(),
             private_editor: false,
+            room_indirect: None,
             receipt: None,
             error_code: None,
         };

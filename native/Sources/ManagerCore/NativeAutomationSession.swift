@@ -1185,7 +1185,8 @@ public actor NativeAutomationSession {
               current.principalId == owner.principalId else { throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE") }
         let comparison = protected ?? current
         try checkedRevision(request, comparison)
-        let command = try NativeAutomationArtworkRules.command(request, keys: ["etag"])
+        let command = request["command"]
+        let roomIndirect = try NativeSavedHeadExportComparison.roomIndirect(command, protecting: protected)
         guard !current.dirty, current.pending == nil, let draft = current.draft, let etag = current.etag,
               command["etag"] == .string(etag), let path = request["outputPath"].string else {
             throw BridgeFailure("EXHIBITION_EXPORT_SAVE_REQUIRED")
@@ -1251,11 +1252,12 @@ public actor NativeAutomationSession {
         let head = try NativeSavedHeadExportComparison.head(current: current, protecting: protected,
             requestId: id, revisionSHA256: frozen.revisionSha256)
         _ = try await bridge.startStaticExport(context, publicationId: frozen.publicationId, output: destination,
-                                               privateEditor: true, nativeOriginalDetail: false,
-                                               outputParentIdentity: parent, savedHead: head)
+                                               privateEditor: roomIndirect == nil, nativeOriginalDetail: false,
+                                               outputParentIdentity: parent, savedHead: head, roomIndirect: roomIndirect)
         let receipt = try await waitForStaticExport(context, publication: frozen, path: path, nativeOriginal: false, detailJobId: nil)
         guard receipt.publicationId == frozen.publicationId, receipt.revisionSha256 == frozen.revisionSha256,
               receipt.output == path, FileManager.default.fileExists(atPath: path),
+              (receipt.indirectBake != nil) == (roomIndirect != nil),
               try Self.exportRootIdentity(root, profile: profile) == parent else { throw BridgeFailure(changed) }
         return receipt
     }
@@ -4672,6 +4674,18 @@ public actor NativeAutomationSession {
 /// The export's private saved head and the selected official journal have
 /// different revision domains. Neither may be substituted for the other.
 enum NativeSavedHeadExportComparison {
+    static func roomIndirect(_ command: DocumentValue, protecting protected: NativeDocumentState?) throws -> NativeRoomIndirectRecipe? {
+        guard case .object(let fields) = command else { throw BridgeFailure("AUTOMATION_COMMAND_INVALID") }
+        let keys = Set(fields.keys)
+        if keys == ["etag"] { return nil }
+        guard keys == ["etag", "roomIndirect"],
+              let value = fields["roomIndirect"]?.string, let recipe = NativeRoomIndirectRecipe(rawValue: value) else {
+            throw BridgeFailure("AUTOMATION_COMMAND_INVALID")
+        }
+        guard protected == nil else { throw BridgeFailure("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE") }
+        return recipe
+    }
+
     static func head(current: NativeDocumentState, protecting protected: NativeDocumentState?,
                      requestId: String, revisionSHA256: String) throws -> DocumentValue {
         func fields(_ state: NativeDocumentState) throws -> DocumentValue {
