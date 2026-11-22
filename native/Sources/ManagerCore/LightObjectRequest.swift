@@ -419,13 +419,14 @@ public struct LightObjectRequest: Sendable {
         case "set-light-object":
             var row = command["light"]; row["id"] = original["id"]
             if command["settings"]["trackAim"] != .null {
+                // The saved mount and aim stay bound to the request. Moving an
+                // artwork may leave the saved derived pose behind the live aim.
                 try copySolvedTransform(from: reply, into: &row)
             }
             if command["fitBeam"] != .null {
                 let solved = reply["lights"].items?.filter { $0["id"] == original["id"] } ?? []
                 guard solved.count == 1, let width = solved[0]["beamAngle"].double,
                       width > 0, width <= .pi / 2 else { throw Self.changed }
-                guard RoomBaseLightIntent.samePose(row["transform"], original["transform"]) else { throw Self.changed }
                 row["beamAngle"] = solved[0]["beamAngle"]
             }
             lights[index] = row; next["lights"] = .array(lights)
