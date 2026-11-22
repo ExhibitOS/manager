@@ -911,9 +911,16 @@ pub(crate) const ROOM_INDIRECT_ORDINARY_TARGET: RuntimeTuple = (
     "4e89c5f57c1d1efaa302e829b7347f3c569e8ae167ec8412e77f4f3abf72fa9b",
 );
 
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) const ROOM_INDIRECT_PAIRED_DOOR_TARGET: RuntimeTuple = (
+    "b788353b74debeea7dc9909a1b79977b6e54e62e",
+    "67bdfb306a154103d23cad4187312e082a167acafb0bc2957539434d56957d9a",
+    "1d37aacf445158da7398db3af7705731a7fac1876d962b7d45b16b1914730582",
+);
+
 fn room_indirect_ordinary_host_matches(tuple: (&str, &str, &str)) -> bool {
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-    return tuple == ROOM_INDIRECT_ORDINARY_TARGET;
+    return [ROOM_INDIRECT_ORDINARY_TARGET, ROOM_INDIRECT_PAIRED_DOOR_TARGET].contains(&tuple);
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
     { let _ = tuple; false }
 }
@@ -929,6 +936,7 @@ const FRESH_CATALOG52_CONSTRUCTOR_TARGETS: &[RuntimeTuple] = &[
     ROOM_CEILING_FILL_TARGET,
     PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET,
     ROOM_INDIRECT_ORDINARY_TARGET,
+    ROOM_INDIRECT_PAIRED_DOOR_TARGET,
 ];
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ROOM_CEILING_FILL_TARGET: RuntimeTuple = (
@@ -1056,8 +1064,8 @@ pub(crate) fn combined_thumbnail_ordinary_host_matches(tuple: (&str, &str, &str)
     if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET,
         ROOM_CEILING_FILL_TARGET, PREPARED_VIEWER_BUDGET_TARGET, OWNER_LOCAL_ORIGINAL_TARGET,
         R285_ROOM_FILL_EXIT_TARGET, R285_SUPPLEMENTAL_FILL_TARGET, R285_INITIAL_PRODUCT_IMAGE_TARGET,
-        R285_CLOSING_ARTICULATION_TARGET, PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET,
-        ROOM_INDIRECT_ORDINARY_TARGET].contains(&tuple) { return true; }
+        R285_CLOSING_ARTICULATION_TARGET, PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET].contains(&tuple)
+        || room_indirect_ordinary_host_matches(tuple) { return true; }
     if r285_hayes_preopen_terminal_host_matches(tuple) { return true; }
     combined_thumbnail_host_matches(tuple)
 }
@@ -3289,8 +3297,14 @@ pub(crate) mod normal_oex_release_declaration_tests {
     #[ignore = "requires the exact sealed room-indirect runtime; read-only payload openers"]
     fn room_indirect_payload_admits_only_exact_ordinary_fresh_and_reopen_modes() {
         let root = PathBuf::from(std::env::var_os("EXHIBITOS_TEST_ROOM_INDIRECT_RUNTIME").unwrap());
-        let target = ROOM_INDIRECT_ORDINARY_TARGET;
-        let ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let mut ordinary = Payload::open_workspace_v5_validation(&root, false).unwrap();
+        let (target, recipe, viewer) = if ordinary.context().manifest_sha256 == ROOM_INDIRECT_PAIRED_DOOR_TARGET.2 {
+            (ROOM_INDIRECT_PAIRED_DOOR_TARGET, "44691f360c33b934fc70952469d281c043b52b6ce3f2c6978feed442f72d6208",
+                "c391155e5236c23993fcde4cfdb477b470f069141abf9e7e305baad4cc96123c")
+        } else {
+            (ROOM_INDIRECT_ORDINARY_TARGET, "598b2c4a92b70a031760a7ca950067de64afaacd9bf84ed91315a42d97a8b03a",
+                "f62384be916179e278514c828e3af21d2aa161b4d9f44ef4125191b6ecba0fe8")
+        };
         let fresh = Payload::open_fresh_workspace_v7_validation(&root).unwrap();
         let catalog = WorkspaceFurnishingCatalog::CombinedThumbnails052;
         let ledger = fresh.workspace_furnishing_ledger(catalog).unwrap();
@@ -3308,11 +3322,21 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
         assert!(ordinary.static_export_resources(true).is_ok());
         assert!(ordinary.static_detail_export_resources(true).is_err());
-        assert!(ordinary.static_room_indirect_export_resources().is_ok());
+        let (_, binding) = ordinary.static_room_indirect_export_resources().unwrap();
+        let binding = serde_json::to_value(binding).unwrap();
+        assert_eq!(binding["recipeSha256"], recipe);
+        assert_eq!(binding["viewerBuildId"], viewer);
+        let prepare_row = ordinary.manifest.files.iter()
+            .position(|row| row.path == "platform/scripts/prepare-room-indirect.mjs").unwrap();
+        let original_sha = ordinary.manifest.files[prepare_row].sha256.replace("0".repeat(64));
+        assert!(ordinary.static_room_indirect_export_resources().is_err());
+        ordinary.manifest.files[prepare_row].sha256 = original_sha;
         assert!(Payload::classify_workspace_import_validation(ordinary, WorkspaceImport::V7, true).is_err());
 
         let retained_official_manifest = "3b35d0d81021b7118e7092c4406976307a0ec1d0ff0f58310a06b745f078dce1";
         for denied in [
+            (ROOM_INDIRECT_ORDINARY_TARGET.0, ROOM_INDIRECT_ORDINARY_TARGET.1, ROOM_INDIRECT_PAIRED_DOOR_TARGET.2),
+            (ROOM_INDIRECT_PAIRED_DOOR_TARGET.0, ROOM_INDIRECT_PAIRED_DOOR_TARGET.1, ROOM_INDIRECT_ORDINARY_TARGET.2),
             (target.0, target.1, retained_official_manifest),
             (target.0, PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET.1, target.2),
             (PARTIAL_WALL_PORTAL_121_ORDINARY_TARGET.0, target.1, target.2),
@@ -8935,14 +8959,32 @@ impl Payload {
             self.root.join("platform/apps/web/dist-static"),
         ))
     }
-    pub(crate) fn static_room_indirect_export_resources(&self) -> Result<(PathBuf, PathBuf)> {
+    pub(crate) fn static_room_indirect_export_resources(
+        &self,
+    ) -> Result<((PathBuf, PathBuf), installations::native_static_export::RoomIndirectBinding)> {
+        use installations::native_static_export::{ORIGINAL_VIEWER_BUILD_ID, RoomIndirectBinding};
+        let tuple = (self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str());
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        let (viewer_build_id, prepare_sha, integrator_sha) = match tuple {
+            ROOM_INDIRECT_PAIRED_DOOR_TARGET => (
+                "c391155e5236c23993fcde4cfdb477b470f069141abf9e7e305baad4cc96123c",
+                "3e3d6f9353632ca311a20ce65a8b3f2fa33ff261175044f44f3ca8495b394bf1",
+                "bf3900f7893c7ead7a0b4779c268c7f4d1755693160d51b8c0aba686cf79b714",
+            ),
+            _ => (
+                ORIGINAL_VIEWER_BUILD_ID,
+                "4fc4e6597856d1ee761fbdac8818116a68b9d81a48db3be27aab617206bfae20",
+                "5d5b8129b6077d069faa8150ccee3e03502ca488d9b0fc381dd49fc0e7cb10e6",
+            ),
+        };
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        let (viewer_build_id, prepare_sha, integrator_sha) = (ORIGINAL_VIEWER_BUILD_ID, "", "");
         let inputs = [
             ("platform/scripts/native-static-export.mjs", "9a1865570f602c5bfe8f63a8c7ee3ea5da7c160fcde461e94998568e3a6671fb"),
             ("platform/scripts/export-static-publication.mjs", "54b0e92dd901f0a9de83688896e898a95e312a349a7f8b5e8624b2d009c027c6"),
-            ("platform/scripts/prepare-room-indirect.mjs", "4fc4e6597856d1ee761fbdac8818116a68b9d81a48db3be27aab617206bfae20"),
-            ("platform/scripts/room-indirect-irradiance.mjs", "5d5b8129b6077d069faa8150ccee3e03502ca488d9b0fc381dd49fc0e7cb10e6"),
+            ("platform/scripts/prepare-room-indirect.mjs", prepare_sha),
+            ("platform/scripts/room-indirect-irradiance.mjs", integrator_sha),
         ];
-        let tuple = (self.manifest.source_commit.as_str(), self.producer_sha256(), self.manifest_sha256.as_str());
         if !room_indirect_ordinary_host_matches(tuple)
             || self.workspace_furnishing_catalog()? != Some(WorkspaceFurnishingCatalog::CombinedThumbnails052)
             || !inputs.into_iter().all(|(path, sha)| self.manifest.files.iter().any(|file|
@@ -8952,7 +8994,8 @@ impl Payload {
             return Err(err("NATIVE_SAVED_HEAD_EXPORT_UNAVAILABLE"));
         }
         self.recheck()?;
-        self.static_export_resources(false)
+        let binding = RoomIndirectBinding::from_worker_rows([prepare_sha, integrator_sha], viewer_build_id);
+        Ok((self.static_export_resources(false)?, binding))
     }
 
     pub(crate) fn static_publication_reader(&self) -> Result<PathBuf> {

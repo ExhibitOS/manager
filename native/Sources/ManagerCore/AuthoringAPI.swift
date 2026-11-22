@@ -4475,6 +4475,7 @@ public actor AuthoringAPI {
     nonisolated static func supportsPrivateRoomIndirectRuntime(manifest: String) -> Bool {
         #if DEBUG
         manifest == "4e89c5f57c1d1efaa302e829b7347f3c569e8ae167ec8412e77f4f3abf72fa9b"
+            || manifest == "1d37aacf445158da7398db3af7705731a7fac1876d962b7d45b16b1914730582"
         #else
         false
         #endif

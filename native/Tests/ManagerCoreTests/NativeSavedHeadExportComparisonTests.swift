@@ -53,9 +53,13 @@ final class NativeSavedHeadExportComparisonTests: XCTestCase {
 
     func testRoomIndirectAdmissionRequiresTheSealedOrdinaryRuntime() {
         let sealed = "4e89c5f57c1d1efaa302e829b7347f3c569e8ae167ec8412e77f4f3abf72fa9b"
+        let pairedDoor = "1d37aacf445158da7398db3af7705731a7fac1876d962b7d45b16b1914730582"
         let official = "3b35d0d81021b7118e7092c4406976307a0ec1d0ff0f58310a06b745f078dce1"
         XCTAssertTrue(AuthoringAPI.supportsPrivateRoomIndirectRuntime(manifest: sealed))
         XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: sealed))
+        XCTAssertTrue(AuthoringAPI.supportsPrivateRoomIndirectRuntime(manifest: pairedDoor))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: pairedDoor))
+        XCTAssertFalse(AuthoringAPI.supportsPrivateRoomIndirectRuntime(manifest: pairedDoor.uppercased()))
         XCTAssertFalse(AuthoringAPI.supportsPrivateRoomIndirectRuntime(manifest: official))
         XCTAssertFalse(AuthoringAPI.supportsPrivateRoomIndirectRuntime(manifest: sealed.uppercased()))
     }
