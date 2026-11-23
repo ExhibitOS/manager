@@ -97,6 +97,26 @@ final class NativeSceneAdmissionTests: XCTestCase {
                                                        from: JSONEncoder().encode(DocumentValue.object(altered))))
     }
 
+    func testOrdinaryImageJobActionsStayBoundToAnInitialApproval() {
+        let artwork = UUID().uuidString.lowercased(), owner = UUID().uuidString.lowercased()
+        let job = UUID().uuidString.lowercased()
+        var transfer = NativeUploadState(format: 1, revision: 1, workspaceId: owner, tenantId: owner,
+                                         principalId: owner, intent: nil, jobId: job, fileName: "fixture.jpg")
+        for (preparation, admitted) in [
+            (NativeProductImagePreparationIntent(artworkRevision: 1, initialApproval: true), true),
+            (.init(artworkRevision: 1, fresh: true), true),
+            (.init(artworkRevision: 1), false)
+        ] {
+            transfer.intent = .init(artworkId: artwork, mime: "image/jpeg", sha256: String(repeating: "a", count: 64),
+                                    bytes: 16, scaleMeters: 1, rights: .init(), productImagePreparation: preparation)
+            XCTAssertEqual(transfer.permitsOrdinaryJobAction(job, selectedArtworkId: artwork), preparation.isFresh)
+            XCTAssertEqual(transfer.permitsOrdinaryJobAction(job, selectedArtworkId: artwork,
+                                                              allowsInitialProductImage: true), admitted)
+            XCTAssertFalse(transfer.permitsOrdinaryJobAction(owner, selectedArtworkId: artwork, allowsInitialProductImage: true))
+            XCTAssertFalse(transfer.permitsOrdinaryJobAction(job, selectedArtworkId: owner, allowsInitialProductImage: true))
+        }
+    }
+
     func testSelectedPNGReadManifestIsExactAndDoesNotAdmitOtherRuntimeFamilies() throws {
         let pin = "1b542833230e3f80c3850b09fb677cc119415a04b15e53c4904942eb76b5a238"
         XCTAssertTrue(AuthoringAPI.supportsSelectedArtworkThumbnailRuntime(manifest: pin))

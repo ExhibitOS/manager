@@ -268,7 +268,15 @@ final class ManagerModel: ObservableObject {
             }, recover: { job, revision in
                 try await bridge.hayesRelease(context, jobId: job, currentArtworkRevision: revision)
             })
-            authoring.bindIntakeWorkspace(available: status.selectedOex == false) { [weak self] in
+            authoring.bindIntakeWorkspace(available: status.selectedOex == false,
+                readDocument: {
+                    let current = try await bridge.nativeStatus(context)
+                    guard !current.busy, current.selectedOex == false, current.runtime?.jobId == runtimeJobID,
+                          current.runtime?.readiness.ready == true else {
+                        throw BridgeFailure("INTAKE_WORKSPACE_UNAVAILABLE")
+                    }
+                    return try await bridge.documentState(context)
+                }) { [weak self] in
                 guard let self, self.context?.selectionToken == context.selectionToken else { return false }
                 let observed = try await bridge.nativeStatus(context)
                 return self.context?.selectionToken == context.selectionToken && observed.selectedOex == false

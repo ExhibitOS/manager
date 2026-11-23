@@ -34,8 +34,8 @@ public struct NativeProductImagePreparationIntent: Codable, Equatable, Sendable 
 
     public var isFresh: Bool { profile == Self.freshProfileID }
 
-    var isInitialProductImage: Bool { profile == Self.profileID && purpose == Self.initialApprovalPurpose }
-    var isInitialApproval: Bool { isFresh || isInitialProductImage }
+    public var isInitialProductImage: Bool { profile == Self.profileID && purpose == Self.initialApprovalPurpose }
+    public var isInitialApproval: Bool { isFresh || isInitialProductImage }
 
     var valid: Bool {
         version == 1 && (isFresh || profile == Self.profileID)
