@@ -763,7 +763,8 @@ extension AuthoringModel {
         let hayes = usesHayesOriginal
         let unknown = inspectUnknown || ordinaryUnknownModel
         guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
-        let generation = importStatusGeneration
+        let panelGeneration = importStatusGeneration
+        let panelArtwork = (selected?.id, selected?.revision)
         let initialOnlyJPEG = !jpegImportsEnabled && !freshImagePreparationAvailable && catalog057InitialJPEGSelectable
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
@@ -787,7 +788,11 @@ extension AuthoringModel {
             panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
         }
         guard response == .OK, let url = panel.url else { return }
+        let needsInitialJPEGFence = initialOnlyJPEG && ["jpg", "jpeg"].contains(url.pathExtension.lowercased())
+        guard !needsInitialJPEGFence || (panelGeneration == importStatusGeneration
+            && panelArtwork == (selected?.id, selected?.revision)) else { return }
         await action {
+            let readGeneration = importStatusGeneration
             let read = Task {
                 try await ImportFileSnapshot.load(url, allowJPEG: !hayes && importJPEGAvailable,
                     byteLimit: hayes ? NativeHayesOriginalIntent.sourceBytes : ImportFileSnapshot.limit,
@@ -803,12 +808,15 @@ extension AuthoringModel {
                     throw AuthoringFailure("IMPORT_INTENT_CHANGED")
                 }
             }
-            if snapshot.mime == "image/jpeg", initialOnlyJPEG {
-                guard generation == importStatusGeneration, catalog057InitialJPEGSelectable,
-                      let api, let state = transfer else {
+            if snapshot.mime == "image/jpeg", needsInitialJPEGFence {
+                guard readGeneration == importStatusGeneration, panelArtwork == (selected?.id, selected?.revision),
+                      catalog057InitialJPEGSelectable, let api, let state = transfer else {
                     throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
                 }
                 try await checkCatalog057InitialJPEGAdmission(api: api, state: state)
+                guard readGeneration == importStatusGeneration, panelArtwork == (selected?.id, selected?.revision) else {
+                    throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+                }
             }
             if let intent = transfer?.intent, !snapshot.matches(intent) { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
             if inspectUnknown {
