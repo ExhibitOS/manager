@@ -1254,6 +1254,13 @@ const STOCK_V6_DEFAULT_CATALOGUE_RUNTIME: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG057_CREDIT_REVIEW_RUNTIME: RuntimeTuple = (
+    "0a854ff50ce5108415efcbfed43f1c3438af422d",
+    STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.1,
+    "4c2ba03ef04ab0b282e0c38161b5fc942e52e71580d35190e433b7cc71a0a604",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ORDINARY_RAIL_INSERTION_CHECK_RUNTIME: RuntimeTuple = (
     "c041df9e082a89e31e059572fe6057048333609d",
     "2891b3d62617615a2de409c478b867b349f7feb5b8efb8b2ddd4ca7558b943e7",
@@ -1271,6 +1278,7 @@ pub(crate) fn current_default_catalogue_host_matches(tuple: (&str, &str, &str)) 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CURRENT_DEFAULT_CATALOGUE_PAIR.0 == tuple
         || STOCK_V6_DEFAULT_CATALOGUE_RUNTIME == tuple
+        || CATALOG057_CREDIT_REVIEW_RUNTIME == tuple
         || RECORDED_FLOOR_DEFAULT_RUNTIME == tuple
         || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -1284,6 +1292,7 @@ pub(crate) fn current_default_catalogue_manifest_matches(manifest: &str) -> bool
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CURRENT_DEFAULT_CATALOGUE_PAIR.0.2 == manifest
         || STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2 == manifest
+        || CATALOG057_CREDIT_REVIEW_RUNTIME.2 == manifest
         || RECORDED_FLOOR_DEFAULT_RUNTIME.2 == manifest
         || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME.2 == manifest;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -2244,6 +2253,13 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair == (STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2, CATALOG057_CREDIT_REVIEW_RUNTIME.2) {
+            return Some(Self::SameCatalog {
+                source: STOCK_V6_DEFAULT_CATALOGUE_RUNTIME,
+                target: CATALOG057_CREDIT_REVIEW_RUNTIME,
+                catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057,
+            });
+        }
         if let Some((source, target)) = r285_greek_thumbnail_trace_runtime_pair(pair) {
             return Some(Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
         }
@@ -7540,6 +7556,13 @@ impl Payload {
         self.manifest.mode == "local-validation" && current_default_catalogue_host_matches((
             &self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256,
         ))
+    }
+
+    pub(crate) fn catalog057_credit_review_reopen_only(&self) -> bool {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        return self.manifest_sha256 == CATALOG057_CREDIT_REVIEW_RUNTIME.2;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        false
     }
 
     fn current_default_catalogue_inputs_match(&self) -> bool {

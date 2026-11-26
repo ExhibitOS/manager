@@ -423,6 +423,15 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
+        if transition.target_catalog() == crate::native_payload::WorkspaceFurnishingCatalog::DefaultCatalogue057 {
+            return if self.phase == Phase::Clean && self.admission_kind == Admission::CleanReopen
+                && self.restore.is_none()
+            {
+                Ok(None)
+            } else {
+                Err(err(ERROR))
+            };
+        }
         if transition.is_current52_interrupted_recovery() {
             return if self.phase == Phase::Active && self.admission_kind == Admission::CleanReopen && self.restore.is_none() {
                 Ok(None)
@@ -1591,6 +1600,66 @@ mod tests {
             private_codec_manifest_sha256: None,
         });
         assert!(prior.transition_restore(step).is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog057_credit_review_requires_the_directed_clean_same_owner_transition() {
+        let source = "cd821e1710d12ff5342431e537fde7b576426dfc1d3361ea004175ab51bc8899";
+        let target = "4c2ba03ef04ab0b282e0c38161b5fc942e52e71580d35190e433b7cc71a0a604";
+        let step = FurnishingTransition::from_manifests((source, target)).unwrap();
+        assert!(FurnishingTransition::from_manifests((target, source)).is_none());
+        assert!(FurnishingTransition::from_manifests((target, target)).is_none());
+        assert!(FurnishingTransition::from_manifests(("a", target)).is_none());
+        assert!(FurnishingTransition::from_manifests((source, "a")).is_none());
+
+        let catalog_binding = |generation, (commit, producer, manifest): (&str, &str, &str)| {
+            let mut binding = binding(generation);
+            binding.catalog = 57;
+            binding.source_commit = commit.into();
+            binding.producer_sha256 = producer.into();
+            binding.payload_manifest_sha256 = manifest.into();
+            binding
+        };
+        let mut prior = catalog_binding(NEXT, step.source());
+        prior.phase = Phase::Clean;
+        prior.previous_generation = Some(GENERATION.into());
+        prior.admission_kind = Admission::CleanReopen;
+        let clean = prior.clone();
+        let next = catalog_binding(LATER, step.target());
+
+        let mut old_reopen = catalog_binding(LATER, step.source());
+        old_reopen.consume(&prior).unwrap();
+        assert_eq!(old_reopen.admission_kind, Admission::CleanReopen);
+        assert!(next.clone().consume(&prior).is_err());
+
+        let mut foreign = next.clone();
+        foreign.owner.principal_id = GENERATION.into();
+        assert!(foreign.consume_furnishing_transition(&prior, step).is_err());
+        let mut moved = next.clone();
+        moved.physical.root_inode += 1;
+        assert!(moved.consume_furnishing_transition(&prior, step).is_err());
+        let mut wrong_tuple = next.clone();
+        wrong_tuple.producer_sha256 = "a".repeat(64);
+        assert!(wrong_tuple.consume_furnishing_transition(&prior, step).is_err());
+        let mut interrupted = prior.clone();
+        interrupted.phase = Phase::Active;
+        assert!(next.clone().consume_furnishing_transition(&interrupted, step).is_err());
+        let mut newly_initialized = prior.clone();
+        newly_initialized.admission_kind = Admission::FreshEmpty;
+        newly_initialized.previous_generation = None;
+        assert!(next.clone().consume_furnishing_transition(&newly_initialized, step).is_err());
+        assert_eq!(prior, clean);
+
+        let mut transitioned = next;
+        transitioned.consume_furnishing_transition(&prior, step).unwrap();
+        assert_eq!(transitioned.admission_kind, Admission::CleanReopen);
+        assert_eq!(transitioned.previous_generation.as_deref(), Some(NEXT));
+        transitioned.phase = Phase::Clean;
+        let mut reopen = catalog_binding(GENERATION, step.target());
+        reopen.consume(&transitioned).unwrap();
+        assert!(catalog_binding(GENERATION, step.target())
+            .consume_furnishing_transition(&transitioned, step).is_err());
     }
 
     #[test]

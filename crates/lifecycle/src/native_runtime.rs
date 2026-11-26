@@ -1816,16 +1816,28 @@ impl Session {
     fn workspace_furnishing_start(&self, prior: Option<&Binding>) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
-        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057
-            && (self.normal_oex_selected || self.transition_fence.is_some()
-                || prior.is_some_and(|binding| binding.phase != Phase::Clean || binding.restore.is_some()
-                    || !binding.matches_catalog_tuple(57, (
-                        &self.payload.context().source_commit,
-                        self.payload.producer_sha256(),
-                        &self.payload.context().manifest_sha256,
-                    ))))
-        {
-            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057 {
+            let context = self.payload.context();
+            let target = (context.source_commit.as_str(), self.payload.producer_sha256(),
+                context.manifest_sha256.as_str());
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            let reviewed_trial = self.furnishing_transition_trial.as_ref().is_some_and(|(trial, step)| {
+                !self.normal_oex_selected && self.transition_fence.is_some() && step.target() == target
+                    && FurnishingTransition::from_manifests((step.source().2, target.2)) == Some(*step)
+                    && trial.source_binding(*step).is_ok_and(|source| prior == Some(source))
+            });
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+            let reviewed_trial = false;
+            let successor_without_clean_reopen = self.payload.catalog057_credit_review_reopen_only()
+                && prior.is_none_or(|binding| binding.admission_kind != Admission::CleanReopen);
+            if !reviewed_trial
+                && (self.normal_oex_selected || self.transition_fence.is_some()
+                    || successor_without_clean_reopen
+                    || prior.is_some_and(|binding| binding.phase != Phase::Clean || binding.restore.is_some()
+                        || !binding.matches_catalog_tuple(57, target)))
+            {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
         }
         if catalog == WorkspaceFurnishingCatalog::CurrentRail053 {
             self.check_native_observation_fence()?;
