@@ -1254,10 +1254,17 @@ const STOCK_V6_DEFAULT_CATALOGUE_RUNTIME: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
-const SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME: RuntimeTuple = (
+pub(crate) const SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME: RuntimeTuple = (
     "9e16cf602de2d5483d9694764f1a702214a244bb",
     "9d675f6b50a0f774f071454182246524aec99ff7db3706421b1e00d97bfa0f52",
     "1afcb72faf53cfc69b22c6460f4457dcd32abd45cb01f470a8594e689af77af9",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const CATALOG057_STOCK_PUBLICATION_RUNTIME: RuntimeTuple = (
+    "de1643e9da02fe15b57f6fdf25e1ce628e171269",
+    SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME.1,
+    "173961831db2972e72d39a94f3bb3f93618fbd576a0c94b4efd944d9e2c3fced",
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
@@ -1279,6 +1286,7 @@ pub(crate) fn current_default_catalogue_host_matches(tuple: (&str, &str, &str)) 
     return CURRENT_DEFAULT_CATALOGUE_PAIR.0 == tuple
         || STOCK_V6_DEFAULT_CATALOGUE_RUNTIME == tuple
         || SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME == tuple
+        || CATALOG057_STOCK_PUBLICATION_RUNTIME == tuple
         || RECORDED_FLOOR_DEFAULT_RUNTIME == tuple
         || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -1293,6 +1301,7 @@ pub(crate) fn current_default_catalogue_manifest_matches(manifest: &str) -> bool
     return CURRENT_DEFAULT_CATALOGUE_PAIR.0.2 == manifest
         || STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2 == manifest
         || SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME.2 == manifest
+        || CATALOG057_STOCK_PUBLICATION_RUNTIME.2 == manifest
         || RECORDED_FLOOR_DEFAULT_RUNTIME.2 == manifest
         || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME.2 == manifest;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -2073,6 +2082,7 @@ pub(crate) fn catalog45_startup_recovery(pair: (&str, &str)) -> Option<Catalog45
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
+        || manifest == CATALOG057_STOCK_PUBLICATION_RUNTIME.2
         || CATALOG39_UPGRADE_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_EXB_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_RESTORE_PROVENANCE_TARGET.is_some_and(|target| target.2 == manifest)
@@ -2253,6 +2263,13 @@ impl FurnishingTransition {
     }
 
     pub(crate) fn from_manifests(pair: (&str, &str)) -> Option<Self> {
+        if pair == (SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME.2, CATALOG057_STOCK_PUBLICATION_RUNTIME.2) {
+            return Some(Self::SameCatalog {
+                source: SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME,
+                target: CATALOG057_STOCK_PUBLICATION_RUNTIME,
+                catalog: WorkspaceFurnishingCatalog::DefaultCatalogue057,
+            });
+        }
         if let Some((source, target)) = r285_greek_thumbnail_trace_runtime_pair(pair) {
             return Some(Self::SameCatalog { source, target, catalog: WorkspaceFurnishingCatalog::CombinedThumbnails052 });
         }
@@ -3100,6 +3117,43 @@ pub(crate) mod normal_oex_release_declaration_tests {
         assert!(!current_default_catalogue_host_matches((source, CURRENT_DEFAULT_CATALOGUE_PAIR.0.1, manifest)));
         assert!(!current_default_catalogue_host_matches((source, producer, STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2)));
         assert!(!current_default_catalogue_manifest_matches(&manifest.to_ascii_uppercase()));
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn catalog057_publication_admits_only_the_exact_forward_maintenance_pair() {
+        let source = SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME;
+        let target = CATALOG057_STOCK_PUBLICATION_RUNTIME;
+        let step = FurnishingTransition::from_manifests((source.2, target.2)).unwrap();
+        assert_eq!(step.source(), source);
+        assert_eq!(step.target(), target);
+        assert_eq!(step.target_catalog(), WorkspaceFurnishingCatalog::DefaultCatalogue057);
+        assert!(current_default_catalogue_host_matches(target));
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(target.2));
+        assert!(saved_workspace_transition_target(target.2));
+        assert!(!saved_workspace_transition_target(source.2));
+        assert!(!current_default_catalogue_host_matches((source.0, target.1, target.2)));
+        assert!(FurnishingTransition::from_manifests((target.2, source.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((target.2, target.2)).is_none());
+        assert!(FurnishingTransition::from_manifests((STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2, target.2)).is_none());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires named reads of both exact sealed Catalog057 endpoints"]
+    fn catalog057_publication_maintenance_reads_exact_sealed_ordinary_endpoints() {
+        let source = std::env::var_os("EXHIBITOS_TEST_CATALOG057_PUBLICATION_SOURCE").unwrap();
+        let target = std::env::var_os("EXHIBITOS_TEST_CATALOG057_PUBLICATION_TARGET").unwrap();
+        let prior = Payload::open_saved_workspace_transition(Path::new(&source)).unwrap();
+        let next = Payload::open_saved_workspace_transition(Path::new(&target)).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+        assert_eq!(prior.manifest_sha256, SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME.2);
+        assert_eq!(next.manifest_sha256, CATALOG057_STOCK_PUBLICATION_RUNTIME.2);
+        assert!(!prior.catalog057_stock_publication_reopen_only());
+        assert!(next.catalog057_stock_publication_reopen_only());
+        assert!(!prior.normal_oex_selected_input().unwrap());
+        assert!(!next.normal_oex_selected_input().unwrap());
+        assert_eq!(prior.workspace_furnishing_ledger(catalog).unwrap(), next.workspace_furnishing_ledger(catalog).unwrap());
     }
 
     #[test]
@@ -7479,6 +7533,16 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
+        if [SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME.2, CATALOG057_STOCK_PUBLICATION_RUNTIME.2]
+            .contains(&context.manifest_sha256.as_str())
+        {
+            let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+            if payload.workspace_furnishing_catalog()? != Some(catalog) || payload.normal_oex_selected_input()? {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+            payload.workspace_furnishing_ledger(catalog)?;
+            return Ok(payload);
+        }
         if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&(
             &*context.source_commit, payload.producer_sha256(), &*context.manifest_sha256
         )) {
@@ -7564,6 +7628,13 @@ impl Payload {
         self.manifest.mode == "local-validation" && current_default_catalogue_host_matches((
             &self.manifest.source_commit, self.producer_sha256(), &self.manifest_sha256,
         ))
+    }
+
+    pub(crate) fn catalog057_stock_publication_reopen_only(&self) -> bool {
+        #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+        return self.manifest_sha256 == CATALOG057_STOCK_PUBLICATION_RUNTIME.2;
+        #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+        false
     }
 
     fn current_default_catalogue_inputs_match(&self) -> bool {

@@ -17,6 +17,18 @@ final class PassiveCeilingRailRuntimeTests: XCTestCase {
         XCTAssertFalse(AuthoringAPI.supportsCurrentDefaultCatalogueRuntime(manifest: manifest.uppercased()))
     }
 
+    func testCatalog057StockPublicationSuccessorUsesExactOrdinaryAdmission() {
+        let manifest = "173961831db2972e72d39a94f3bb3f93618fbd576a0c94b4efd944d9e2c3fced"
+        #if DEBUG && os(macOS)
+        XCTAssertTrue(AuthoringAPI.supportsCurrentDefaultCatalogueRuntime(manifest: manifest))
+        XCTAssertTrue(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        #else
+        XCTAssertFalse(AuthoringAPI.supportsCurrentDefaultCatalogueRuntime(manifest: manifest))
+        XCTAssertFalse(AuthoringAPI.supportsOrdinarySavedHeadStaticRuntime(manifest: manifest))
+        #endif
+        XCTAssertFalse(AuthoringAPI.supportsCurrentDefaultCatalogueRuntime(manifest: manifest.uppercased()))
+    }
+
     func testSelectedFindBoundsSuccessorRetainsExistingFeatures() {
         let qualified = "899c866846127b435794ecc4b07ea8e69328a2432450189ab31eb9b88a43cb59"
         XCTAssertTrue(AuthoringAPI.supportsPassiveCeilingRailRuntime(manifest: qualified))

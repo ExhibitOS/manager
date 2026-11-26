@@ -1066,6 +1066,15 @@ impl FurnishingTransitionTrial {
         let guard = FurnishingTransitionWriterGuard::acquire_existing(&service.root)?;
         let prior = self.source_binding(transition)?;
         let (workspace_id, tenant_id, principal_id) = service.personal_identity()?;
+        if transition.target_catalog() == WorkspaceFurnishingCatalog::DefaultCatalogue057 {
+            use crate::installations::native_publication_custody::{
+                catalog057_custody_owner, check_retained_catalog057_stage,
+            };
+            if !catalog057_custody_owner((&workspace_id, &tenant_id, &principal_id)) {
+                return Err(err(furnishing_lifecycle::ERROR));
+            }
+            check_retained_catalog057_stage(&service.root, &prior.generation)?;
+        }
         if prior.physical != guard.identity()? || prior.owner != (FurnishingOwner {
             workspace_id, tenant_id, principal_id, owner_uid: unsafe { libc::geteuid() },
         }) {
@@ -1383,6 +1392,32 @@ pub(crate) fn check_interrupted_root(root: &Path) -> Result<()> {
 #[cfg(debug_assertions)]
 pub(crate) fn check_cold_checkpoint_root(root: &Path) -> Result<()> {
     check_cold_transition_root(root, None)
+}
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+pub(crate) fn check_cold_catalog057_publication_custody(
+    service: &LifecycleService, source: &Payload, writer: &FurnishingTransitionWriterGuard,
+    generation: &str,
+) -> Result<()> {
+    let invalid = || err("NATIVE_PUBLICATION_STAGE_CUSTODY_UNCONFIRMED");
+    check_cold_checkpoint_root(&service.root)?;
+    let current = current_run(&service.root)?.ok_or_else(invalid)?;
+    let binding = current.furnishing.filter(|binding| current.id == generation
+        && binding.generation == generation && binding.phase == Phase::Clean
+        && binding.admission_kind == Admission::CleanReopen && binding.restore.is_none())
+        .ok_or_else(invalid)?;
+    let context = source.context();
+    let owner = service.personal_identity()?;
+    if !binding.matches_catalog_tuple(57, (&context.source_commit, source.producer_sha256(), &context.manifest_sha256))
+        || binding.physical != writer.identity()?
+        || (&binding.owner.workspace_id, &binding.owner.tenant_id, &binding.owner.principal_id)
+            != (&owner.0, &owner.1, &owner.2)
+        || binding.owner.owner_uid != unsafe { libc::geteuid() }
+    {
+        return Err(invalid());
+    }
+    unconsumed_furnishing_completion(&service.root, &binding)?;
+    Ok(())
 }
 
 #[cfg(debug_assertions)]
@@ -1816,16 +1851,33 @@ impl Session {
     fn workspace_furnishing_start(&self, prior: Option<&Binding>) -> Result<Option<FurnishingStart>> {
         use std::os::unix::fs::MetadataExt;
         let Some(catalog) = self.payload.workspace_furnishing_catalog()? else { return Ok(None); };
-        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057
-            && (self.normal_oex_selected || self.transition_fence.is_some()
-                || prior.is_some_and(|binding| binding.phase != Phase::Clean || binding.restore.is_some()
-                    || !binding.matches_catalog_tuple(57, (
-                        &self.payload.context().source_commit,
-                        self.payload.producer_sha256(),
-                        &self.payload.context().manifest_sha256,
-                    ))))
-        {
-            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        if catalog == WorkspaceFurnishingCatalog::DefaultCatalogue057 {
+            let context = self.payload.context();
+            let target = (context.source_commit.as_str(), self.payload.producer_sha256(), context.manifest_sha256.as_str());
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            let reviewed_trial = self.furnishing_transition_trial.as_ref().is_some_and(|(trial, step)| {
+                !self.normal_oex_selected && self.transition_fence.is_some() && step.target() == target
+                    && FurnishingTransition::from_manifests((step.source().2, target.2)) == Some(*step)
+                    && trial.source_binding(*step).is_ok_and(|source| prior == Some(source))
+            });
+            #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
+            let reviewed_trial = false;
+            if !reviewed_trial
+                && (self.normal_oex_selected || self.transition_fence.is_some()
+                    || (self.payload.catalog057_stock_publication_reopen_only()
+                        && prior.is_none_or(|binding| binding.admission_kind != Admission::CleanReopen))
+                    || prior.is_some_and(|binding| binding.phase != Phase::Clean || binding.restore.is_some()
+                        || !binding.matches_catalog_tuple(57, target)))
+            {
+                return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+            }
+            #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+            if self.payload.catalog057_stock_publication_reopen_only() {
+                let owner = self.service.personal_identity()?;
+                if !crate::installations::native_publication_custody::catalog057_custody_owner((&owner.0, &owner.1, &owner.2)) {
+                    return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+                }
+            }
         }
         if catalog == WorkspaceFurnishingCatalog::CurrentRail053 {
             self.check_native_observation_fence()?;

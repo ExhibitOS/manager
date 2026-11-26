@@ -1156,10 +1156,17 @@ impl Host {
             });
             #[cfg(not(target_os = "macos"))]
             let guard_diagnostic = false;
-            if (transition_entry || guard_diagnostic) && !self.workspace_v5_maintenance_only {
+            #[cfg(target_os = "macos")]
+            let cold_catalog057_maintenance = matches!(&request.command, UiCommand::NativeMaintenance {
+                maintenance: Input::RetainCatalog057FailedPublicationStage { .. }
+                    | Input::PrivatizeCatalog057TrustCache { .. }, ..
+            });
+            #[cfg(not(target_os = "macos"))]
+            let cold_catalog057_maintenance = false;
+            if (transition_entry || guard_diagnostic || cold_catalog057_maintenance) && !self.workspace_v5_maintenance_only {
                 return Err(err("NATIVE_PROTOCOL_INVALID"));
             }
-            if self.workspace_v5_maintenance_only && !guard_diagnostic && !matches!(
+            if self.workspace_v5_maintenance_only && !guard_diagnostic && !cold_catalog057_maintenance && !matches!(
                 &request.command,
                 UiCommand::Context | UiCommand::NativeStatus { .. } |
                 UiCommand::NativeMaintenance { maintenance: Input::CreateKey { .. }, .. } |
@@ -1407,6 +1414,29 @@ impl Host {
                 let payload=Payload::open(&self.resources)?;
                 return serde_json::to_value(payload.normal_oex_027_selected_input()?).map_err(|_|err("STATE_INVALID"));
             }
+            #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+            if matches!(&maintenance, Input::RetainCatalog057FailedPublicationStage { .. }
+                | Input::PrivatizeCatalog057TrustCache { .. })
+            {
+                let state = self.state.lock().map_err(|_| err("NATIVE_HOST_UNAVAILABLE"))?;
+                if state.busy || state.session.is_some() || state.selected_oex
+                    || self.worker.is_some() || self.exporter.active() || self.hoster.active()
+                    || self.exporter.detail_held(&selection_token)?
+                {
+                    return Err(err("BUSY"));
+                }
+                return match &maintenance {
+                    Input::RetainCatalog057FailedPublicationStage { source_payload } =>
+                        self.controller.retain_catalog057_failed_publication_stage(
+                            &selection_token, source_payload, &self.resources,
+                        ),
+                    Input::PrivatizeCatalog057TrustCache { source_payload, proof } =>
+                        self.controller.privatize_catalog057_trust_cache(
+                            &selection_token, source_payload, &self.resources, proof,
+                        ),
+                    _ => Err(err("NATIVE_PROTOCOL_INVALID")),
+                };
+            }
             #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
             if let Input::RetainAbandonedOrdinaryPublicationStage { proof } = &maintenance {
                 if self.exporter.detail_held(&selection_token)? { return Err(err("BUSY")); }
@@ -1430,6 +1460,9 @@ impl Host {
                 Input::CheckOexWorkspace => Err(err("NATIVE_PROTOCOL_INVALID")),
                 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions))]
                 Input::RetainAbandonedOrdinaryPublicationStage { .. } => Err(err("NATIVE_PROTOCOL_INVALID")),
+                #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+                Input::RetainCatalog057FailedPublicationStage { .. }
+                | Input::PrivatizeCatalog057TrustCache { .. } => Err(err("NATIVE_PROTOCOL_INVALID")),
                 Input::CreateKey { path } => {
                     self.controller.create_backup_key(&selection_token, &path)?;
                     Ok(Value::Null)

@@ -17,6 +17,13 @@ pub enum Input {
     CheckOexWorkspace,
     #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
     RetainAbandonedOrdinaryPublicationStage { proof: super::native_publication_custody::Input },
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    RetainCatalog057FailedPublicationStage { source_payload: PathBuf },
+    #[cfg(all(target_os = "macos", feature = "workspace-v5-owner-validation", debug_assertions))]
+    PrivatizeCatalog057TrustCache {
+        source_payload: PathBuf,
+        proof: super::native_publication_custody::trust_cache::Proof,
+    },
     Select { id: String, acknowledged: bool },
     StageRestore {
         source: PathBuf,
