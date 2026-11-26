@@ -566,9 +566,10 @@ PRIVATE_RUN/output. After verifying the assembly receipt and its exact signed
 bundle, invoke `Contents/MacOS/ExhibitOSManager` directly in the terminal
 with the standard `--authoring-cli` or `--export-cli` arguments for those paths.
 The local build refuses other entry points, relocated bundles and other
-profiles. It keeps the standard managed profile, owner and live capability
-checks. The headless preview, fixed GUI validation and release assembly
-retain their existing purposes.
+profiles. It rechecks the static app and nested Helper seals with
+Security.framework before starting the Helper. It keeps the standard managed
+profile, owner and live capability checks. The headless preview, fixed GUI
+validation and release assembly retain their existing purposes.
 
 ## Rectangular portal registration
 

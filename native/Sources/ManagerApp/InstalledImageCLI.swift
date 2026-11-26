@@ -3,6 +3,9 @@ import Darwin
 import Dispatch
 import Foundation
 import ManagerCore
+#if EXHIBITOS_LOCAL_INSTALLED_CLI
+import Security
+#endif
 
 #if EXHIBITOS_LOCAL_INSTALLED_CLI && !DEBUG
 #error("The local installed CLI is a debug-only build")
@@ -47,7 +50,8 @@ struct ManagerEntryPoint {
 
 enum InstalledImageCLI {
     #if EXHIBITOS_LOCAL_INSTALLED_CLI
-    static func localValidationRuntime(_ marker: Any, bundle: URL, arguments: [String]) -> String? {
+    static func localValidationRuntime(_ marker: Any, bundle: URL, arguments: [String],
+                                       verifyCode: (URL, String, Bool) -> Bool = verifyLocalCode) -> String? {
         guard let fields = marker as? [String: String],
               Set(fields.keys) == ["version", "root", "runtimeManifestSHA256"],
               fields["version"] == "org.exhibitos.manager.local-installed-cli/v1",
@@ -57,6 +61,10 @@ enum InstalledImageCLI {
               bundle.resolvingSymlinksInPath().path == bundle.path,
               let operation = arguments.first, ["--authoring-cli", "--export-cli"].contains(operation),
               privateLocalDirectory(root) else { return nil }
+        let helper = bundle.appendingPathComponent("Contents/Helpers/exhibitos-native")
+        guard helper.resolvingSymlinksInPath().path == helper.path,
+              verifyCode(bundle, "org.exhibitos.manager", true),
+              verifyCode(helper, "org.exhibitos.manager.native", false) else { return nil }
         if Array(arguments.dropFirst()) != ["--help"] {
             let profile = root + "/profile", output = root + "/output"
             guard Array(arguments.dropFirst()) == ["--profile", profile, "--output-root", output],
@@ -69,6 +77,24 @@ enum InstalledImageCLI {
               info.st_size > 0, info.st_size <= 16 * 1024 * 1024,
               let bytes = try? Data(contentsOf: manifest), NativeAutomationSession.digest(bytes) == digest else { return nil }
         return digest
+    }
+
+    private static func verifyLocalCode(_ path: URL, identifier: String, nested: Bool) -> Bool {
+        var staticCode: SecStaticCode?
+        var information: CFDictionary?
+        let options = kSecCSCheckAllArchitectures | kSecCSStrictValidate | (nested ? kSecCSCheckNestedCode : 0)
+        guard SecStaticCodeCreateWithPath(path as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode,
+              SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: options), nil) == errSecSuccess,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation),
+                                            &information) == errSecSuccess,
+              let sealed = information as? [String: Any],
+              sealed[kSecCodeInfoIdentifier as String] as? String == identifier,
+              let flags = sealed[kSecCodeInfoFlags as String] as? NSNumber,
+              flags.uint32Value & SecCodeSignatureFlags.adhoc.rawValue != 0 else { return false }
+        return sealed[kSecCodeInfoEntitlements as String] == nil
+            && sealed[kSecCodeInfoEntitlementsDict as String] == nil
+            && sealed[kSecCodeInfoTeamIdentifier as String] == nil
     }
 
     private static func privateLocalDirectory(_ path: String) -> Bool {
