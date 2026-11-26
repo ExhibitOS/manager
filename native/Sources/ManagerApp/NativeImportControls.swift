@@ -68,7 +68,7 @@ struct NativeImportControls: View {
                         }
                     }
                     else if let name = model.transfer?.fileName { Text("저장한 요청: \(name)").textSelection(.enabled) }
-                    if !model.ordinaryUnknownModel && !model.freshImageSourceSelected {
+                    if !model.ordinaryUnknownModel && !model.initialImageSourceSelected {
                         TextField("파일 1단위의 길이 (m)", value: $model.importScale, format: .number)
                             .disabled(model.transfer?.intent != nil)
                     }
@@ -78,7 +78,7 @@ struct NativeImportControls: View {
                     if model.importJob == nil || model.importJob?.state == "uploading" {
                         Button("파일 검사 시작·계속") { Task { await submitFile() } }
                             .disabled(model.metadataDirty || model.selected == nil || model.importFile == nil || model.transfer == nil
-                                || model.inspectedReferencePending || (!model.ordinaryUnknownModel && !model.freshImageSourceSelected && (!model.importScale.isFinite || model.importScale <= 0)))
+                                || model.inspectedReferencePending || (!model.ordinaryUnknownModel && !model.initialImageSourceSelected && (!model.importScale.isFinite || model.importScale <= 0)))
                     }
                 }
                 if submittingFile && (model.importJob == nil || model.importJob?.state == "uploading") {
@@ -120,7 +120,7 @@ struct NativeImportControls: View {
                             Button("감상용 파일 재시도") { Task { await model.changeImport(.retry) } }
                                 .disabled(!job.canRetry || !model.modelDerivationEnabled || model.modelWorkerPending)
                         }
-                        if !job.terminal, model.transfer?.permitsOrdinaryJobAction(job.id, selectedArtworkId: model.selected?.id) == true {
+                        if !job.terminal, model.permitsOrdinaryImportAction(job.id) {
                             Button("검사 중단") { Task { await model.changeImport(.cancel) } }
                         }
                         if model.canPrepareDifferentImport { Button("다른 파일 검사 준비") { Task { await model.clearImport() } }.disabled(model.intakeDrainPending || model.modelWorkerPending || job.modelDerivation?.workerDrained == false) }
@@ -139,15 +139,15 @@ struct NativeImportControls: View {
                         DisclosureGroup("검사 오류 상세") { Text(code).textSelection(.enabled) }
                     }
                 }
-                if !model.hasProductImageTransfer, belongs, model.hasFreshImageTransfer {
-                    if let prepared = model.freshImageReady, let full = prepared.full {
+                if !model.hasProductImageTransfer, belongs, model.hasInitialImageTransfer {
+                    if let prepared = model.initialImageReady, let full = prepared.full {
                         Text("감상용 PNG · \(full.width) × \(full.height)")
                         if let coarse = prepared.coarse { Text("경량 PNG · \(coarse.width) × \(coarse.height)") }
                         Text("선택한 원본 파일은 별도로 보관합니다.").foregroundStyle(.secondary)
                         if model.selected?.approvedAssetId != full.assetId {
                             Toggle("준비된 파일과 저장한 작품 정보·권리를 확인했습니다", isOn: $model.approvalAcknowledged)
                             Button("작품 정보·권리 승인") { Task { await model.approveImportedArtwork() } }
-                                .disabled(!model.approvalAcknowledged || model.metadataDirty || !model.freshImagePreparationAvailable)
+                                .disabled(!model.approvalAcknowledged || model.metadataDirty || !model.initialImageApprovalAvailable)
                         } else {
                             Text("저장한 이 버전은 전시에서 사용할 수 있습니다.").foregroundStyle(.secondary)
                         }

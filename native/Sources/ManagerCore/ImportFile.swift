@@ -15,10 +15,12 @@ public struct NativeUploadState: Codable, Sendable {
     public var compactVariant: NativeCompactModelVariantTransfer? = nil
     public var gpuVariant: NativeGPUModelPreparationTransfer? = nil
 
-    public func permitsOrdinaryJobAction(_ jobId: String, selectedArtworkId: String?) -> Bool {
+    public func permitsOrdinaryJobAction(_ jobId: String, selectedArtworkId: String?,
+                                         allowsInitialProductImage: Bool = false) -> Bool {
         guard gpuVariant == nil, let intent, let selectedArtworkId else { return false }
         return self.jobId == jobId && intent.artworkId == selectedArtworkId && intent.hayesOriginal == nil
-            && (intent.productImagePreparation == nil || intent.productImagePreparation?.isFresh == true)
+            && (intent.productImagePreparation == nil || intent.productImagePreparation?.isFresh == true
+                || (allowsInitialProductImage && intent.productImagePreparation?.isInitialProductImage == true))
     }
 
     public func holdsRequiredModelMetadata(for artworkId: String?) -> Bool {

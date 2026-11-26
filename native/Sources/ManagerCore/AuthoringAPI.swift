@@ -1251,7 +1251,7 @@ public actor AuthoringAPI {
         #endif
     }
 
-    nonisolated static func supportsCatalog057InitialProductImageRuntime(manifest: String?) -> Bool {
+    public nonisolated static func supportsCatalog057InitialProductImageRuntime(manifest: String?) -> Bool {
         #if DEBUG && os(macOS)
         manifest == "cd821e1710d12ff5342431e537fde7b576426dfc1d3361ea004175ab51bc8899"
         #else
@@ -1259,7 +1259,7 @@ public actor AuthoringAPI {
         #endif
     }
 
-    var admitsInitialProductImagePreparation: Bool {
+    public var admitsInitialProductImagePreparation: Bool {
         nativeSession && !authenticationBusy
             && (Self.supportsR285InitialProductImageRuntime(manifest: nativeRuntimeManifestSHA256)
                 || Self.supportsR285ClosingArticulationRuntime(manifest: nativeRuntimeManifestSHA256)

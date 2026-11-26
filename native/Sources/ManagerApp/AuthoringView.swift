@@ -65,6 +65,7 @@ final class AuthoringModel: ObservableObject {
     @Published private(set) var intakeWritesAvailable = false
     private var intakeTarget: (artworkID: String, revision: Int)?
     private var intakeWorkspaceCheck: (() async throws -> Bool)?
+    private var readIntakeDocument: (() async throws -> NativeDocumentState)?
     var hasWaitingIntake: Bool { intakeRows.contains { $0.result == nil && $0.id != activeIntakeID } }
     private var requiredModelPreparationEnabled: Bool {
         session?.modelPreparationProfile == NativeModelPreparationIntent.profile
@@ -214,7 +215,7 @@ final class AuthoringModel: ObservableObject {
         guard let intent = transfer?.intent, let job = importJob, let selected else { return false }
         return job.modelDerivation?.currentOutputs(in: selected, intent: intent, job: job) == true
     }
-    var importFormats: String { (jpegImportsEnabled || freshImagePreparationAvailable) ? "GLB·PNG·JPEG" : "GLB·PNG" }
+    var importFormats: String { importJPEGAvailable ? "GLB·PNG·JPEG" : "GLB·PNG" }
     var jpegOriginalStored: Bool {
         guard transfer?.intent?.mime == "image/jpeg", transfer?.intent?.derived?.valid == true,
               let job = importJob, job.state == "approved", transfer?.jobId?.lowercased() == job.id.lowercased(),
@@ -241,7 +242,7 @@ final class AuthoringModel: ObservableObject {
     var metadataDirty: Bool { editing && (draft != original || selected == nil || creationYearText != (original.creationYear.map(String.init) ?? "")) }
     var intakeMetadataHeld: Bool {
         transfer?.holdsRequiredModelMetadata(for: selected?.id) == true
-            || (hasFreshImageTransfer && transfer?.intent?.artworkId == selected?.id)
+            || (hasInitialImageTransfer && transfer?.intent?.artworkId == selected?.id)
     }
 
     var dirty: Bool { metadataDirty || (importFile != nil && transfer?.intent == nil) }
@@ -289,7 +290,7 @@ final class AuthoringModel: ObservableObject {
         guard !busy, !dirty, !hasWaitingIntake else { api = nil; session = nil; failure = AuthoringFailure("LOCAL_SCOPE_CHANGED"); return false }
         importPoll?.cancel(); importPoll = nil; importPollID = nil
         transfer = nil; importJob = nil; importFile = nil; compactJob = nil; modelOriginalInspection = nil; provisionalHeight = nil; assetId = ""
-        intakeRows = []; activeIntakeID = nil; intakeTarget = nil; intakeWritesAvailable = false; intakeWorkspaceCheck = nil
+        intakeRows = []; activeIntakeID = nil; intakeTarget = nil; intakeWritesAvailable = false; intakeWorkspaceCheck = nil; readIntakeDocument = nil
         readTransfer = nil; writeTransfer = nil; readGPUPreviewResources = nil
         scope = next; session = nil; artworks = []; artists = []; selected = nil; editing = false
         subject = configuration.subject ?? ""
@@ -393,7 +394,7 @@ final class AuthoringModel: ObservableObject {
     func save() async {
         await action {
             guard let api else { return }
-            guard !intakeMetadataHeld else { throw AuthoringFailure(hasFreshImageTransfer ? "IMPORT_ACTIVE" : "IMPORT_MODEL_METADATA_HELD") }
+            guard !intakeMetadataHeld else { throw AuthoringFailure(hasInitialImageTransfer ? "IMPORT_ACTIVE" : "IMPORT_MODEL_METADATA_HELD") }
             guard !inspectedReferencePending else { throw AuthoringFailure("ARTWORK_DISPLAY_REFERENCE_INVALID") }
             if let selected, let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil,
                selected.id.lowercased() == intent.artworkId.lowercased() {
@@ -427,8 +428,9 @@ final class AuthoringModel: ObservableObject {
 }
 
 extension AuthoringModel {
-    func bindIntakeWorkspace(available: Bool, recheck: @escaping () async throws -> Bool) {
-        intakeWritesAvailable = available; intakeWorkspaceCheck = recheck
+    func bindIntakeWorkspace(available: Bool, readDocument: @escaping () async throws -> NativeDocumentState,
+                             recheck: @escaping () async throws -> Bool) {
+        intakeWritesAvailable = available; intakeWorkspaceCheck = recheck; readIntakeDocument = readDocument
     }
     func chooseIntakeFiles() async {
         guard canSelectIntake, intakeRows.count < 8, let window = NSApp.keyWindow else { return }
@@ -554,23 +556,100 @@ extension AuthoringModel {
         guard let writeTransfer else { throw AuthoringFailure("IMPORT_STORE_REQUIRED") }
         transfer = try await writeTransfer(state)
     }
-    var hasProductImageTransfer: Bool { transfer?.intent?.productImagePreparation?.isFresh == false }
-    var hasFreshImageTransfer: Bool { transfer?.intent?.productImagePreparation?.isFresh == true }
+    var hasProductImageTransfer: Bool {
+        transfer?.intent?.productImagePreparation != nil && !hasInitialImageTransfer
+    }
+    var hasInitialImageTransfer: Bool {
+        guard let preparation = transfer?.intent?.productImagePreparation else { return false }
+        return preparation.isFresh || (isCatalog057InitialImageRuntime && preparation.isInitialProductImage)
+    }
+    func permitsOrdinaryImportAction(_ jobId: String) -> Bool {
+        transfer?.permitsOrdinaryJobAction(jobId, selectedArtworkId: selected?.id,
+            allowsInitialProductImage: catalog057InitialJPEGAvailable) == true
+    }
     var freshImagePreparationAvailable: Bool {
         available && intakeWritesAvailable && api != nil
             && session?.nativeFreshImagePreparationProfile == NativeProductImagePreparationIntent.freshProfileID
     }
-    var freshImageSourceSelected: Bool {
-        hasFreshImageTransfer || (freshImagePreparationAvailable && transfer?.intent == nil
-            && selected?.approvedRevision == nil && selected?.approvedAssetId == nil
-            && ["image/jpeg", "image/png"].contains(importFile?.mime ?? ""))
+    private var isCatalog057InitialImageRuntime: Bool {
+        AuthoringAPI.supportsCatalog057InitialProductImageRuntime(manifest: runtimeManifestSHA256)
     }
-    var freshImageReady: NativeProductImagePreparationStatus? {
-        guard let transfer, let intent = transfer.intent, let preparation = intent.productImagePreparation, preparation.isFresh,
-              let job = importJob, transfer.jobId == job.id, let status = job.productImagePreparation,
+    private var catalog057InitialJPEGAvailable: Bool {
+        available && intakeWritesAvailable && api != nil && intakeTarget == nil && isCatalog057InitialImageRuntime
+            && session?.nativeInitialProductImagePreparationProfile == NativeProductImagePreparationIntent.profileID
+    }
+    private var catalog057InitialJPEGSelectable: Bool {
+        guard catalog057InitialJPEGAvailable, !hasUnknownSourceUnits, draft.displayReference == nil else { return false }
+        if let intent = transfer?.intent {
+            return intent.productImagePreparation?.isInitialProductImage == true && selected?.id == intent.artworkId
+        }
+        return selected?.archived != true && selected?.approvedRevision == nil && selected?.approvedAssetId == nil
+    }
+    private var importJPEGAvailable: Bool {
+        jpegImportsEnabled || freshImagePreparationAvailable || catalog057InitialJPEGSelectable
+    }
+    var initialImageApprovalAvailable: Bool {
+        transfer?.intent?.productImagePreparation?.isInitialProductImage == true
+            ? catalog057InitialJPEGAvailable : freshImagePreparationAvailable
+    }
+    var initialImageSourceSelected: Bool {
+        hasInitialImageTransfer || (transfer?.intent == nil
+            && selected?.approvedRevision == nil && selected?.approvedAssetId == nil
+            && ((freshImagePreparationAvailable && ["image/jpeg", "image/png"].contains(importFile?.mime ?? ""))
+                || (catalog057InitialJPEGSelectable && importFile?.mime == "image/jpeg")))
+    }
+    var initialImageReady: NativeProductImagePreparationStatus? {
+        guard hasInitialImageTransfer, let transfer, let intent = transfer.intent,
+              let preparation = intent.productImagePreparation, let job = importJob, transfer.jobId == job.id,
+              let status = job.productImagePreparation,
+              (!preparation.isInitialProductImage || status.coarse != nil),
               status.validatesReady(intent: intent, preparation: preparation, job: job,
                                     workspaceID: transfer.workspaceId, principalID: transfer.principalId) else { return nil }
         return status
+    }
+
+    private func checkInitialImageAdmission(_ preparation: NativeProductImagePreparationIntent,
+                                            api: AuthoringAPI, state: NativeUploadState) async throws {
+        if preparation.isFresh {
+            guard freshImagePreparationAvailable, await api.admitsFreshImagePreparation else {
+                throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
+            }
+            return
+        }
+        guard preparation.isInitialProductImage else { throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE") }
+        try await checkCatalog057InitialJPEGAdmission(api: api, state: state)
+    }
+
+    private func checkCatalog057InitialJPEGAdmission(api: AuthoringAPI, state: NativeUploadState) async throws {
+        let generation = importStatusGeneration
+        guard catalog057InitialJPEGAvailable, let readIntakeDocument,
+              await api.admitsInitialProductImagePreparation else {
+            throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
+        }
+        let document = try await readIntakeDocument()
+        guard !document.dirty, document.pending == nil, (document.draft == nil) == (document.etag == nil),
+              document.workspaceId == state.workspaceId,
+              document.tenantId == state.tenantId, document.principalId == state.principalId else {
+            throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+        }
+        if let draft = document.draft, let etag = document.etag {
+            let policy = try await api.nativeViewportPolicy(draft.id)
+            guard policy.etag == etag, policy.confirmsOrdinaryDraft else {
+                throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
+            }
+            let current = try await readIntakeDocument()
+            guard current.revision == document.revision, !current.dirty, current.pending == nil,
+                  current.etag == etag, current.workspaceId == state.workspaceId,
+                  current.tenantId == state.tenantId, current.principalId == state.principalId else {
+                throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+            }
+        }
+        guard await api.admitsInitialProductImagePreparation, self.api === api,
+              generation == importStatusGeneration, transfer?.revision == state.revision,
+              session?.tenantId == state.tenantId, session?.userId == state.principalId,
+              catalog057InitialJPEGAvailable else {
+            throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+        }
     }
 
     var productImagePreparationAvailable: Bool {
@@ -684,11 +763,14 @@ extension AuthoringModel {
         let hayes = usesHayesOriginal
         let unknown = inspectUnknown || ordinaryUnknownModel
         guard !busy, available, session != nil, activeIntakeID == nil || transfer?.intent != nil else { return }
+        let panelGeneration = importStatusGeneration
+        let panelArtwork = (selected?.id, selected?.revision)
+        let initialOnlyJPEG = !jpegImportsEnabled && !freshImagePreparationAvailable && catalog057InitialJPEGSelectable
         let panel = NSOpenPanel()
         panel.title = "작품 파일 가져오기"
-        panel.message = (jpegImportsEnabled || freshImagePreparationAvailable) ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 감상용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
+        panel.message = importJPEGAvailable ? "GLB·PNG·JPEG 파일을 선택하세요. 최대 32 MiB이며 JPEG 원본을 유지하고 감상용 PNG를 준비합니다." : "GLB 또는 PNG 파일을 선택하세요. 최대 32 MiB를 지원합니다."
         if largeModelPreparationEnabled {
-            panel.message = (jpegImportsEnabled || freshImagePreparationAvailable)
+            panel.message = importJPEGAvailable
                 ? "GLB는 최대 64 MiB, PNG·JPEG는 최대 32 MiB를 지원합니다."
                 : "GLB는 최대 64 MiB, PNG는 최대 32 MiB를 지원합니다."
         }
@@ -699,16 +781,20 @@ extension AuthoringModel {
         } else if unknown {
             panel.message = "원본 단위를 확인할 수 없는 GLB를 선택하세요. 구조와 좌표 범위를 확인합니다."
         } else {
-            panel.allowedContentTypes += [.png] + ((jpegImportsEnabled || freshImagePreparationAvailable) ? [.jpeg] : [])
+            panel.allowedContentTypes += [.png] + (importJPEGAvailable ? [.jpeg] : [])
         }
         guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.identifier?.rawValue == "manager" }) else { return }
         let response = await withCheckedContinuation { continuation in
             panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
         }
         guard response == .OK, let url = panel.url else { return }
+        let needsInitialJPEGFence = initialOnlyJPEG && ["jpg", "jpeg"].contains(url.pathExtension.lowercased())
+        guard !needsInitialJPEGFence || (panelGeneration == importStatusGeneration
+            && panelArtwork == (selected?.id, selected?.revision)) else { return }
         await action {
+            let readGeneration = importStatusGeneration
             let read = Task {
-                try await ImportFileSnapshot.load(url, allowJPEG: !hayes && (jpegImportsEnabled || freshImagePreparationAvailable),
+                try await ImportFileSnapshot.load(url, allowJPEG: !hayes && importJPEGAvailable,
                     byteLimit: hayes ? NativeHayesOriginalIntent.sourceBytes : ImportFileSnapshot.limit,
                     allowLargeModel: !hayes && largeModelPreparationEnabled)
             }
@@ -720,6 +806,16 @@ extension AuthoringModel {
                 guard snapshot.mime == "model/gltf-binary", snapshot.sha256 == NativeHayesOriginalIntent.sourceSHA256,
                       snapshot.data.count == NativeHayesOriginalIntent.sourceBytes else {
                     throw AuthoringFailure("IMPORT_INTENT_CHANGED")
+                }
+            }
+            if snapshot.mime == "image/jpeg", needsInitialJPEGFence {
+                guard readGeneration == importStatusGeneration, panelArtwork == (selected?.id, selected?.revision),
+                      catalog057InitialJPEGSelectable, let api, let state = transfer else {
+                    throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
+                }
+                try await checkCatalog057InitialJPEGAdmission(api: api, state: state)
+                guard readGeneration == importStatusGeneration, panelArtwork == (selected?.id, selected?.revision) else {
+                    throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
                 }
             }
             if let intent = transfer?.intent, !snapshot.matches(intent) { throw AuthoringFailure("IMPORT_INTENT_CHANGED") }
@@ -794,14 +890,25 @@ extension AuthoringModel {
                     }
                 }
             }
-            if freshImageSourceSelected {
-                guard freshImagePreparationAvailable, await api.admitsFreshImagePreparation,
-                      try await intakeWorkspaceCheck?() == true else {
-                    throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
-                }
+            if initialImageSourceSelected {
                 let preparation = state.intent?.productImagePreparation
-                    ?? .init(artworkRevision: selected.revision, fresh: true)
-                try preparation.checkFreshArtwork(selected, rights: draft.rights)
+                    ?? .init(artworkRevision: selected.revision, fresh: freshImagePreparationAvailable,
+                             initialApproval: !freshImagePreparationAvailable)
+                try await checkInitialImageAdmission(preparation, api: api, state: state)
+                let current: NativeArtwork
+                if preparation.isInitialProductImage {
+                    guard file.mime == "image/jpeg" else { throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE") }
+                    current = try await api.artwork(selected.id)
+                    guard current.id == selected.id, current.metadata == selected.metadata else {
+                        throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
+                    }
+                } else {
+                    guard try await intakeWorkspaceCheck?() == true else {
+                        throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
+                    }
+                    current = selected
+                }
+                try preparation.checkFreshArtwork(current, rights: draft.rights)
                 let intent = state.intent ?? NativeImportIntent(artworkId: selected.id, mime: file.mime, sha256: file.sha256,
                     bytes: file.data.count, scaleMeters: 1, rights: draft.rights, productImagePreparation: preparation)
                 guard generation == importStatusGeneration, currentScope == scope, self.api === api,
@@ -881,10 +988,9 @@ extension AuthoringModel {
         guard artwork.id == intent.artworkId, let metadata = artwork.metadata else {
             throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
         }
-        if let preparation = intent.productImagePreparation, preparation.isFresh {
-            guard freshImagePreparationAvailable, await api.admitsFreshImagePreparation else {
-                throw AuthoringFailure("IMAGE_PREPARATION_UNAVAILABLE")
-            }
+        if let preparation = intent.productImagePreparation, preparation.isInitialApproval {
+            guard let state = transfer else { throw AuthoringFailure("IMPORT_CONTEXT_CHANGED") }
+            try await checkInitialImageAdmission(preparation, api: api, state: state)
             try preparation.checkFreshArtwork(artwork, rights: intent.rights, approvedAssetId: importJob?.assetId)
             return
         }
@@ -911,8 +1017,9 @@ extension AuthoringModel {
         let tenant = session?.tenantId, principal = session?.userId
         @MainActor func current() -> Bool {
             generation == importStatusGeneration && currentScope == scope && available && isScopeCurrent()
-                && (intent.productImagePreparation?.isFresh == true
-                    ? (freshImagePreparationAvailable && manifest == runtimeManifestSHA256)
+                && (intent.productImagePreparation?.isInitialApproval == true
+                    ? ((intent.productImagePreparation?.isInitialProductImage == true
+                        ? catalog057InitialJPEGAvailable : freshImagePreparationAvailable) && manifest == runtimeManifestSHA256)
                     : (intent.mime != "image/jpeg" || ((intent.productImagePreparation == nil
                         ? jpegImportsEnabled : productImagePreparationAvailable) && manifest == runtimeManifestSHA256)))
                 && (intent.modelDerivation == nil || (modelDerivationEnabled && manifest == runtimeManifestSHA256))
@@ -998,7 +1105,7 @@ extension AuthoringModel {
     func changeImport(_ change: NativeImportAction) async {
         await action {
             guard let api, let job = importJob,
-                  transfer?.permitsOrdinaryJobAction(job.id, selectedArtworkId: selected?.id) == true else {
+                  permitsOrdinaryImportAction(job.id) else {
                 throw AuthoringFailure("IMPORT_CONTEXT_CHANGED")
             }
             if change == .retry {
@@ -1015,7 +1122,7 @@ extension AuthoringModel {
                     }
                     importJob = observed
                 }
-                if intent.modelPreparation != nil || intent.productImagePreparation?.isFresh == true {
+                if intent.modelPreparation != nil || intent.productImagePreparation?.isInitialApproval == true {
                     let observed = try await api.importJob(job.id)
                     guard observed.id == job.id, transfer?.jobId == job.id, transfer?.intent == intent,
                           observed.canRetry, observed.confirmsIntakeDrain(for: intent) else {
@@ -1023,6 +1130,10 @@ extension AuthoringModel {
                     }
                     importJob = observed
                 }
+            }
+            if change == .cancel, let state = transfer, let preparation = state.intent?.productImagePreparation,
+               preparation.isInitialProductImage {
+                try await checkInitialImageAdmission(preparation, api: api, state: state)
             }
             if let intent = transfer?.intent, intent.derived?.recipe.colourConversion != nil {
                 guard iccImportAdmitted else { throw AuthoringFailure("IMPORT_ICC_UNAVAILABLE") }
@@ -1098,7 +1209,7 @@ extension AuthoringModel {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
                 }
             }
-            if let intent = state.intent, intent.productImagePreparation?.isFresh == true,
+            if let intent = state.intent, intent.productImagePreparation?.isInitialApproval == true,
                let job = completed, job.state == "approved" {
                 guard let api else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
                 let artwork = try await api.artwork(intent.artworkId)
@@ -1160,7 +1271,7 @@ extension AuthoringModel {
     func approveImportedArtwork() async {
         await action {
             guard !hasProductImageTransfer, let api, let selected, !metadataDirty, approvalAcknowledged,
-                  hasFreshImageTransfer ? freshImageReady?.full != nil
+                  hasInitialImageTransfer ? initialImageReady?.full != nil
                     : selected.assets.contains(where: { $0.id == assetId && $0.state == "approved" }) else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
             let generation = importStatusGeneration
             if usesHayesOriginal {
@@ -1184,16 +1295,21 @@ extension AuthoringModel {
                 guard jpegOriginalStored else { throw AuthoringFailure("IMPORT_RECEIPT_INVALID") }
             }
             let approved: NativeArtwork
-            if let transfer, let intent = transfer.intent, intent.productImagePreparation?.isFresh == true {
-                guard freshImagePreparationAvailable, intent.artworkId == selected.id, let jobId = transfer.jobId else {
+            if let transfer, let intent = transfer.intent, let preparation = intent.productImagePreparation,
+               preparation.isInitialApproval {
+                guard intent.artworkId == selected.id, let jobId = transfer.jobId, let reviewed = initialImageReady else {
                     throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED")
                 }
+                try await checkInitialImageAdmission(preparation, api: api, state: transfer)
                 let job = try await api.importJob(jobId)
                 let current = try await api.artwork(selected.id)
-                guard self.transfer?.revision == transfer.revision, self.selected?.id == selected.id,
-                      job.id == jobId, job.productImagePreparation?.serverReceipt?.sha256 == freshImageReady?.serverReceipt?.sha256,
+                guard generation == importStatusGeneration, self.api === api,
+                      self.transfer?.revision == transfer.revision, self.selected?.id == selected.id,
+                      !metadataDirty, approvalAcknowledged,
+                      job.id == jobId, job.productImagePreparation?.serverReceipt?.sha256 == reviewed.serverReceipt?.sha256,
                       current.metadata == selected.metadata else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
-                approved = try await api.approveFreshImage(job, request: intent, current: current, workspaceID: transfer.workspaceId)
+                approved = try await api.approveFreshImage(job, request: intent, current: current, workspaceID: transfer.workspaceId,
+                    expectedFullSHA256: reviewed.full?.sha256, expectedCoarseSHA256: reviewed.coarse?.sha256)
             } else if let intent = transfer?.intent, intent.modelPreparation != nil, intent.artworkId == selected.id {
                 guard requiredModelPreparationEnabled, let jobId = transfer?.jobId else { throw AuthoringFailure("APPROVAL_REVIEW_REQUIRED") }
                 let job = try await api.importJob(jobId)
@@ -1655,7 +1771,7 @@ struct NativeAuthoringView: View {
                 if model.editing {
                     NativeImportControls(model: model, ready: ready, mode: mode, openArtwork: { select($0) })
                     if model.intakeMetadataHeld {
-                        Text(model.hasFreshImageTransfer
+                        Text(model.hasInitialImageTransfer
                              ? "준비된 파일의 검토를 마친 뒤 작품 정보를 편집할 수 있습니다."
                              : AuthoringFailure("IMPORT_MODEL_METADATA_HELD").localizedDescription).foregroundStyle(.secondary)
                     }
