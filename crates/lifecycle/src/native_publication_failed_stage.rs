@@ -182,6 +182,26 @@ impl InstallationController {
         source_path: &Path,
         target_path: &Path,
     ) -> Result<Value> {
+        self.maintain_catalog057_failed_publication(token, source_path, target_path, None)
+    }
+
+    pub(crate) fn privatize_catalog057_trust_cache(
+        &self,
+        token: &str,
+        source_path: &Path,
+        target_path: &Path,
+        proof: &trust_cache::Proof,
+    ) -> Result<Value> {
+        self.maintain_catalog057_failed_publication(token, source_path, target_path, Some(proof))
+    }
+
+    fn maintain_catalog057_failed_publication(
+        &self,
+        token: &str,
+        source_path: &Path,
+        target_path: &Path,
+        trust_cache_proof: Option<&trust_cache::Proof>,
+    ) -> Result<Value> {
         let source = Payload::open_saved_workspace_transition(source_path)?;
         let target = Payload::open_saved_workspace_transition(target_path)?;
         let from = source.context();
@@ -251,6 +271,32 @@ impl InstallationController {
                 INTENT_SHA,
             )?;
             let intent: Value = serde_json::from_slice(&intent).map_err(|_| refused())?;
+            if let Some(proof) = trust_cache_proof {
+                let check_history = || -> Result<()> {
+                    profile_pin.check()?;
+                    check_cold_catalog057_publication_custody(
+                        service, &source, &writer, GENERATION,
+                    )?;
+                    check_retained_catalog057_stage(&service.root, GENERATION)?;
+                    verified_bytes(
+                        &profile.root,
+                        &format!(".automation-saved-head-export-{REQUEST}.json"),
+                        8192,
+                        INTENT_SHA,
+                    )?;
+                    Ok(())
+                };
+                check_history()?;
+                let proof_sha256 = digest(&serde_json::to_vec(proof).map_err(|_| refused())?);
+                let changed = trust_cache::privatize(&service.root, DEVICE, proof)?;
+                check_history()?;
+                return Ok(serde_json::json!({
+                    "generation": GENERATION, "sourceManifestSha256": SOURCE_MANIFEST,
+                    "etag": ETAG, "cacheEntries": 7, "changedEntries": changed,
+                    "proofSha256": proof_sha256,
+                }));
+            }
+
             let output = proof_root.join("sdk-output");
             private_directory(&output)?;
             let metadata = fs::metadata(&output).map_err(|_| refused())?;

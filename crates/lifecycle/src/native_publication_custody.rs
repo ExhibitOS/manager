@@ -289,6 +289,9 @@ impl Plan {
     }
 }
 
+#[path = "native_catalog057_trust_cache.rs"]
+pub(crate) mod trust_cache;
+
 #[path = "native_publication_failed_stage.rs"]
 mod failed_stage;
 pub(crate) use failed_stage::{
