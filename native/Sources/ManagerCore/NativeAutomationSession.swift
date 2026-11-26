@@ -76,6 +76,7 @@ public actor NativeAutomationSession {
     private let installedAuthoringCLI: Bool
     private let installedImageCLI: Bool
     private let installedExportRootIdentity: (dev_t, ino_t)?
+    private let localRuntimeManifest: String?
     private let requiresReleaseImageRuntime: Bool
     private let inputs: [String: String]
     private let capability = UUID().uuidString.lowercased()
@@ -188,6 +189,7 @@ public actor NativeAutomationSession {
         self.root = outputRoot; self.inputs = inputs; self.installedImageCLI = false
         self.installedAuthoringCLI = false
         self.installedExportRootIdentity = nil
+        self.localRuntimeManifest = nil
         self.requiresReleaseImageRuntime = false
         self.helper = helper; self.profile = profile; self.temporaryRoot = temporaryRoot; self.ports = ports
         self.workspaceV5ValidationRuntime = workspaceV5ValidationRuntime
@@ -225,15 +227,18 @@ public actor NativeAutomationSession {
                       exportRoot: nil)
     }
 
-    public init(installedExportCLIHelper helper: URL, profile: URL, outputRoot: URL) throws {
-        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot)
+    public init(installedExportCLIHelper helper: URL, profile: URL, outputRoot: URL, localRuntimeManifest: String? = nil) throws {
+        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true,
+                      exportRoot: outputRoot, localRuntimeManifest: localRuntimeManifest)
     }
 
-    public init(installedAuthoringCLIHelper helper: URL, profile: URL, outputRoot: URL) throws {
-        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true, exportRoot: outputRoot, authoring: true)
+    public init(installedAuthoringCLIHelper helper: URL, profile: URL, outputRoot: URL, localRuntimeManifest: String? = nil) throws {
+        try self.init(installedHelper: helper, profile: profile, requireExistingManagedProfile: true,
+                      exportRoot: outputRoot, authoring: true, localRuntimeManifest: localRuntimeManifest)
     }
 
-    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?, authoring: Bool = false) throws {
+    private init(installedHelper helper: URL, profile: URL, requireExistingManagedProfile: Bool, exportRoot: URL?,
+                 authoring: Bool = false, localRuntimeManifest: String? = nil) throws {
         var metadata = stat()
         if lstat(profile.path, &metadata) != 0 && errno == ENOENT {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
@@ -248,6 +253,7 @@ public actor NativeAutomationSession {
         self.installedAuthoringCLI = authoring
         self.installedImageCLI = exportRoot == nil
         self.installedExportRootIdentity = try exportRoot.map { try Self.exportRootIdentity($0, profile: profile) }
+        self.localRuntimeManifest = localRuntimeManifest
         self.requiresReleaseImageRuntime = requireExistingManagedProfile
         self.workspaceV5ValidationRuntime = nil
         self.workspaceV6ValidationRuntime = nil
@@ -347,6 +353,9 @@ public actor NativeAutomationSession {
               let configured = stopped.configuration, configured.kind == "personal",
               stopped.restoration.map({ $0.state == "activated" }) ?? true else {
             throw BridgeFailure("IMAGE_CLI_PERSONAL_WORKSPACE_REQUIRED")
+        }
+        if let localRuntimeManifest, localRuntimeManifest != configured.manifestSha256 {
+            throw BridgeFailure("AUTOMATION_SCOPE_CHANGED")
         }
         guard installedAuthoringCLI || installedExportRootIdentity != nil || stopped.freshImageReleaseConfigured == true
                 || (!requiresReleaseImageRuntime

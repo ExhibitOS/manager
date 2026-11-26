@@ -541,6 +541,36 @@ the receipt and checked binding readback, separately from exhibition Save or
 export. Source tests and compilation alone do not qualify a packaged runtime,
 actual WebKit rendering/cancellation, durable consumption or Viewer output.
 
+### Local installed CLI qualification
+
+For an isolated developer run, build the existing debug `ExhibitOSManager`
+product with `-Xswiftc -DEXHIBITOS_LOCAL_INSTALLED_CLI` and the matching debug
+Helper. Use the reviewed v1 JSON build receipt with `managerCommit`,
+`managerTree`, `appSHA256`, `helperSHA256`, and `runtimeManifestSHA256`.
+The exact ordinary local-validation runtime and its managed personal owner
+still need the existing Helper admission and live operation permissions.
+
+From that clean checkout, use `scripts/package-native-preview.py`
+with `--local-cli-receipt RECEIPT --local-cli-receipt-sha256 SHA256`,
+`--swift-executable APP_BINARY --rust-helper HELPER_BINARY`,
+`--runtime-payload RUNTIME` and
+`--app "PRIVATE_RUN/ExhibitOS Manager Local CLI.app"`. Use absolute canonical
+paths. PRIVATE_RUN must be a new, empty, owner-only mode-0700 directory
+outside installation directories. The recipe checks the pinned build and
+runtime inventory, signs the two code objects ad hoc without entitlements,
+and verifies the signed bundle before publishing it at that path.
+
+Prepare the isolated managed personal owner at PRIVATE_RUN/profile using the
+existing supported preparation path, with a separate mode-0700
+PRIVATE_RUN/output. After verifying the assembly receipt and its exact signed
+bundle, invoke `Contents/MacOS/ExhibitOSManager` directly in the terminal
+with the standard `--authoring-cli` or `--export-cli` arguments for those paths.
+The local build refuses other entry points, relocated bundles and other
+profiles. It rechecks the static app and nested Helper seals with
+Security.framework before starting the Helper. It keeps the standard managed
+profile, owner and live capability checks. The headless preview, fixed GUI
+validation and release assembly retain their existing purposes.
+
 ## Rectangular portal registration
 
 The native furnishing form can explicitly request `rectangular-portal-v1` for

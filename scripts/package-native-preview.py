@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import itertools
 import json
+import mmap
 import os
 import plistlib
 import shutil
@@ -25,6 +26,11 @@ def require(condition, message):
 def digest(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def local_cli_executable(path):
+    with path.open('rb') as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as contents:
+        return contents.find(LOCAL_CLI_MARKER.encode('ascii')) >= 0
 
 
 def read_pinned_json(path, sha256, limit):
@@ -68,6 +74,17 @@ def verify_release_tree(root, rows, *, runtime=False):
     require(actual == set(expected), 'Release tree inventory is incomplete')
 
 
+def verify_build_inputs(args, source_root, receipt):
+    git = lambda *argv: subprocess.check_output(['git', '-C', str(source_root), *argv], text=True).strip()
+    require(git('rev-parse', 'HEAD') == receipt['managerCommit']
+            and git('rev-parse', 'HEAD^{tree}') == receipt['managerTree']
+            and not git('status', '--porcelain'), 'Manager checkout does not match build receipt')
+    for binary, field in [(args.swift_executable, 'appSHA256'), (args.rust_helper, 'helperSHA256')]:
+        require(binary.is_absolute() and binary.resolve(strict=True) == binary and binary.is_file()
+                and binary.stat().st_mode & 0o111 and digest(binary) == receipt[field],
+                'Manager executable does not match build receipt')
+
+
 def release_inputs(args, source_root):
     receipt_path = args.release_receipt
     require(receipt_path.is_absolute() and receipt_path.resolve(strict=True) == receipt_path
@@ -87,14 +104,8 @@ def release_inputs(args, source_root):
             and not args.app.exists() and not args.app.is_symlink()
             and not any(args.app.is_relative_to(root) for root in (args.runtime_payload, args.legal_resources)),
             'Release output must be a new canonical app path outside its inputs')
-    git = lambda *argv: subprocess.check_output(['git', '-C', str(source_root), *argv], text=True).strip()
-    require(git('rev-parse', 'HEAD') == receipt['managerCommit']
-            and git('rev-parse', 'HEAD^{tree}') == receipt['managerTree']
-            and not git('status', '--porcelain'), 'Manager checkout does not match release build receipt')
-    for binary, field in [(args.swift_executable, 'appSHA256'), (args.rust_helper, 'helperSHA256')]:
-        require(binary.is_absolute() and binary.resolve(strict=True) == binary and binary.is_file()
-                and binary.stat().st_mode & 0o111 and digest(binary) == receipt[field],
-                'Manager executable does not match release build receipt')
+    verify_build_inputs(args, source_root, receipt)
+    require(not local_cli_executable(args.swift_executable), 'Local CLI executable cannot be assembled for release')
     manifest = read_pinned_json(args.runtime_payload / 'manifest.json', receipt['runtimeManifestSHA256'], 16 * 1024 ** 2)
     require(manifest.get('format') == 'exhibitos-native-runtime-v1' and manifest.get('platform') == 'darwin-arm64'
             and manifest.get('mode') == 'release' and manifest.get('redistributionQualified') is True
@@ -117,6 +128,8 @@ APP_EXECUTABLE = 'Contents/MacOS/ExhibitOSManager'
 HELPER_EXECUTABLE = 'Contents/Helpers/exhibitos-native'
 RUNTIME_PATH = 'Contents/Resources/native-runtime'
 SEAL_METADATA = {'Contents/_CodeSignature', 'Contents/_CodeSignature/CodeResources'}
+LOCAL_CLI_APP = 'ExhibitOS Manager Local CLI.app'
+LOCAL_CLI_MARKER = 'org.exhibitos.manager.local-installed-cli/v1'
 
 
 def app_inventory(root):
@@ -198,7 +211,8 @@ def seal_release(argv):
     metadata = plistlib.loads((source / 'Contents/Info.plist').read_bytes())
     require(metadata.get('CFBundleIdentifier') == APP_ID
             and metadata.get('CFBundleExecutable') == Path(APP_EXECUTABLE).name
-            and 'ExhibitOSValidationProfile' not in metadata, 'Unexpected Swift app identity')
+            and 'ExhibitOSValidationProfile' not in metadata
+            and 'ExhibitOSLocalInstalledCLI' not in metadata, 'Unexpected Swift app identity')
     runtime = source / RUNTIME_PATH
     manifest = read_pinned_json(runtime / 'manifest.json', inputs['runtimeManifestSHA256'], 16 * 1024 ** 2)
     require(manifest.get('format') == 'exhibitos-native-runtime-v1' and manifest.get('platform') == 'darwin-arm64'
@@ -216,6 +230,7 @@ def seal_release(argv):
         mode, _, sha = before[path]
         require(stat.S_ISREG(mode) and mode & 0o111 and sha == inputs[field],
                 f'Staged executable does not match build receipt: {path}')
+    require(not local_cli_executable(source / APP_EXECUTABLE), 'Local CLI executable cannot be sealed for release')
     staged_bytes = sum(entry[1] for entry in before.values() if stat.S_ISREG(entry[0]))
     require('Contents/_CodeSignature' not in before and staged_bytes == assembly['stagedBytes']
             and 0 < staged_bytes <= RELEASE_STAGE_MAX_BYTES
@@ -253,118 +268,212 @@ def seal_release(argv):
     }))
 
 
-if sys.argv[1:2] == ['seal-release']:
-    seal_release(sys.argv[2:])
-    raise SystemExit(0)
+
+def verify_local_cli_seal(path, identifier, *, bundle=False):
+    codesign('--verify', '--strict', '--all-architectures',
+             *(['--deep'] if bundle else []), path)
+    report = codesign('--display', '--verbose=4', '--entitlements', ':-', path)
+    lines = report.splitlines()
+    require(f'Identifier={identifier}' in lines and 'Signature=adhoc' in lines
+            and all(not line.startswith('Authority=') for line in lines)
+            and not any(line.startswith('TeamIdentifier=') and line != 'TeamIdentifier=not set' for line in lines)
+            and '<key>' not in report, f'Unexpected local CLI signature or entitlements: {identifier}')
 
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--app', required=True, type=Path)
-parser.add_argument('--swift-executable', required=True, type=Path)
-parser.add_argument('--rust-helper', required=True, type=Path)
-mode = parser.add_mutually_exclusive_group(required=True)
-mode.add_argument('--validation-profile', type=Path)
-mode.add_argument('--release-receipt', type=Path)
-parser.add_argument('--legal-inventory', type=Path)
-parser.add_argument('--runtime-payload', type=Path)
-parser.add_argument('--legal-resources', type=Path)
-args = parser.parse_args()
-assert args.app.is_absolute() and not args.app.exists(), 'New absolute app path required'
-source_root = Path(__file__).resolve().parent.parent
-release = release_inputs(args, source_root) if args.release_receipt else None
-if not release:
-    assert args.validation_profile.is_absolute() and not args.validation_profile.exists(), 'New isolated profile required'
-    assert args.legal_inventory is None, 'Legal inventory is a release input'
-assert args.swift_executable.is_file() and args.rust_helper.is_file(), 'Built executables required'
-if args.legal_resources:
-    assert args.legal_resources.is_absolute() and args.legal_resources.is_dir(), 'Absolute legal resources directory required'
-    assert (args.legal_resources / 'index.html').is_file(), 'Legal source and notice index required'
-    assert not args.app.is_relative_to(args.legal_resources), 'App must be outside legal resources'
-    assert not args.legal_resources.is_symlink() and all(not p.is_symlink() and (p.is_file() or p.is_dir()) for p in args.legal_resources.rglob('*')), 'Legal resources must contain regular files and directories'
-contents = args.app / 'Contents'
-(contents / 'MacOS').mkdir(parents=True)
-(contents / 'Helpers').mkdir()
-(contents / 'Resources').mkdir()
-gui = contents / 'MacOS/ExhibitOSManager'
-if release:
-    shutil.copy2(args.swift_executable, gui)
-else:
-    # The fixed launcher adds the app entry and executable mode during preparation.
-    shutil.copyfile(args.swift_executable, gui)
-shutil.copy2(args.rust_helper, contents / 'Helpers/exhibitos-native')
-brand_source = source_root / 'native/Resources/Brand'
-brand = contents / 'Resources/Brand'
-brand.mkdir()
-shutil.copy2(brand_source / 'manager.icns', contents / 'Resources/manager.icns')
-for name in ['manager.png', 'studio.svg', 'cms.svg', 'THIRD-PARTY-NOTICES.txt',
-             'MDI-LICENSE.txt', 'Manrope-OFL.txt']:
-    shutil.copy2(brand_source / name, brand / name)
-# The upstream MDI notice links Apache-2.0; include the existing full project
-# license beside that unmodified attribution, without a new build dependency.
-shutil.copy2(source_root / 'LICENSE', brand / 'Apache-2.0.txt')
-if args.legal_resources:
-    shutil.copytree(args.legal_resources, contents / 'Resources/NativeRuntime-Legal')
-if args.runtime_payload:
-    assert args.runtime_payload.is_absolute() and args.runtime_payload.is_dir(), 'Absolute runtime payload required'
+def assemble_local_cli(args, source_root):
+    require(sys.platform == 'darwin', 'Local Manager CLI assembly requires macOS')
+    app, root = args.app, args.app.parent
+    require(app.name == LOCAL_CLI_APP and root.resolve(strict=True) == root
+            and not any(part.lower() == 'applications' or part.lower().endswith('.app') for part in root.parts)
+            and root.is_dir() and not any(root.iterdir()), 'Local CLI output requires a new empty private run directory')
+    metadata = root.stat()
+    require(metadata.st_uid == os.getuid() and stat.S_IMODE(metadata.st_mode) == 0o700,
+            'Local CLI run directory must be owned by the current user and mode 0700')
+    require(args.runtime_payload and args.legal_resources is None and args.legal_inventory is None,
+            'Local CLI assembly requires a local runtime without release inputs')
+    require(args.local_cli_receipt_sha256 is not None
+            and args.local_cli_receipt.resolve(strict=True) == args.local_cli_receipt,
+            'Local CLI assembly requires an exact canonical build receipt and digest')
+    receipt = read_pinned_json(args.local_cli_receipt, args.local_cli_receipt_sha256, 65_536)
+    require(set(receipt) == {'version', 'managerCommit', 'managerTree', 'appSHA256', 'helperSHA256',
+                             'runtimeManifestSHA256'} and receipt['version'] == 1,
+            'Local CLI build receipt fields are invalid')
+    verify_build_inputs(args, source_root, receipt)
+    require(local_cli_executable(args.swift_executable), 'Expected the local-only Manager debug executable')
+    runtime = args.runtime_payload
+    require(runtime.resolve(strict=True) == runtime and runtime.is_dir() and not root.is_relative_to(runtime),
+            'Local CLI runtime must be a separate canonical directory')
+    manifest_sha = receipt['runtimeManifestSHA256']
+    manifest = read_pinned_json(runtime / 'manifest.json', manifest_sha, 16 * 1024 ** 2)
+    require(manifest.get('format') == 'exhibitos-native-runtime-v1' and manifest.get('platform') == 'darwin-arm64'
+            and manifest.get('mode') == 'local-validation' and manifest.get('officialSigned') is False
+            and manifest.get('redistributionQualified') is False, 'An exact nonofficial local-validation runtime is required')
+    size = sum(row.get('bytes', 0) for row in manifest['files'])
+    size += sum(path.stat().st_size for path in (args.swift_executable, args.rust_helper))
+    require(0 < size <= RELEASE_STAGE_MAX_BYTES and shutil.disk_usage(root).free > size + 6 * 1024 ** 3,
+            'Insufficient reserved space for local CLI assembly')
+    verify_release_tree(runtime, manifest['files'], runtime=True)
+
+    with tempfile.TemporaryDirectory(prefix='.local-cli-', dir=root) as stage:
+        staged_app = Path(stage) / app.name
+        marker = {'version': LOCAL_CLI_MARKER, 'root': str(root), 'runtimeManifestSHA256': manifest_sha}
+        staged_args = argparse.Namespace(**{**vars(args), 'app': staged_app})
+        assemble(staged_args, source_root, local_cli=marker)
+        installed_runtime = staged_app / RUNTIME_PATH
+        read_pinned_json(installed_runtime / 'manifest.json', manifest_sha, 16 * 1024 ** 2)
+        verify_release_tree(installed_runtime, manifest['files'], runtime=True)
+        before = app_inventory(staged_app)
+        require(before[APP_EXECUTABLE][2] == receipt['appSHA256']
+                and before[HELPER_EXECUTABLE][2] == receipt['helperSHA256'], 'Local CLI executable changed during assembly')
+        for path, identifier in ((staged_app / HELPER_EXECUTABLE, HELPER_ID), (staged_app, APP_ID)):
+            codesign('--force', '--sign', '-', '--timestamp=none', '--identifier', identifier, path)
+        verify_local_cli_seal(staged_app / HELPER_EXECUTABLE, HELPER_ID)
+        verify_local_cli_seal(staged_app, APP_ID, bundle=True)
+        after = app_inventory(staged_app)
+        require(set(after) == set(before) | SEAL_METADATA
+                and all(after[path] == entry for path, entry in before.items()
+                        if path not in {APP_EXECUTABLE, HELPER_EXECUTABLE})
+                and all(after[path][0] == before[path][0] for path in (APP_EXECUTABLE, HELPER_EXECUTABLE)),
+                'Local CLI signing changed the assembled resources')
+        require(not app.exists() and not app.is_symlink() and set(root.iterdir()) == {Path(stage)},
+                'Local CLI output directory changed during assembly')
+        staged_app.rename(app)
+    return {'kind': 'LOCAL_INSTALLED_CLI_NOT_RELEASE_QUALIFIED', 'app': str(app), 'inputs': receipt,
+            'profile': str(root / 'profile'), 'outputRoot': str(root / 'output'),
+            'signedInventorySHA256': inventory_digest(after)}
+
+
+def assemble(args, source_root, release=None, local_cli=None):
+    contents = args.app / 'Contents'
+    (contents / 'MacOS').mkdir(parents=True)
+    (contents / 'Helpers').mkdir()
+    (contents / 'Resources').mkdir()
+    gui = contents / 'MacOS/ExhibitOSManager'
+    if release or local_cli:
+        shutil.copy2(args.swift_executable, gui)
+    else:
+        # The fixed launcher adds the app entry and executable mode during preparation.
+        shutil.copyfile(args.swift_executable, gui)
+    shutil.copy2(args.rust_helper, contents / 'Helpers/exhibitos-native')
+    brand_source = source_root / 'native/Resources/Brand'
+    brand = contents / 'Resources/Brand'
+    brand.mkdir()
+    shutil.copy2(brand_source / 'manager.icns', contents / 'Resources/manager.icns')
+    for name in ['manager.png', 'studio.svg', 'cms.svg', 'THIRD-PARTY-NOTICES.txt',
+                 'MDI-LICENSE.txt', 'Manrope-OFL.txt']:
+        shutil.copy2(brand_source / name, brand / name)
+    # The upstream MDI notice links Apache-2.0; include the existing full project
+    # license beside that unmodified attribution, without a new build dependency.
+    shutil.copy2(source_root / 'LICENSE', brand / 'Apache-2.0.txt')
+    if args.legal_resources:
+        shutil.copytree(args.legal_resources, contents / 'Resources/NativeRuntime-Legal')
+    if args.runtime_payload:
+        assert args.runtime_payload.is_absolute() and args.runtime_payload.is_dir(), 'Absolute runtime payload required'
+        if not release and not local_cli:
+            manifest = json.loads((args.runtime_payload / 'manifest.json').read_text())
+            assert manifest['mode'] == 'local-validation' and not manifest['redistributionQualified'], 'Only unqualified validation payloads belong in this preview producer'
+        shutil.copytree(args.runtime_payload, contents / 'Resources/native-runtime', symlinks=True)
+    if args.runtime_payload and not local_cli:
+        # Fixed Manager-owned public provider code; the helper checks the same
+        # source bytes compiled into it before any credential-bearing execution.
+        migration = contents / 'Resources/native-migration'
+        hosting = migration if release else contents / 'Resources/native-hosting'
+        hosting_files = ['scripts/native-hosting-runner.mjs',
+                         'vendor/deployment/src/pages-render.mjs',
+                         'vendor/deployment/src/pages-asset-hash.mjs',
+                         'vendor/deployment/src/pages-render-worker.mjs',
+                         'vendor/deployment/native-hosting-source.json']
+        # The release layout shares these two files with migration. Preview keeps
+        # the older separate hosting directory for existing validation helpers.
+        if not release:
+            hosting_files += ['vendor/deployment/src/bounded-json.mjs', 'vendor/deployment/LICENSE']
+        for name in hosting_files:
+            target = hosting / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_root / name, target)
+        for name in ['scripts/native-legacy-verify.mjs',
+                     'scripts/native-legacy-inspect.mjs',
+                     'scripts/native-legacy-apply.mjs',
+                     'scripts/native-legacy-activation-check.mjs',
+                     'vendor/platform/freeze-signature.mjs', 'vendor/platform/freeze-signature.ts',
+                     'vendor/platform/migrations.mjs', 'vendor/platform/migrations.ts',
+                     'vendor/platform/LICENSE', 'vendor/platform/native-migration-source.json',
+                     'vendor/deployment/src/bounded-json.mjs',
+                     'vendor/deployment/LICENSE', 'vendor/deployment/source.json']:
+            target = migration / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_root / name, target)
+    metadata = dict(CFBundleIdentifier='org.exhibitos.manager', CFBundleName='ExhibitOS Manager',
+                    CFBundleDisplayName='ExhibitOS Manager',
+                    CFBundlePackageType='APPL', CFBundleVersion='1', CFBundleShortVersionString='0.1.0',
+                    LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True,
+                    CFBundleIconFile='manager.icns')
+    if release or local_cli:
+        metadata['CFBundleExecutable'] = 'ExhibitOSManager'
+    if local_cli:
+        metadata['CFBundleDisplayName'] = 'ExhibitOS Manager Local CLI'
+        metadata['LSUIElement'] = True
+        metadata['ExhibitOSLocalInstalledCLI'] = local_cli
+    elif not release:
+        metadata['ExhibitOSValidationProfile'] = str(args.validation_profile)
+    with (contents / 'Info.plist').open('wb') as f:
+        plistlib.dump(metadata, f)
+
+
+def main():
+    if sys.argv[1:2] == ['seal-release']:
+        seal_release(sys.argv[2:])
+        return
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--app', required=True, type=Path)
+    parser.add_argument('--swift-executable', required=True, type=Path)
+    parser.add_argument('--rust-helper', required=True, type=Path)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--validation-profile', type=Path)
+    mode.add_argument('--release-receipt', type=Path)
+    mode.add_argument('--local-cli-receipt', type=Path)
+    parser.add_argument('--local-cli-receipt-sha256')
+    parser.add_argument('--legal-inventory', type=Path)
+    parser.add_argument('--runtime-payload', type=Path)
+    parser.add_argument('--legal-resources', type=Path)
+    args = parser.parse_args()
+    assert args.app.is_absolute() and not args.app.exists(), 'New absolute app path required'
+    source_root = Path(__file__).resolve().parent.parent
+    if args.local_cli_receipt:
+        print(json.dumps(assemble_local_cli(args, source_root)))
+        return
+    require(args.local_cli_receipt_sha256 is None, 'A local CLI receipt is required with its digest')
+    release = release_inputs(args, source_root) if args.release_receipt else None
     if not release:
-        manifest = json.loads((args.runtime_payload / 'manifest.json').read_text())
-        assert manifest['mode'] == 'local-validation' and not manifest['redistributionQualified'], 'Only unqualified validation payloads belong in this preview producer'
-    shutil.copytree(args.runtime_payload, contents / 'Resources/native-runtime', symlinks=True)
-    # Fixed Manager-owned public provider code; the helper checks the same
-    # source bytes compiled into it before any credential-bearing execution.
-    migration = contents / 'Resources/native-migration'
-    hosting = migration if release else contents / 'Resources/native-hosting'
-    hosting_files = ['scripts/native-hosting-runner.mjs',
-                     'vendor/deployment/src/pages-render.mjs',
-                     'vendor/deployment/src/pages-asset-hash.mjs',
-                     'vendor/deployment/src/pages-render-worker.mjs',
-                     'vendor/deployment/native-hosting-source.json']
-    # The release layout shares these two files with migration. Preview keeps
-    # the older separate hosting directory for existing validation helpers.
-    if not release:
-        hosting_files += ['vendor/deployment/src/bounded-json.mjs', 'vendor/deployment/LICENSE']
-    for name in hosting_files:
-        target = hosting / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_root / name, target)
-    for name in ['scripts/native-legacy-verify.mjs',
-                 'scripts/native-legacy-inspect.mjs',
-                 'scripts/native-legacy-apply.mjs',
-                 'scripts/native-legacy-activation-check.mjs',
-                 'vendor/platform/freeze-signature.mjs', 'vendor/platform/freeze-signature.ts',
-                 'vendor/platform/migrations.mjs', 'vendor/platform/migrations.ts',
-                 'vendor/platform/LICENSE', 'vendor/platform/native-migration-source.json',
-                 'vendor/deployment/src/bounded-json.mjs',
-                 'vendor/deployment/LICENSE', 'vendor/deployment/source.json']:
-        target = migration / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_root / name, target)
-metadata = dict(CFBundleIdentifier='org.exhibitos.manager', CFBundleName='ExhibitOS Manager',
-                CFBundleDisplayName='ExhibitOS Manager',
-                CFBundlePackageType='APPL', CFBundleVersion='1', CFBundleShortVersionString='0.1.0',
-                LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True,
-                CFBundleIconFile='manager.icns')
-if release:
-    metadata['CFBundleExecutable'] = 'ExhibitOSManager'
-else:
-    metadata['ExhibitOSValidationProfile'] = str(args.validation_profile)
-with (contents / 'Info.plist').open('wb') as f:
-    plistlib.dump(metadata, f)
-if release:
-    receipt, manifest, legal, size = release
-    resources = contents / 'Resources'
-    read_pinned_json(resources / 'native-runtime/manifest.json', receipt['runtimeManifestSHA256'], 16 * 1024 ** 2)
-    verify_release_tree(resources / 'native-runtime', manifest['files'], runtime=True)
-    verify_release_tree(resources / 'NativeRuntime-Legal', legal['files'])
-    require(digest(contents / 'MacOS/ExhibitOSManager') == receipt['appSHA256']
-            and digest(contents / 'Helpers/exhibitos-native') == receipt['helperSHA256'],
-            'Assembled Manager executable changed')
-    staged_size = sum(file.stat().st_size for file in args.app.rglob('*')
-                      if not file.is_symlink() and file.is_file())
-    require(staged_size <= RELEASE_STAGE_MAX_BYTES, 'Assembled release exceeds the stage limit')
-    print(json.dumps({'app': str(args.app), 'kind': 'RELEASE_ASSEMBLY_PENDING_APP_SEAL',
-                      'inputs': receipt, 'inputBytes': size, 'stagedBytes': staged_size,
-                      'stageLimitBytes': RELEASE_STAGE_MAX_BYTES,
-                      'stagedInventorySHA256': inventory_digest(app_inventory(args.app))}))
-else:
-    print(json.dumps({'app': str(args.app), 'profile': str(args.validation_profile), 'kind': 'DEVELOPMENT_PREVIEW_NOT_RELEASE_QUALIFIED'}))
+        assert args.validation_profile.is_absolute() and not args.validation_profile.exists(), 'New isolated profile required'
+        assert args.legal_inventory is None, 'Legal inventory is a release input'
+    assert args.swift_executable.is_file() and args.rust_helper.is_file(), 'Built executables required'
+    if args.legal_resources:
+        assert args.legal_resources.is_absolute() and args.legal_resources.is_dir(), 'Absolute legal resources directory required'
+        assert (args.legal_resources / 'index.html').is_file(), 'Legal source and notice index required'
+        assert not args.app.is_relative_to(args.legal_resources), 'App must be outside legal resources'
+        assert not args.legal_resources.is_symlink() and all(not p.is_symlink() and (p.is_file() or p.is_dir()) for p in args.legal_resources.rglob('*')), 'Legal resources must contain regular files and directories'
+    assemble(args, source_root, release)
+    if release:
+        receipt, manifest, legal, size = release
+        contents = args.app / 'Contents'
+        resources = contents / 'Resources'
+        read_pinned_json(resources / 'native-runtime/manifest.json', receipt['runtimeManifestSHA256'], 16 * 1024 ** 2)
+        verify_release_tree(resources / 'native-runtime', manifest['files'], runtime=True)
+        verify_release_tree(resources / 'NativeRuntime-Legal', legal['files'])
+        require(digest(contents / 'MacOS/ExhibitOSManager') == receipt['appSHA256']
+                and digest(contents / 'Helpers/exhibitos-native') == receipt['helperSHA256'],
+                'Assembled Manager executable changed')
+        staged_size = sum(file.stat().st_size for file in args.app.rglob('*')
+                          if not file.is_symlink() and file.is_file())
+        require(staged_size <= RELEASE_STAGE_MAX_BYTES, 'Assembled release exceeds the stage limit')
+        print(json.dumps({'app': str(args.app), 'kind': 'RELEASE_ASSEMBLY_PENDING_APP_SEAL',
+                          'inputs': receipt, 'inputBytes': size, 'stagedBytes': staged_size,
+                          'stageLimitBytes': RELEASE_STAGE_MAX_BYTES,
+                          'stagedInventorySHA256': inventory_digest(app_inventory(args.app))}))
+    else:
+        print(json.dumps({'app': str(args.app), 'profile': str(args.validation_profile), 'kind': 'DEVELOPMENT_PREVIEW_NOT_RELEASE_QUALIFIED'}))
+
+
+if __name__ == '__main__':
+    main()
