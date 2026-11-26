@@ -2073,6 +2073,8 @@ pub(crate) fn catalog45_startup_recovery(pair: (&str, &str)) -> Option<Catalog45
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 pub(crate) fn saved_workspace_transition_target(manifest: &str) -> bool {
     WORKSPACE_V5_SAVED_TRANSITIONS.iter().any(|(_, target)| *target == manifest)
+        || FurnishingTransition::from_manifests((STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2, manifest))
+            .is_some_and(|step| step.target_catalog() == WorkspaceFurnishingCatalog::DefaultCatalogue057)
         || CATALOG39_UPGRADE_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_EXB_TARGET.is_some_and(|target| target.2 == manifest)
         || CATALOG40_RESTORE_PROVENANCE_TARGET.is_some_and(|target| target.2 == manifest)
@@ -3125,6 +3127,40 @@ pub(crate) mod normal_oex_release_declaration_tests {
         payload.manifest.producer_sha256 = producer;
         payload.manifest_sha256 = COMBINED_THUMBNAIL_TARGET.2.into();
         assert!(payload.workspace_furnishing_catalog().is_err());
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    #[ignore = "requires both exact sealed Catalog057 transition payloads"]
+    fn catalog057_credit_review_maintenance_opens_only_the_exact_directed_endpoints() {
+        let old = std::env::var_os("EXHIBITOS_TEST_CATALOG057_CREDIT_REVIEW_SOURCE").unwrap();
+        let new = std::env::var_os("EXHIBITOS_TEST_CATALOG057_CREDIT_REVIEW_TARGET").unwrap();
+        let source = Payload::open_saved_workspace_transition(Path::new(&old)).unwrap();
+        let target = Payload::open_saved_workspace_transition(Path::new(&new)).unwrap();
+        let old_manifest = source.manifest_sha256.as_str();
+        let new_manifest = target.manifest_sha256.as_str();
+        let step = FurnishingTransition::from_manifests((old_manifest, new_manifest)).unwrap();
+        let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+        assert_eq!(step.source(), STOCK_V6_DEFAULT_CATALOGUE_RUNTIME);
+        assert_eq!(step.target(), CATALOG057_CREDIT_REVIEW_RUNTIME);
+        assert!(!saved_workspace_transition_target(old_manifest));
+        assert!(saved_workspace_transition_target(new_manifest));
+        assert!(!saved_workspace_transition_target(&"0".repeat(64)));
+        assert!(FurnishingTransition::from_manifests((new_manifest, old_manifest)).is_none());
+        assert_eq!(source.workspace_furnishing_ledger(catalog).unwrap(),
+                   target.workspace_furnishing_ledger(catalog).unwrap());
+
+        let mut wrong_role = Payload::open(Path::new(&new)).unwrap();
+        wrong_role.workspace_import = Some((WorkspaceImport::V7, true));
+        assert!(wrong_role.check_catalog057_transition_payload().is_err());
+        let mut wrong_ledger = target;
+        let migration = wrong_ledger.manifest.files.iter_mut()
+            .find(|file| file.path == CURRENT_DEFAULT_CATALOGUE_SCHEMA.0).unwrap();
+        migration.sha256 = Some("0".repeat(64));
+        assert!(wrong_ledger.check_catalog057_transition_payload().is_err());
+        let mut wrong_manifest = source;
+        wrong_manifest.manifest_sha256 = ORDINARY_RAIL_INSERTION_CHECK_RUNTIME.2.into();
+        assert!(wrong_manifest.check_catalog057_transition_payload().is_err());
     }
 
     #[test]
@@ -7471,6 +7507,14 @@ impl Payload {
     pub(crate) fn open_saved_workspace_transition(root: &Path) -> Result<Self> {
         let payload = Self::open(root)?;
         let context = payload.context();
+        if context.manifest_sha256 == STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2
+            || FurnishingTransition::from_manifests((
+                STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2, &context.manifest_sha256
+            )).is_some_and(|step| step.target_catalog() == WorkspaceFurnishingCatalog::DefaultCatalogue057)
+        {
+            payload.check_catalog057_transition_payload()?;
+            return Ok(payload);
+        }
         if [KNOWN_TRACK_AIM_TARGET, INSTALLED_CATALOG_ORIGIN_TARGET, BENCH_BASECOLOR_PREPARATION_TARGET].contains(&(
             &*context.source_commit, payload.producer_sha256(), &*context.manifest_sha256
         )) {
@@ -7537,6 +7581,16 @@ impl Payload {
             return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
         }
         Self::open_workspace_v5_validation(root, false)
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    fn check_catalog057_transition_payload(&self) -> Result<()> {
+        let catalog = WorkspaceFurnishingCatalog::DefaultCatalogue057;
+        if self.workspace_furnishing_catalog()? != Some(catalog) || self.normal_oex_selected_input()? {
+            return Err(err("NATIVE_RUNTIME_UNQUALIFIED"));
+        }
+        self.workspace_furnishing_ledger(catalog)?;
+        Ok(())
     }
 
     pub(crate) fn ordinary_hayes_release(&self) -> bool {
