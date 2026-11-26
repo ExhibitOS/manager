@@ -7,6 +7,7 @@ use std::{
 };
 
 const CACHE: &str = "default-catalogue-trust";
+const PRESERVED_ROOT: &str = "tuf-repo.github.com/root.json";
 
 struct Entry {
     path: &'static str,
@@ -14,7 +15,7 @@ struct Entry {
     bytes: u64,
 }
 
-const ENTRIES: [Entry; 7] = [
+const ENTRIES: [Entry; 8] = [
     Entry {
         path: "",
         children: &["tuf-repo.github.com"],
@@ -22,13 +23,24 @@ const ENTRIES: [Entry; 7] = [
     },
     Entry {
         path: "tuf-repo.github.com",
-        children: &["snapshot.json", "targets", "targets.json", "timestamp.json"],
+        children: &[
+            "root.json",
+            "snapshot.json",
+            "targets",
+            "targets.json",
+            "timestamp.json",
+        ],
         bytes: 0,
     },
     Entry {
         path: "tuf-repo.github.com/targets",
         children: &["trusted_root.json"],
         bytes: 0,
+    },
+    Entry {
+        path: PRESERVED_ROOT,
+        children: &[],
+        bytes: 6734,
     },
     Entry {
         path: "tuf-repo.github.com/snapshot.json",
@@ -104,7 +116,9 @@ impl Held<'_> {
     }
 
     fn modes(&self) -> (u32, u32) {
-        if self.entry.children.is_empty() {
+        if self.entry.path == PRESERVED_ROOT {
+            (0o600, 0o600)
+        } else if self.entry.children.is_empty() {
             (0o644, 0o600)
         } else {
             (0o755, 0o700)
@@ -199,7 +213,9 @@ pub(super) fn privatize(root: &Path, device: u64, proof: &Proof) -> Result<usize
                 .map_err(|_| invalid())?;
             changed += 1;
         }
-        member.file.sync_all().map_err(|_| invalid())?;
+        if member.entry.path != PRESERVED_ROOT {
+            member.file.sync_all().map_err(|_| invalid())?;
+        }
     }
     parent.check()?;
     for member in &mut held {
@@ -235,7 +251,12 @@ mod tests {
                 let (sha256, mode) = if entry.children.is_empty() {
                     let bytes = vec![42; entry.bytes as usize];
                     fs::write(&path, &bytes).unwrap();
-                    (Some(digest(&bytes)), 0o644)
+                    let mode = if entry.path == PRESERVED_ROOT {
+                        0o600
+                    } else {
+                        0o644
+                    };
+                    (Some(digest(&bytes)), mode)
                 } else {
                     private(&path);
                     (None, 0o755)
@@ -278,10 +299,18 @@ mod tests {
     #[test]
     fn exact_catalog057_trust_cache_tightens_modes_and_resumes_same_proof() {
         let fresh = Fixture::new();
+        let root_before = fresh.path(3).metadata().unwrap();
         assert_eq!(fresh.repair(&fresh.proof).unwrap(), 7);
+        let root_after = fresh.path(3).metadata().unwrap();
+        assert_eq!(root_after.ino(), root_before.ino());
+        assert_eq!(root_after.mode(), root_before.mode());
+        assert_eq!(
+            (root_after.ctime(), root_after.ctime_nsec()),
+            (root_before.ctime(), root_before.ctime_nsec())
+        );
         let fixture = Fixture::new();
         fs::set_permissions(fixture.path(0), fs::Permissions::from_mode(0o700)).unwrap();
-        fs::set_permissions(fixture.path(3), fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(fixture.path(4), fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(fixture.repair(&fixture.proof).unwrap(), 5);
         assert_eq!(fixture.repair(&fixture.proof).unwrap(), 0);
         for (index, pin) in fixture.proof.entries.iter().enumerate() {
@@ -317,7 +346,19 @@ mod tests {
         wrong.entries.swap(3, 4);
         assert!(fixture.repair(&wrong).is_err());
 
-        let last = fixture.path(6);
+        let root = fixture.path(3);
+        let mut wrong_root = fixture.proof.clone();
+        wrong_root.entries[3].sha256 = Some("0".repeat(64));
+        assert!(fixture.repair(&wrong_root).is_err());
+        wrong_root = fixture.proof.clone();
+        wrong_root.entries[3].inode += 1;
+        assert!(fixture.repair(&wrong_root).is_err());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(fixture.repair(&fixture.proof).is_err());
+        assert_eq!(fixture.mode(3), 0o644);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let last = fixture.path(7);
         fs::set_permissions(&last, fs::Permissions::from_mode(0o664)).unwrap();
         assert!(fixture.repair(&fixture.proof).is_err());
         fs::set_permissions(&last, fs::Permissions::from_mode(0o644)).unwrap();

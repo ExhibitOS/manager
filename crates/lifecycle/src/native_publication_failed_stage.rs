@@ -25,6 +25,10 @@ const INTENT_SHA: &str = "e40dcd6f12e04b3fa9d7dd0417f9836d17dfde5277d92ff4162d97
 const FAILED_LOG_SHA: &str = "a7fe8fb188252e6803cb209847406eb119b73c7512d11c2f622a1b2d25bece28";
 const REVIEWED_DOCUMENT_SHA: &str =
     "2e43ded1f0cc33a4f45854ef88126a0e77eeb53761bdcecc23900a6d2ebb7e72";
+// Canonical proof of the eight exact cache entries observed under the cold
+// owner fence. The sole already-private root entry is preservation-only.
+const TRUST_CACHE_PROOF_SHA: &str =
+    "0d4152dd6748b6b5edd407872820c05f472545ab5f17ef2686391bdc509d9976";
 const DEVICE: u64 = 16_777_244;
 const PROFILE_INODE: u64 = 52_850_051;
 const STAGE_INODE: u64 = 52_852_527;
@@ -288,11 +292,14 @@ impl InstallationController {
                 };
                 check_history()?;
                 let proof_sha256 = digest(&serde_json::to_vec(proof).map_err(|_| refused())?);
+                if proof_sha256 != TRUST_CACHE_PROOF_SHA {
+                    return Err(refused());
+                }
                 let changed = trust_cache::privatize(&service.root, DEVICE, proof)?;
                 check_history()?;
                 return Ok(serde_json::json!({
                     "generation": GENERATION, "sourceManifestSha256": SOURCE_MANIFEST,
-                    "etag": ETAG, "cacheEntries": 7, "changedEntries": changed,
+                    "etag": ETAG, "cacheEntries": 8, "changedEntries": changed,
                     "proofSha256": proof_sha256,
                 }));
             }
