@@ -3392,6 +3392,7 @@ public actor AuthoringAPI {
         manifest == "91833cef7d7cba12423e8feff506dc1fb072d107c1eb63b395d071b3f84e1b98"
             || manifest == "eee0808ab66919d15341327acb80f0055d00224ca12d984926efa526827a4109"
             || manifest == "cd821e1710d12ff5342431e537fde7b576426dfc1d3361ea004175ab51bc8899"
+            || manifest == "1afcb72faf53cfc69b22c6460f4457dcd32abd45cb01f470a8594e689af77af9"
         #else
         return false
         #endif

@@ -1254,6 +1254,13 @@ const STOCK_V6_DEFAULT_CATALOGUE_RUNTIME: RuntimeTuple = (
 );
 
 #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+const SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME: RuntimeTuple = (
+    "9e16cf602de2d5483d9694764f1a702214a244bb",
+    "9d675f6b50a0f774f071454182246524aec99ff7db3706421b1e00d97bfa0f52",
+    "1afcb72faf53cfc69b22c6460f4457dcd32abd45cb01f470a8594e689af77af9",
+);
+
+#[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
 const ORDINARY_RAIL_INSERTION_CHECK_RUNTIME: RuntimeTuple = (
     "c041df9e082a89e31e059572fe6057048333609d",
     "2891b3d62617615a2de409c478b867b349f7feb5b8efb8b2ddd4ca7558b943e7",
@@ -1271,6 +1278,7 @@ pub(crate) fn current_default_catalogue_host_matches(tuple: (&str, &str, &str)) 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CURRENT_DEFAULT_CATALOGUE_PAIR.0 == tuple
         || STOCK_V6_DEFAULT_CATALOGUE_RUNTIME == tuple
+        || SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME == tuple
         || RECORDED_FLOOR_DEFAULT_RUNTIME == tuple
         || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME == tuple;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -1284,6 +1292,7 @@ pub(crate) fn current_default_catalogue_manifest_matches(manifest: &str) -> bool
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     return CURRENT_DEFAULT_CATALOGUE_PAIR.0.2 == manifest
         || STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2 == manifest
+        || SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME.2 == manifest
         || RECORDED_FLOOR_DEFAULT_RUNTIME.2 == manifest
         || ORDINARY_RAIL_INSERTION_CHECK_RUNTIME.2 == manifest;
     #[cfg(not(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos")))]
@@ -3076,6 +3085,21 @@ pub(crate) mod normal_oex_release_declaration_tests {
         payload.manifest.files.push(Item { path: path.into(), bytes: Some(bytes), sha256: Some(hash.into()), executable: Some(false), link: None });
         payload.manifest.source_commit = tuple.0.into(); payload.manifest.producer_sha256 = tuple.1.into();
         payload.manifest_sha256 = tuple.2.into(); payload
+    }
+
+    #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
+    #[test]
+    fn signed_passive_stock_requires_its_exact_ordinary_host_tuple() {
+        let (source, producer, manifest) = SIGNED_PASSIVE_STOCK_CATALOGUE_RUNTIME;
+        assert!(current_default_catalogue_host_matches((source, producer, manifest)));
+        assert!(current_default_catalogue_manifest_matches(manifest));
+        assert!(crate::installations::native_static_export::saved_head_runtime_allowed(manifest));
+        assert!(current_default_catalogue_host_matches(STOCK_V6_DEFAULT_CATALOGUE_RUNTIME));
+
+        assert!(!current_default_catalogue_host_matches((STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.0, producer, manifest)));
+        assert!(!current_default_catalogue_host_matches((source, CURRENT_DEFAULT_CATALOGUE_PAIR.0.1, manifest)));
+        assert!(!current_default_catalogue_host_matches((source, producer, STOCK_V6_DEFAULT_CATALOGUE_RUNTIME.2)));
+        assert!(!current_default_catalogue_manifest_matches(&manifest.to_ascii_uppercase()));
     }
 
     #[test]
