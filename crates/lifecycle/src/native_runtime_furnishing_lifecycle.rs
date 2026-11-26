@@ -423,6 +423,15 @@ impl Binding {
 
     #[cfg(all(feature = "workspace-v5-owner-validation", debug_assertions, target_os = "macos"))]
     pub(super) fn transition_restore(&self, transition: FurnishingTransition) -> Result<Option<&Restore>> {
+        if transition.target_catalog() == crate::native_payload::WorkspaceFurnishingCatalog::DefaultCatalogue057 {
+            return if self.phase == Phase::Clean && self.admission_kind == Admission::CleanReopen
+                && self.restore.is_none()
+            {
+                Ok(None)
+            } else {
+                Err(err(ERROR))
+            };
+        }
         if transition.is_current52_interrupted_recovery() {
             return if self.phase == Phase::Active && self.admission_kind == Admission::CleanReopen && self.restore.is_none() {
                 Ok(None)

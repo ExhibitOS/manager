@@ -2045,6 +2045,9 @@ impl InstallationController {
             if !staging.is_absolute() || staging.starts_with(profile) || profile.starts_with(staging) {
                 return Err(invalid());
             }
+            if target.catalog057_stock_publication_reopen_only() {
+                crate::installations::native_publication_custody::check_reviewed_catalog057_document(profile, document)?;
+            }
             let owner = service.personal_identity()?;
             if let Some(saved) = retained_saved_head {
                 check_retained_saved_head(pair, document, saved, (&owner.0, &owner.1, &owner.2))?;

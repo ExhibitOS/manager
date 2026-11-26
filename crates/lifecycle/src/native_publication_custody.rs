@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Explicit custody of an empty, abandoned ordinary publication stage in the
-//! qualified local validation runtime. The failed request remains recorded.
+//! Explicit custody of reviewed abandoned ordinary publication stages. The
+//! failed requests remain recorded.
 use super::*;
 use crate::maintenance_source::DirectoryPin;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -11,6 +11,20 @@ use std::{
 
 fn refused() -> LifecycleError {
     err("NATIVE_PUBLICATION_STAGE_CUSTODY_UNCONFIRMED")
+}
+
+fn rename_exclusive(directory: &File, source: &str, retained: &str) -> Result<()> {
+    let source = CString::new(source).map_err(|_| refused())?;
+    let retained = CString::new(retained).map_err(|_| refused())?;
+    if unsafe {
+        libc::renameatx_np(
+            directory.as_raw_fd(), source.as_ptr(),
+            directory.as_raw_fd(), retained.as_ptr(), libc::RENAME_EXCL,
+        )
+    } != 0 {
+        return Err(refused());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Deserialize, Eq, PartialEq)]
@@ -261,20 +275,7 @@ impl Plan {
             old.try_clone_file()?.sync_all().map_err(|_| refused())?;
             parent.check()?;
             old.check()?;
-            let src = CString::new(stage).map_err(|_| refused())?;
-            let dst = CString::new(retained.as_str()).map_err(|_| refused())?;
-            if unsafe {
-                libc::renameatx_np(
-                    directory.as_raw_fd(),
-                    src.as_ptr(),
-                    directory.as_raw_fd(),
-                    dst.as_ptr(),
-                    libc::RENAME_EXCL,
-                )
-            } != 0
-            {
-                return Err(refused());
-            }
+            rename_exclusive(&directory, &stage, &retained)?;
         }
         directory.sync_all().map_err(|_| refused())?;
         parent.check()?;
@@ -287,6 +288,12 @@ impl Plan {
         )
     }
 }
+
+#[path = "native_publication_failed_stage.rs"]
+mod failed_stage;
+pub(crate) use failed_stage::{
+    catalog057_custody_owner, check_retained_catalog057_stage, check_reviewed_catalog057_document,
+};
 
 #[cfg(test)]
 mod tests {
